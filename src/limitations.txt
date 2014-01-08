@@ -1,0 +1,8 @@
+PSMs in theory can be longer than 16 bits. We do not support PSMs over 16 bits,
+since nobody else (incl bluedroid) does either
+
+only basic l2cap mode is supported for now
+
+spec does not allow "fixed channels supported" to report real supported channels (says must be zero)
+so we do not report fixed channels over EDR nor do we query them.  since spec says unknown packets RXed shall be dropped,
+we do that, and assume any open()s to the other side are a success, since at worst other side will drop the data...
