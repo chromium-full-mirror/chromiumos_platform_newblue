@@ -1192,6 +1192,12 @@ void l2cAclDataRx(uint16_t aclConn, const void *data, uint32_t datalen)
     struct l2cAclConn *conn;
 
 
+    if (datalen < sizeof(struct l2cFrm)) {
+
+        loge("Short L2CAP frame RXed: %db\n", datalen);
+        return;
+    }
+
     /* get the header */
     frm = (struct l2cFrm*)data;
     len = utilGetLE16(&frm->len);
@@ -1205,8 +1211,11 @@ void l2cAclDataRx(uint16_t aclConn, const void *data, uint32_t datalen)
     conn = l2cAclConnFindById(aclConn);
     if (conn) {
 
-        if (len != datalen)
+        if (len != datalen) {
             logw("XXX: packet len=%d datalen=%d\n", len, datalen);
+            if (len > datalen)
+                len = datalen;
+        }
 
         if (cid == L2C_CH_SIGNALLING_EDR) {
             if (!BT_ADDR_IS_EDR(conn->addr))
@@ -1219,13 +1228,20 @@ void l2cAclDataRx(uint16_t aclConn, const void *data, uint32_t datalen)
             else
                 l2cSignallingRx(conn, data, len);
         } else if (cid == L2C_CH_CONNECTIONLESS) {
-            psm_t psm = utilGetLE16(data);
             l2c_handle_t handle;
-            data = ((uint16_t*)data) + 1;
-            len -= sizeof(uint16_t);
-            handle = l2cHandleCreate(aclConn, L2C_CH_CONNECTIONLESS, L2C_CH_CONNECTIONLESS, psm);
-            if (!l2cSvcWorkSchedulePsmConnectionlessRx(psm, NULL, handle, data, len))
-                loge("Failed to schedule call to connectionless RX for psm %d\n", psm);
+            psm_t psm;
+
+            if (len < sizeof(psm_t))
+                loge("Short connectionless L2CAP data RXed: %db\n", len);
+            else {
+
+                psm = utilGetLE16(data);
+                data = ((uint16_t*)data) + 1;
+                len -= sizeof(uint16_t);
+                handle = l2cHandleCreate(aclConn, L2C_CH_CONNECTIONLESS, L2C_CH_CONNECTIONLESS, psm);
+                if (!l2cSvcWorkSchedulePsmConnectionlessRx(psm, NULL, handle, data, len))
+                    loge("Failed to schedule call to connectionless RX for psm %d\n", psm);
+            }
         } else {
             if (!l2cSendRxToChannel(conn, cid, data, len)) {
                 if (cid < L2C_NUM_FIXED_CHANNELS)
