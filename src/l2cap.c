@@ -2,6 +2,8 @@
 //TODO: audit lock sequence everywhere...
 //todo: peer & i both open psm connection ot each other @ same time. discuss...
 //todo: do we close fixedch and psm services properly?
+//both connections we create and ones we accept use stateCbk to callback into higher code. we shoudl thus use said calls to stateCbk as th eunit of work in worker thread. thus the code in here that then calls to services can call service directly, since it will have already been ruinning in worker thread...
+
 
 #include <pthread.h>
 #include <stdlib.h>
@@ -28,7 +30,6 @@
 #define L2C_CH_SIGNALLING_EDR    0x0001
 #define L2C_CH_CONNECTIONLESS    0x0002
 #define L2C_CH_SIGNALLING_LE     0x0005
-#define L2C_CH_LAST_FIXED        0x0EFF
 
 
 typedef uint64_t uniq_t;
@@ -382,6 +383,58 @@ static bool l2cPsmValid(psm_t psm)
 }
 
 /*
+ * FUNCTION: l2cHandleCreate
+ * USE:      Create an externally-visible handle that can be used to identify an
+ *           L2CAP connection/connectionless pipe
+ * PARAMS:   aclConn - the acl connection ID
+ *           localCh - local channel number
+ *           remCh - remote channel number
+ *           psm - the PSM in use
+ * RETURN:   the handle
+ * NOTES:
+ */
+static l2c_handle_t l2cHandleCreate(uint16_t aclConn, uint16_t localCh, uint16_t remCh, psm_t psm)
+{
+    l2c_handle_t ret = aclConn;
+
+    ret = (ret << 16) + localCh;
+    ret = (ret << 16) + remCh;
+    ret = (ret << 16) + psm;
+
+    return ret;
+}
+
+/*
+ * FUNCTION: l2cHandleDecode
+ * USE:      Decode an externally-visible handle to parts that help us identify a
+ *           connection/connectionless pipe
+ * PARAMS:   handle - the handle
+ *           aclConnP - store here the acl connection ID
+ *           localChP - store here the local channel number
+ *           remChP - store here the remote channel number
+ *           psmP - store here the PSM in use
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void l2cHandleDecode(l2c_handle_t handle, uint16_t *aclConnP, uint16_t *localChP, uint16_t *remChP, psm_t *psmP)
+{
+    if (psmP)
+        *psmP = handle & 0xFFFF;
+    handle >>= 16;
+
+    if(remChP)
+        *remChP = handle & 0xFFFF;
+    handle >>= 16;
+
+    if(localChP)
+        *localChP = handle & 0xFFFF;
+    handle >>= 16;
+
+    if(aclConnP)
+        *aclConnP = handle & 0xFFFF;
+}
+
+/*
  * FUNCTION: l2cSvcWorkAlloc
  * USE:      Allocate a work item for the service worker
  * PARAMS:   type - the type of work
@@ -534,7 +587,7 @@ static bool l2cSvcWorkSchedulePsmConnectionlessRx(psm_t psm, void* reqID, l2c_ha
         return false;
     }
 
-    w = l2cSvcWorkAlloc(L2C_SVC_WORK_PSM_INST_RX, psm, 0, reqID);
+    w = l2cSvcWorkAlloc(L2C_SVC_WORK_PSM_CONNECTIONLESS_RX, psm, 0, reqID);
     if (!w) {
         free(copy);
         return false;
@@ -1027,6 +1080,52 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
 }
 
 /*
+ * FUNCTION: l2cFixedChRx
+ * USE:      Called when given channel data arrives. Dispatches it
+ *           to the right destination
+ * PARAMS:   aclConn - the ACL connection
+ *           cid - the channel data arrived on
+ *           data - buffer with the data
+ *           len - how much data there is
+ * RETURN:   false if data went nowhere
+ * NOTES:    call with mAclConnsLock lock held.
+ */
+static bool l2cSendRxToChannel(struct l2cAclConn *aclConn, uint16_t chan, const void *data, uint32_t len)
+{
+    struct l2cConn *iter, *cur;
+    bool ret = true;
+
+    pthread_mutex_lock(&mConnsLock);
+    iter = mConns;
+    while (iter) {
+        cur = iter;
+        iter = iter->next;
+
+        if (cur->acl != aclConn->uniq) /* wrong ACL connection */
+            continue;
+
+        if (cur->localCh != chan) /* wrong channel */
+            continue;
+
+        if (cur->state != L2C_CONN_STATE_ESTABLISHED) { /* not open yet */
+            logw("Got data for a not-yet-open channel\n");
+            continue;
+        }
+
+        break;
+    }
+
+    if (cur) /* found it */
+        cur->stateCbk(cur->cbkData, L2C_STATE_RX, data, len); //todo: this needs to go to worker thread...
+    else
+        ret = false;
+
+    pthread_mutex_unlock(&mConnsLock);
+
+   return ret;
+}
+
+/*
  * FUNCTION: l2cAclDataRx
  * USE:      Called by lower layers when ACL data arrives
  * PARAMS:   aclConn - the connection ID
@@ -1049,7 +1148,7 @@ void l2cAclDataRx(uint16_t aclConn, const void *data, uint32_t datalen)
 
     /* re-point data to point to the actual post-header data */
     data = (const void*)(frm + 1);
-    datalen -= sizeof(struct l2cFrm);
+    datalen -= sizeof(struct l2cFrm); //todo: check against "len"
 
     pthread_mutex_lock(&mAclConnsLock);
     conn = l2cAclConnFindById(aclConn);
@@ -1068,11 +1167,22 @@ void l2cAclDataRx(uint16_t aclConn, const void *data, uint32_t datalen)
                 loge("Received LE signalling packet on non-LE link. Dropping.\n");
             else
                 l2cSignallingRx(conn, data, len);
-        } else if (cid <= L2C_CH_LAST_FIXED)
-            l2cFixedChRx(conn, data, len);
-        else
-            l2cDynamicChRx(conn, data, len, datalen);
-
+        } else if (cid == L2C_CH_CONNECTIONLESS) {
+            psm_t psm = utilGetLE16(data);
+            l2c_handle_t handle;
+            data = ((uint16_t*)data) + 1;
+            len -= sizeof(uint16_t);
+            handle = l2cHandleCreate(aclConn, L2C_CH_CONNECTIONLESS, L2C_CH_CONNECTIONLESS, psm);
+            if (!l2cSvcWorkSchedulePsmConnectionlessRx(psm, NULL, handle, data, len))
+                loge("Failed to schedule call to connectionless RX for psm %d\n", psm);
+        } else {
+            if (!l2cSendRxToChannel(conn, cid, data, len)) {
+                if (cid < L2C_NUM_FIXED_CHANNELS)
+                    logw("Dropping RXed FixedCh data for cid %d\n", cid);
+                else
+                    logw("Dropping RXed PSM data for unknown cid %d\n", cid);
+            }
+        }
     } else {
         loge("Unable to find ACL connection %d. Dropping packet\n", aclConn);
     }
@@ -1487,7 +1597,8 @@ bool l2cApiServiceFixedChRegister(uint16_t chan, const struct l2cServiceFixedChD
 {
     struct l2cFixedChSvc *svc;
 
-    if (chan == L2C_CH_SIGNALLING_EDR || chan == L2C_CH_CONNECTIONLESS || chan == L2C_CH_SIGNALLING_LE)
+    if (chan == L2C_CH_SIGNALLING_EDR || chan == L2C_CH_CONNECTIONLESS ||
+        chan == L2C_CH_SIGNALLING_LE || !chan || chan >= L2C_NUM_FIXED_CHANNELS)
         return false;
 
     svc = (struct l2cFixedChSvc*)malloc(sizeof(struct l2cFixedChSvc));
@@ -1561,58 +1672,6 @@ bool l2cApiServiceFixedChUnregister(uint16_t chan, void (*doneCbk)(void*), void*
     pthread_mutex_unlock(&mSvcsLock);
 
     return success;
-}
-
-/*
- * FUNCTION: l2cHandleCreate
- * USE:      Create an externally-visible handle that can be used to identify an
- *           L2CAP connection/connectionless pipe
- * PARAMS:   aclConn - the acl connection ID
- *           localCh - local channel number
- *           remCh - remote channel number
- *           psm - the PSM in use
- * RETURN:   the handle
- * NOTES:
- */
-static l2c_handle_t l2cHandleCreate(uint16_t aclConn, uint16_t localCh, uint16_t remCh, psm_t psm)
-{
-    l2c_handle_t ret = aclConn;
-
-    ret = (ret << 16) + localCh;
-    ret = (ret << 16) + remCh;
-    ret = (ret << 16) + psm;
-
-    return ret;
-}
-
-/*
- * FUNCTION: l2cHandleDecode
- * USE:      Decode an externally-visible handle to parts taht help us identify a
- *           connection/connectionless pipe
- * PARAMS:   handle - the handle
- *           aclConnP - store here the acl connection ID
- *           localChP - store here the local channel number
- *           remChP - store here the remote channel number
- *           psmP - store here the PSM in use
- * RETURN:   NONE
- * NOTES:
- */
-static void l2cHandleDecode(l2c_handle_t handle, uint16_t *aclConnP, uint16_t *localChP, uint16_t *remChP, psm_t *psmP)
-{
-    if (psmP)
-        *psmP = handle & 0xFFFF;
-    handle >>= 16;
-
-    if(remChP)
-        *remChP = handle & 0xFFFF;
-    handle >>= 16;
-
-    if(localChP)
-        *localChP = handle & 0xFFFF;
-    handle >>= 16;
-
-    if(aclConnP)
-        *aclConnP = handle & 0xFFFF;
 }
 
 /*
@@ -2081,6 +2140,12 @@ bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr* addr, l2
     struct l2cAclConn *aclConn;
     struct l2cConn *conn = NULL, *t;
     bool ret = false;
+
+    if (chan == L2C_CH_SIGNALLING_EDR || chan == L2C_CH_CONNECTIONLESS ||
+        chan == L2C_CH_SIGNALLING_LE || !chan || chan >= L2C_NUM_FIXED_CHANNELS) {
+        logw("Invalid channel for creating a FixedCh connection\n");
+        return false;
+    }
 
     if (!stateCbk) {
         logw("Invalid stateCbk\n");
