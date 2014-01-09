@@ -66,7 +66,7 @@ bool l2cApiServiceFixedChRegister(uint16_t chan, const struct l2cServiceFixedChD
 bool l2cApiServiceFixedChUnregister(uint16_t chan, void (*doneCbk)(void*), void* cbkData);
 
 /* callbacks for connections */
-#define L2C_STATE_OPEN       0 /* dataPtr points to l2c_handle_t */
+#define L2C_STATE_OPEN       0 /* dataPtr points to l2c_handle_t, len has mtu */
 #define L2C_STATE_RX         1 /* dataPtr points to data, len to length */
 #define L2C_STATE_CLOSED     2 /* or error on openining */ 
 typedef void (*l2cStateCbk)(void *cbkData, uint8_t state, const void *data, uint32_t len);

@@ -1,9 +1,8 @@
+//#define L2C_STATE_OPEN       0 /* dataPtr points to l2c_handle_t, len has mtu */    - make sure len has mtu when we call it
 //todo: idea: sending thread get blocke don actual sending code which is blocke don hci buffer. l2cap layer itself ahs a send buffer, and a send thread whcih is also blocked. l2c's send data always higher priority than all other, so as long as it exists, all other send data waits...
 //TODO: audit lock sequence everywhere...
 //todo: peer & i both open psm connection ot each other @ same time. discuss...
 //todo: do we close fixedch and psm services properly?
-//both connections we create and ones we accept use stateCbk to callback into higher code. we shoudl thus use said calls to stateCbk as th eunit of work in worker thread. thus the code in here that then calls to services can call service directly, since it will have already been ruinning in worker thread...
-
 
 #include <pthread.h>
 #include <stdlib.h>
@@ -212,6 +211,13 @@ struct l2cSvcWork {
             void (*doneCbk)(void*);
             void *cbkData;
         } unreg;
+        struct {
+            l2cStateCbk stateCbk;
+            void *cbkData;
+            uint8_t state;
+            const void *data;
+            uint32_t len;
+        } state;
     };
 };
 #define L2C_SVC_WORK_PSM_INST_ALLOC          0
@@ -223,6 +229,7 @@ struct l2cSvcWork {
 #define L2C_SVC_WORK_FIXEDCH_INST_FREE       6
 #define L2C_SVC_WORK_FIXEDCH_INST_RX         7
 #define L2C_SVC_WORK_FIXEDCH_UNREGISTER      8 /* does not call service itself */
+#define L2C_SVC_WORK_STATE_CBK               9
 
 /* our per-service struct for PSM-based services */
 struct l2cPsmSvc {
@@ -456,9 +463,8 @@ static struct l2cSvcWork* l2cSvcWorkAlloc(int type, psm_t psm, uint16_t chan, vo
         else if (chan)
             w->chan = chan;
         else {
-            loge("l2cSvcWorkAlloc called with no PSM or channel\n");
-            free(w);
-            w= NULL;
+            w->psm = 0;
+            w->chan = 0;
         }
     } else
         loge("Failed to allocate service work item\n");
@@ -757,6 +763,54 @@ static bool l2cSvcWorkSchedulePsmUnregister(psm_t psm, void* reqID, void (*doneC
         return true;
 
     loge("Failed to enqueue service work for service unregistering!\n");
+    free(w);
+    return false;
+}
+
+/*
+ * FUNCTION: l2cSvcWorkScheduleStateCall
+ * USE:      Schedule a "state" callback for a local-initiated connection
+ * PARAMS:   reqID - request ID to signal completion
+ *           stateCbk - the callback to call
+ *           cbkData - data pointer to pass to the callback
+ *           state - state vaklue to pass to the callback
+ *           data - buffer a copy of which is passed to the callback
+ *           passed_len - the len value to call the callabck with (not same as buffer len possibly)
+ *           buffer_len - the length of the buffer (not passed to callback, just used to make a copy)
+ * RETURN:   NONE
+ * NOTES:    actual call will happen in the worker thread. Buffer is copied
+ */
+static bool l2cSvcWorkScheduleStateCall(void* reqID, l2cStateCbk stateCbk, void *cbkData, uint8_t state, const void *data, uint32_t passed_len, uint32_t buffer_len)
+{
+    struct l2cSvcWork* w;
+    void* copy;
+
+    copy = malloc(buffer_len);
+    if (!copy) {
+        loge("Failed to allocate service work data copy for state call!\n");
+        return false;
+    }
+
+    memcpy(copy, data, buffer_len);
+
+
+    w = l2cSvcWorkAlloc(L2C_SVC_WORK_STATE_CBK, 0, 0, reqID);
+    if (!w) {
+        free(copy);
+        return false;
+    }
+
+    w->state.stateCbk = stateCbk;
+    w->state.cbkData = cbkData;
+    w->state.state = state;
+    w->state.data = data;
+    w->state.len = passed_len;
+
+    if (workQueuePut(mServiceWork, w))
+        return true;
+
+    loge("Failed to enqueue service work for state call!\n");
+    free(copy);
     free(w);
     return false;
 }
@@ -1093,7 +1147,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
 static bool l2cSendRxToChannel(struct l2cAclConn *aclConn, uint16_t chan, const void *data, uint32_t len)
 {
     struct l2cConn *iter, *cur;
-    bool ret = true;
+    bool ret;
 
     pthread_mutex_lock(&mConnsLock);
     iter = mConns;
@@ -1115,14 +1169,11 @@ static bool l2cSendRxToChannel(struct l2cAclConn *aclConn, uint16_t chan, const 
         break;
     }
 
-    if (cur) /* found it */
-        cur->stateCbk(cur->cbkData, L2C_STATE_RX, data, len); //todo: this needs to go to worker thread...
-    else
-        ret = false;
+    ret = cur && l2cSvcWorkScheduleStateCall(NULL, cur->stateCbk, cur->cbkData, L2C_STATE_RX, data, len, len);
 
     pthread_mutex_unlock(&mConnsLock);
 
-   return ret;
+    return ret;
 }
 
 /*
@@ -1492,6 +1543,11 @@ static void l2cConnRequestClose(struct l2cConn *conn)
 psm_t l2cApiServicePsmRegister(psm_t psm, const struct l2cServicePsmDescriptor *service)
 {
     struct l2cPsmSvc *svc;
+
+    if (!l2cPsmValid(psm)) {
+        logw("Invalid PSM %d\n", psm);
+        return false;
+    }
 
     svc = (struct l2cPsmSvc*)malloc(sizeof(struct l2cPsmSvc));
     if (!svc)
@@ -2270,7 +2326,7 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr)
             if (!conn->psm) { /* FixedCh */
                 l2c_handle_t handle = l2cHandleCreate(aclConn->conn, conn->remCh, conn->remCh, 0);
                 conn->state = L2C_CONN_STATE_ESTABLISHED;
-                conn->stateCbk(conn->cbkData, L2C_STATE_OPEN, &handle, 0);
+                l2cSvcWorkScheduleStateCall(NULL, conn->stateCbk, conn->cbkData, L2C_STATE_OPEN, &handle, 0/*no mtu for fixedCh*/, sizeof(handle));
                 continue;
             }
 
@@ -2278,7 +2334,7 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr)
             ident = l2cSendOpenPsmChannel(aclConn, conn->psm);
 
             if (!ident) {
-                conn->stateCbk(conn->cbkData, L2C_STATE_CLOSED, NULL, 0);
+                l2cSvcWorkScheduleStateCall(NULL, conn->stateCbk, conn->cbkData, L2C_STATE_CLOSED, NULL, 0, 0);
                 loge("Failed to request opening of a psm channel\n");
                 //TODO: drop it appropriately
             }
