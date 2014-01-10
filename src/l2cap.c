@@ -2,6 +2,7 @@
 //todo: idea: sending thread get blocke don actual sending code which is blocke don hci buffer. l2cap layer itself ahs a send buffer, and a send thread whcih is also blocked. l2c's send data always higher priority than all other, so as long as it exists, all other send data waits...
 //TODO: audit lock sequence everywhere...
 //todo: peer & i both open psm connection ot each other @ same time. discuss...
+//todo: it may not be worthwhile to have mConnsLock and mAclConns lock as separate locks since we often need both. we shoudl condirer unifying them
 //todo: do we close fixedch and psm services properly?
 
 #include <pthread.h>
@@ -1448,6 +1449,20 @@ static void* l2cSvcWorker(void* unused)
 }
 
 /*
+ * FUNCTION: l2cAclEnqueueTx
+ * USE:      Request a send on an ACL connection
+ * PARAMS:   aclConn - the ACL connection structure
+ *           data - the data
+ *           size - how much data there is
+ * RETURN:   true is a send was requested. False on immediate error.
+ * NOTES:    Call only with mAclConnsLock held. buffer becomes owned by this code. will be freed.
+ */
+static bool l2cAclEnqueueTx(struct l2cAclConn *aclConn, const void *data, uint32_t len)
+{
+    //TODO: this
+}
+
+/*
  * FUNCTION: l2cInit
  * USE:      Called to init of L2CAP state
  * PARAMS:   NONE
@@ -1494,6 +1509,144 @@ void l2cConnStructDelete(struct l2cConn *conn)
 }
 
 /*
+ * FUNCTION: l2cAclSigNextIdent
+ * USE:      Request an "ident" value for signalling channel on ACL link
+ * PARAMS:   aclConn - the ACL connection structure
+ *           commit - whether to increment internal counter or not
+ * RETURN:   the ident value
+ * NOTES:    Call only with mAclConnsLock held
+ */
+static uint8_t l2cAclSigNextIdent(struct l2cAclConn *aclConn, bool commit)
+{
+    uint8_t ret = aclConn->ident;
+
+    if (commit)
+        aclConn->ident = (ret == 0xFF) ? 1 : ret + 1;
+
+    return ret;
+}
+
+/*
+ * FUNCTION: l2cAclFreeCid
+ * USE:      Find a free channel ID for an ACL connection
+ * PARAMS:   aclConn - the acl connection to send it on
+ * RETURN:   a free channel ID or zero on failure
+ * NOTES:    call with mConnsLock & mAclConnsLock locks held
+ */
+static uint16_t l2cAclFreeCid(struct l2cAclConn *aclConn)
+{
+    struct l2cConn* conn;
+    uint16_t guess = aclConn->nextChan, next, initial = aclConn->nextChan;
+
+    while(1) {
+        /* calculate next guess */
+        next = guess + 1;
+        if (next < L2C_NUM_FIXED_CHANNELS)
+            next = L2C_NUM_FIXED_CHANNELS;
+
+        /* see if the guessed free channel is actually free */
+        conn = mConns;
+        while (conn && (conn->acl != aclConn->conn || conn->localCh != guess))
+            conn = conn->next;
+
+        /* if so, we're done! */
+        if (!conn)
+            break;
+
+        /* else move on to the next one */
+        guess = next;
+
+        /* unless we've come a full circle, then give up */
+        if (guess == initial)
+            return 0;
+    }
+
+    /* store away where the next search should start */
+    aclConn->nextChan = next;
+    return guess;
+}
+
+/*
+ * FUNCTION: l2cSigSend
+ * USE:      Send a generic l2cap signalling frame
+ * PARAMS:   aclConn - the ACL connection
+ *           code - the ACL command code
+ *           sigFrm - the signalling frame to send (a copy will be made)
+ *           sigFrmLen - length of said signalling frame
+ * RETURN:   ident if request was sent, else 0
+ * NOTES:    call with mAclConnsLock locks held
+ */
+static uint8_t l2cSigSend(struct l2cAclConn *aclConn, uint8_t code, const void *sigFrm, uint32_t sigFrmLen)
+{
+    const int len = sizeof(struct l2cFrm) + sizeof(struct l2cSigFrm) + sigFrmLen;
+    struct l2cFrm *frm = (struct l2cFrm*)malloc(len);
+    struct l2cSigFrm *sig = (struct l2cSigFrm*)(frm + 1);
+    void *req = sig + 1;
+
+    if (!frm) {
+        loge("out of memory");
+        return 0;
+    }
+
+    frm->len = sizeof(struct l2cSigFrm) + sigFrmLen;
+    frm->cid = BT_ADDR_IS_LE(aclConn->addr) ? L2C_CH_SIGNALLING_LE : L2C_CH_SIGNALLING_EDR;
+    sig->code = code;
+    sig->len = sigFrmLen;
+    memcpy(req, sigFrm, sigFrmLen);
+
+    sig->ident = l2cAclSigNextIdent(aclConn, false);
+
+    if (l2cAclEnqueueTx(aclConn, frm, len)) {
+        l2cAclSigNextIdent(aclConn, true);
+        return sig->ident;
+    } else {
+        free(frm);
+        return 0;
+    }
+}
+
+/*
+ * FUNCTION: l2cSigSendCloseReq
+ * USE:      Request a send of a "close connection" command
+ * PARAMS:   aclConn - the acl connection,
+ *           conn - the l2c connection
+ * RETURN:   ident if request was sent, else 0
+ * NOTES:    call with mConnsLock & mAclConnsLock locks held
+ */
+static uint8_t l2cSigSendCloseReq(struct l2cAclConn *aclConn, struct l2cConn *conn)
+{
+    struct l2cSigDiscReq req;
+
+    req.scid = conn->localCh;
+    req.dcid = conn->remCh;
+
+    return l2cSigSend(aclConn, L2C_SIG_DISC_REQ, &req, sizeof(req));
+}
+
+/*
+ * FUNCTION: l2cSigSendConnectionReq
+ * USE:      Send a request to open a PSM channel
+ * PARAMS:   aclConn - the acl connection to send it on
+ *           psm - the PSM
+ * RETURN:   ident vlue used for request or 0 if none was sent
+ * NOTES:    call with mConnsLock & mAclConnsLock locks held
+ */
+static uint8_t l2cSigSendConnectionReq(struct l2cAclConn *aclConn, psm_t psm)
+{
+    struct l2cSigConnReq req;
+
+    req.psm = psm;
+    req.scid = l2cAclFreeCid(aclConn);
+
+    if (!req.scid) {
+        logw("No free channels for conn %d\n", aclConn->conn);
+        return 0;
+    }
+
+    return l2cSigSend(aclConn, L2C_SIG_CONN_REQ, &req, sizeof(req));
+}
+
+/*
  * FUNCTION: l2cConnRequestClose
  * USE:      Request an orderly closing of a channel
  * PARAMS:   con - the connection structure
@@ -1503,6 +1656,9 @@ void l2cConnStructDelete(struct l2cConn *conn)
 static void l2cConnRequestClose(struct l2cConn *conn)
 {
     struct l2cAclConn *acl;
+
+    pthread_mutex_lock(&mAclConnsLock);
+    acl = l2cAclConnFindByUniq(conn->acl); //todo: we should check if this is truly th eonly waiting connection for this ACL link. perhaps keep a "num_waiters" in the aclConn struct?
 
     switch (conn->state) {
     case L2C_CONN_STATE_RX_OPEN_SVC:
@@ -1519,19 +1675,22 @@ static void l2cConnRequestClose(struct l2cConn *conn)
                 l2cSvcWorkScheduleFixedChFree(conn->localCh, conn, conn->instance);
             conn->state = L2C_CONN_STATE_DIE_REQD;
         } else {
-            l2cConnSendCloseReq(conn);
-            conn->state = L2C_CONN_STATE_DIE_TXED;
+            if (acl){
+                l2cSigSendCloseReq(acl, conn);
+                conn->state = L2C_CONN_STATE_DIE_TXED;
+            } else {
+                /* let other side, if any, care */
+                l2cConnStructDelete(conn);
+            }
         }
         break;
     case L2C_CONN_STATE_CONN_WAIT:
-        /* cancel connection */
-        pthread_mutex_lock(&mAclConnsLock);
-        acl = l2cAclConnFindByUniq(conn->acl);
-        if (acl)
+        /* cancel an in-progress connection, if we're the last one waiting for it */
+        if (acl) //todo: we should check if this is truly th eonly waiting connection for this ACL link. perhaps keep a "num_waiters" in the aclConn struct?
             l2cAclLinkClose(&acl->addr);
         else
             logw("Cannot close in-progress acl conn - not found\n");
-        pthread_mutex_unlock(&mAclConnsLock);
+
         /* fallthrough intentional */
     case L2C_CONN_STATE_TX_OPEN_TXED:
         /* let other side care */
@@ -1546,6 +1705,7 @@ static void l2cConnRequestClose(struct l2cConn *conn)
     default:
         logw("Unexpected connection state %d when trying to close\n", conn->state);
     }
+    pthread_mutex_unlock(&mAclConnsLock);
 }
 
 /*
@@ -1832,38 +1992,6 @@ void l2cSvcDisconnect(l2c_handle_t handle)
 }
 
 /*
- * FUNCTION: l2cAclSigNextIdent
- * USE:      Request an "ident" value for signalling channel on ACL link
- * PARAMS:   aclConn - the ACL connection structure
- *           commit - whether to increment internal counter or not
- * RETURN:   the ident value
- * NOTES:    Call only with mAclConnsLock held
- */
-static uint8_t l2cAclSigNextIdent(struct l2cAclConn *aclConn, bool commit)
-{
-    uint8_t ret = aclConn->ident;
-
-    if (commit)
-        aclConn->ident = (ret == 0xFF) ? 1 : ret + 1;
-
-    return ret;
-}
-
-/*
- * FUNCTION: l2cAclEnqueueTx
- * USE:      Request a send on an ACL connection
- * PARAMS:   aclConn - the ACL connection structure
- *           data - the data
- *           size - how much data there is
- * RETURN:   true is a send was requested. False on immediate error.
- * NOTES:    Call only with mAclConnsLock held. buffer becomes owned by this code. will be freed.
- */
-static bool l2cAclEnqueueTx(struct l2cAclConn *aclConn, const void *data, uint32_t len)
-{
-    //TODO: this
-}
-
-/*
  * FUNCTION: l2cConnRequestSend
  * USE:      Request a send on a channel
  * PARAMS:   conn - the connection structure
@@ -1984,90 +2112,6 @@ bool l2cSvcDataTx(l2c_handle_t handle, const void* data, uint32_t size)
 }
 
 /*
- * FUNCTION: l2cAclFreeCid
- * USE:      Find a free channel ID for an ACL connection
- * PARAMS:   aclConn - the acl connection to send it on
- * RETURN:   a free channel ID or zero on failure
- * NOTES:    call with mConnsLock & mAclConnsLock locks held
- */
-static uint16_t l2cAclFreeCid(struct l2cAclConn *aclConn)
-{
-    struct l2cConn* conn;
-    uint16_t guess = aclConn->nextChan, next, initial = aclConn->nextChan;
-
-    while(1) {
-        /* calculate next guess */
-        next = guess + 1;
-        if (next < L2C_NUM_FIXED_CHANNELS)
-            next = L2C_NUM_FIXED_CHANNELS;
-
-        /* see if the guessed free channel is actually free */
-        conn = mConns;
-        while (conn && (conn->acl != aclConn->conn || conn->localCh != guess))
-            conn = conn->next;
-
-        /* if so, we're done! */
-        if (!conn)
-            break;
-
-        /* else move on to the next one */
-        guess = next;
-
-        /* unless we've come a full circle, then give up */
-        if (guess == initial)
-            return 0;
-    }
-
-    /* store away where the next search should start */
-    aclConn->nextChan = next;
-    return guess;
-}
-
-/*
- * FUNCTION: l2cSendOpenPsmChannel
- * USE:      Send a request to open a PSM channel
- * PARAMS:   aclConn - the acl connection to send it on
- *           psm - the PSM
- * RETURN:   ident vlue used for request or 0 if none was sent
- * NOTES:    call with mConnsLock & mAclConnsLock locks held
- */
-static uint8_t l2cSendOpenPsmChannel(struct l2cAclConn *aclConn, psm_t psm)
-{
-    const int len = sizeof(struct l2cFrm) + sizeof(struct l2cSigFrm) + sizeof(struct l2cSigConnReq);
-    struct l2cFrm *frm = (struct l2cFrm*)malloc(len);
-    struct l2cSigFrm *sig = (struct l2cSigFrm*)(frm + 1);
-    struct l2cSigConnReq *req = (struct l2cSigConnReq*)(sig + 1);
-
-    if (!frm) {
-        loge("out of memory");
-        return 0;
-    }
-
-    frm->len = sizeof(struct l2cSigFrm) + sizeof(struct l2cSigConnReq);
-    frm->cid = BT_ADDR_IS_LE(aclConn->addr) ? L2C_CH_SIGNALLING_LE : L2C_CH_SIGNALLING_EDR;
-    sig->code = L2C_SIG_CONN_REQ;
-    sig->len = sizeof(struct l2cSigConnReq);
-    req->psm = psm;
-    req->scid = l2cAclFreeCid(aclConn);
-
-    if (!req->scid) {
-        logw("No free channels for conn %d\n", aclConn->conn);
-        free(frm);
-        return 0;
-    }
-
-    sig->ident = l2cAclSigNextIdent(aclConn, false);
-
-    if (l2cAclEnqueueTx(aclConn, frm, len)) {
-        l2cAclSigNextIdent(aclConn, true);
-        return sig->ident;
-    } else {
-        free(frm);
-        return 0;
-    }
-}
-
-/*
  * FUNCTION: l2cCreateAndOpenNewConn
  * USE:      Request an ACL connection be created
  * PARAMS:   addr - the peer address
@@ -2172,7 +2216,7 @@ bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr* addr, l2cStateCb
     if (aclConn->conn & L2C_CONN_IN_PROGRESS)
         conn->state = L2C_CONN_STATE_CONN_WAIT;
     else {
-        uint8_t ident = l2cSendOpenPsmChannel(aclConn, psm);
+        uint8_t ident = l2cSigSendConnectionReq(aclConn, psm);
 
         if (!ident) {
             stateCbk(cbkData, L2C_STATE_CLOSED, NULL, 0);
@@ -2347,7 +2391,7 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr)
             }
 
             /* PSM connection */
-            ident = l2cSendOpenPsmChannel(aclConn, conn->psm);
+            ident = l2cSigSendConnectionReq(aclConn, conn->psm);
 
             if (!ident) {
                 l2cSvcWorkScheduleStateCall(NULL, conn->stateCbk, conn->cbkData, L2C_STATE_CLOSED, NULL, 0, 0);
