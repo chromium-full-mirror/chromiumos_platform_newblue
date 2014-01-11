@@ -1588,24 +1588,26 @@ static uint8_t l2cSigSend(struct l2cAclConn *aclConn, uint8_t code, const void *
     struct l2cFrm *frm = (struct l2cFrm*)malloc(len);
     struct l2cSigFrm *sig = (struct l2cSigFrm*)(frm + 1);
     void *req = sig + 1;
+    uint8_t ident;
 
     if (!frm) {
         loge("out of memory");
         return 0;
     }
 
-    frm->len = sizeof(struct l2cSigFrm) + sigFrmLen + extraLen;
-    frm->cid = BT_ADDR_IS_LE(aclConn->addr) ? L2C_CH_SIGNALLING_LE : L2C_CH_SIGNALLING_EDR;
-    sig->code = code;
-    sig->len = sigFrmLen + extraLen;
+    utilSetLE16(&frm->len, sizeof(struct l2cSigFrm) + sigFrmLen + extraLen);
+    utilSetLE16(&frm->cid, BT_ADDR_IS_LE(aclConn->addr) ? L2C_CH_SIGNALLING_LE : L2C_CH_SIGNALLING_EDR);
+    utilSetLE8(&sig->code, code);
+    utilSetLE16(&sig->len, sigFrmLen + extraLen);
     memcpy(req, sigFrm, sigFrmLen);
     memcpy(((uint8_t*)req) + sigFrmLen, extraPtr, extraLen);
 
-    sig->ident = l2cAclSigNextIdent(aclConn, false);
+    ident = l2cAclSigNextIdent(aclConn, false);
+    utilSetLE8(&sig->ident, ident);
 
     if (l2cAclEnqueueTx(aclConn, frm, len)) {
         l2cAclSigNextIdent(aclConn, true);
-        return sig->ident;
+        return ident;
     } else {
         free(frm);
         return 0;
@@ -1625,8 +1627,8 @@ static uint8_t l2cSigSendConnectionReq(struct l2cAclConn *aclConn, psm_t psm, ui
 {
     struct l2cSigConnReq req;
 
-    req.psm = psm;
-    req.scid = localCh; 
+    utilSetLE16(&req.psm, psm);
+    utilSetLE16(&req.scid, localCh); 
 
     return l2cSigSend(aclConn, L2C_SIG_CONN_REQ, &req, sizeof(req), NULL, 0);
 }
@@ -1646,10 +1648,10 @@ static uint8_t l2cSigSendConnectionRsp(struct l2cAclConn *aclConn, uint16_t loca
 {
     struct l2cSigConnRsp rsp;
 
-    rsp.dcid = localCh;
-    rsp.scid = remCh;
-    rsp.result = result;
-    rsp.status = status;
+    utilSetLE16(&rsp.dcid, localCh);
+    utilSetLE16(&rsp.scid, remCh);
+    utilSetLE16(&rsp.result, result);
+    utilSetLE16(&rsp.status, status);
 
     return l2cSigSend(aclConn, L2C_SIG_CONN_RSP, &rsp, sizeof(rsp), NULL, 0);
 }
@@ -1669,8 +1671,8 @@ static uint8_t l2cSigSendConfigReq(struct l2cAclConn *aclConn, uint16_t remCh, u
 {
     struct l2cSigConfReq req;
 
-    req.dcid = remCh;
-    req.flags = flags;
+    utilSetLE16(&req.dcid, remCh);
+    utilSetLE16(&req.flags, flags);
 
     return l2cSigSend(aclConn, L2C_SIG_CONF_REQ, &req, sizeof(req), cfgData, cfgLen);
 }
@@ -1691,9 +1693,9 @@ static uint8_t l2cSigSendConfigRsp(struct l2cAclConn *aclConn, uint16_t remCh, u
 {
     struct l2cSigConfRsp rsp;
 
-    rsp.scid = remCh;
-    rsp.flags = flags;
-    rsp.result = result;
+    utilSetLE16(&rsp.scid, remCh);
+    utilSetLE16(&rsp.flags, flags);
+    utilSetLE16(&rsp.result, result);
 
     return l2cSigSend(aclConn, L2C_SIG_CONF_RSP, &rsp, sizeof(rsp), cfgData, cfgLen);
 }
@@ -1711,8 +1713,8 @@ static uint8_t l2cSigSendDiscReq(struct l2cAclConn *aclConn, uint16_t localCh, u
 {
     struct l2cSigDiscReq req;
 
-    req.scid = localCh;
-    req.dcid = remCh;
+    utilSetLE16(&req.scid, localCh);
+    utilSetLE16(&req.dcid, remCh);
 
     return l2cSigSend(aclConn, L2C_SIG_DISC_REQ, &req, sizeof(req), NULL, 0);
 }
@@ -1730,8 +1732,8 @@ static uint8_t l2cSigSendDiscRsp(struct l2cAclConn *aclConn, uint16_t localCh, u
 {
     struct l2cSigDiscRsp rsp;
 
-    rsp.scid = remCh;
-    rsp.dcid = localCh;
+    utilSetLE16(&rsp.scid, remCh);
+    utilSetLE16(&rsp.dcid, localCh);
 
     return l2cSigSend(aclConn, L2C_SIG_DISC_RSP, &rsp, sizeof(rsp), NULL, 0);
 }
@@ -1762,7 +1764,7 @@ static uint8_t l2cSigSendInfoReq(struct l2cAclConn *aclConn, uint16_t infoType)
 {
     struct l2cSigInfoReq req;
 
-    req.infoType = infoType;
+    utilSetLE16(&req.infoType, infoType);
 
     return l2cSigSend(aclConn, L2C_SIG_INFO_REQ, &req, sizeof(req), NULL, 0);
 }
@@ -1782,8 +1784,8 @@ static uint8_t l2cSigSendInfoRsp(struct l2cAclConn *aclConn, uint16_t infoType, 
 {
     struct l2cSigInfoRsp rsp;
 
-    rsp.infoType = infoType;
-    rsp.result = result;
+    utilSetLE16(&rsp.infoType, infoType);
+    utilSetLE16(&rsp.result, result);
 
     return l2cSigSend(aclConn, L2C_SIG_INFO_RSP, &rsp, sizeof(rsp), infoData, infoLen);
 }
@@ -1803,10 +1805,10 @@ static uint8_t l2cSigSendConnUpdateReq(struct l2cAclConn *aclConn, uint16_t intM
 {
     struct l2cSigConnUpdtReq req;
 
-    req.intMin = intMin;
-    req.intMax = intMax;
-    req.latency = latency;
-    req.timeoutMult = timeoutMult;
+    utilSetLE16(&req.intMin, intMin);
+    utilSetLE16(&req.intMax, intMax);
+    utilSetLE16(&req.latency, latency);
+    utilSetLE16(&req.timeoutMult, timeoutMult);
 
     return l2cSigSend(aclConn, L2C_SIG_CONN_UPDT_REQ, &req, sizeof(req), NULL, 0);
 }
@@ -1823,7 +1825,7 @@ static uint8_t l2cSigSendConnUpdateRsp(struct l2cAclConn *aclConn, uint16_t resu
 {
     struct l2cSigConnUpdtRsp rsp;
 
-    rsp.result = result;
+    utilSetLE16(&rsp.result, result);
 
     return l2cSigSend(aclConn, L2C_SIG_CONN_UPDT_RSP, &rsp, sizeof(rsp), NULL, 0);
 }
@@ -1842,7 +1844,7 @@ static uint8_t l2cSigSendErrCmdReject(struct l2cAclConn *aclConn, uint16_t reaso
 {
     struct l2cSigCmdRej rej;
 
-    rej.reason = reason;
+    utilSetLE16(&rej.reason, reason);
 
     return l2cSigSend(aclConn, L2C_SIG_CMD_REJ, &rej, sizeof(rej), rejData, rejLen);
 }
@@ -1872,8 +1874,8 @@ static uint8_t l2cSigSendErrInvalidCid(struct l2cAclConn *aclConn, uint16_t rxed
 {
     struct l2cSigInvalidCid info;
 
-    info.rxedDcid = rxedDcid;
-    info.rxedScid = rxedScid;
+    utilSetLE16(&info.rxedDcid, rxedDcid);
+    utilSetLE16(&info.rxedScid, rxedScid);
 
     return l2cSigSendErrCmdReject(aclConn, L2C_SIG_INVALID_CID, &info, sizeof(info));
 }
@@ -2252,8 +2254,8 @@ static bool l2cConnRequestSend(struct l2cConn *conn, const void *data, uint32_t 
 
     frm = (struct l2cFrm*)buf;
     memcpy(frm + 1, data, len);
-    frm->len = len;
-    frm->cid = conn->remCh;
+    utilSetLE16(&frm->len, len);
+    utilSetLE16(&frm->cid, conn->remCh);
 
     pthread_mutex_lock(&mAclConnsLock);
     aclConn = l2cAclConnFindByUniq(conn->acl);
@@ -2290,9 +2292,9 @@ static bool l2cConnectionlessRequestSend(struct l2cAclConn *aclConn, psm_t psm, 
     frm = (struct l2cFrm*)buf;
     psmP = (psm_t*)(frm + 1);
     memcpy(psmP + 1, data, len);
-    *psmP = psm;
-    frm->len = len + sizeof(psm_t);
-    frm->cid = L2C_CH_CONNECTIONLESS;
+    utilSetLE16(psmP, psm);
+    utilSetLE16(&frm->len, len + sizeof(psm_t));
+    utilSetLE16(&frm->cid, L2C_CH_CONNECTIONLESS);
 
     if (!l2cAclEnqueueTx(aclConn, buf, buflen)) {
         free(buf);
