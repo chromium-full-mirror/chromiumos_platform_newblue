@@ -41,8 +41,12 @@ struct l2cSigCmdRej {
     /* optional data */
 };
 #define L2C_SIG_CMD_NOT_UNDERSTOD 0x0001
-#define L2C_SIG_MTU_EXCEEDED      0x0002
+/* no data */
 #define L2C_SIG_INVALID_CID       0x0003
+struct l2cSigInvalidCid {
+    uint16_t rxedDcid;
+    uint16_t rxedScid;
+};
 
 #define L2C_SIG_CONN_REQ          0x02
 struct l2cSigConnReq {
@@ -859,7 +863,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigConnReq *params = (struct l2cSigConnReq*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Connection Request packet on a non-EDR link\n");
-                l2cSendCmdNotUnderstood(conn, ident);
+                l2cSigSendCmdReject(conn, ident);
             } else if (len < sizeof(*params))
                 logw("Got a short Connection Request packet\n");
             else {
@@ -874,7 +878,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigConnRsp *params = (struct l2cSigConnRsp*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Connection Response packet on a non-EDR link\n");
-                l2cSendCmdNotUnderstood(conn, ident);
+                l2cSigSendCmdReject(conn, ident);
             } else if (len < sizeof(*params))
                 logw("Got a short Connection Response packet\n");
             else {
@@ -891,7 +895,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigConfReq *params = (struct l2cSigConfReq*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Configuration Request packet on a non-EDR link\n");
-                l2cSendCmdNotUnderstood(conn, ident);
+                l2cSigSendCmdReject(conn, ident);
             } else if (len < sizeof(*params))
                 logw("Got a short Configuration Request packet\n");
             else {
@@ -907,7 +911,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigConfRsp *params = (struct l2cSigConfRsp*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Configuration Response packet on a non-EDR link\n");
-                l2cSendCmdNotUnderstood(conn, ident);
+                l2cSigSendCmdReject(conn, ident);
             } else if (len < sizeof(*params))
                 logw("Got a short Configuration Response packet\n");
             else {
@@ -924,7 +928,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigDiscReq *params = (struct l2cSigDiscReq*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Disconnect Request packet on a non-EDR link\n");
-                l2cSendCmdNotUnderstood(conn, ident);
+                l2cSigSendCmdReject(conn, ident);
             } else if (len < sizeof(*params))
                 logw("Got a short Disconnect Request packet\n");
             else {
@@ -939,7 +943,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigDiscRsp *params = (struct l2cSigDiscRsp*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Disconnect Response packet on a non-EDR link\n");
-                l2cSendCmdNotUnderstood(conn, ident);
+                l2cSigSendCmdReject(conn, ident);
             } else if (len < sizeof(*params))
                 logw("Got a short Disconnect Response packet\n");
             else {
@@ -953,7 +957,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
         case L2C_SIG_ECHO_REQ: {
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Echo Request packet on a non-EDR link\n");
-                l2cSendCmdNotUnderstood(conn, ident);
+                l2cSigSendCmdReject(conn, ident);
             } else
                 l2cHandleEchoReq(conn, paramsP, len);
             break;
@@ -961,7 +965,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
         case L2C_SIG_ECHO_RSP: {
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Echo Response packet on a non-EDR link\n");
-                l2cSendCmdNotUnderstood(conn, ident);
+                l2cSigSendCmdReject(conn, ident);
             } else
                 l2cHandleEchoRsp(conn, paramsP, len);
             break;
@@ -970,7 +974,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigInfoReq *params = (struct l2cSigInfoReq*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Info Request packet on a non-EDR link\n");
-                l2cSendCmdNotUnderstood(conn, ident);
+                l2cSigSendCmdReject(conn, ident);
             } else if (len < sizeof(*params))
                 logw("Got a short Info Request packet\n");
             else {
@@ -984,7 +988,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigInfoRsp *params = (struct l2cSigInfoRsp*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Info Response packet on a non-EDR link\n");
-                l2cSendCmdNotUnderstood(conn, ident);
+                l2cSigSendCmdReject(conn, ident);
             } else if (len < sizeof(*params))
                 logw("Got a short Info Response packet\n");
             else {
@@ -1000,7 +1004,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigChCreatReq *params = (struct l2cSigChCreatReq*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Channel Create Request packet on a non-EDR link\n");
-                l2cSendCmdNotUnderstood(conn, ident);
+                l2cSigSendCmdReject(conn, ident);
             } else if (len < sizeof(*params))
                 logw("Got a short Channel Create Request packet\n");
             else {
@@ -1016,7 +1020,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigChCreatRsp *params = (struct l2cSigChCreatRsp*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Channel Create Response packet on a non-EDR link\n");
-                l2cSendCmdNotUnderstood(conn, ident);
+                l2cSigSendCmdReject(conn, ident);
             } else if (len < sizeof(*params))
                 logw("Got a short Channel Create Response packet\n");
             else {
@@ -1033,7 +1037,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigChMoveReq *params = (struct l2cSigChMoveReq*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Channel Move Request packet on a non-EDR link\n");
-                l2cSendCmdNotUnderstood(conn, ident);
+                l2cSigSendCmdReject(conn, ident);
             } else if (len < sizeof(*params))
                 logw("Got a short Channel Move Request packet\n");
             else {
@@ -1048,7 +1052,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigChMoveRsp *params = (struct l2cSigChMoveRsp*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Channel Move Response packet on a non-EDR link\n");
-                l2cSendCmdNotUnderstood(conn, ident);
+                l2cSigSendCmdReject(conn, ident);
             } else if (len < sizeof(*params))
                 logw("Got a short Channel Move Response packet\n");
             else {
@@ -1063,7 +1067,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigChMoveCnfReq *params = (struct l2cSigChMoveCnfReq*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Channel Move Confirmation packet on a non-EDR link\n");
-                l2cSendCmdNotUnderstood(conn, ident);
+                l2cSigSendCmdReject(conn, ident);
             } else if (len < sizeof(*params))
                 logw("Got a short Channel Move Confirmation packet\n");
             else {
@@ -1079,7 +1083,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Channel Move Confirmation Response "
                     "packet on a non-EDR link\n");
-                l2cSendCmdNotUnderstood(conn, ident);
+                l2cSigSendCmdReject(conn, ident);
             } else if (len < sizeof(*params))
                 logw("Got a short Channel Move Confirmation Response packet\n");
             else {
@@ -1093,7 +1097,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigConnUpdtReq *params = (struct l2cSigConnUpdtReq*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Connection Update Request packet on an EDR link\n");
-                l2cSendCmdNotUnderstood(conn, ident);
+                l2cSigSendCmdReject(conn, ident);
             } else if (len < sizeof(*params))
                 logw("Got a short Connection Update Request packet\n");
             else {
@@ -1110,7 +1114,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigConnUpdtRsp *params = (struct l2cSigConnUpdtRsp*)paramsP;
             if (!BT_ADDR_IS_LE(conn->addr)) {
                 logw("Got a Connection Update Response packet on a non-LE link\n");
-                l2cSendCmdNotUnderstood(conn, ident);
+                l2cSigSendCmdReject(conn, ident);
             } else if (len < sizeof(*params))
                 logw("Got a short Connection Update Response packet\n");
             else {
@@ -1122,7 +1126,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
         }
         default: {
             logw("Got unknown code %d on signalling channel\n", code);
-            l2cSendCmdNotUnderstood(conn, ident);
+            l2cSigSendCmdReject(conn, ident);
         }
         }
 
@@ -1573,12 +1577,14 @@ static uint16_t l2cAclFreeCid(struct l2cAclConn *aclConn)
  *           code - the ACL command code
  *           sigFrm - the signalling frame to send (a copy will be made)
  *           sigFrmLen - length of said signalling frame
+ *           extraPtr - extra data to attach, if any (a copy will be made)
+ *           extraLen - length of the extra data
  * RETURN:   ident if request was sent, else 0
  * NOTES:    call with mAclConnsLock locks held
  */
-static uint8_t l2cSigSend(struct l2cAclConn *aclConn, uint8_t code, const void *sigFrm, uint32_t sigFrmLen)
+static uint8_t l2cSigSend(struct l2cAclConn *aclConn, uint8_t code, const void *sigFrm, uint32_t sigFrmLen, const void *extraPtr, uint32_t extraLen)
 {
-    const int len = sizeof(struct l2cFrm) + sizeof(struct l2cSigFrm) + sigFrmLen;
+    const int len = sizeof(struct l2cFrm) + sizeof(struct l2cSigFrm) + sigFrmLen + extraLen;
     struct l2cFrm *frm = (struct l2cFrm*)malloc(len);
     struct l2cSigFrm *sig = (struct l2cSigFrm*)(frm + 1);
     void *req = sig + 1;
@@ -1588,11 +1594,12 @@ static uint8_t l2cSigSend(struct l2cAclConn *aclConn, uint8_t code, const void *
         return 0;
     }
 
-    frm->len = sizeof(struct l2cSigFrm) + sigFrmLen;
+    frm->len = sizeof(struct l2cSigFrm) + sigFrmLen + extraLen;
     frm->cid = BT_ADDR_IS_LE(aclConn->addr) ? L2C_CH_SIGNALLING_LE : L2C_CH_SIGNALLING_EDR;
     sig->code = code;
-    sig->len = sigFrmLen;
+    sig->len = sigFrmLen + extraLen;
     memcpy(req, sigFrm, sigFrmLen);
+    memcpy(((uint8_t*)req) + sigFrmLen, extraPtr, extraLen);
 
     sig->ident = l2cAclSigNextIdent(aclConn, false);
 
@@ -1606,44 +1613,269 @@ static uint8_t l2cSigSend(struct l2cAclConn *aclConn, uint8_t code, const void *
 }
 
 /*
- * FUNCTION: l2cSigSendCloseReq
- * USE:      Request a send of a "close connection" command
- * PARAMS:   aclConn - the acl connection,
- *           conn - the l2c connection
- * RETURN:   ident if request was sent, else 0
- * NOTES:    call with mConnsLock & mAclConnsLock locks held
- */
-static uint8_t l2cSigSendCloseReq(struct l2cAclConn *aclConn, struct l2cConn *conn)
-{
-    struct l2cSigDiscReq req;
-
-    req.scid = conn->localCh;
-    req.dcid = conn->remCh;
-
-    return l2cSigSend(aclConn, L2C_SIG_DISC_REQ, &req, sizeof(req));
-}
-
-/*
  * FUNCTION: l2cSigSendConnectionReq
  * USE:      Send a request to open a PSM channel
  * PARAMS:   aclConn - the acl connection to send it on
  *           psm - the PSM
+ *           localCh - local channel number
  * RETURN:   ident vlue used for request or 0 if none was sent
- * NOTES:    call with mConnsLock & mAclConnsLock locks held
+ * NOTES:    call with mAclConnsLock held
  */
-static uint8_t l2cSigSendConnectionReq(struct l2cAclConn *aclConn, psm_t psm)
+static uint8_t l2cSigSendConnectionReq(struct l2cAclConn *aclConn, psm_t psm, uint16_t localCh)
 {
     struct l2cSigConnReq req;
 
     req.psm = psm;
-    req.scid = l2cAclFreeCid(aclConn);
+    req.scid = localCh; 
 
-    if (!req.scid) {
-        logw("No free channels for conn %d\n", aclConn->conn);
-        return 0;
-    }
+    return l2cSigSend(aclConn, L2C_SIG_CONN_REQ, &req, sizeof(req), NULL, 0);
+}
 
-    return l2cSigSend(aclConn, L2C_SIG_CONN_REQ, &req, sizeof(req));
+/*
+ * FUNCTION: l2cSigSendConnectionRsp
+ * USE:      Send a response to an open request for a PSM channel
+ * PARAMS:   aclConn - the acl connection to send it on
+ *           localCh - local channel number
+ *           remCh - remote channel number
+ *           result - the result value to send
+ *           status - the status value to send
+ * RETURN:   ident vlue used for request or 0 if none was sent
+ * NOTES:    call with mAclConnsLock held
+ */
+static uint8_t l2cSigSendConnectionRsp(struct l2cAclConn *aclConn, uint16_t localCh, uint16_t remCh, uint16_t result, uint16_t status)
+{
+    struct l2cSigConnRsp rsp;
+
+    rsp.dcid = localCh;
+    rsp.scid = remCh;
+    rsp.result = result;
+    rsp.status = status;
+
+    return l2cSigSend(aclConn, L2C_SIG_CONN_RSP, &rsp, sizeof(rsp), NULL, 0);
+}
+
+/*
+ * FUNCTION: l2cSigSendConnectionReq
+ * USE:      Send a request to configure a PSM channel
+ * PARAMS:   aclConn - the acl connection to send it on
+ *           remCh - remote channel number
+ *           flags - the flags value to send
+ *           cfgData - config data to send (copy will be made)
+ *           cfgLen - length of config data
+ * RETURN:   ident vlue used for request or 0 if none was sent
+ * NOTES:    call with mAclConnsLock held
+ */
+static uint8_t l2cSigSendConfigReq(struct l2cAclConn *aclConn, uint16_t remCh, uint16_t flags, const void *cfgData, uint32_t cfgLen)
+{
+    struct l2cSigConfReq req;
+
+    req.dcid = remCh;
+    req.flags = flags;
+
+    return l2cSigSend(aclConn, L2C_SIG_CONF_REQ, &req, sizeof(req), cfgData, cfgLen);
+}
+
+/*
+ * FUNCTION: l2cSigSendConnectionRsp
+ * USE:      Send a response to an configure request for a PSM channel
+ * PARAMS:   aclConn - the acl connection to send it on
+ *           remCh - remote channel number
+ *           flags - the flags value to send
+ *           result - the result value to send
+ *           cfgData - config data to send (copy will be made)
+ *           cfgLen - length of config data
+ * RETURN:   ident vlue used for request or 0 if none was sent
+ * NOTES:    call with mAclConnsLock held
+ */
+static uint8_t l2cSigSendConfigRsp(struct l2cAclConn *aclConn, uint16_t remCh, uint16_t flags, uint16_t result, const void *cfgData, uint32_t cfgLen)
+{
+    struct l2cSigConfRsp rsp;
+
+    rsp.scid = remCh;
+    rsp.flags = flags;
+    rsp.result = result;
+
+    return l2cSigSend(aclConn, L2C_SIG_CONF_RSP, &rsp, sizeof(rsp), cfgData, cfgLen);
+}
+
+/*
+ * FUNCTION: l2cSigSendDiscReq
+ * USE:      Send a request to close a PSM channel
+ * PARAMS:   aclConn - the acl connection,
+ *           localCh - local channel number
+ *           remCh - remote channel number
+ * RETURN:   ident if request was sent, else 0
+ * NOTES:    call with mAclConnsLock held
+ */
+static uint8_t l2cSigSendDiscReq(struct l2cAclConn *aclConn, uint16_t localCh, uint16_t remCh)
+{
+    struct l2cSigDiscReq req;
+
+    req.scid = localCh;
+    req.dcid = remCh;
+
+    return l2cSigSend(aclConn, L2C_SIG_DISC_REQ, &req, sizeof(req), NULL, 0);
+}
+
+/*
+ * FUNCTION: l2cSigSendDiscRsp
+ * USE:      Send a response to an close request for a PSM channel
+ * PARAMS:   aclConn - the acl connection,
+ *           localCh - local channel number
+ *           remCh - remote channel number
+ * RETURN:   ident if request was sent, else 0
+ * NOTES:    call with mAclConnsLock held
+ */
+static uint8_t l2cSigSendDiscRsp(struct l2cAclConn *aclConn, uint16_t localCh, uint16_t remCh)
+{
+    struct l2cSigDiscRsp rsp;
+
+    rsp.scid = remCh;
+    rsp.dcid = localCh;
+
+    return l2cSigSend(aclConn, L2C_SIG_DISC_RSP, &rsp, sizeof(rsp), NULL, 0);
+}
+
+/*
+ * FUNCTION: l2cSigSendEchoRsp
+ * USE:      Send a response to an echo request
+ * PARAMS:   aclConn - the acl connection to send it on
+ *           echoData - echo data to send (copy will be made)
+ *           echoLen - length of config data
+ * RETURN:   ident vlue used for request or 0 if none was sent
+ * NOTES:    call with mAclConnsLock held
+ */
+static uint8_t l2cSigSendEchoRsp(struct l2cAclConn *aclConn, const void *echoData, uint32_t echoLen)
+{
+    return l2cSigSend(aclConn, L2C_SIG_ECHO_RSP, NULL, 0, echoData, echoLen);
+}
+
+/*
+ * FUNCTION: l2cSigSendInfoReq
+ * USE:      Send an info request
+ * PARAMS:   aclConn - the acl connection,
+ *           infoType - requested info type
+ * RETURN:   ident if request was sent, else 0
+ * NOTES:    call with mAclConnsLock held
+ */
+static uint8_t l2cSigSendInfoReq(struct l2cAclConn *aclConn, uint16_t infoType)
+{
+    struct l2cSigInfoReq req;
+
+    req.infoType = infoType;
+
+    return l2cSigSend(aclConn, L2C_SIG_INFO_REQ, &req, sizeof(req), NULL, 0);
+}
+
+/*
+ * FUNCTION: l2cSigSendInfoRsp
+ * USE:      Send a response to an info request
+ * PARAMS:   aclConn - the acl connection,
+ *           infoType - requested info type
+ *           result - requested info type
+ *           infoData - info data to send (copy will be made)
+ *           infoLen - length of config data
+ * RETURN:   ident if request was sent, else 0
+ * NOTES:    call with mAclConnsLock held
+ */
+static uint8_t l2cSigSendInfoRsp(struct l2cAclConn *aclConn, uint16_t infoType, uint16_t result, const void *infoData, uint32_t infoLen)
+{
+    struct l2cSigInfoRsp rsp;
+
+    rsp.infoType = infoType;
+    rsp.result = result;
+
+    return l2cSigSend(aclConn, L2C_SIG_INFO_RSP, &rsp, sizeof(rsp), infoData, infoLen);
+}
+
+/*
+ * FUNCTION: l2cSigSendConnUpdateReq
+ * USE:      Send a connection update request for an LE link
+ * PARAMS:   aclConn - the acl connection,
+ *           intMin - minimum requested interval in units of 1.25ms
+ *           intMax - maximum requested interval in units of 1.25ms
+ *           latency - requested latency
+ *           timeoutMult - requested timeout in units of 10ms
+ * RETURN:   ident if request was sent, else 0
+ * NOTES:    call with mAclConnsLock held
+ */
+static uint8_t l2cSigSendConnUpdateReq(struct l2cAclConn *aclConn, uint16_t intMin, uint16_t intMax, uint16_t latency, uint16_t timeoutMult)
+{
+    struct l2cSigConnUpdtReq req;
+
+    req.intMin = intMin;
+    req.intMax = intMax;
+    req.latency = latency;
+    req.timeoutMult = timeoutMult;
+
+    return l2cSigSend(aclConn, L2C_SIG_CONN_UPDT_REQ, &req, sizeof(req), NULL, 0);
+}
+
+/*
+ * FUNCTION: l2cSigSendConnUpdateRsp
+ * USE:      Send a connection update request for an LE link
+ * PARAMS:   aclConn - the acl connection,
+ *           result - requested info type
+ * RETURN:   ident if request was sent, else 0
+ * NOTES:    call with mAclConnsLock held
+ */
+static uint8_t l2cSigSendConnUpdateRsp(struct l2cAclConn *aclConn, uint16_t result)
+{
+    struct l2cSigConnUpdtRsp rsp;
+
+    rsp.result = result;
+
+    return l2cSigSend(aclConn, L2C_SIG_CONN_UPDT_RSP, &rsp, sizeof(rsp), NULL, 0);
+}
+
+/*
+ * FUNCTION: l2cSigSendErrCmdReject
+ * USE:      Send a "command rejected" signalling frame
+ * PARAMS:   aclConn - the acl connection
+ *           reason - the reason to send
+ *           rejData - rejection data to send (copy will be made)
+ *           rejLen - length of rejection data
+ * RETURN:   ident if request was sent, else 0
+ * NOTES:    call with mAclConnsLock held
+ */
+static uint8_t l2cSigSendErrCmdReject(struct l2cAclConn *aclConn, uint16_t reason, const void *rejData, uint32_t rejLen)
+{
+    struct l2cSigCmdRej rej;
+
+    rej.reason = reason;
+
+    return l2cSigSend(aclConn, L2C_SIG_CMD_REJ, &rej, sizeof(rej), rejData, rejLen);
+}
+
+/*
+ * FUNCTION: l2cSigSendErrCmdNotUnderstood
+ * USE:      Send a "command not understood" error
+ * PARAMS:   aclConn - the acl connection
+ * RETURN:   ident if request was sent, else 0
+ * NOTES:    call with mAclConnsLock held
+ */
+static uint8_t l2cSigSendErrCmdNotUnderstood(struct l2cAclConn *aclConn)
+{
+    return l2cSigSendErrCmdReject(aclConn, L2C_SIG_CMD_NOT_UNDERSTOD, NULL, 0);
+}
+
+/*
+ * FUNCTION: l2cSigSendErrInvalidCid
+ * USE:      Send a "invalid channel id" error
+ * PARAMS:   aclConn - the acl connection
+ *           rxedDcid - the received "dcid" value
+ *           rxedScid - the received "scid" value
+ * RETURN:   ident if request was sent, else 0
+ * NOTES:    call with mAclConnsLock held
+ */
+static uint8_t l2cSigSendErrInvalidCid(struct l2cAclConn *aclConn, uint16_t rxedDcid, uint16_t rxedScid)
+{
+    struct l2cSigInvalidCid info;
+
+    info.rxedDcid = rxedDcid;
+    info.rxedScid = rxedScid;
+
+    return l2cSigSendErrCmdReject(aclConn, L2C_SIG_INVALID_CID, &info, sizeof(info));
 }
 
 /*
@@ -1676,7 +1908,7 @@ static void l2cConnRequestClose(struct l2cConn *conn)
             conn->state = L2C_CONN_STATE_DIE_REQD;
         } else {
             if (acl){
-                l2cSigSendCloseReq(acl, conn);
+                l2cSigSendDiscReq(acl, conn->localCh, conn->remCh);
                 conn->state = L2C_CONN_STATE_DIE_TXED;
             } else {
                 /* let other side, if any, care */
@@ -2216,13 +2448,21 @@ bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr* addr, l2cStateCb
     if (aclConn->conn & L2C_CONN_IN_PROGRESS)
         conn->state = L2C_CONN_STATE_CONN_WAIT;
     else {
-        uint8_t ident = l2cSigSendConnectionReq(aclConn, psm);
+        uint8_t ident;
+        uint16_t localCh = l2cAclFreeCid(aclConn);
 
+        if (!localCh) {
+            logw("No free channels for conn %d\n", aclConn->conn);
+            goto out;
+        }
+
+        ident = l2cSigSendConnectionReq(aclConn, psm, localCh);
         if (!ident) {
-            stateCbk(cbkData, L2C_STATE_CLOSED, NULL, 0);
+            l2cSvcWorkScheduleStateCall(NULL, stateCbk, cbkData, L2C_STATE_CLOSED, NULL, 0, 0);
             loge("Failed to request opening of a psm channel\n");
             goto out;
         }
+        conn->localCh = localCh;
         conn->state = L2C_CONN_STATE_TX_OPEN_TXED;
         conn->ident = ident;
     }
@@ -2305,7 +2545,7 @@ bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr* addr, l2
         conn->state = L2C_CONN_STATE_CONN_WAIT;
     else {
         l2c_handle_t handle = l2cHandleCreate(aclConn->conn, chan, chan, 0);
-        stateCbk(cbkData, L2C_STATE_OPEN, &handle, 0);
+        l2cSvcWorkScheduleStateCall(NULL, stateCbk, cbkData, L2C_STATE_OPEN, &handle, 0/*no mtu for fixedCh*/, sizeof(handle));
         conn->state = L2C_CONN_STATE_ESTABLISHED;
     }
     conn->prev = NULL;
@@ -2370,7 +2610,8 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr)
         pthread_mutex_lock(&mConnsLock);
         connIter = mConns;
         while (connIter){
-            uint8_t ident;
+            uint8_t ident = 0;
+            uint16_t localCh;
             struct l2cConn *conn = connIter;
             connIter = connIter->next;
 
@@ -2391,7 +2632,11 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr)
             }
 
             /* PSM connection */
-            ident = l2cSigSendConnectionReq(aclConn, conn->psm);
+            localCh = l2cAclFreeCid(aclConn);
+            if (localCh) {
+                 ident = l2cSigSendConnectionReq(aclConn, conn->psm, localCh);
+                 conn->localCh = localCh;
+            }
 
             if (!ident) {
                 l2cSvcWorkScheduleStateCall(NULL, conn->stateCbk, conn->cbkData, L2C_STATE_CLOSED, NULL, 0, 0);
