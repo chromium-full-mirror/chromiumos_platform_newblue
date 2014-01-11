@@ -1574,6 +1574,7 @@ static uint16_t l2cAclFreeCid(struct l2cAclConn *aclConn)
  * FUNCTION: l2cSigSend
  * USE:      Send a generic l2cap signalling frame
  * PARAMS:   aclConn - the ACL connection
+ *           ident - ident to use, 0 for auto
  *           code - the ACL command code
  *           sigFrm - the signalling frame to send (a copy will be made)
  *           sigFrmLen - length of said signalling frame
@@ -1582,13 +1583,13 @@ static uint16_t l2cAclFreeCid(struct l2cAclConn *aclConn)
  * RETURN:   ident if request was sent, else 0
  * NOTES:    call with mAclConnsLock locks held
  */
-static uint8_t l2cSigSend(struct l2cAclConn *aclConn, uint8_t code, const void *sigFrm, uint32_t sigFrmLen, const void *extraPtr, uint32_t extraLen)
+static uint8_t l2cSigSend(struct l2cAclConn *aclConn, uint8_t ident, uint8_t code, const void *sigFrm, uint32_t sigFrmLen, const void *extraPtr, uint32_t extraLen)
 {
     const int len = sizeof(struct l2cFrm) + sizeof(struct l2cSigFrm) + sigFrmLen + extraLen;
     struct l2cFrm *frm = (struct l2cFrm*)malloc(len);
     struct l2cSigFrm *sig = (struct l2cSigFrm*)(frm + 1);
     void *req = sig + 1;
-    uint8_t ident;
+    bool newIdent = ident == 0;
 
     if (!frm) {
         loge("out of memory");
@@ -1602,11 +1603,13 @@ static uint8_t l2cSigSend(struct l2cAclConn *aclConn, uint8_t code, const void *
     memcpy(req, sigFrm, sigFrmLen);
     memcpy(((uint8_t*)req) + sigFrmLen, extraPtr, extraLen);
 
-    ident = l2cAclSigNextIdent(aclConn, false);
+    if (newIdent)
+        ident = l2cAclSigNextIdent(aclConn, false);
     utilSetLE8(&sig->ident, ident);
 
     if (l2cAclEnqueueTx(aclConn, frm, len)) {
-        l2cAclSigNextIdent(aclConn, true);
+        if (newIdent)
+            l2cAclSigNextIdent(aclConn, true);
         return ident;
     } else {
         free(frm);
@@ -1620,7 +1623,7 @@ static uint8_t l2cSigSend(struct l2cAclConn *aclConn, uint8_t code, const void *
  * PARAMS:   aclConn - the acl connection to send it on
  *           psm - the PSM
  *           localCh - local channel number
- * RETURN:   ident vlue used for request or 0 if none was sent
+ * RETURN:   ident if request was sent, else 0
  * NOTES:    call with mAclConnsLock held
  */
 static uint8_t l2cSigSendConnectionReq(struct l2cAclConn *aclConn, psm_t psm, uint16_t localCh)
@@ -1630,21 +1633,22 @@ static uint8_t l2cSigSendConnectionReq(struct l2cAclConn *aclConn, psm_t psm, ui
     utilSetLE16(&req.psm, psm);
     utilSetLE16(&req.scid, localCh); 
 
-    return l2cSigSend(aclConn, L2C_SIG_CONN_REQ, &req, sizeof(req), NULL, 0);
+    return l2cSigSend(aclConn, 0, L2C_SIG_CONN_REQ, &req, sizeof(req), NULL, 0);
 }
 
 /*
  * FUNCTION: l2cSigSendConnectionRsp
  * USE:      Send a response to an open request for a PSM channel
  * PARAMS:   aclConn - the acl connection to send it on
+ *           ident - ident to use
  *           localCh - local channel number
  *           remCh - remote channel number
  *           result - the result value to send
  *           status - the status value to send
- * RETURN:   ident vlue used for request or 0 if none was sent
+ * RETURN:   ident if request was sent, else 0
  * NOTES:    call with mAclConnsLock held
  */
-static uint8_t l2cSigSendConnectionRsp(struct l2cAclConn *aclConn, uint16_t localCh, uint16_t remCh, uint16_t result, uint16_t status)
+static uint8_t l2cSigSendConnectionRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localCh, uint16_t remCh, uint16_t result, uint16_t status)
 {
     struct l2cSigConnRsp rsp;
 
@@ -1653,7 +1657,7 @@ static uint8_t l2cSigSendConnectionRsp(struct l2cAclConn *aclConn, uint16_t loca
     utilSetLE16(&rsp.result, result);
     utilSetLE16(&rsp.status, status);
 
-    return l2cSigSend(aclConn, L2C_SIG_CONN_RSP, &rsp, sizeof(rsp), NULL, 0);
+    return l2cSigSend(aclConn, ident, L2C_SIG_CONN_RSP, &rsp, sizeof(rsp), NULL, 0);
 }
 
 /*
@@ -1664,7 +1668,7 @@ static uint8_t l2cSigSendConnectionRsp(struct l2cAclConn *aclConn, uint16_t loca
  *           flags - the flags value to send
  *           cfgData - config data to send (copy will be made)
  *           cfgLen - length of config data
- * RETURN:   ident vlue used for request or 0 if none was sent
+ * RETURN:   ident if request was sent, else 0
  * NOTES:    call with mAclConnsLock held
  */
 static uint8_t l2cSigSendConfigReq(struct l2cAclConn *aclConn, uint16_t remCh, uint16_t flags, const void *cfgData, uint32_t cfgLen)
@@ -1674,22 +1678,23 @@ static uint8_t l2cSigSendConfigReq(struct l2cAclConn *aclConn, uint16_t remCh, u
     utilSetLE16(&req.dcid, remCh);
     utilSetLE16(&req.flags, flags);
 
-    return l2cSigSend(aclConn, L2C_SIG_CONF_REQ, &req, sizeof(req), cfgData, cfgLen);
+    return l2cSigSend(aclConn, 0, L2C_SIG_CONF_REQ, &req, sizeof(req), cfgData, cfgLen);
 }
 
 /*
  * FUNCTION: l2cSigSendConnectionRsp
  * USE:      Send a response to an configure request for a PSM channel
  * PARAMS:   aclConn - the acl connection to send it on
+ *           ident - ident to use
  *           remCh - remote channel number
  *           flags - the flags value to send
  *           result - the result value to send
  *           cfgData - config data to send (copy will be made)
  *           cfgLen - length of config data
- * RETURN:   ident vlue used for request or 0 if none was sent
+ * RETURN:   ident if request was sent, else 0
  * NOTES:    call with mAclConnsLock held
  */
-static uint8_t l2cSigSendConfigRsp(struct l2cAclConn *aclConn, uint16_t remCh, uint16_t flags, uint16_t result, const void *cfgData, uint32_t cfgLen)
+static uint8_t l2cSigSendConfigRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t remCh, uint16_t flags, uint16_t result, const void *cfgData, uint32_t cfgLen)
 {
     struct l2cSigConfRsp rsp;
 
@@ -1697,13 +1702,13 @@ static uint8_t l2cSigSendConfigRsp(struct l2cAclConn *aclConn, uint16_t remCh, u
     utilSetLE16(&rsp.flags, flags);
     utilSetLE16(&rsp.result, result);
 
-    return l2cSigSend(aclConn, L2C_SIG_CONF_RSP, &rsp, sizeof(rsp), cfgData, cfgLen);
+    return l2cSigSend(aclConn, ident, L2C_SIG_CONF_RSP, &rsp, sizeof(rsp), cfgData, cfgLen);
 }
 
 /*
  * FUNCTION: l2cSigSendDiscReq
  * USE:      Send a request to close a PSM channel
- * PARAMS:   aclConn - the acl connection,
+ * PARAMS:   aclConn - the acl connection
  *           localCh - local channel number
  *           remCh - remote channel number
  * RETURN:   ident if request was sent, else 0
@@ -1716,46 +1721,48 @@ static uint8_t l2cSigSendDiscReq(struct l2cAclConn *aclConn, uint16_t localCh, u
     utilSetLE16(&req.scid, localCh);
     utilSetLE16(&req.dcid, remCh);
 
-    return l2cSigSend(aclConn, L2C_SIG_DISC_REQ, &req, sizeof(req), NULL, 0);
+    return l2cSigSend(aclConn, 0, L2C_SIG_DISC_REQ, &req, sizeof(req), NULL, 0);
 }
 
 /*
  * FUNCTION: l2cSigSendDiscRsp
  * USE:      Send a response to an close request for a PSM channel
- * PARAMS:   aclConn - the acl connection,
+ * PARAMS:   aclConn - the acl connection
+ *           ident - ident to use
  *           localCh - local channel number
  *           remCh - remote channel number
  * RETURN:   ident if request was sent, else 0
  * NOTES:    call with mAclConnsLock held
  */
-static uint8_t l2cSigSendDiscRsp(struct l2cAclConn *aclConn, uint16_t localCh, uint16_t remCh)
+static uint8_t l2cSigSendDiscRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localCh, uint16_t remCh)
 {
     struct l2cSigDiscRsp rsp;
 
     utilSetLE16(&rsp.scid, remCh);
     utilSetLE16(&rsp.dcid, localCh);
 
-    return l2cSigSend(aclConn, L2C_SIG_DISC_RSP, &rsp, sizeof(rsp), NULL, 0);
+    return l2cSigSend(aclConn, ident, L2C_SIG_DISC_RSP, &rsp, sizeof(rsp), NULL, 0);
 }
 
 /*
  * FUNCTION: l2cSigSendEchoRsp
  * USE:      Send a response to an echo request
  * PARAMS:   aclConn - the acl connection to send it on
+ *           ident - ident to use
  *           echoData - echo data to send (copy will be made)
  *           echoLen - length of config data
  * RETURN:   ident vlue used for request or 0 if none was sent
  * NOTES:    call with mAclConnsLock held
  */
-static uint8_t l2cSigSendEchoRsp(struct l2cAclConn *aclConn, const void *echoData, uint32_t echoLen)
+static uint8_t l2cSigSendEchoRsp(struct l2cAclConn *aclConn, uint8_t ident, const void *echoData, uint32_t echoLen)
 {
-    return l2cSigSend(aclConn, L2C_SIG_ECHO_RSP, NULL, 0, echoData, echoLen);
+    return l2cSigSend(aclConn, ident, L2C_SIG_ECHO_RSP, NULL, 0, echoData, echoLen);
 }
 
 /*
  * FUNCTION: l2cSigSendInfoReq
  * USE:      Send an info request
- * PARAMS:   aclConn - the acl connection,
+ * PARAMS:   aclConn - the acl connection
  *           infoType - requested info type
  * RETURN:   ident if request was sent, else 0
  * NOTES:    call with mAclConnsLock held
@@ -1766,13 +1773,14 @@ static uint8_t l2cSigSendInfoReq(struct l2cAclConn *aclConn, uint16_t infoType)
 
     utilSetLE16(&req.infoType, infoType);
 
-    return l2cSigSend(aclConn, L2C_SIG_INFO_REQ, &req, sizeof(req), NULL, 0);
+    return l2cSigSend(aclConn, 0, L2C_SIG_INFO_REQ, &req, sizeof(req), NULL, 0);
 }
 
 /*
  * FUNCTION: l2cSigSendInfoRsp
  * USE:      Send a response to an info request
- * PARAMS:   aclConn - the acl connection,
+ * PARAMS:   aclConn - the acl connection
+ *           ident - ident to use
  *           infoType - requested info type
  *           result - requested info type
  *           infoData - info data to send (copy will be made)
@@ -1780,20 +1788,20 @@ static uint8_t l2cSigSendInfoReq(struct l2cAclConn *aclConn, uint16_t infoType)
  * RETURN:   ident if request was sent, else 0
  * NOTES:    call with mAclConnsLock held
  */
-static uint8_t l2cSigSendInfoRsp(struct l2cAclConn *aclConn, uint16_t infoType, uint16_t result, const void *infoData, uint32_t infoLen)
+static uint8_t l2cSigSendInfoRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t infoType, uint16_t result, const void *infoData, uint32_t infoLen)
 {
     struct l2cSigInfoRsp rsp;
 
     utilSetLE16(&rsp.infoType, infoType);
     utilSetLE16(&rsp.result, result);
 
-    return l2cSigSend(aclConn, L2C_SIG_INFO_RSP, &rsp, sizeof(rsp), infoData, infoLen);
+    return l2cSigSend(aclConn, ident, L2C_SIG_INFO_RSP, &rsp, sizeof(rsp), infoData, infoLen);
 }
 
 /*
  * FUNCTION: l2cSigSendConnUpdateReq
  * USE:      Send a connection update request for an LE link
- * PARAMS:   aclConn - the acl connection,
+ * PARAMS:   aclConn - the acl connection
  *           intMin - minimum requested interval in units of 1.25ms
  *           intMax - maximum requested interval in units of 1.25ms
  *           latency - requested latency
@@ -1810,55 +1818,58 @@ static uint8_t l2cSigSendConnUpdateReq(struct l2cAclConn *aclConn, uint16_t intM
     utilSetLE16(&req.latency, latency);
     utilSetLE16(&req.timeoutMult, timeoutMult);
 
-    return l2cSigSend(aclConn, L2C_SIG_CONN_UPDT_REQ, &req, sizeof(req), NULL, 0);
+    return l2cSigSend(aclConn, 0, L2C_SIG_CONN_UPDT_REQ, &req, sizeof(req), NULL, 0);
 }
 
 /*
  * FUNCTION: l2cSigSendConnUpdateRsp
  * USE:      Send a connection update request for an LE link
- * PARAMS:   aclConn - the acl connection,
+ * PARAMS:   aclConn - the acl connection
+ *           ident - ident to use
  *           result - requested info type
  * RETURN:   ident if request was sent, else 0
  * NOTES:    call with mAclConnsLock held
  */
-static uint8_t l2cSigSendConnUpdateRsp(struct l2cAclConn *aclConn, uint16_t result)
+static uint8_t l2cSigSendConnUpdateRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t result)
 {
     struct l2cSigConnUpdtRsp rsp;
 
     utilSetLE16(&rsp.result, result);
 
-    return l2cSigSend(aclConn, L2C_SIG_CONN_UPDT_RSP, &rsp, sizeof(rsp), NULL, 0);
+    return l2cSigSend(aclConn, ident, L2C_SIG_CONN_UPDT_RSP, &rsp, sizeof(rsp), NULL, 0);
 }
 
 /*
  * FUNCTION: l2cSigSendErrCmdReject
  * USE:      Send a "command rejected" signalling frame
  * PARAMS:   aclConn - the acl connection
+ *           ident - the ident value to use
  *           reason - the reason to send
  *           rejData - rejection data to send (copy will be made)
  *           rejLen - length of rejection data
  * RETURN:   ident if request was sent, else 0
  * NOTES:    call with mAclConnsLock held
  */
-static uint8_t l2cSigSendErrCmdReject(struct l2cAclConn *aclConn, uint16_t reason, const void *rejData, uint32_t rejLen)
+static uint8_t l2cSigSendErrCmdReject(struct l2cAclConn *aclConn, uint8_t ident, uint16_t reason, const void *rejData, uint32_t rejLen)
 {
     struct l2cSigCmdRej rej;
 
     utilSetLE16(&rej.reason, reason);
 
-    return l2cSigSend(aclConn, L2C_SIG_CMD_REJ, &rej, sizeof(rej), rejData, rejLen);
+    return l2cSigSend(aclConn, ident, L2C_SIG_CMD_REJ, &rej, sizeof(rej), rejData, rejLen);
 }
 
 /*
  * FUNCTION: l2cSigSendErrCmdNotUnderstood
  * USE:      Send a "command not understood" error
  * PARAMS:   aclConn - the acl connection
+ *           ident - the ident value to use
  * RETURN:   ident if request was sent, else 0
  * NOTES:    call with mAclConnsLock held
  */
-static uint8_t l2cSigSendErrCmdNotUnderstood(struct l2cAclConn *aclConn)
+static uint8_t l2cSigSendErrCmdNotUnderstood(struct l2cAclConn *aclConn, uint8_t ident)
 {
-    return l2cSigSendErrCmdReject(aclConn, L2C_SIG_CMD_NOT_UNDERSTOD, NULL, 0);
+    return l2cSigSendErrCmdReject(aclConn, ident, L2C_SIG_CMD_NOT_UNDERSTOD, NULL, 0);
 }
 
 /*
@@ -1870,21 +1881,21 @@ static uint8_t l2cSigSendErrCmdNotUnderstood(struct l2cAclConn *aclConn)
  * RETURN:   ident if request was sent, else 0
  * NOTES:    call with mAclConnsLock held
  */
-static uint8_t l2cSigSendErrInvalidCid(struct l2cAclConn *aclConn, uint16_t rxedDcid, uint16_t rxedScid)
+static uint8_t l2cSigSendErrInvalidCid(struct l2cAclConn *aclConn, uint8_t ident, uint16_t rxedDcid, uint16_t rxedScid)
 {
     struct l2cSigInvalidCid info;
 
     utilSetLE16(&info.rxedDcid, rxedDcid);
     utilSetLE16(&info.rxedScid, rxedScid);
 
-    return l2cSigSendErrCmdReject(aclConn, L2C_SIG_INVALID_CID, &info, sizeof(info));
+    return l2cSigSendErrCmdReject(aclConn, ident, L2C_SIG_INVALID_CID, &info, sizeof(info));
 }
 
 /*
  * FUNCTION: l2cConnRequestClose
  * USE:      Request an orderly closing of a channel
  * PARAMS:   con - the connection structure
- * RETURN:   NONE
+ * RETURN:   ident if request was sent, else 0
  * NOTES:    Call with mConnsLock held. Will call service's free(), cbk if appropriate
  */
 static void l2cConnRequestClose(struct l2cConn *conn)
