@@ -874,7 +874,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
                 psm_t psm = utilGetLE16(&params->psm);
                 uint16_t scid = utilGetLE16(&params->scid);
 
-                l2cHandleConnReq(conn, psm, scid);
+                l2cHandleConnReq(conn, ident, psm, scid);
             }
             break;
         }
@@ -891,7 +891,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
                 uint16_t result = utilGetLE16(&params->result);
                 uint16_t status = utilGetLE16(&params->status);
 
-                l2cHandleConnRsp(conn, dcid, scid, result, status);
+                l2cHandleConnRsp(conn, ident, dcid, scid, result, status);
             }
             break;
         }
@@ -906,7 +906,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
                 uint16_t dcid = utilGetLE16(&params->dcid);
                 uint16_t flags = utilGetLE16(&params->flags);
 
-                l2cHandleConfReq(conn, dcid, flags,
+                l2cHandleConfReq(conn, ident, dcid, flags,
                     (const void*)(params + 1), len - sizeof(*params));
             }
             break;
@@ -923,7 +923,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
                 uint16_t flags = utilGetLE16(&params->flags);
                 uint16_t result = utilGetLE16(&params->result);
 
-                l2cHandleConfRsp(conn, scid, flags, result,
+                l2cHandleConfRsp(conn, ident, scid, flags, result,
                     (const void*)(params + 1), len - sizeof(*params));
             }
             break;
@@ -939,7 +939,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
                 uint16_t dcid = utilGetLE16(&params->dcid);
                 uint16_t scid = utilGetLE16(&params->scid);
 
-                l2cHandleDiscReq(conn, dcid, scid);
+                l2cHandleDiscReq(conn, ident, dcid, scid);
             }
             break;
         }
@@ -954,7 +954,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
                 uint16_t dcid = utilGetLE16(&params->dcid);
                 uint16_t scid = utilGetLE16(&params->scid);
 
-                l2cHandleDiscRsp(conn, dcid, scid);
+                l2cHandleDiscRsp(conn, ident, dcid, scid);
             }
             break;
         }
@@ -963,7 +963,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
                 logw("Got a Echo Request packet on a non-EDR link\n");
                 l2cSigSendErrCmdNotUnderstood(conn, ident);
             } else
-                l2cHandleEchoReq(conn, paramsP, len);
+                l2cHandleEchoReq(conn, ident, paramsP, len);
             break;
         }
         case L2C_SIG_ECHO_RSP: {
@@ -971,7 +971,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
                 logw("Got a Echo Response packet on a non-EDR link\n");
                 l2cSigSendErrCmdNotUnderstood(conn, ident);
             } else
-                l2cHandleEchoRsp(conn, paramsP, len);
+                l2cHandleEchoRsp(conn, ident, paramsP, len);
             break;
         }
         case L2C_SIG_INFO_REQ: {
@@ -984,7 +984,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             else {
                 uint16_t infoType = utilGetLE16(&params->infoType);
 
-                l2cHandleInfoReq(conn, infoType);
+                l2cHandleInfoReq(conn, ident, infoType);
             }
             break;
         }
@@ -999,7 +999,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
                 uint16_t infoType = utilGetLE16(&params->infoType);
                 uint16_t result = utilGetLE16(&params->result);
 
-                l2cHandleInfoRsp(conn, infoType, result,
+                l2cHandleInfoRsp(conn, ident, infoType, result,
                     (const void*)(params + 1), len - sizeof(*params));
             }
             break;
@@ -1017,7 +1017,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
                 uint16_t scid = utilGetLE16(&params->scid);
                 uint8_t controller = utilGetLE8(&params->controller);
 
-                l2cHandleChCreatReq(conn, psm, scid, controller);
+                l2cHandleChCreatReq(conn, ident, psm, scid, controller);
             }
             break;
         }
@@ -1034,7 +1034,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
                 uint16_t result = utilGetLE16(&params->result);
                 uint16_t status = utilGetLE16(&params->status);
 
-                l2cHandleChCreatRsp(conn, dcid, scid, result, status);
+                l2cHandleChCreatRsp(conn, ident, dcid, scid, result, status);
             }
             break;
         }
@@ -1049,7 +1049,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
                 uint16_t icid = utilGetLE16(&params->icid);
                 uint8_t controller = utilGetLE8(&params->controller);
 
-                l2cHandleChMoveReq(conn, icid, controller);
+                l2cHandleChMoveReq(conn, ident, icid, controller);
             }
             break;
         }
@@ -1064,7 +1064,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
                 uint16_t icid = utilGetLE16(&params->icid);
                 uint16_t result = utilGetLE8(&params->result);
 
-                l2cHandleChMoveRsp(conn, icid, result);
+                l2cHandleChMoveRsp(conn, ident, icid, result);
             }
             break;
         }
@@ -1079,7 +1079,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
                 uint16_t icid = utilGetLE16(&params->icid);
                 uint16_t result = utilGetLE8(&params->result);
 
-                l2cHandleChMoveCnfReq(conn, icid, result);
+                l2cHandleChMoveCnfReq(conn, ident, icid, result);
             }
             break;
         }
@@ -1094,7 +1094,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             else {
                 uint16_t icid = utilGetLE16(&params->icid);
 
-                l2cHandleChMoveCnfRsp(conn, icid);
+                l2cHandleChMoveCnfRsp(conn, ident, icid);
             }
             break;
         }
@@ -1112,7 +1112,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
                 uint16_t latency = utilGetLE16(&params->latency);
                 uint16_t timeoutMult = utilGetLE16(&params->timeoutMult);
 
-                l2cHandleConnUpdtReq(conn, intMin, intMax, latency, timeoutMult);
+                l2cHandleConnUpdtReq(conn, ident, intMin, intMax, latency, timeoutMult);
             }
             break;
         }
@@ -1126,7 +1126,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             else {
                 uint16_t result = utilGetLE8(&params->result);
 
-                l2cHandleConnUpdtRsp(conn, result);
+                l2cHandleConnUpdtRsp(conn, ident, result);
             }
             break;
         }
