@@ -27,7 +27,7 @@ struct l2cServicePsmDescriptor {
     void *userData; /* passed to all callbacks */
 
     /* all these are null if connectionless only */
-    void* (*serviceInstanceAlloc)(void* userData, l2c_handle_t handle, uint16_t mtu);
+    void* (*serviceInstanceAlloc)(void* userData, l2c_handle_t handle);
     void (*serviceInstanceFree)(void* userData, void* instance);
     void (*serviceInstanceRx)(void* userData, void* instance, const void *data, uint32_t size);
 

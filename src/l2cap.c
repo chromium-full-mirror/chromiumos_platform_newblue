@@ -4,6 +4,7 @@
 //todo: peer & i both open psm connection ot each other @ same time. discuss...
 //todo: it may not be worthwhile to have mConnsLock and mAclConns lock as separate locks since we often need both. we shoudl condirer unifying them
 //todo: do we close fixedch and psm services properly?
+//todo: stateCbk for peer-initiated connections is null. this should work. will it?
 
 #include <pthread.h>
 #include <stdlib.h>
@@ -61,6 +62,11 @@ struct l2cSigConnRsp {
     uint16_t result;
     uint16_t status;
 };
+#define L2C_SIG_CONN_RSP_OK       0x0000
+#define L2C_SIG_CONN_RSP_PEND     0x0001
+#define L2C_SIG_CONN_RSP_BAD_PSM  0x0002
+#define L2C_SIG_CONN_RSP_BAD_SEC  0x0003
+#define L2C_SIG_CONN_RSP_NO_RSRC  0x0004
 
 #define L2C_SIG_CONF_REQ          0x04
 struct l2cSigConfReq {
@@ -197,7 +203,6 @@ struct l2cSvcWork {
     union {
         struct {
             l2c_handle_t handle;
-            uint16_t mtu;
         } i_alloc;
         struct {
             void* instance;
@@ -291,6 +296,8 @@ struct l2cConn {
 /* some fwd declarations */
 static uint8_t l2cSigSendErrCmdNotUnderstood(struct l2cAclConn *aclConn, uint8_t ident);
 static uint8_t l2cSigSendErrInvalidCid(struct l2cAclConn *aclConn, uint8_t ident, uint16_t rxedDcid, uint16_t rxedScid);
+static uint16_t l2cAclFreeCid(struct l2cAclConn *aclConn);
+static uint8_t l2cSigSendConnectionRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localCh, uint16_t remCh, uint16_t result, uint16_t status);
 
 /* our state */
 static pthread_mutex_t mUniqLock = PTHREAD_MUTEX_INITIALIZER;
@@ -487,11 +494,10 @@ static struct l2cSvcWork* l2cSvcWorkAlloc(int type, psm_t psm, uint16_t chan, vo
  * PARAMS:   psm - the psm which this is for
  *           reqID - request ID to signal completion
  *           handle - the handle to pass to the service alloc handler
- *           mtu - the mtu pther side accepts
  * RETURN:   NONE
  * NOTES:    actual call will happen in the worker thread
  */
-static bool l2cSvcWorkSchedulePsmAlloc(psm_t psm, void* reqID, l2c_handle_t handle, uint16_t mtu)
+static bool l2cSvcWorkSchedulePsmAlloc(psm_t psm, void* reqID, l2c_handle_t handle)
 {
     struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_SVC_WORK_PSM_INST_ALLOC, psm, 0, reqID);
 
@@ -499,7 +505,6 @@ static bool l2cSvcWorkSchedulePsmAlloc(psm_t psm, void* reqID, l2c_handle_t hand
         return false;
 
     w->i_alloc.handle = handle;
-    w->i_alloc.mtu = mtu;
 
     if (workQueuePut(mServiceWork, w))
         return true;
@@ -640,7 +645,6 @@ static bool l2cSvcWorkScheduleFixedChAlloc(uint16_t chan, void* reqID, l2c_handl
         return false;
 
     w->i_alloc.handle = handle;
-    w->i_alloc.mtu = 0;
 
     if (workQueuePut(mServiceWork, w))
         return true;
@@ -825,13 +829,100 @@ static bool l2cSvcWorkScheduleStateCall(void* reqID, l2cStateCbk stateCbk, void 
 }
 
 /*
+ * FUNCTION: l2cHandleConnReq
+ * USE:      Process request to open a PSM channel
+ * PARAMS:   aclConn - the per-ACL-connection structure
+ *           ident - the ident to use for response
+ *           psm - the requested psm
+ *           remCh - the remote channel used to make the request
+ * RETURN:   NONE
+ * NOTES:    call with mAclConnsLock held
+ */
+static void l2cHandleConnReq(struct l2cAclConn *aclConn, uint8_t ident, psm_t psm, uint16_t remCh)
+{
+    bool invalidPsm = false;
+    struct l2cPsmSvc *svc = NULL;
+    struct l2cConn *conn = NULL;
+    uint16_t localCh = 0;
+    bool enqueued = false;
+    uint16_t result;
+
+    if (!l2cPsmValid(psm))
+        goto out_nolocks;
+
+    pthread_mutex_lock(&mSvcsLock);
+    svc = mPsmSvcs;
+    while (svc && (svc->psm != psm || svc->beingRemoved || !svc->desc.serviceInstanceAlloc))
+        svc = svc->next;
+    if (!svc)
+        goto out_svcs_lock;
+
+    conn = (struct l2cConn*)malloc(sizeof(struct l2cConn));
+    if (!conn) {
+        loge("Failed to allocate an L2C conn\n");
+        goto out_svcs_lock;
+    }
+    conn->acl = aclConn->uniq;
+    conn->psm = psm;
+    conn->instance = NULL;
+    conn->stateCbk = NULL;
+    conn->cbkData = NULL;
+    conn->remCh = remCh;
+    localCh = l2cAclFreeCid(aclConn);
+    if (!localCh) {
+        logw("No free channels for conn %d\n", aclConn->conn);
+        free(conn);
+        goto out_svcs_lock;
+    }
+    conn->prev = NULL;
+    conn->localCh = localCh;
+    conn->ident = ident;
+    conn->state = L2C_CONN_STATE_RX_OPEN_SVC;
+
+    /* safe to call this enqueue here , since worker thread cannot work on it till we release this lock */
+    pthread_mutex_lock(&mConnsLock);
+    enqueued = l2cSvcWorkSchedulePsmAlloc(psm, NULL, l2cHandleCreate(aclConn->conn, localCh,remCh, psm));
+    if (enqueued) {
+        conn->next = mConns;
+        mConns = conn;
+    } else {
+        free(conn);
+    }
+    pthread_mutex_unlock(&mConnsLock);
+
+out_svcs_lock:
+    pthread_mutex_unlock(&mSvcsLock);
+
+out_nolocks:
+    if (!svc) {
+        result = L2C_SIG_CONN_RSP_BAD_PSM;
+        logi("Request for connect to unknown pesm %d\n", psm);
+    } else if (!conn) {
+        result = L2C_SIG_CONN_RSP_NO_RSRC;
+        logi("Couldnt allocate a connection struct for incoming psm %d open request\n", psm);
+    } else if (!localCh) {
+        result = L2C_SIG_CONN_RSP_NO_RSRC;
+        logi("Couldnt find a local channel for incoming psm %d open request\n", psm);
+    } else if (!enqueued) {
+        result = L2C_SIG_CONN_RSP_NO_RSRC;
+        logi("Couldnt enqueue a service alloc request for incoming psm %d open request\n", psm);
+    } else {
+        logd("Scheduled service open for psm %d\n", psm);
+        return;
+    }
+
+    if (!l2cSigSendConnectionRsp(aclConn, ident, 0, remCh, result, 0))
+        loge("Failed to sent negative connection request response frame\n");
+}
+
+/*
  * FUNCTION: l2cSignallingRx
  * USE:      Process arriving data over signalling channels
  * PARAMS:   conn - the per-ACL-connection structure
  *           data - buffer with the data
  *           len - how much data there is
  * RETURN:   num bytes used/needed or 0 for error
- * NOTES:
+ * NOTES:    call with mAclConnsLock held
  */
 static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t datalen)
 {
@@ -1336,7 +1427,7 @@ static void* l2cSvcWorker(void* unused)
             } else {
                 l2cPsmSvcInstAllocDone(work->reqID,
                     svc->desc.serviceInstanceAlloc(svc->desc.userData,
-                    work->i_alloc.handle, work->i_alloc.mtu));
+                    work->i_alloc.handle));
             }
             break;
         }
