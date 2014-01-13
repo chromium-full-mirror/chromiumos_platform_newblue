@@ -5,6 +5,8 @@
 //todo: it may not be worthwhile to have mConnsLock and mAclConns lock as separate locks since we often need both. we shoudl condirer unifying them
 //todo: do we close fixedch and psm services properly?
 //todo: stateCbk for peer-initiated connections is null. this should work. will it?
+//todo: close acl link when last psm link down, close acl link when last attempted psm link is cancelled, etc...
+//todo: timers/timouts for unspecced BT waits (config, etc)
 
 #include <pthread.h>
 #include <stdlib.h>
@@ -283,14 +285,13 @@ struct l2cConn {
 };
 #define L2C_CONN_STATE_CONN_WAIT       0 /* waiting for ACL link up */
 #define L2C_CONN_STATE_RX_OPEN_SVC     1 /* call to service in pipeline */
-#define L2C_CONN_STATE_RX_OPEN_RSP     2 /* reply sent to other side */
-#define L2C_CONN_STATE_TX_OPEN_TXED    3 /* request sent to other side */
-#define L2C_CONN_STATE_CFG             4 /* configuration ongoing */
-#define L2C_CONN_STATE_ESTABLISHED     5 /* connected */
-#define L2C_CONN_STATE_DIE_REQD        6 /* we closed, call to svc in pipeline */
-#define L2C_CONN_STATE_DIE_TXED        7 /* we closed, request sent to peer */
-#define L2C_CONN_STATE_DIE_RXED        8 /* other side closed, call to svc in pipeline */
-#define L2C_CONN_STATE_TEARDOWN        9 /* tearing down */
+#define L2C_CONN_STATE_TX_OPEN_TXED    2 /* request sent to other side */
+#define L2C_CONN_STATE_CFG             3 /* configuration ongoing */
+#define L2C_CONN_STATE_ESTABLISHED     4 /* connected */
+#define L2C_CONN_STATE_DIE_REQD        5 /* we closed, call to svc in pipeline */
+#define L2C_CONN_STATE_DIE_TXED        6 /* we closed, request sent to peer */
+#define L2C_CONN_STATE_DIE_RXED        7 /* other side closed, call to svc in pipeline */
+#define L2C_CONN_STATE_TEARDOWN        8 /* tearing down */
 
 
 /* some fwd declarations */
@@ -298,6 +299,8 @@ static uint8_t l2cSigSendErrCmdNotUnderstood(struct l2cAclConn *aclConn, uint8_t
 static uint8_t l2cSigSendErrInvalidCid(struct l2cAclConn *aclConn, uint8_t ident, uint16_t rxedDcid, uint16_t rxedScid);
 static uint16_t l2cAclFreeCid(struct l2cAclConn *aclConn);
 static uint8_t l2cSigSendConnectionRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localCh, uint16_t remCh, uint16_t result, uint16_t status);
+static struct l2cConn* l2cFindConnByHandle(l2c_handle_t handle);
+static void l2cConnStructDelete(struct l2cConn *conn);
 
 /* our state */
 static pthread_mutex_t mUniqLock = PTHREAD_MUTEX_INITIALIZER;
@@ -1392,12 +1395,70 @@ static struct l2cFixedChSvc* l2cFixedChSvcFindByChan(uint16_t chan)
 }
 
 /*
+ * FUNCTION: l2cPsmSvcInstAllocDone
+ * USE:      Called when a service call to allocate a PSM service instance finishes
+ * PARAMS:   reqID - request ID originally passed to l2cSvcWorkSchedulePsmAlloc
+ *           instance - the allocated instance or NULL
+ *           handle - the handle param for the connection
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void l2cPsmSvcInstAllocDone(void *reqID, void *instance, l2c_handle_t handle)
+{
+    struct l2cConn* conn;
+    struct l2cAclConn* aclConn;
+
+    pthread_mutex_lock(&mConnsLock);
+
+    conn = l2cFindConnByHandle(handle);
+    if (!conn) {
+        loge("Connection not found\n");
+        goto out_conns_lock;
+    }
+
+    pthread_mutex_lock(&mAclConnsLock);
+
+    aclConn = l2cAclConnFindByUniq(conn->acl);
+    if (!aclConn) {
+        loge("ACL link not found\n");
+        goto out_acl_lock;
+    }
+
+    if (!instance) {
+        logi("Service allocations failed for psm %d\n", conn->psm);
+        if (!l2cSigSendConnectionRsp(aclConn, conn->ident, 0, conn->remCh, L2C_SIG_CONN_RSP_NO_RSRC, 0))
+            loge("Failed to sent negative connection request response frame\n");
+        logd("Dropping connection struct\n");
+        l2cConnStructDelete(conn);
+        goto out_acl_lock;
+    }
+
+    if (!l2cSigSendConnectionRsp(aclConn, conn->ident, conn->localCh, conn->remCh, L2C_SIG_CONN_RSP_OK, 0)) {
+        loge("Failed to sent positive connection request response frame - dropping connection\n");
+        if (!l2cSvcWorkSchedulePsmFree(conn->psm, NULL, instance))
+            loge("Failed to free instance. this will cause a memory leak\n");
+        l2cConnStructDelete(conn);
+        goto out_acl_lock;
+    }
+
+    conn->state = L2C_CONN_STATE_CFG;
+    conn->cfgTxState = 0;
+    conn->cfgRxState = 0;
+    l2cPsmSendConfig(conn, aclConn);
+
+out_acl_lock:
+    pthread_mutex_unlock(&mAclConnsLock);
+
+out_conns_lock:
+    pthread_mutex_unlock(&mConnsLock);
+}
+
+/*
  * FUNCTION: l2cSvcWorker
  * USE:      Worker thread to call up to services
  * PARAMS:   unused - not used
  * RETURN:   NONE
- * NOTES:    We have a few of these and they are used to call services and not
- *           get blocked by them.
+ * NOTES:    Used to call services and not get blocked by them.
  */
 static void* l2cSvcWorker(void* unused)
 {
@@ -1423,11 +1484,11 @@ static void* l2cSvcWorker(void* unused)
             if (svc->beingRemoved) {
                 logi("Ignoring instance alloc for service (psm=%d) being removed\n",
                     work->psm);
-                l2cPsmSvcInstAllocDone(work->reqID, NULL);
+                l2cPsmSvcInstAllocDone(work->reqID, NULL, work->i_alloc.handle);
             } else {
                 l2cPsmSvcInstAllocDone(work->reqID,
                     svc->desc.serviceInstanceAlloc(svc->desc.userData,
-                    work->i_alloc.handle));
+                    work->i_alloc.handle), work->i_alloc.handle);
             }
             break;
         }
@@ -1593,11 +1654,11 @@ int l2cInit(void)
 /*
  * FUNCTION: l2cConnStructDelete
  * USE:      Delete a conn structure
- * PARAMS:   con - the connection structure
+ * PARAMS:   conn - the connection structure
  * RETURN:   NONE
  * NOTES:    Call with mConnsLock held.
  */
-void l2cConnStructDelete(struct l2cConn *conn)
+static void l2cConnStructDelete(struct l2cConn *conn)
 {
     if (conn->next)
         conn->next = conn->prev;
@@ -2006,7 +2067,6 @@ static void l2cConnRequestClose(struct l2cConn *conn)
     case L2C_CONN_STATE_RX_OPEN_SVC:
         conn->state = L2C_CONN_STATE_TEARDOWN;
         break;
-    case L2C_CONN_STATE_RX_OPEN_RSP:
     case L2C_CONN_STATE_CFG:
     case L2C_CONN_STATE_ESTABLISHED:
         
@@ -2255,7 +2315,7 @@ bool l2cApiServiceFixedChUnregister(uint16_t chan, void (*doneCbk)(void*), void*
  * RETURN:   connection structure or NULL
  * NOTES:    Called must hold mConnsLock
  */
-struct l2cConn* l2cFindConnByHandle(l2c_handle_t handle)
+static struct l2cConn* l2cFindConnByHandle(l2c_handle_t handle)
 {
     struct l2cConn *conn;
     uint16_t aclConnID, localCh, remCh;
