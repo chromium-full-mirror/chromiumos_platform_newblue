@@ -1454,6 +1454,54 @@ out_conns_lock:
 }
 
 /*
+ * FUNCTION: l2cFixedChSvcInstAllocDone
+ * USE:      Called when a service call to allocate a FixedCh service instance finishes
+ * PARAMS:   reqID - request ID originally passed to l2cSvcWorkScheduleFixedChAlloc
+ *           instance - the allocated instance or NULL
+ *           handle - the handle param for the connection
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void l2cFixedChSvcInstAllocDone(void *reqID, void *instance, l2c_handle_t handle)
+{
+    struct l2cConn* conn;
+    struct l2cAclConn* aclConn;
+
+    pthread_mutex_lock(&mConnsLock);
+
+    conn = l2cFindConnByHandle(handle);
+    if (!conn) {
+        loge("Connection not found\n");
+        goto out_conns_lock;
+    }
+
+    pthread_mutex_lock(&mAclConnsLock);
+
+    aclConn = l2cAclConnFindByUniq(conn->acl);
+    if (!aclConn) {
+        loge("ACL link not found\n");
+        goto out_acl_lock;
+    }
+
+    if (!instance) {
+        logi("Service allocations failed for FixedCh %d\n", conn->localCh);
+        logd("Dropping connection struct\n");
+        l2cConnStructDelete(conn);
+        goto out_acl_lock;
+    }
+
+    logd("Service up for FixedCh %d\n", conn->localCh);
+
+    conn->state = L2C_CONN_STATE_ESTABLISHED;
+
+out_acl_lock:
+    pthread_mutex_unlock(&mAclConnsLock);
+
+out_conns_lock:
+    pthread_mutex_unlock(&mConnsLock);
+}
+
+/*
  * FUNCTION: l2cSvcWorker
  * USE:      Worker thread to call up to services
  * PARAMS:   unused - not used
@@ -1563,11 +1611,11 @@ static void* l2cSvcWorker(void* unused)
             if (svc->beingRemoved) {
                 logi("Ignoring instance alloc for service (chan=%d) being removed\n",
                     work->chan);
-                l2cFixedChSvcInstAllocDone(work->reqID, NULL);
+                l2cFixedChSvcInstAllocDone(work->reqID, NULL, work->i_alloc.handle);
             } else {
                 l2cFixedChSvcInstAllocDone(work->reqID,
                     svc->desc.serviceFixedChAlloc(svc->desc.userData,
-                    work->i_alloc.handle));
+                    work->i_alloc.handle), work->i_alloc.handle);
             }
             break;
         }
@@ -2823,7 +2871,8 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr)
         svc = mFixedSvcs;
         while (svc) {
             if (!svc->beingRemoved)
-                svc->desc.serviceFixedChAlloc(svc->desc.userData, l2cHandleCreate(aclConn->conn, svc->chan, svc->chan, 0));
+                if (!l2cSvcWorkScheduleFixedChAlloc(svc->chan, NULL, l2cHandleCreate(aclConn->conn, svc->chan, svc->chan, 0)))
+                    loge("Failed to schedule FixedCh alloc for ch %d\n", svc->chan);
             svc = svc->next;
         }
         pthread_mutex_unlock(&mSvcsLock);
