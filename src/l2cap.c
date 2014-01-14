@@ -919,6 +919,95 @@ out_nolocks:
 }
 
 /*
+ * FUNCTION: l2cHandleConnRsp
+ * USE:      Randle a response to a open PSM channel request we had sent
+ * PARAMS:   aclConn - the per-ACL-connection structure
+ *           ident - the ident in the response packet
+ *           remCh - remote channel number
+ *           localCh -local channel number
+ *           result - the result the remote side sent
+ *           status - the status from the remote side
+ * RETURN:   NONE
+ * NOTES:    call with mAclConnsLock held
+ */
+static void l2cHandleConnRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t remCh, uint16_t localCh, uint16_t result, uint16_t status)
+{
+    struct l2cConn *conn = NULL;
+
+
+    pthread_mutex_lock(&mConnsLock);
+
+    conn = mConns;
+    while (conn && conn->localCh != localCh)
+        conn = conn->next;
+
+    if (!conn) {
+        logw("Unexpected Connection Response id %d for ch %d %d with result %d\n", ident, localCh, remCh, result);
+        goto out_conns_lock;
+    }
+
+    if (ident != conn->ident) {
+        logi("RXed a Connection Response witrh an invalid ident %d (expected %d). Dropping\n", ident, conn->ident);
+        goto out_conns_lock;
+    }
+
+    if (!conn->psm) {
+        logw("Unexpected Connection Response for a FixedCh conn chan %d\n", localCh);
+        goto out_conns_lock;
+    }
+
+    if (conn->state != L2C_CONN_STATE_TX_OPEN_TXED) {
+        logw("Connection Response for connection in bad state %d %d for ch %d %d with result %d\n", conn->state, ident, localCh, remCh, result);
+        //todo: what to do here?
+        goto out_conns_lock;
+    }
+
+    if (!conn->stateCbk) {
+        logw("Connection Response for connection we did not create\n");
+        //todo: what to do here?
+        goto out_conns_lock;
+    }
+
+    if (result == L2C_SIG_CONN_RSP_BAD_PSM || result == L2C_SIG_CONN_RSP_BAD_SEC || result == L2C_SIG_CONN_RSP_NO_RSRC) {
+        logi("Other side refused our connection for psm %d\n", conn->psm);
+        if (!l2cSvcWorkScheduleStateCall(NULL, conn->stateCbk, conn->cbkData, L2C_STATE_CLOSED, NULL, 0, 0))
+            loge("Failed to schedule 'closed' state call\n");
+        l2cConnStructDelete(conn);
+        goto out_conns_lock;
+    }
+
+    if (result == L2C_SIG_CONN_RSP_PEND) {
+
+        /* TODO: when we support unencrypted links, this code block will need to evolve */
+
+        loge("Unexpected 'pending' reply to open request - we are not expecting this on a secure link\n");
+        if (!l2cSvcWorkScheduleStateCall(NULL, conn->stateCbk, conn->cbkData, L2C_STATE_CLOSED, NULL, 0, 0))
+            loge("Failed to schedule 'closed' state call\n");
+        l2cConnStructDelete(conn);
+        goto out_conns_lock;
+    }
+
+    if (result != L2C_SIG_CONN_RSP_OK) {
+
+        loge("Unexpected result %d for connection to psm %d\n", result, conn->psm);
+        if (!l2cSvcWorkScheduleStateCall(NULL, conn->stateCbk, conn->cbkData, L2C_STATE_CLOSED, NULL, 0, 0))
+            loge("Failed to schedule 'closed' state call\n");
+        l2cConnStructDelete(conn);
+        goto out_conns_lock;
+    }
+
+    conn->state = L2C_CONN_STATE_CFG;
+    conn->cfgTxState = 0;
+    conn->cfgRxState = 0;
+    conn->remCh = remCh;
+
+    l2cPsmSendConfig(conn, aclConn);
+
+out_conns_lock:
+    pthread_mutex_unlock(&mConnsLock);
+}
+
+/*
  * FUNCTION: l2cSignallingRx
  * USE:      Process arriving data over signalling channels
  * PARAMS:   conn - the per-ACL-connection structure
