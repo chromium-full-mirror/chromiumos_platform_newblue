@@ -301,6 +301,7 @@ static uint16_t l2cAclFreeCid(struct l2cAclConn *aclConn);
 static uint8_t l2cSigSendConnectionRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localCh, uint16_t remCh, uint16_t result, uint16_t status);
 static struct l2cConn* l2cFindConnByHandle(l2c_handle_t handle);
 static void l2cConnStructDelete(struct l2cConn *conn);
+static void l2cPsmSendConfig(struct l2cAclConn *aclConn, struct l2cConn *conn);
 
 /* our state */
 static pthread_mutex_t mUniqLock = PTHREAD_MUTEX_INITIALIZER;
@@ -1001,10 +1002,58 @@ static void l2cHandleConnRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
     conn->cfgRxState = 0;
     conn->remCh = remCh;
 
-    l2cPsmSendConfig(conn, aclConn);
+    l2cPsmSendConfig(aclConn, conn);
 
 out_conns_lock:
     pthread_mutex_unlock(&mConnsLock);
+}
+
+/*
+ * FUNCTION: l2cPsmSendConfig
+ * USE:      RStart a config negotiation with a peer for a new PSM channel
+ * PARAMS:   aclConn - the per-ACL-connection structure
+ *           conn - the l2c connection struct
+ * RETURN:   NONE
+ * NOTES:    call with mAclConnsLock & mConnsLock locks held
+ */
+static void l2cPsmSendConfig(struct l2cAclConn *aclConn, struct l2cConn *conn)
+{
+    //todo: this
+}
+
+/*
+ * FUNCTION: l2cHandleConfReq
+ * USE:      Handle a configuration request for a PSM channel
+ * PARAMS:   aclConn - the per-ACL-connection structure
+ *           ident - the ident in the response packet
+ *           localCh -local channel number
+ *           flags - the flags the remote side sent
+ *           data - the data from the remote side
+ *           len - the length of the abovementioned data
+ * RETURN:   NONE
+ * NOTES:    call with mAclConnsLock held
+ */
+static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localCh, uint16_t flags, const void *data, uint16_t len)
+{
+    //todo: this
+}
+
+/*
+ * FUNCTION: l2cHandleConfRsp
+ * USE:      Handle a configuration request for a PSM channel
+ * PARAMS:   aclConn - the per-ACL-connection structure
+ *           ident - the ident in the response packet
+ *           localCh -local channel number
+ *           flags - the flags the remote side sent
+ *           result - the result the remote side sent
+ *           data - the data from the remote side
+ *           len - the length of the abovementioned data
+ * RETURN:   NONE
+ * NOTES:    call with mAclConnsLock held
+ */
+static void l2cHandleConfRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localCh, uint16_t flags, uint16_t result, const void *data, uint16_t len)
+{
+    //todo: this
 }
 
 /*
@@ -1533,7 +1582,7 @@ static void l2cPsmSvcInstAllocDone(void *reqID, void *instance, l2c_handle_t han
     conn->state = L2C_CONN_STATE_CFG;
     conn->cfgTxState = 0;
     conn->cfgRxState = 0;
-    l2cPsmSendConfig(conn, aclConn);
+    l2cPsmSendConfig(aclConn, conn);
 
 out_acl_lock:
     pthread_mutex_unlock(&mAclConnsLock);
