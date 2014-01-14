@@ -302,6 +302,7 @@ static uint8_t l2cSigSendConnectionRsp(struct l2cAclConn *aclConn, uint8_t ident
 static struct l2cConn* l2cFindConnByHandle(l2c_handle_t handle);
 static void l2cConnStructDelete(struct l2cConn *conn);
 static void l2cPsmSendConfig(struct l2cAclConn *aclConn, struct l2cConn *conn);
+static uint8_t l2cSigSendConfigReq(struct l2cAclConn *aclConn, uint16_t remCh, uint16_t flags, const void *cfgData, uint32_t cfgLen);
 
 /* our state */
 static pthread_mutex_t mUniqLock = PTHREAD_MUTEX_INITIALIZER;
@@ -1014,11 +1015,33 @@ out_conns_lock:
  * PARAMS:   aclConn - the per-ACL-connection structure
  *           conn - the l2c connection struct
  * RETURN:   NONE
- * NOTES:    call with mAclConnsLock & mConnsLock locks held
+ * NOTES:    call with mAclConnsLock & mConnsLock locks held, when *first* entering config state
  */
 static void l2cPsmSendConfig(struct l2cAclConn *aclConn, struct l2cConn *conn)
 {
-    //todo: this
+    /* for now our hardwired config is a large MTU and basic mode, if we ever support enhanced mode, this will change */
+    uint8_t ident;
+    static const uint8_t config[] = {
+        0x01, 0x02, 0xff, 0xef, /* our mtu is 0xefff */
+        0x04, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 /* basic mode */
+    };
+
+    ident = l2cSigSendConfigReq(aclConn, conn->remCh, 0, config, sizeof(config));
+    if (ident) {
+        conn->ident = ident;
+        conn->cfgTxState = 1;
+    } else {
+        loge("Failed to send config request on conn for chs %d %d on acl %d\n", conn->localCh, conn->remCh, aclConn->conn);
+        if (conn->stateCbk) {
+            if (!l2cSvcWorkScheduleStateCall(NULL, conn->stateCbk, conn->cbkData, L2C_STATE_CLOSED, NULL, 0, 0))
+                loge("Failed to schedule 'closed' state call\n");
+        } else if (conn->instance) {
+            if (!l2cSvcWorkSchedulePsmFree(conn->psm, NULL, conn->instance))
+                loge("Failed to schedule 'free' psm service call\n");
+        } else {
+            loge("internal error: how do i close this thing?\n");
+        }
+    }
 }
 
 /*
