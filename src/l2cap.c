@@ -2,7 +2,6 @@
 //todo: idea: sending thread get blocke don actual sending code which is blocke don hci buffer. l2cap layer itself ahs a send buffer, and a send thread whcih is also blocked. l2c's send data always higher priority than all other, so as long as it exists, all other send data waits...
 //TODO: audit lock sequence everywhere...
 //todo: peer & i both open psm connection ot each other @ same time. discuss...
-//todo: it may not be worthwhile to have mConnsLock and mAclConns lock as separate locks since we often need both. we shoudl condirer unifying them
 //todo: do we close fixedch and psm services properly?
 //todo: stateCbk for peer-initiated connections is null. this should work. will it?
 //todo: close acl link when last psm link down, close acl link when last attempted psm link is cancelled, etc...
@@ -308,9 +307,6 @@ static uint8_t l2cSigSendConfigReq(struct l2cAclConn *aclConn, uint16_t remCh, u
 static pthread_mutex_t mUniqLock = PTHREAD_MUTEX_INITIALIZER;
 static uniq_t mUniq = 1;
 
-static pthread_mutex_t mAclConnsLock = PTHREAD_MUTEX_INITIALIZER;
-static struct l2cAclConn *mAclConns = NULL;
-
 static pthread_t mSvcWorker;
 static struct workQueue *mServiceWork = NULL;
 
@@ -320,6 +316,7 @@ static struct l2cFixedChSvc *mFixedSvcs = NULL;
 static psm_t nextPsm = 0x1001;
 
 static pthread_mutex_t mConnsLock = PTHREAD_MUTEX_INITIALIZER;
+static struct l2cAclConn *mAclConns = NULL;
 static struct l2cConn *mConns = NULL;
 
 
@@ -344,7 +341,7 @@ static uniq_t l2cUniqNext(void)
  * USE:      Find a l2cConn structure for a given ACL connection ID
  * PARAMS:   aclConn - the ACL connection ID
  * RETURN:   the found struct or null
- * NOTES:    requires mAclConnsLock held
+ * NOTES:    requires mConnsLock held
  */
 static struct l2cAclConn* l2cAclConnFindById(uint16_t aclConn)
 {
@@ -361,7 +358,7 @@ static struct l2cAclConn* l2cAclConnFindById(uint16_t aclConn)
  * USE:      Find a l2cConn structure for a given a UniqID
  * PARAMS:   uniq - the UniqID
  * RETURN:   the found struct or null
- * NOTES:    requires mAclConnsLock held
+ * NOTES:    requires mConnsLock held
  */
 static struct l2cAclConn* l2cAclConnFindByUniq(uniq_t uniq)
 {
@@ -378,7 +375,7 @@ static struct l2cAclConn* l2cAclConnFindByUniq(uniq_t uniq)
  * USE:      Find a l2cConn structure for a given a peer addr
  * PARAMS:   addr - the addr
  * RETURN:   the found struct or null
- * NOTES:    requires mAclConnsLock held
+ * NOTES:    requires mConnsLock held
  */
 static struct l2cAclConn* l2cAclConnFindByAddr(const struct bt_addr* addr)
 {
@@ -841,7 +838,7 @@ static bool l2cSvcWorkScheduleStateCall(void* reqID, l2cStateCbk stateCbk, void 
  *           psm - the requested psm
  *           remCh - the remote channel used to make the request
  * RETURN:   NONE
- * NOTES:    call with mAclConnsLock held
+ * NOTES:    call with mConnsLock held
  */
 static void l2cHandleConnReq(struct l2cAclConn *aclConn, uint8_t ident, psm_t psm, uint16_t remCh)
 {
@@ -885,7 +882,6 @@ static void l2cHandleConnReq(struct l2cAclConn *aclConn, uint8_t ident, psm_t ps
     conn->state = L2C_CONN_STATE_RX_OPEN_SVC;
 
     /* safe to call this enqueue here , since worker thread cannot work on it till we release this lock */
-    pthread_mutex_lock(&mConnsLock);
     enqueued = l2cSvcWorkSchedulePsmAlloc(psm, NULL, l2cHandleCreate(aclConn->conn, localCh,remCh, psm));
     if (enqueued) {
         conn->next = mConns;
@@ -893,7 +889,6 @@ static void l2cHandleConnReq(struct l2cAclConn *aclConn, uint8_t ident, psm_t ps
     } else {
         free(conn);
     }
-    pthread_mutex_unlock(&mConnsLock);
 
 out_svcs_lock:
     pthread_mutex_unlock(&mSvcsLock);
@@ -930,14 +925,12 @@ out_nolocks:
  *           result - the result the remote side sent
  *           status - the status from the remote side
  * RETURN:   NONE
- * NOTES:    call with mAclConnsLock held
+ * NOTES:    call with mConnsLock held
  */
 static void l2cHandleConnRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t remCh, uint16_t localCh, uint16_t result, uint16_t status)
 {
     struct l2cConn *conn = NULL;
 
-
-    pthread_mutex_lock(&mConnsLock);
 
     conn = mConns;
     while (conn && conn->localCh != localCh)
@@ -945,29 +938,29 @@ static void l2cHandleConnRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
 
     if (!conn) {
         logw("Unexpected Connection Response id %d for ch %d %d with result %d\n", ident, localCh, remCh, result);
-        goto out_conns_lock;
+        return;
     }
 
     if (ident != conn->ident) {
         logi("RXed a Connection Response witrh an invalid ident %d (expected %d). Dropping\n", ident, conn->ident);
-        goto out_conns_lock;
+        return;
     }
 
     if (!conn->psm) {
         logw("Unexpected Connection Response for a FixedCh conn chan %d\n", localCh);
-        goto out_conns_lock;
+        return;
     }
 
     if (conn->state != L2C_CONN_STATE_TX_OPEN_TXED) {
         logw("Connection Response for connection in bad state %d %d for ch %d %d with result %d\n", conn->state, ident, localCh, remCh, result);
         //todo: what to do here?
-        goto out_conns_lock;
+        return;
     }
 
     if (!conn->stateCbk) {
         logw("Connection Response for connection we did not create\n");
         //todo: what to do here?
-        goto out_conns_lock;
+        return;
     }
 
     if (result == L2C_SIG_CONN_RSP_BAD_PSM || result == L2C_SIG_CONN_RSP_BAD_SEC || result == L2C_SIG_CONN_RSP_NO_RSRC) {
@@ -975,7 +968,7 @@ static void l2cHandleConnRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
         if (!l2cSvcWorkScheduleStateCall(NULL, conn->stateCbk, conn->cbkData, L2C_STATE_CLOSED, NULL, 0, 0))
             loge("Failed to schedule 'closed' state call\n");
         l2cConnStructDelete(conn);
-        goto out_conns_lock;
+        return;
     }
 
     if (result == L2C_SIG_CONN_RSP_PEND) {
@@ -986,7 +979,7 @@ static void l2cHandleConnRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
         if (!l2cSvcWorkScheduleStateCall(NULL, conn->stateCbk, conn->cbkData, L2C_STATE_CLOSED, NULL, 0, 0))
             loge("Failed to schedule 'closed' state call\n");
         l2cConnStructDelete(conn);
-        goto out_conns_lock;
+        return;
     }
 
     if (result != L2C_SIG_CONN_RSP_OK) {
@@ -995,7 +988,7 @@ static void l2cHandleConnRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
         if (!l2cSvcWorkScheduleStateCall(NULL, conn->stateCbk, conn->cbkData, L2C_STATE_CLOSED, NULL, 0, 0))
             loge("Failed to schedule 'closed' state call\n");
         l2cConnStructDelete(conn);
-        goto out_conns_lock;
+        return;
     }
 
     conn->state = L2C_CONN_STATE_CFG;
@@ -1004,9 +997,6 @@ static void l2cHandleConnRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
     conn->remCh = remCh;
 
     l2cPsmSendConfig(aclConn, conn);
-
-out_conns_lock:
-    pthread_mutex_unlock(&mConnsLock);
 }
 
 /*
@@ -1015,7 +1005,7 @@ out_conns_lock:
  * PARAMS:   aclConn - the per-ACL-connection structure
  *           conn - the l2c connection struct
  * RETURN:   NONE
- * NOTES:    call with mAclConnsLock & mConnsLock locks held, when *first* entering config state
+ * NOTES:    call with mConnsLock held, when *first* entering config state
  */
 static void l2cPsmSendConfig(struct l2cAclConn *aclConn, struct l2cConn *conn)
 {
@@ -1054,7 +1044,7 @@ static void l2cPsmSendConfig(struct l2cAclConn *aclConn, struct l2cConn *conn)
  *           data - the data from the remote side
  *           len - the length of the abovementioned data
  * RETURN:   NONE
- * NOTES:    call with mAclConnsLock held
+ * NOTES:    call with mConnsLock held
  */
 static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localCh, uint16_t flags, const void *data, uint16_t len)
 {
@@ -1072,7 +1062,7 @@ static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
  *           data - the data from the remote side
  *           len - the length of the abovementioned data
  * RETURN:   NONE
- * NOTES:    call with mAclConnsLock held
+ * NOTES:    call with mConnsLock held
  */
 static void l2cHandleConfRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localCh, uint16_t flags, uint16_t result, const void *data, uint16_t len)
 {
@@ -1086,7 +1076,7 @@ static void l2cHandleConfRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
  *           data - buffer with the data
  *           len - how much data there is
  * RETURN:   num bytes used/needed or 0 for error
- * NOTES:    call with mAclConnsLock held
+ * NOTES:    call with mConnsLock held
  */
 static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t datalen)
 {
@@ -1408,14 +1398,13 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
  *           data - buffer with the data
  *           len - how much data there is
  * RETURN:   false if data went nowhere
- * NOTES:    call with mAclConnsLock lock held.
+ * NOTES:    call with mConnsLock lock held.
  */
 static bool l2cSendRxToChannel(struct l2cAclConn *aclConn, uint16_t chan, const void *data, uint32_t len)
 {
     struct l2cConn *iter, *cur;
     bool ret;
 
-    pthread_mutex_lock(&mConnsLock);
     iter = mConns;
     while (iter) {
         cur = iter;
@@ -1435,11 +1424,7 @@ static bool l2cSendRxToChannel(struct l2cAclConn *aclConn, uint16_t chan, const 
         break;
     }
 
-    ret = cur && l2cSvcWorkScheduleStateCall(NULL, cur->stateCbk, cur->cbkData, L2C_STATE_RX, data, len, len);
-
-    pthread_mutex_unlock(&mConnsLock);
-
-    return ret;
+    return cur && l2cSvcWorkScheduleStateCall(NULL, cur->stateCbk, cur->cbkData, L2C_STATE_RX, data, len, len);
 }
 
 /*
@@ -1471,9 +1456,9 @@ void l2cAclDataRx(uint16_t aclConn, const void *data, uint32_t datalen)
 
     /* re-point data to point to the actual post-header data */
     data = (const void*)(frm + 1);
-    datalen -= sizeof(struct l2cFrm); //todo: check against "len"
+    datalen -= sizeof(struct l2cFrm);
 
-    pthread_mutex_lock(&mAclConnsLock);
+    pthread_mutex_lock(&mConnsLock);
     conn = l2cAclConnFindById(aclConn);
     if (conn) {
 
@@ -1519,7 +1504,7 @@ void l2cAclDataRx(uint16_t aclConn, const void *data, uint32_t datalen)
     } else {
         loge("Unable to find ACL connection %d. Dropping packet\n", aclConn);
     }
-    pthread_mutex_unlock(&mAclConnsLock);
+    pthread_mutex_unlock(&mConnsLock);
 }
 
 /*
@@ -1574,15 +1559,13 @@ static void l2cPsmSvcInstAllocDone(void *reqID, void *instance, l2c_handle_t han
     conn = l2cFindConnByHandle(handle);
     if (!conn) {
         loge("Connection not found\n");
-        goto out_conns_lock;
+        goto out;
     }
-
-    pthread_mutex_lock(&mAclConnsLock);
 
     aclConn = l2cAclConnFindByUniq(conn->acl);
     if (!aclConn) {
         loge("ACL link not found\n");
-        goto out_acl_lock;
+        goto out;
     }
 
     if (!instance) {
@@ -1591,7 +1574,7 @@ static void l2cPsmSvcInstAllocDone(void *reqID, void *instance, l2c_handle_t han
             loge("Failed to sent negative connection request response frame\n");
         logd("Dropping connection struct\n");
         l2cConnStructDelete(conn);
-        goto out_acl_lock;
+        goto out;
     }
 
     if (!l2cSigSendConnectionRsp(aclConn, conn->ident, conn->localCh, conn->remCh, L2C_SIG_CONN_RSP_OK, 0)) {
@@ -1599,7 +1582,7 @@ static void l2cPsmSvcInstAllocDone(void *reqID, void *instance, l2c_handle_t han
         if (!l2cSvcWorkSchedulePsmFree(conn->psm, NULL, instance))
             loge("Failed to free instance. this will cause a memory leak\n");
         l2cConnStructDelete(conn);
-        goto out_acl_lock;
+        goto out;
     }
 
     conn->state = L2C_CONN_STATE_CFG;
@@ -1607,10 +1590,7 @@ static void l2cPsmSvcInstAllocDone(void *reqID, void *instance, l2c_handle_t han
     conn->cfgRxState = 0;
     l2cPsmSendConfig(aclConn, conn);
 
-out_acl_lock:
-    pthread_mutex_unlock(&mAclConnsLock);
-
-out_conns_lock:
+out:
     pthread_mutex_unlock(&mConnsLock);
 }
 
@@ -1633,32 +1613,27 @@ static void l2cFixedChSvcInstAllocDone(void *reqID, void *instance, l2c_handle_t
     conn = l2cFindConnByHandle(handle);
     if (!conn) {
         loge("Connection not found\n");
-        goto out_conns_lock;
+        goto out;
     }
-
-    pthread_mutex_lock(&mAclConnsLock);
 
     aclConn = l2cAclConnFindByUniq(conn->acl);
     if (!aclConn) {
         loge("ACL link not found\n");
-        goto out_acl_lock;
+        goto out;
     }
 
     if (!instance) {
         logi("Service allocations failed for FixedCh %d\n", conn->localCh);
         logd("Dropping connection struct\n");
         l2cConnStructDelete(conn);
-        goto out_acl_lock;
+        goto out;
     }
 
     logd("Service up for FixedCh %d\n", conn->localCh);
 
     conn->state = L2C_CONN_STATE_ESTABLISHED;
 
-out_acl_lock:
-    pthread_mutex_unlock(&mAclConnsLock);
-
-out_conns_lock:
+out:
     pthread_mutex_unlock(&mConnsLock);
 }
 
@@ -1826,7 +1801,7 @@ static void* l2cSvcWorker(void* unused)
  *           data - the data
  *           size - how much data there is
  * RETURN:   true is a send was requested. False on immediate error.
- * NOTES:    Call only with mAclConnsLock held. buffer becomes owned by this code. will be freed.
+ * NOTES:    Call only with mConnsLock held. buffer becomes owned by this code. will be freed.
  */
 static bool l2cAclEnqueueTx(struct l2cAclConn *aclConn, const void *data, uint32_t len)
 {
@@ -1885,7 +1860,7 @@ static void l2cConnStructDelete(struct l2cConn *conn)
  * PARAMS:   aclConn - the ACL connection structure
  *           commit - whether to increment internal counter or not
  * RETURN:   the ident value
- * NOTES:    Call only with mAclConnsLock held
+ * NOTES:    Call with mConnsLock held
  */
 static uint8_t l2cAclSigNextIdent(struct l2cAclConn *aclConn, bool commit)
 {
@@ -1902,7 +1877,7 @@ static uint8_t l2cAclSigNextIdent(struct l2cAclConn *aclConn, bool commit)
  * USE:      Find a free channel ID for an ACL connection
  * PARAMS:   aclConn - the acl connection to send it on
  * RETURN:   a free channel ID or zero on failure
- * NOTES:    call with mConnsLock & mAclConnsLock locks held
+ * NOTES:    call with mConnsLock held
  */
 static uint16_t l2cAclFreeCid(struct l2cAclConn *aclConn)
 {
@@ -1948,7 +1923,7 @@ static uint16_t l2cAclFreeCid(struct l2cAclConn *aclConn)
  *           extraPtr - extra data to attach, if any (a copy will be made)
  *           extraLen - length of the extra data
  * RETURN:   ident if request was sent, else 0
- * NOTES:    call with mAclConnsLock locks held
+ * NOTES:    call with mConnsLock held
  */
 static uint8_t l2cSigSend(struct l2cAclConn *aclConn, uint8_t ident, uint8_t code, const void *sigFrm, uint32_t sigFrmLen, const void *extraPtr, uint32_t extraLen)
 {
@@ -1991,7 +1966,7 @@ static uint8_t l2cSigSend(struct l2cAclConn *aclConn, uint8_t ident, uint8_t cod
  *           psm - the PSM
  *           localCh - local channel number
  * RETURN:   ident if request was sent, else 0
- * NOTES:    call with mAclConnsLock held
+ * NOTES:    call with mConnsLock held
  */
 static uint8_t l2cSigSendConnectionReq(struct l2cAclConn *aclConn, psm_t psm, uint16_t localCh)
 {
@@ -2013,7 +1988,7 @@ static uint8_t l2cSigSendConnectionReq(struct l2cAclConn *aclConn, psm_t psm, ui
  *           result - the result value to send
  *           status - the status value to send
  * RETURN:   ident if request was sent, else 0
- * NOTES:    call with mAclConnsLock held
+ * NOTES:    call with mConnsLock held
  */
 static uint8_t l2cSigSendConnectionRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localCh, uint16_t remCh, uint16_t result, uint16_t status)
 {
@@ -2036,7 +2011,7 @@ static uint8_t l2cSigSendConnectionRsp(struct l2cAclConn *aclConn, uint8_t ident
  *           cfgData - config data to send (copy will be made)
  *           cfgLen - length of config data
  * RETURN:   ident if request was sent, else 0
- * NOTES:    call with mAclConnsLock held
+ * NOTES:    call with mConnsLock held
  */
 static uint8_t l2cSigSendConfigReq(struct l2cAclConn *aclConn, uint16_t remCh, uint16_t flags, const void *cfgData, uint32_t cfgLen)
 {
@@ -2059,7 +2034,7 @@ static uint8_t l2cSigSendConfigReq(struct l2cAclConn *aclConn, uint16_t remCh, u
  *           cfgData - config data to send (copy will be made)
  *           cfgLen - length of config data
  * RETURN:   ident if request was sent, else 0
- * NOTES:    call with mAclConnsLock held
+ * NOTES:    call with mConnsLock held
  */
 static uint8_t l2cSigSendConfigRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t remCh, uint16_t flags, uint16_t result, const void *cfgData, uint32_t cfgLen)
 {
@@ -2079,7 +2054,7 @@ static uint8_t l2cSigSendConfigRsp(struct l2cAclConn *aclConn, uint8_t ident, ui
  *           localCh - local channel number
  *           remCh - remote channel number
  * RETURN:   ident if request was sent, else 0
- * NOTES:    call with mAclConnsLock held
+ * NOTES:    call with mConnsLock held
  */
 static uint8_t l2cSigSendDiscReq(struct l2cAclConn *aclConn, uint16_t localCh, uint16_t remCh)
 {
@@ -2099,7 +2074,7 @@ static uint8_t l2cSigSendDiscReq(struct l2cAclConn *aclConn, uint16_t localCh, u
  *           localCh - local channel number
  *           remCh - remote channel number
  * RETURN:   ident if request was sent, else 0
- * NOTES:    call with mAclConnsLock held
+ * NOTES:    call with mConnsLock held
  */
 static uint8_t l2cSigSendDiscRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localCh, uint16_t remCh)
 {
@@ -2119,7 +2094,7 @@ static uint8_t l2cSigSendDiscRsp(struct l2cAclConn *aclConn, uint8_t ident, uint
  *           echoData - echo data to send (copy will be made)
  *           echoLen - length of config data
  * RETURN:   ident vlue used for request or 0 if none was sent
- * NOTES:    call with mAclConnsLock held
+ * NOTES:    call with mConnsLock held
  */
 static uint8_t l2cSigSendEchoRsp(struct l2cAclConn *aclConn, uint8_t ident, const void *echoData, uint32_t echoLen)
 {
@@ -2132,7 +2107,7 @@ static uint8_t l2cSigSendEchoRsp(struct l2cAclConn *aclConn, uint8_t ident, cons
  * PARAMS:   aclConn - the acl connection
  *           infoType - requested info type
  * RETURN:   ident if request was sent, else 0
- * NOTES:    call with mAclConnsLock held
+ * NOTES:    call with mConnsLock held
  */
 static uint8_t l2cSigSendInfoReq(struct l2cAclConn *aclConn, uint16_t infoType)
 {
@@ -2153,7 +2128,7 @@ static uint8_t l2cSigSendInfoReq(struct l2cAclConn *aclConn, uint16_t infoType)
  *           infoData - info data to send (copy will be made)
  *           infoLen - length of config data
  * RETURN:   ident if request was sent, else 0
- * NOTES:    call with mAclConnsLock held
+ * NOTES:    call with mConnsLock held
  */
 static uint8_t l2cSigSendInfoRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t infoType, uint16_t result, const void *infoData, uint32_t infoLen)
 {
@@ -2174,7 +2149,7 @@ static uint8_t l2cSigSendInfoRsp(struct l2cAclConn *aclConn, uint8_t ident, uint
  *           latency - requested latency
  *           timeoutMult - requested timeout in units of 10ms
  * RETURN:   ident if request was sent, else 0
- * NOTES:    call with mAclConnsLock held
+ * NOTES:    call with mConnsLock held
  */
 static uint8_t l2cSigSendConnUpdateReq(struct l2cAclConn *aclConn, uint16_t intMin, uint16_t intMax, uint16_t latency, uint16_t timeoutMult)
 {
@@ -2195,7 +2170,7 @@ static uint8_t l2cSigSendConnUpdateReq(struct l2cAclConn *aclConn, uint16_t intM
  *           ident - ident to use
  *           result - requested info type
  * RETURN:   ident if request was sent, else 0
- * NOTES:    call with mAclConnsLock held
+ * NOTES:    call with mConnsLock held
  */
 static uint8_t l2cSigSendConnUpdateRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t result)
 {
@@ -2215,7 +2190,7 @@ static uint8_t l2cSigSendConnUpdateRsp(struct l2cAclConn *aclConn, uint8_t ident
  *           rejData - rejection data to send (copy will be made)
  *           rejLen - length of rejection data
  * RETURN:   ident if request was sent, else 0
- * NOTES:    call with mAclConnsLock held
+ * NOTES:    call with mConnsLock held
  */
 static uint8_t l2cSigSendErrCmdReject(struct l2cAclConn *aclConn, uint8_t ident, uint16_t reason, const void *rejData, uint32_t rejLen)
 {
@@ -2232,7 +2207,7 @@ static uint8_t l2cSigSendErrCmdReject(struct l2cAclConn *aclConn, uint8_t ident,
  * PARAMS:   aclConn - the acl connection
  *           ident - the ident value to use
  * RETURN:   ident if request was sent, else 0
- * NOTES:    call with mAclConnsLock held
+ * NOTES:    call with mConnsLock held
  */
 static uint8_t l2cSigSendErrCmdNotUnderstood(struct l2cAclConn *aclConn, uint8_t ident)
 {
@@ -2246,7 +2221,7 @@ static uint8_t l2cSigSendErrCmdNotUnderstood(struct l2cAclConn *aclConn, uint8_t
  *           rxedDcid - the received "dcid" value
  *           rxedScid - the received "scid" value
  * RETURN:   ident if request was sent, else 0
- * NOTES:    call with mAclConnsLock held
+ * NOTES:    call with mConnsLock held
  */
 static uint8_t l2cSigSendErrInvalidCid(struct l2cAclConn *aclConn, uint8_t ident, uint16_t rxedDcid, uint16_t rxedScid)
 {
@@ -2269,7 +2244,6 @@ static void l2cConnRequestClose(struct l2cConn *conn)
 {
     struct l2cAclConn *acl;
 
-    pthread_mutex_lock(&mAclConnsLock);
     acl = l2cAclConnFindByUniq(conn->acl); //todo: we should check if this is truly th eonly waiting connection for this ACL link. perhaps keep a "num_waiters" in the aclConn struct?
 
     switch (conn->state) {
@@ -2316,7 +2290,6 @@ static void l2cConnRequestClose(struct l2cConn *conn)
     default:
         logw("Unexpected connection state %d when trying to close\n", conn->state);
     }
-    pthread_mutex_unlock(&mAclConnsLock);
 }
 
 /*
@@ -2522,13 +2495,12 @@ bool l2cApiServiceFixedChUnregister(uint16_t chan, void (*doneCbk)(void*), void*
  * USE:      Find a connection structure by handle
  * PARAMS:   handle - the handle
  * RETURN:   connection structure or NULL
- * NOTES:    Called must hold mConnsLock
+ * NOTES:    Call with mConnsLock held
  */
 static struct l2cConn* l2cFindConnByHandle(l2c_handle_t handle)
 {
     struct l2cConn *conn;
     uint16_t aclConnID, localCh, remCh;
-    bool found = false;
     psm_t psm;
 
     l2cHandleDecode(handle, &aclConnID, &localCh, &remCh, &psm);
@@ -2540,11 +2512,8 @@ static struct l2cConn* l2cFindConnByHandle(l2c_handle_t handle)
         if (conn->psm == psm && conn->state != L2C_CONN_STATE_CONN_WAIT &&
             conn->localCh == localCh && conn->remCh == remCh) {
             struct l2cAclConn *aclConn;
-            pthread_mutex_lock(&mAclConnsLock);
             aclConn = l2cAclConnFindByUniq(conn->acl);
-            found = (aclConn && aclConn->conn == aclConnID);
-            pthread_mutex_unlock(&mAclConnsLock);
-            if (found)
+            if (aclConn && aclConn->conn == aclConnID)
                 return conn;
         }
 
@@ -2569,13 +2538,13 @@ bool l2cSvcGetBtAddr(l2c_handle_t handle, struct bt_addr* addrP)
     bool ret = false;
 
     l2cHandleDecode(handle, &aclConnID, NULL, NULL, NULL);
-    pthread_mutex_lock(&mAclConnsLock);
+    pthread_mutex_lock(&mConnsLock);
     aclConn = l2cAclConnFindById(aclConnID);
     if (aclConn) {
         memcpy(addrP, &aclConn->addr, sizeof(struct bt_addr));
         ret = true;
     }
-    pthread_mutex_unlock(&mAclConnsLock);
+    pthread_mutex_unlock(&mConnsLock);
 
     return ret;
 }
@@ -2616,7 +2585,6 @@ static bool l2cConnRequestSend(struct l2cConn *conn, const void *data, uint32_t 
     struct l2cAclConn *aclConn;
     uint32_t buflen = len + sizeof(struct l2cFrm);
     struct l2cFrm *frm;
-    bool ret = false;
     void *buf;
 
     /* we only support L2CAP simple mode for now */
@@ -2634,15 +2602,12 @@ static bool l2cConnRequestSend(struct l2cConn *conn, const void *data, uint32_t 
     utilSetLE16(&frm->len, len);
     utilSetLE16(&frm->cid, conn->remCh);
 
-    pthread_mutex_lock(&mAclConnsLock);
     aclConn = l2cAclConnFindByUniq(conn->acl);
-    ret = aclConn && l2cAclEnqueueTx(aclConn, buf, buflen);
-    pthread_mutex_unlock(&mAclConnsLock);
+    if (aclConn && l2cAclEnqueueTx(aclConn, buf, buflen))
+        return true;
 
-    if (!ret)
-        free(buf);
-
-    return ret;
+    free(buf);
+    return false;
 }
 
 /*
@@ -2653,7 +2618,7 @@ static bool l2cConnRequestSend(struct l2cConn *conn, const void *data, uint32_t 
  *           data - the data
  *           size - how much data there is
  * RETURN:   true is a send was requested. False on immediate error.
- * NOTES:    A copy of the data is made. Call only with mAclConnsLock held
+ * NOTES:    A copy of the data is made. Call only with mConnsLock held
  */
 static bool l2cConnectionlessRequestSend(struct l2cAclConn *aclConn, psm_t psm, const void *data, uint32_t len)
 {
@@ -2700,24 +2665,21 @@ bool l2cSvcDataTx(l2c_handle_t handle, const void* data, uint32_t size)
 
     l2cHandleDecode(handle, &aclConnID, &localCh, &remCh, &psm);
 
+    pthread_mutex_lock(&mConnsLock);
     if (localCh && remCh) { /* connection-oriented pipe */
-        pthread_mutex_lock(&mConnsLock);
         conn = l2cFindConnByHandle(handle);
         if (conn)
             ret = l2cConnRequestSend(conn, data, size);
         else
             ret = false;
-        pthread_mutex_unlock(&mConnsLock);
     } else { /* connectionless pipe */
-
-        pthread_mutex_lock(&mAclConnsLock);
         aclConn = l2cAclConnFindById(aclConnID);
         if (aclConn)
             ret = l2cConnectionlessRequestSend(aclConn, psm, data, size);
         else
             ret = false;
-        pthread_mutex_unlock(&mAclConnsLock);
     }
+    pthread_mutex_unlock(&mConnsLock);
 
     return ret;
 }
@@ -2727,7 +2689,7 @@ bool l2cSvcDataTx(l2c_handle_t handle, const void* data, uint32_t size)
  * USE:      Request an ACL connection be created
  * PARAMS:   addr - the peer address
  * RETURN:   true is it was requested. False on immediate error.
- * NOTES:    call with mAclConnsLock held
+ * NOTES:    call with mConnsLock held
  */
 static struct l2cAclConn* l2cCreateAndOpenNewConn(const struct bt_addr* addr)
 {
@@ -2798,7 +2760,6 @@ bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr* addr, l2cStateCb
         return false;
     }
 
-    pthread_mutex_lock(&mAclConnsLock);
     pthread_mutex_lock(&mConnsLock);
     aclConn = l2cAclConnFindByAddr(addr);
     if (!aclConn) {
@@ -2852,7 +2813,6 @@ bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr* addr, l2cStateCb
 
 out:
     pthread_mutex_unlock(&mConnsLock);
-    pthread_mutex_unlock(&mAclConnsLock);
     if (!ret)
         free(conn);
     return ret;
@@ -2893,7 +2853,6 @@ bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr* addr, l2
         return false;
     }
 
-    pthread_mutex_lock(&mAclConnsLock);
     pthread_mutex_lock(&mConnsLock);
     aclConn = l2cAclConnFindByAddr(addr);
     if (!aclConn) {
@@ -2934,7 +2893,6 @@ bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr* addr, l2
 
 out:
     pthread_mutex_unlock(&mConnsLock);
-    pthread_mutex_unlock(&mAclConnsLock);
     free(conn);
     return ret;
 }
@@ -2953,7 +2911,7 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr)
     struct l2cConn *connIter;
     struct l2cFixedChSvc *svc;
 
-    pthread_mutex_lock(&mAclConnsLock);
+    pthread_mutex_lock(&mConnsLock);
     if (l2cAclConnFindById(aclConnID))
         loge("Duplicate ACL connection ID up %d\n", aclConnID);
     else {
@@ -2986,7 +2944,6 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr)
         aclConn->conn = aclConnID;
 
         /* handle all pending-open connections */
-        pthread_mutex_lock(&mConnsLock);
         connIter = mConns;
         while (connIter){
             uint8_t ident = 0;
@@ -3025,7 +2982,6 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr)
             conn->state = L2C_CONN_STATE_TX_OPEN_TXED;
             conn->ident = ident;
         }
-        pthread_mutex_unlock(&mConnsLock);
 
         /* Bring up all FixedCh services */
         pthread_mutex_lock(&mSvcsLock);
@@ -3040,7 +2996,7 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr)
     }
 
 out:
-    pthread_mutex_unlock(&mAclConnsLock);
+    pthread_mutex_unlock(&mConnsLock);
 }
 
 /*
