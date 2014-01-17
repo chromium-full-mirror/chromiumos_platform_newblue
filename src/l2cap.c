@@ -83,6 +83,12 @@ struct l2cSigConfRsp {
     uint16_t result;
     /* optional data */
 };
+#define L2C_SIG_CONF_RSP_OK            0x0000
+#define L2C_SIG_CONF_RSP_UNACCEPTABLE  0x0001
+#define L2C_SIG_CONF_RSP_REJECTED      0x0002
+#define L2C_SIG_CONF_RSP_UNKNOWN_OPTN  0x0003
+#define L2C_SIG_CONF_RSP_PENDING       0x0004
+#define L2C_SIG_CONF_RSP_FLOW_SPEC_REJ 0x0005
 
 #define L2C_SIG_DISC_REQ          0x06
 struct l2cSigDiscReq {
@@ -291,6 +297,10 @@ struct l2cConn {
 #define L2C_CONN_STATE_DIE_TXED        6 /* we closed, request sent to peer */
 #define L2C_CONN_STATE_DIE_RXED        7 /* other side closed, call to svc in pipeline */
 #define L2C_CONN_STATE_TEARDOWN        8 /* tearing down */
+
+#define L2C_CFG_STATE_INITIAL          0
+#define L2C_CFG_STATE_REQ_SENT         1
+#define L2C_CFG_STATE_CFG_ACCEPTED     2
 
 
 /* some fwd declarations */
@@ -992,8 +1002,8 @@ static void l2cHandleConnRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
     }
 
     conn->state = L2C_CONN_STATE_CFG;
-    conn->cfgTxState = 0;
-    conn->cfgRxState = 0;
+    conn->cfgTxState = L2C_CFG_STATE_INITIAL;
+    conn->cfgRxState = L2C_CFG_STATE_INITIAL;
     conn->remCh = remCh;
 
     l2cPsmSendConfig(aclConn, conn);
@@ -1016,10 +1026,16 @@ static void l2cPsmSendConfig(struct l2cAclConn *aclConn, struct l2cConn *conn)
         0x04, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 /* basic mode */
     };
 
+    if (conn->cfgTxState != L2C_CFG_STATE_INITIAL) {
+
+        //todo: properly abort
+        return;
+    }
+
     ident = l2cSigSendConfigReq(aclConn, conn->remCh, 0, config, sizeof(config));
     if (ident) {
         conn->ident = ident;
-        conn->cfgTxState = 1;
+        conn->cfgTxState = L2C_CFG_STATE_REQ_SENT;
     } else {
         loge("Failed to send config request on conn for chs %d %d on acl %d\n", conn->localCh, conn->remCh, aclConn->conn);
         if (conn->stateCbk) {
@@ -1048,7 +1064,7 @@ static void l2cPsmSendConfig(struct l2cAclConn *aclConn, struct l2cConn *conn)
  */
 static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localCh, uint16_t flags, const void *data, uint16_t len)
 {
-    //todo: this
+    
 }
 
 /*
@@ -1066,7 +1082,55 @@ static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
  */
 static void l2cHandleConfRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localCh, uint16_t flags, uint16_t result, const void *data, uint16_t len)
 {
-    //todo: this
+    struct l2cConn *conn = NULL;
+
+    conn = mConns;
+    while (conn && conn->localCh != localCh)
+        conn = conn->next;
+
+    if (!conn) {
+        logw("Unexpected Configuration Response id %d for ch %d with result %d\n", ident, localCh, result);
+        return;
+    }
+
+    if (ident != conn->ident) {
+        logi("RXed a Configuration Response witrh an invalid ident %d (expected %d). Dropping\n", ident, conn->ident);
+        return;
+    }
+
+    if (!conn->psm) {
+        logw("Unexpected Configuration Response for a FixedCh conn chan %d\n", localCh);
+        return;
+    }
+
+    if (conn->state != L2C_CONN_STATE_CFG) {
+        logw("Configuration Response for connection in bad state %d %d for ch %d with result %d\n", conn->state, ident, localCh, result);
+        //todo: what to do here?
+        return;
+    }
+
+    if (result == L2C_SIG_CONF_RSP_UNACCEPTABLE || result == L2C_SIG_CONF_RSP_REJECTED ||
+        result == L2C_SIG_CONF_RSP_UNKNOWN_OPTN || result == L2C_SIG_CONF_RSP_PENDING ||
+        result == L2C_SIG_CONF_RSP_FLOW_SPEC_REJ) {
+
+        logi("Other side refused our configuration for psm %d\n", conn->psm);
+        //todo: close it properly
+        return;
+    }
+
+    if (result != L2C_SIG_CONF_RSP_OK) {
+
+        loge("Unexpected result %d for connection to psm %d\n", result, conn->psm);
+        //todo: close it properly
+        return;
+    }
+
+    if (conn->cfgTxState != L2C_CFG_STATE_REQ_SENT)
+        loge("Unexpected internal inconsitency: expected %d saw %d\n", L2C_CFG_STATE_REQ_SENT, conn->cfgTxState);
+
+    conn->cfgTxState = L2C_CFG_STATE_CFG_ACCEPTED;
+    if (conn->cfgRxState)
+        l2cChannelConfigDone(aclConn, conn); //todo: send events up saying channel ready
 }
 
 /*
@@ -1586,8 +1650,8 @@ static void l2cPsmSvcInstAllocDone(void *reqID, void *instance, l2c_handle_t han
     }
 
     conn->state = L2C_CONN_STATE_CFG;
-    conn->cfgTxState = 0;
-    conn->cfgRxState = 0;
+    conn->cfgTxState = L2C_CFG_STATE_INITIAL;
+    conn->cfgRxState = L2C_CFG_STATE_INITIAL;
     l2cPsmSendConfig(aclConn, conn);
 
 out:
