@@ -244,7 +244,7 @@ struct l2cAclConn {
     uint8_t            ident; /* next ident to use */
     uint16_t           nextChan; /* a guess to a currently-free channel */
     uint16_t           conn;
-    uint8_t            connectionlessMtu;
+    uint16_t           connectionlessMtu;
     struct bt_addr     addr;
 };
 
