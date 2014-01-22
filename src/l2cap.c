@@ -6,6 +6,7 @@
 //todo: stateCbk for peer-initiated connections is null. this should work. will it?
 //todo: close acl link when last psm link down, close acl link when last attempted psm link is cancelled, etc...
 //todo: timers/timouts for unspecced BT waits (config, etc)
+//todo: set flush timout at hci layer to 0xffff for a reliable link
 
 #include <pthread.h>
 #include <stdlib.h>
@@ -41,20 +42,20 @@ typedef uint64_t uniq_t;
 struct l2cSigCmdRej {
     uint16_t reason;
     /* optional data */
-};
+} __packed;
 #define L2C_SIG_CMD_NOT_UNDERSTOD 0x0001
 /* no data */
 #define L2C_SIG_INVALID_CID       0x0003
 struct l2cSigInvalidCid {
     uint16_t rxedDcid;
     uint16_t rxedScid;
-};
+} __packed;
 
 #define L2C_SIG_CONN_REQ          0x02
 struct l2cSigConnReq {
     psm_t    psm;
     uint16_t scid;
-};
+} __packed;
 
 #define L2C_SIG_CONN_RSP          0x03
 struct l2cSigConnRsp {
@@ -62,7 +63,7 @@ struct l2cSigConnRsp {
     uint16_t scid;
     uint16_t result;
     uint16_t status;
-};
+} __packed;
 #define L2C_SIG_CONN_RSP_OK       0x0000
 #define L2C_SIG_CONN_RSP_PEND     0x0001
 #define L2C_SIG_CONN_RSP_BAD_PSM  0x0002
@@ -74,7 +75,38 @@ struct l2cSigConfReq {
     uint16_t dcid;
     uint16_t flags;
     /* optional data */
-};
+} __packed;
+
+#define L2C_CONF_MTU              0x01 /* payload: uint16 mtu */
+#define L2C_CONF_FLUSH_TIMEOUT    0x02 /* payload: uint16 timeout */
+#define L2C_CONF_QOS              0x03 /* 22 bytes of payload, beginning with uint8 SBZ, uint8 type (=1 for us) */
+#define L2C_CONF_RETR_AND_FLOW    0x04 /* 9 bytes of payload, beginnign with mode (=0 for us) */
+#define L2C_CONF_FCS              0x05 /* payload: uint8_t fcsType */
+#define L2C_CONF_EXT_FLOW         0x06 /* 16 bytes of payload, beginning with uint8 id(=1) and svc(=1) */
+
+struct l2cConfQosOpts {
+    uint8_t flags;
+    uint8_t serviceType;
+    uint32_t tokenRate;
+    uint32_t tockenBucketSz;
+    uint32_t peakBandwidth;
+    uint32_t latency;
+    uint32_t delayVariation;
+} __packed;
+#define L2C_QOS_SVC_TYPE_BEST_EFFORT 0x01
+#define L2C_QOS_SVC_TYPE_GUARANTEED  0x02
+
+struct l2cConfRetrOpts {
+    uint8_t mode;
+    uint8_t txWindowSize;
+    uint8_t maxTransmit;
+    uint16_t retrTimeout;
+    uint16_t monitorTimeout;
+    uint16_t maxPduSz;
+} __packed;
+#define L2C_RETR_MODE_BASIC          0x00
+
+
 
 #define L2C_SIG_CONF_RSP          0x05
 struct l2cSigConfRsp {
@@ -82,7 +114,7 @@ struct l2cSigConfRsp {
     uint16_t flags;
     uint16_t result;
     /* optional data */
-};
+} __packed;
 #define L2C_SIG_CONF_RSP_OK            0x0000
 #define L2C_SIG_CONF_RSP_UNACCEPTABLE  0x0001
 #define L2C_SIG_CONF_RSP_REJECTED      0x0002
@@ -90,17 +122,19 @@ struct l2cSigConfRsp {
 #define L2C_SIG_CONF_RSP_PENDING       0x0004
 #define L2C_SIG_CONF_RSP_FLOW_SPEC_REJ 0x0005
 
+#define L2C_SIG_CONF_FLAG_C            0x0001
+
 #define L2C_SIG_DISC_REQ          0x06
 struct l2cSigDiscReq {
     uint16_t dcid;
     uint16_t scid;
-};
+} __packed;
 
 #define L2C_SIG_DISC_RSP          0x07
 struct l2cSigDiscRsp {
     uint16_t dcid;
     uint16_t scid;
-};
+} __packed;
 
 #define L2C_SIG_ECHO_REQ          0x08
 /* all data is optional */
@@ -111,21 +145,21 @@ struct l2cSigDiscRsp {
 #define L2C_SIG_INFO_REQ          0x0A
 struct l2cSigInfoReq {
     uint16_t infoType;
-};
+} __packed;
 
 #define L2C_SIG_INFO_RSP          0x0B
 struct l2cSigInfoRsp {
     uint16_t infoType;
     uint16_t result;
     /* optional data */
-};
+} __packed;
 
 #define L2C_SIG_CH_CREAT_REQ      0x0C
 struct l2cSigChCreatReq {
     psm_t    psm;
     uint16_t scid;
     uint8_t  controller;
-};
+} __packed;
 
 #define L2C_SIG_CH_CREAT_RSP      0x0D
 struct l2cSigChCreatRsp {
@@ -133,29 +167,29 @@ struct l2cSigChCreatRsp {
     uint16_t scid;
     uint16_t result;
     uint16_t status;
-};
+} __packed;
 
 #define L2C_SIG_CH_MOVE_REQ       0x0E
 struct l2cSigChMoveReq {
     uint16_t icid;
     uint8_t  controller;
-};
+} __packed;
 
 #define L2C_SIG_CH_MOVE_RSP       0x0F
 struct l2cSigChMoveRsp {
     uint16_t icid;
     uint16_t result;
-};
+} __packed;
 #define L2C_SIG_CH_MOVE_CNF_REQ   0x10
 struct l2cSigChMoveCnfReq {
     uint16_t icid;
     uint16_t result;
-};
+} __packed;
 
 #define L2C_SIG_CH_MOVE_CNF_RSP   0x11
 struct l2cSigChMoveCnfRsp {
     uint16_t icid;
-};
+} __packed;
 
 #define L2C_SIG_CONN_UPDT_REQ     0x12
 struct l2cSigConnUpdtReq {
@@ -163,12 +197,12 @@ struct l2cSigConnUpdtReq {
     uint16_t intMax;
     uint16_t latency;
     uint16_t timeoutMult;
-};
+} __packed;
 
 #define L2C_SIG_CONN_UPDT_RSP     0x13
 struct l2cSigConnUpdtRsp {
     uint16_t result;
-};
+} __packed;
 
 
 
@@ -177,14 +211,14 @@ struct l2cSigConnUpdtRsp {
 struct l2cFrm {
     uint16_t len;
     uint16_t cid;
-};
+} __packed;
 
 /* L2CAP signalling channel frame */
 struct l2cSigFrm {
     uint8_t  code;
     uint8_t  ident;
     uint16_t len;
-};
+} __packed;
 
 /* our per-ACL-connection structure */
 struct l2cAclConn {
@@ -286,6 +320,7 @@ struct l2cConn {
     psm_t              psm; /* 0 for fixedCh */
     uint16_t           localCh;
     uint16_t           remCh;
+    uint16_t           mtu; /* for other side */
     void*              instance; /* may be null */
 };
 #define L2C_CONN_STATE_CONN_WAIT       0 /* waiting for ACL link up */
@@ -312,6 +347,7 @@ static struct l2cConn* l2cFindConnByHandle(l2c_handle_t handle);
 static void l2cConnStructDelete(struct l2cConn *conn);
 static void l2cPsmSendConfig(struct l2cAclConn *aclConn, struct l2cConn *conn);
 static uint8_t l2cSigSendConfigReq(struct l2cAclConn *aclConn, uint16_t remCh, uint16_t flags, const void *cfgData, uint32_t cfgLen);
+static uint8_t l2cSigSendConfigRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t remCh, uint16_t flags, uint16_t result, const void *cfgData, uint32_t cfgLen);
 
 /* our state */
 static pthread_mutex_t mUniqLock = PTHREAD_MUTEX_INITIALIZER;
@@ -876,6 +912,7 @@ static void l2cHandleConnReq(struct l2cAclConn *aclConn, uint8_t ident, psm_t ps
     }
     conn->acl = aclConn->uniq;
     conn->psm = psm;
+    conn->mtu = 0xFFFF;
     conn->instance = NULL;
     conn->stateCbk = NULL;
     conn->cbkData = NULL;
@@ -1005,6 +1042,7 @@ static void l2cHandleConnRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
     conn->cfgTxState = L2C_CFG_STATE_INITIAL;
     conn->cfgRxState = L2C_CFG_STATE_INITIAL;
     conn->remCh = remCh;
+    conn->mtu = 0xFFFF;
 
     l2cPsmSendConfig(aclConn, conn);
 }
@@ -1019,11 +1057,10 @@ static void l2cHandleConnRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
  */
 static void l2cPsmSendConfig(struct l2cAclConn *aclConn, struct l2cConn *conn)
 {
-    /* for now our hardwired config is a large MTU and basic mode, if we ever support enhanced mode, this will change */
+    /* for now our hardwired config is a large MTU */
     uint8_t ident;
     static const uint8_t config[] = {
-        0x01, 0x02, 0xff, 0xef, /* our mtu is 0xefff */
-        0x04, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 /* basic mode */
+        L2C_CONF_MTU, 0x02, 0xff, 0xef /* our mtu is 0xefff */
     };
 
     if (conn->cfgTxState != L2C_CFG_STATE_INITIAL) {
@@ -1062,9 +1099,162 @@ static void l2cPsmSendConfig(struct l2cAclConn *aclConn, struct l2cConn *conn)
  * RETURN:   NONE
  * NOTES:    call with mConnsLock held
  */
-static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localCh, uint16_t flags, const void *data, uint16_t len)
+static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localCh, uint16_t flags, const void *dataP, uint16_t len)
 {
-    
+    struct l2cConn *conn = NULL;
+    uint8_t *reply, *end;
+    const uint8_t *data = (const uint8_t*)dataP;
+    uint16_t result = L2C_SIG_CONF_RSP_OK;
+
+    conn = mConns;
+    while (conn && conn->localCh != localCh)
+        conn = conn->next;
+
+    if (!conn) {
+        logw("Unexpected Configuration Request id %d for ch %d with result %d\n", ident, localCh, result);
+        return;
+    }
+
+    if (!conn->psm) {
+        logw("Unexpected Configuration Request for a FixedCh conn chan %d\n", localCh);
+        return;
+    }
+
+    if (conn->state != L2C_CONN_STATE_CFG) {
+        logw("Configuration Request for connection in bad state %d for ch %d with flags %d\n", conn->state, localCh, flags);
+        //todo: what to do here?
+        return;
+    }
+
+    if (conn->cfgRxState != L2C_CFG_STATE_INITIAL)
+        loge("Unexpected internal inconsistency on conf req: expected %d saw %d\n", L2C_CFG_STATE_INITIAL, conn->cfgRxState);
+
+    /* go through every option and amkeup a reply. Note: no reply is longer than request, so this allocation works */
+    end = reply = (uint8_t*)malloc(len);
+    if (!reply) {
+        loge("Cannot allocate a conf reply\n");
+        //todo: drop it? send error?
+        return;
+    }
+
+    while (len > 2) {
+        uint8_t optType = utilGetLE8(data++);
+        uint8_t optLen = utilGetLE8(data++);
+        const uint8_t *opt;
+
+        len -= 2;
+
+        if (optLen > len) {
+            logw("Got invalid conf req option len %d/%d\n", optLen, len);
+            //todo: send comamdn not understood
+            break;
+        }
+        opt = data;
+        data += optLen;
+        len -= optLen;
+
+        switch (optType){
+        case L2C_CONF_MTU:
+            if (optLen != sizeof(uint16_t)) {
+                logi("other side sent bad sized mtu conf: %db\n", optLen);
+                result = L2C_SIG_CONF_RSP_REJECTED;
+            } else {
+                conn->mtu = utilGetLE16(opt);
+                utilSetLE8(end + 0, L2C_CONF_MTU);
+                utilSetLE8(end + 1, sizeof(uint16_t));
+                utilSetLE16(end + 2, conn->mtu);
+                end += 4;
+            }
+            break;
+        case L2C_CONF_FLUSH_TIMEOUT:
+            /* we accept whatever the other side says here */
+            if (optLen != sizeof(uint16_t)) {
+                logi("other side sent bad sized flush to conf: %db\n", optLen);
+                result = L2C_SIG_CONF_RSP_REJECTED;
+            } else {
+                utilSetLE8(end + 0, L2C_CONF_FLUSH_TIMEOUT);
+                utilSetLE8(end + 1, sizeof(uint16_t));
+                utilSetLE16(end + 2, utilGetLE16(opt));
+                end += 4;
+            }
+            break;
+/*
+        case L2C_CONF_QOS:
+            if (optLen != sizeof(struct l2cConfQosOpts)) {
+                logi("other side sent bad sized qos to conf: %db\n", optLen);
+                result = L2C_SIG_CONF_RSP_REJECTED;
+            } else {
+                struct l2cConfQosOpts *qosOut;
+
+                // copy over all data first
+                utilSetLE8(end + 0, L2C_CONF_QOS);
+                utilSetLE8(end + 1, sizeof(struct l2cConfQosOpts));
+                end += 2;
+                qosOut = (struct l2cConfQosOpts*)end;
+                end += sizeof(struct l2cConfQosOpts);
+                memcpy(qosOut, opt, sizeof(struct l2cConfQosOpts));
+
+                // change any "required"s to "best effort"s
+                if (utilGetLE8(&qosOut->serviceType) == L2C_QOS_SVC_TYPE_GUARANTEED)
+                    utilSetLE8(&qosOut->serviceType, L2C_QOS_SVC_TYPE_BEST_EFFORT);
+            }
+            break;
+        case L2C_CONF_RETR_AND_FLOW:
+            // we do not care what they ask for, we send back basic mode only
+            if (optLen != sizeof(struct l2cConfRetrOpts)) {
+                logi("other side sent bad sized retr to conf: %db\n", optLen);
+                result = L2C_SIG_CONF_RSP_REJECTED;
+            } else {
+                struct l2cConfRetrOpts *retrOut;
+
+                // copy over all data first
+                utilSetLE8(end + 0, L2C_CONF_RETR_AND_FLOW);
+                utilSetLE8(end + 1, sizeof(struct l2cConfRetrOpts));
+                end += 2;
+                retrOut = (struct l2cConfRetrOpts*)end;
+                end += sizeof(struct l2cConfRetrOpts);
+                memset(retrOut, 0, sizeof(struct l2cConfRetrOpts));
+                utilSetLE8(&retrOut->mode, L2C_RETR_MODE_BASIC);
+            }
+            break;
+        case L2C_CONF_FCS:
+            // we do not care what they ask for, we send back "no FCS" only
+            if (optLen != sizeof(suint8_t)) {
+                logi("other side sent bad sized fcs to conf: %db\n", optLen);
+                result = L2C_SIG_CONF_RSP_REJECTED;
+            } else {
+                struct l2cConfRetrOpts *retrOut;
+                utilSetLE8(end + 0, L2C_CONF_FCS);
+                utilSetLE8(end + 1, sizeof(uint8_t));
+                utilSetLE8(end + 2, 0);
+                end += 3;
+            }
+            break;
+*/
+        default:
+            logw("Unexpected config data received (t=%d l=%d) ignoring\n", optType, optLen);
+            break;
+        }
+    }
+
+    if (len) {
+        free(reply);
+        logw("Conf req not processed: %d\n", len);
+        //todo: send command not understood
+        return;
+    }
+
+    if (!l2cSigSendConfigRsp(aclConn, ident, conn->remCh, flags, result, reply, end - reply))
+        loge("Failed to sent configuration request response frame\n");
+    free(reply);
+
+    if (flags & L2C_SIG_CONF_FLAG_C)
+        logi("Conf Rsp continues\n");
+    else {
+        conn->cfgTxState = L2C_CFG_STATE_CFG_ACCEPTED;
+        if (conn->cfgRxState)
+            l2cChannelConfigDone(aclConn, conn); //todo: send events up saying channel ready
+    }
 }
 
 /*
@@ -1126,11 +1316,15 @@ static void l2cHandleConfRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
     }
 
     if (conn->cfgTxState != L2C_CFG_STATE_REQ_SENT)
-        loge("Unexpected internal inconsitency: expected %d saw %d\n", L2C_CFG_STATE_REQ_SENT, conn->cfgTxState);
+        loge("Unexpected internal inconsistency on conf rsp: expected %d saw %d\n", L2C_CFG_STATE_REQ_SENT, conn->cfgTxState);
 
-    conn->cfgTxState = L2C_CFG_STATE_CFG_ACCEPTED;
-    if (conn->cfgRxState)
-        l2cChannelConfigDone(aclConn, conn); //todo: send events up saying channel ready
+    if (flags & L2C_SIG_CONF_FLAG_C)
+        logi("Conf Rsp continues\n");
+    else {
+        conn->cfgTxState = L2C_CFG_STATE_CFG_ACCEPTED;
+        if (conn->cfgRxState)
+            l2cChannelConfigDone(aclConn, conn); //todo: send events up saying channel ready
+    }
 }
 
 /*
@@ -2845,6 +3039,7 @@ bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr* addr, l2cStateCb
     /* create the conn */
     conn->acl = aclConn->uniq;
     conn->psm = psm;
+    conn->mtu = 0xFFFF;
     conn->instance = NULL;
     conn->stateCbk = stateCbk;
     conn->cbkData = cbkData;
@@ -2940,6 +3135,7 @@ bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr* addr, l2
     conn->psm = 0;
     conn->localCh = chan;
     conn->remCh = chan;
+    conn->mtu = 0xFFFF;
     conn->instance = NULL;
     conn->stateCbk = stateCbk;
     conn->cbkData = cbkData;
