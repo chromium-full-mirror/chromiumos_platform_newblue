@@ -21,9 +21,10 @@
 #include "hci.h"
 
 
-/* constants fo rinfo requests */
-#define L2C_EXT_FTRS_SUPPORTED    0x180 /* support fixedCh & unicast data Rx */
-#define L2C_FIXED_CHS_SUPPORTED   0x6   /* as mandated by the spec */
+/* constants from spec */
+#define L2C_EXT_FTRS_SUPPORTED     0x180 /* support fixedCh & unicast data Rx */
+#define L2C_FIXED_CHS_SUPPORTED    0x6   /* as mandated by the spec */
+#define L2C_MIN_CONNECTIONLESS_MTU 48
 
 /* connection bit to indicate in-progress connection */
 #define L2C_CONN_IN_PROGRESS     (1 + HCI_CONN_ID_MASK)
@@ -241,6 +242,7 @@ struct l2cAclConn {
     uint8_t            ident; /* next ident to use */
     uint16_t           nextChan; /* a guess to a currently-free channel */
     uint16_t           conn;
+    uint8_t            connectionlessMtu;
     struct bt_addr     addr;
 };
 
@@ -1259,6 +1261,46 @@ static void l2cHandleInfoReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
 
     if (!l2cSigSendInfoRsp(aclConn, ident, infoType, result, reply, infoLen))
         loge("Failed to sent information request response frame\n");
+}
+
+/*
+ * FUNCTION: l2cHandleInfoRsp
+ * USE:      Handle an incoming information response
+ * PARAMS:   conn - the per-ACL-connection structure
+ *           ident - the ident in the response packet
+ *           infoType - the requested info type
+ *           result - the result of the request
+ *           infoData - the returned data
+ *           infoLen - the returned data's length
+ * RETURN:   NONE
+ * NOTES:    call with mConnsLock held
+ */
+static void l2cHandleInfoRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t infoType, uint16_t result, const void* infoData, uint32_t infoLen)
+{
+    uint16_t val;
+
+    if (infoType != L2C_SIG_INFO_TYPE_UNCONN_MTU) {
+        logi("Got unexpected info rsp with type %d\n", infoType);
+        return;
+    }
+
+    if (result != L2C_SIG_INFO_RESULT_OK) {
+        logi("Got unexpected info rsp error (result=%d)\n", result);
+        return;
+    }
+
+    if (infoLen != sizeof(uint16_t)) {
+        logi("Got unexpected info rsp size (infoLen=%d)\n", infoLen);
+        return;
+    }
+
+    val = utilGetLE16(infoData);
+    if (val < L2C_MIN_CONNECTIONLESS_MTU) {
+        logi("Peer reports connectionless mtu %d for acl conn %d. correcting to %d\n", val, aclConn->conn, L2C_MIN_CONNECTIONLESS_MTU);
+        val = L2C_MIN_CONNECTIONLESS_MTU;
+    }
+
+    aclConn->connectionlessMtu = val;
 }
 
 /*
@@ -3090,6 +3132,7 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr)
         }
         memcpy(&aclConn->addr, addr, sizeof(aclConn->addr));
         aclConn->ident = 1;
+        aclConn->connectionlessMtu = L2C_MIN_CONNECTIONLESS_MTU;
         aclConn->nextChan = L2C_NUM_FIXED_CHANNELS;
         aclConn->conn = aclConnID;
 
