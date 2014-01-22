@@ -8,6 +8,8 @@
 //todo: timers/timouts for unspecced BT waits (config, etc)
 //todo: set flush timout at hci layer to 0xffff for a reliable link
 //todo: there are states where instance,stateCbk,userData are null. we shoudl care for them...
+//todo: at acl link up send info req for connectionless mtu just so we know it...
+//todo: check all lengths followed, all log levels correct
 
 #include <pthread.h>
 #include <stdlib.h>
@@ -353,6 +355,7 @@ static void l2cPsmSendConfig(struct l2cAclConn *aclConn, struct l2cConn *conn);
 static uint8_t l2cSigSendConfigReq(struct l2cAclConn *aclConn, uint16_t remCh, uint16_t flags, const void *cfgData, uint32_t cfgLen);
 static uint8_t l2cSigSendConfigRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t remCh, uint16_t flags, uint16_t result, const void *cfgData, uint32_t cfgLen);
 static uint8_t l2cSigSendInfoRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t infoType, uint16_t result, const void *infoData, uint32_t infoLen);
+static uint8_t l2cSigSendEchoRsp(struct l2cAclConn *aclConn, uint8_t ident, const void *echoData, uint32_t echoLen);
 
 /* our state */
 static pthread_mutex_t mUniqLock = PTHREAD_MUTEX_INITIALIZER;
@@ -1304,6 +1307,25 @@ static void l2cHandleInfoRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
 }
 
 /*
+ * FUNCTION: l2cHandleEchoReq
+ * USE:      Handle an incoming echo request
+ * PARAMS:   conn - the per-ACL-connection structure
+ *           ident - the ident in the response packet
+ *           echoData - the data we got
+ *           echoLen - the len we got
+ * RETURN:   NONE
+ * NOTES:    call with mConnsLock held
+ */
+static void l2cHandleEchoReq(struct l2cAclConn *aclConn, uint8_t ident, const void* echoData, uint32_t echoLen)
+{
+    logi("Got echo packet with %db of data\n", echoLen);
+
+    /* no data in reply is valid as per spec */
+    if (!l2cSigSendEchoRsp(aclConn, ident, NULL, 0))
+        loge("Failed to sent echo response frame\n");
+}
+
+/*
  * FUNCTION: l2cSignallingRx
  * USE:      Process arriving data over signalling channels
  * PARAMS:   conn - the per-ACL-connection structure
@@ -1445,6 +1467,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
                 l2cHandleEchoReq(conn, ident, paramsP, len);
             break;
         }
+/*
         case L2C_SIG_ECHO_RSP: {
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Echo Response packet on a non-EDR link\n");
@@ -1453,6 +1476,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
                 l2cHandleEchoRsp(conn, ident, paramsP, len);
             break;
         }
+*/
         case L2C_SIG_INFO_REQ: {
             struct l2cSigInfoReq *params = (struct l2cSigInfoReq*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
