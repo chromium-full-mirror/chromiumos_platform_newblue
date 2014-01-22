@@ -12,6 +12,8 @@
 //todo: check all lengths followed, all log levels correct
 //todo: audit all errors from l2cSigSendConnUpdateRsp and hwo we handle them
 //todo: multiple connections to same psm are allowed. we must allow this (for A2DP, for example)
+//todo: calls to lower layers shoudl be done without locks held if at all possible...
+//todo: connection update callback needs to move into worker thread
 
 #include <pthread.h>
 #include <stdlib.h>
@@ -252,7 +254,14 @@ struct l2cAclConn {
     uint16_t           connectionlessMtu;
     struct bt_addr     addr;
     bool               isMaster;
-    uint8_t            connUpdtRequestIdent; /* 0 if none inflight */
+    struct {
+        union { /* LE-only data */
+            l2cConnUpdateDoneCbk connUpdtDoneCbk;
+            void                *connUpdtDoneCbkData;
+            uint8_t              connUpdtRequestIdent; /* 0 if none inflight */
+        };
+        /* EDR-only data here, if any */
+    };
 };
 
 
@@ -364,6 +373,7 @@ static uint8_t l2cSigSendConfigRsp(struct l2cAclConn *aclConn, uint8_t ident, ui
 static uint8_t l2cSigSendInfoRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t infoType, uint16_t result, const void *infoData, uint32_t infoLen);
 static uint8_t l2cSigSendEchoRsp(struct l2cAclConn *aclConn, uint8_t ident, const void *echoData, uint32_t echoLen);
 static uint8_t l2cSigSendConnUpdateRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t result);
+static uint8_t l2cSigSendConnUpdateReq(struct l2cAclConn *aclConn, uint16_t intMin, uint16_t intMax, uint16_t latency, uint16_t timeoutMult);
 
 /* our state */
 static pthread_mutex_t mUniqLock = PTHREAD_MUTEX_INITIALIZER;
@@ -1377,6 +1387,104 @@ error:
         intMin, intMax, latency, timeoutMult, conn->connUpdtRequestIdent, conn->isMaster);
     if (!l2cSigSendConnUpdateRsp(conn, ident, L2C_SIG_CONN_UPDT_NO))
         loge("Failed to sent connection update response frame\n");
+}
+
+/*
+ * FUNCTION: l2cHandleConnUpdtReq
+ * USE:      Process an incoming connection update response
+ * PARAMS:   conn - the per-ACL-connection structure
+ *           ident - the ident in the response packet
+ *           result - success or failure of our request
+ * RETURN:   num bytes used/needed or 0 for error
+ * NOTES:    NONE
+ * NOTES:    call with mConnsLock held
+ */
+static void l2cHandleConnUpdtRsp(struct l2cAclConn *conn, uint8_t ident, uint16_t result)
+{
+    if (conn->isMaster)
+        loge("Unexpected connection update response for a connection we're master on (%d)\n", conn->conn);
+    else if (!conn->connUpdtRequestIdent)
+        loge("Unexpected connection update response for a connection we had no request on (%d)\n", conn->conn);
+    else {
+        conn->connUpdtRequestIdent = 0;
+        if(conn->connUpdtDoneCbk) { //todo: this needs to go through worker thread
+            conn->connUpdtDoneCbk(conn->connUpdtDoneCbkData, result == L2C_SIG_CONN_UPDT_OK);
+            conn->connUpdtDoneCbk = NULL;
+        }
+    }
+}
+/*
+ * FUNCTION: l2cApiUpdateConnectionParams
+ * USE:      Try to udpate params on an LE link
+ * PARAMS:   handle - the handle
+ *           intMin - minimum requester interval
+ *           intMax - maximum requested interval
+ *           latency - requested latency
+ *           timeoutMult - requester timeout multiplier
+ * RETURN:   num bytes used/needed or 0 for error
+ * NOTES:    NONE
+ * NOTES:    call with mConnsLock held
+ */
+bool l2cApiUpdateConnectionParams(l2c_handle_t handle, uint16_t intMin, uint16_t intMax, uint16_t latency, uint16_t timeout, l2cConnUpdateDoneCbk doneCbk, void *userData)
+{
+    struct l2cConn *conn;
+    struct l2cAclConn *aclConn;
+    bool ret = false;
+
+    /* verify intervals are in valid range */
+    if (intMin < BT_LE_CONN_INTERVAL_MIN || intMax < intMin || intMax > BT_LE_CONN_INTERVAL_MAX)
+        return false;
+
+    /* verify latency and to params are in valid ranges */
+    if (latency > BT_LE_LATENCY_MAX || timeout < BT_LE_TIMEOUT_MIN || timeout > BT_LE_TIMEOUT_MAX)
+        return false;
+
+    /* verify timout meets BTLE criteria for valid timeout given latency & max interval */
+    if (timeout < BT_LE_TIMEOUT_MIN_VALID(intMin, latency))
+        return false;
+
+    pthread_mutex_lock(&mConnsLock);
+
+    conn = l2cFindConnByHandle(handle);
+    if (!conn) {
+        loge("Connection not found\n");
+        goto out;
+    }
+
+    aclConn = l2cAclConnFindByUniq(conn->acl);
+    if (!aclConn) {
+        loge("ACL link not found\n");
+        goto out;
+    }
+
+    if (!BT_ADDR_IS_LE(aclConn->addr)) {
+        logw("Got a Connection Update Request API call on a non-LE link\n");
+        goto out;
+    }
+
+    if (aclConn->isMaster) {
+        aclConn->connUpdtDoneCbk = doneCbk;
+        aclConn->connUpdtDoneCbkData = userData;
+        ret = l2cAclUpdateParams(aclConn->conn, intMin, intMax, latency, timeout);
+    }
+    else if (aclConn->connUpdtRequestIdent)
+        logw("Connection update request while another still in progress (%d) Ignored\n", aclConn->conn);
+    else {
+        uint8_t ident;
+
+        aclConn->connUpdtDoneCbk = doneCbk;
+        aclConn->connUpdtDoneCbkData = userData;
+
+        ident = l2cSigSendConnUpdateReq(aclConn, intMin, intMax, latency, timeout);
+        if (!ident)
+            loge("Failed to send connection update request for conn %d\n", aclConn->conn);
+        else
+            aclConn->connUpdtRequestIdent = ident;
+    }
+
+out:
+    pthread_mutex_unlock(&mConnsLock);
+    return ret;
 }
 
 /*
@@ -3290,12 +3398,13 @@ void l2cAclLinkParamsChange(uint16_t aclConn, bool success, uint16_t interval, u
         loge("Unable to find ACL connection %d. Dropping params change notification\n", aclConn);
     else if (!conn->isMaster)
         logi("Got update for %d: {%d,%d,%d}\n", aclConn, interval, latency, timeout);
-    else if (!conn->connUpdtRequestIdent)
-        loge("Got update for a master connection we did not request an update for (%d)\n", aclConn);
-    else {
+    else if (conn->connUpdtRequestIdent) {
         if (!l2cSigSendConnUpdateRsp(conn, conn->connUpdtRequestIdent, success ? L2C_SIG_CONN_UPDT_OK : L2C_SIG_CONN_UPDT_NO))
             loge("Failed to sent connection update response frame\n");
         conn->connUpdtRequestIdent = 0;
+    } else if (conn->connUpdtDoneCbk) {
+        conn->connUpdtDoneCbk(conn->connUpdtDoneCbkData, success); //todo: this should be done in the worker thread
+        conn->connUpdtDoneCbk = NULL;
     }
     pthread_mutex_unlock(&mConnsLock);
 }
@@ -3311,9 +3420,6 @@ void l2cAclLinkDown(uint16_t aclConn)
 {
     //todo: this (lots...)
 }
-
-
-
 
 
 

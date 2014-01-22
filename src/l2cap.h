@@ -29,7 +29,7 @@ int l2cInit(void);
 #define L2C_STATE_MTU        1 /* dataPtr points to a uint32_t mtu */
 #define L2C_STATE_RX         2 /* dataPtr points to data, len to length */
 #define L2C_STATE_CLOSED     3 /* or error on openining */ 
-typedef void (*l2cStateCbk)(void *userData, void* instance, uint8_t state, const void *data, uint32_t len);
+typedef void (*l2cStateCbk)(void *userData, void *instance, uint8_t state, const void *data, uint32_t len);
 
 /* a PSM-based service is described thusly */
 struct l2cServicePsmDescriptor {
@@ -37,11 +37,11 @@ struct l2cServicePsmDescriptor {
     void *userData; /* passed to all callbacks */
 
     /* these are null if connectionless only */
-    void* (*serviceInstanceAlloc)(void* userData, l2c_handle_t handle);
+    void* (*serviceInstanceAlloc)(void *userData, l2c_handle_t handle);
     l2cStateCbk serviceInstanceStateCbk; /* free when called with the close state */
 
     /* is null if connection-oriented only */
-    void (*serviceConnectionlessRx)(void* userData, l2c_handle_t handle, const void *data, uint32_t size);
+    void (*serviceConnectionlessRx)(void *userData, l2c_handle_t handle, const void *data, uint32_t size);
 };
 
 
@@ -51,7 +51,7 @@ struct l2cServiceFixedChDescriptor {
     void *userData; /* passed to all callbacks */
 
     /* called when ACL connection with a party supporting this channel is opened */
-    void* (*serviceFixedChAlloc)(void* userData, l2c_handle_t handle);
+    void* (*serviceFixedChAlloc)(void *userData, l2c_handle_t handle);
 
     /* called when data is received */
     l2cStateCbk serviceFixedChStateCbk; /* free when called with the close state */
@@ -62,43 +62,45 @@ struct l2cServiceFixedChDescriptor {
 psm_t l2cApiServicePsmRegister(psm_t psm, const struct l2cServicePsmDescriptor *service);
 
 /* call this to unregister a PSM-based service. callback called when done, if provided */
-bool l2cApiServicePsmUnregister(psm_t psm, void (*doneCbk)(void*), void* cbkData);
+bool l2cApiServicePsmUnregister(psm_t psm, void (*doneCbk)(void*), void *cbkData);
 
 
 /* call this to register a FixedCh service. */
 bool l2cApiServiceFixedChRegister(uint16_t chan, const struct l2cServiceFixedChDescriptor *service);
 
 /* call this to unregister a FixedCh service. callback called when done, if provided */
-bool l2cApiServiceFixedChUnregister(uint16_t chan, void (*doneCbk)(void*), void* cbkData);
+bool l2cApiServiceFixedChUnregister(uint16_t chan, void (*doneCbk)(void*), void *cbkData);
 
 
 /* call this to connect to a remote PSM-based service */
-bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr *addr, l2cStateCbk stateCbk, void *userData, void* instance);
+bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr *addr, l2cStateCbk stateCbk, void *userData, void *instance);
 
 /* call this to connect to a remote FixedCh service */
-bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr *addr, l2cStateCbk stateCbk, void *userData, void* instance);
+bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr *addr, l2cStateCbk stateCbk, void *userData, void *instance);
 
-
+/* call this to request a connection parameter update for a given connection */
+typedef void (*l2cConnUpdateDoneCbk)(void *userData, bool success);
+bool l2cApiUpdateConnectionParams(l2c_handle_t handle, uint16_t intMin, uint16_t intMax, uint16_t latency, uint16_t timeout, l2cConnUpdateDoneCbk doneCbk, void *userData);
 
 
 
 /* SERVICE INTERFACE API */
 
 /* service code can use this to get remote's bt addr */
-bool l2cSvcGetBtAddr(l2c_handle_t handle, struct bt_addr* addrP);
+bool l2cSvcGetBtAddr(l2c_handle_t handle, struct bt_addr *addrP);
 
 /* service code can use this to disconnect a channel */
 void l2cSvcDisconnect(l2c_handle_t handle);
 
 /* service code can use this to send to the other side */
-bool l2cSvcDataTx(l2c_handle_t handle, const void* data, uint32_t size);
+bool l2cSvcDataTx(l2c_handle_t handle, const void *data, uint32_t size);
 
 
 
 /* LOWER LAYER INTERFACE API */
 
 /* lower layer calls this when new ACL link is up */
-void l2cAclLinkUp(uint16_t aclConn, const struct bt_addr* addr, bool isMaster);
+void l2cAclLinkUp(uint16_t aclConn, const struct bt_addr *addr, bool isMaster);
 /* lower layer calls this when an ACL link is down */
 void l2cAclLinkDown(uint16_t aclConn);
 /* lower layer calls this when new ACL data arrives */
@@ -106,9 +108,9 @@ void l2cAclDataRx(uint16_t aclConn, const void *data, uint32_t len);
 /* this layer calls this to send ACL data */
 void l2cAclDataTx(uint16_t aclConn, const void *data, uint32_t len);
 /* this layer calls this to establish a link */
-void l2cAclLinkEstablish(const struct bt_addr* addr);
+void l2cAclLinkEstablish(const struct bt_addr *addr);
 /* this layer calls this to close a link, or cancel one being opened */
-void l2cAclLinkClose(const struct bt_addr* addr);
+void l2cAclLinkClose(const struct bt_addr *addr);
 /* this layer calls this to udpate a connection's LE parameters */
 bool l2cAclUpdateParams(uint16_t aclConn, uint16_t minInt, uint16_t maxInt, uint16_t lat, uint16_t to);
 /* lower layer calls this when connection parameters change */
