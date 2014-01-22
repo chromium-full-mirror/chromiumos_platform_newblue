@@ -10,6 +10,8 @@
 //todo: there are states where instance,stateCbk,userData are null. we shoudl care for them...
 //todo: at acl link up send info req for connectionless mtu just so we know it...
 //todo: check all lengths followed, all log levels correct
+//todo: audit all errors from l2cSigSendConnUpdateRsp and hwo we handle them
+//todo: multiple connections to same psm are allowed. we must allow this (for A2DP, for example)
 
 #include <pthread.h>
 #include <stdlib.h>
@@ -215,11 +217,14 @@ struct l2cSigConnUpdtReq {
     uint16_t timeoutMult;
 } __packed;
 
+
 #define L2C_SIG_CONN_UPDT_RSP     0x13
 struct l2cSigConnUpdtRsp {
     uint16_t result;
 } __packed;
 
+#define L2C_SIG_CONN_UPDT_OK      0x0000
+#define L2C_SIG_CONN_UPDT_NO      0x0001
 
 
 
@@ -246,6 +251,8 @@ struct l2cAclConn {
     uint16_t           conn;
     uint16_t           connectionlessMtu;
     struct bt_addr     addr;
+    bool               isMaster;
+    uint8_t            connUpdtRequestIdent; /* 0 if none inflight */
 };
 
 
@@ -356,6 +363,7 @@ static uint8_t l2cSigSendConfigReq(struct l2cAclConn *aclConn, uint16_t remCh, u
 static uint8_t l2cSigSendConfigRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t remCh, uint16_t flags, uint16_t result, const void *cfgData, uint32_t cfgLen);
 static uint8_t l2cSigSendInfoRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t infoType, uint16_t result, const void *infoData, uint32_t infoLen);
 static uint8_t l2cSigSendEchoRsp(struct l2cAclConn *aclConn, uint8_t ident, const void *echoData, uint32_t echoLen);
+static uint8_t l2cSigSendConnUpdateRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t result);
 
 /* our state */
 static pthread_mutex_t mUniqLock = PTHREAD_MUTEX_INITIALIZER;
@@ -1323,6 +1331,52 @@ static void l2cHandleEchoReq(struct l2cAclConn *aclConn, uint8_t ident, const vo
     /* no data in reply is valid as per spec */
     if (!l2cSigSendEchoRsp(aclConn, ident, NULL, 0))
         loge("Failed to sent echo response frame\n");
+}
+
+/*
+ * FUNCTION: l2cHandleConnUpdtReq
+ * USE:      Process an incoming connection update request
+ * PARAMS:   conn - the per-ACL-connection structure
+ *           ident - the ident in the response packet
+ *           intMin - minimum requester interval
+ *           intMax - maximum requested interval
+ *           latency - requested latency
+ *           timeoutMult - requester timeout multiplier
+ * RETURN:   num bytes used/needed or 0 for error
+ * NOTES:    NONE
+ * NOTES:    call with mConnsLock held
+ */
+static void l2cHandleConnUpdtReq(struct l2cAclConn *conn, uint8_t ident, uint16_t intMin, uint16_t intMax, uint16_t latency, uint16_t timeoutMult)
+{
+    /* verify intervals are in valid range */
+    if (intMin < BT_LE_CONN_INTERVAL_MIN || intMax < intMin || intMax > BT_LE_CONN_INTERVAL_MAX)
+        goto error;
+
+    /* verify latency and to params are in valid ranges */
+    if (latency > BT_LE_LATENCY_MAX || timeoutMult < BT_LE_TIMEOUT_MIN || timeoutMult > BT_LE_TIMEOUT_MAX)
+        goto error;
+
+    /* verify timout meets BTLE criteria for valid timeout given latency & max interval */
+    if (timeoutMult < BT_LE_TIMEOUT_MIN_VALID(intMin, latency))
+        goto error;
+
+    /* see if we're the master on this cunnection at all */
+    if (!conn->isMaster)
+        goto error;
+
+    /* see if another is inflight for this ACL connection and reject if so */
+    if (conn->connUpdtRequestIdent)
+        goto error;
+
+    /* try to execute it */
+    if (l2cAclUpdateParams(conn->conn, intMin, intMax, latency, timeoutMult))
+        return;
+
+error:
+    logw("Unable to request connection update to {[%d, %d], %d, %d}, inflight=%d master=%d\n",
+        intMin, intMax, latency, timeoutMult, conn->connUpdtRequestIdent, conn->isMaster);
+    if (!l2cSigSendConnUpdateRsp(conn, ident, L2C_SIG_CONN_UPDT_NO))
+        loge("Failed to sent connection update response frame\n");
 }
 
 /*
@@ -3121,7 +3175,7 @@ out:
  * RETURN:   NONE
  * NOTES:
  */
-void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr)
+void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr, bool isMaster)
 {
     struct l2cAclConn *aclConn;
     struct l2cConn *connIter;
@@ -3156,7 +3210,9 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr)
         }
         memcpy(&aclConn->addr, addr, sizeof(aclConn->addr));
         aclConn->ident = 1;
+        aclConn->isMaster = isMaster;
         aclConn->connectionlessMtu = L2C_MIN_CONNECTIONLESS_MTU;
+        aclConn->connUpdtRequestIdent = 0;
         aclConn->nextChan = L2C_NUM_FIXED_CHANNELS;
         aclConn->conn = aclConnID;
 
@@ -3216,6 +3272,36 @@ out:
 
 /*
  * FUNCTION: l2cAclLinkDown
+ * USE:      Called when LE ACL link params change
+ * PARAMS:   aclConn - the conection ID
+ *           interval - the new interval
+ *           latency - the new latency
+ *           timeout - the new timeout
+ * RETURN:   NONE
+ * NOTES:
+ */
+void l2cAclLinkParamsChange(uint16_t aclConn, bool success, uint16_t interval, uint16_t latency, uint16_t timeout)
+{
+    struct l2cAclConn *conn;
+
+    pthread_mutex_lock(&mConnsLock);
+    conn = l2cAclConnFindById(aclConn);
+    if (!conn)
+        loge("Unable to find ACL connection %d. Dropping params change notification\n", aclConn);
+    else if (!conn->isMaster)
+        logi("Got update for %d: {%d,%d,%d}\n", aclConn, interval, latency, timeout);
+    else if (!conn->connUpdtRequestIdent)
+        loge("Got update for a master connection we did not request an update for (%d)\n", aclConn);
+    else {
+        if (!l2cSigSendConnUpdateRsp(conn, conn->connUpdtRequestIdent, success ? L2C_SIG_CONN_UPDT_OK : L2C_SIG_CONN_UPDT_NO))
+            loge("Failed to sent connection update response frame\n");
+        conn->connUpdtRequestIdent = 0;
+    }
+    pthread_mutex_unlock(&mConnsLock);
+}
+
+/*
+ * FUNCTION: l2cAclLinkDown
  * USE:      Called when a new ACL link goes down
  * PARAMS:   aclConn - the conection ID
  * RETURN:   NONE
@@ -3223,7 +3309,7 @@ out:
  */
 void l2cAclLinkDown(uint16_t aclConn)
 {
-    //todo: lots...
+    //todo: this (lots...)
 }
 
 

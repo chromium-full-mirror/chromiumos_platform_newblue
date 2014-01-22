@@ -98,7 +98,7 @@ bool l2cSvcDataTx(l2c_handle_t handle, const void* data, uint32_t size);
 /* LOWER LAYER INTERFACE API */
 
 /* lower layer calls this when new ACL link is up */
-void l2cAclLinkUp(uint16_t aclConn, const struct bt_addr* addr);
+void l2cAclLinkUp(uint16_t aclConn, const struct bt_addr* addr, bool isMaster);
 /* lower layer calls this when an ACL link is down */
 void l2cAclLinkDown(uint16_t aclConn);
 /* lower layer calls this when new ACL data arrives */
@@ -109,6 +109,10 @@ void l2cAclDataTx(uint16_t aclConn, const void *data, uint32_t len);
 void l2cAclLinkEstablish(const struct bt_addr* addr);
 /* this layer calls this to close a link, or cancel one being opened */
 void l2cAclLinkClose(const struct bt_addr* addr);
+/* this layer calls this to udpate a connection's LE parameters */
+bool l2cAclUpdateParams(uint16_t aclConn, uint16_t minInt, uint16_t maxInt, uint16_t lat, uint16_t to);
+/* lower layer calls this when connection parameters change */
+void l2cAclLinkParamsChange(uint16_t aclConn, bool success, uint16_t interval, uint16_t latency, uint16_t timeout);
 
 #endif
 
