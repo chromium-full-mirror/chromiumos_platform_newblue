@@ -5,6 +5,8 @@
 #include "bt.h"
 
 
+#define OUR_MTU  0xEFFF /* no reason to limit it pointlessly */
+
 typedef uint16_t psm_t;
 typedef uint64_t l2c_handle_t; /* a 0-valued handle is invalid and indicates error */
 #define HANDLEFMT "0x%016llx"

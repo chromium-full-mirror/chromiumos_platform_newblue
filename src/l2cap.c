@@ -21,6 +21,10 @@
 #include "hci.h"
 
 
+/* constants fo rinfo requests */
+#define L2C_EXT_FTRS_SUPPORTED    0x180 /* support fixedCh & unicast data Rx */
+#define L2C_FIXED_CHS_SUPPORTED   0x6   /* as mandated by the spec */
+
 /* connection bit to indicate in-progress connection */
 #define L2C_CONN_IN_PROGRESS     (1 + HCI_CONN_ID_MASK)
 
@@ -148,12 +152,20 @@ struct l2cSigInfoReq {
     uint16_t infoType;
 } __packed;
 
+#define L2C_SIG_INFO_TYPE_UNCONN_MTU 0x0001
+#define L2C_SIG_INFO_TYPE_EXT_FTRS   0x0002
+#define L2C_SIG_INFO_TYPE_FIXED_CHS  0x0003
+
 #define L2C_SIG_INFO_RSP          0x0B
 struct l2cSigInfoRsp {
     uint16_t infoType;
     uint16_t result;
     /* optional data */
 } __packed;
+
+#define L2C_SIG_INFO_RESULT_OK     0x0000
+#define L2C_SIG_INFO_RESULT_NO     0x0001
+
 
 #define L2C_SIG_CH_CREAT_REQ      0x0C
 struct l2cSigChCreatReq {
@@ -338,6 +350,7 @@ static void l2cConnStructDelete(struct l2cConn *conn);
 static void l2cPsmSendConfig(struct l2cAclConn *aclConn, struct l2cConn *conn);
 static uint8_t l2cSigSendConfigReq(struct l2cAclConn *aclConn, uint16_t remCh, uint16_t flags, const void *cfgData, uint32_t cfgLen);
 static uint8_t l2cSigSendConfigRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t remCh, uint16_t flags, uint16_t result, const void *cfgData, uint32_t cfgLen);
+static uint8_t l2cSigSendInfoRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t infoType, uint16_t result, const void *infoData, uint32_t infoLen);
 
 /* our state */
 static pthread_mutex_t mUniqLock = PTHREAD_MUTEX_INITIALIZER;
@@ -931,7 +944,7 @@ static void l2cPsmSendConfig(struct l2cAclConn *aclConn, struct l2cConn *conn)
     /* for now our hardwired config is a large MTU */
     uint8_t ident;
     static const uint8_t config[] = {
-        L2C_CONF_MTU, 0x02, 0xff, 0xef /* our mtu is 0xefff */
+        L2C_CONF_MTU, 0x02, OUR_MTU & 0xFF, OUR_MTU >> 8
     };
 
     if (conn->cfgTxState != L2C_CFG_STATE_INITIAL) {
@@ -1209,6 +1222,43 @@ static void l2cHandleConfRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
         if (conn->cfgRxState)
             l2cChannelReadyForData(aclConn, conn);
     }
+}
+
+/*
+ * FUNCTION: l2cHandleInfoReq
+ * USE:      Handle an incoming information request
+ * PARAMS:   conn - the per-ACL-connection structure
+ *           ident - the ident in the response packet
+ *           infoType - the requested info type
+ * RETURN:   NONE
+ * NOTES:    call with mConnsLock held
+ */
+static void l2cHandleInfoReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t infoType)
+{
+    uint8_t reply[8];
+    uint32_t infoLen = 0;
+    uint16_t result = L2C_SIG_INFO_RESULT_OK;
+
+    switch (infoType) {
+    case L2C_SIG_INFO_TYPE_UNCONN_MTU:
+        utilSetLE16(reply, OUR_MTU);
+        infoLen = sizeof(uint16_t);
+        break;
+    case L2C_SIG_INFO_TYPE_EXT_FTRS:
+        utilSetLE32(reply, L2C_EXT_FTRS_SUPPORTED);
+        infoLen = sizeof(uint32_t);
+        break;
+    case L2C_SIG_INFO_TYPE_FIXED_CHS:
+        utilSetLE64(reply, L2C_FIXED_CHS_SUPPORTED);
+        infoLen = sizeof(uint64_t);
+        break;
+    default:
+        result = L2C_SIG_INFO_RESULT_NO;
+        break;
+    }
+
+    if (!l2cSigSendInfoRsp(aclConn, ident, infoType, result, reply, infoLen))
+        loge("Failed to sent information request response frame\n");
 }
 
 /*
