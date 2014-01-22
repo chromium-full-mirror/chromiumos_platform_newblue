@@ -14,6 +14,7 @@
 //todo: multiple connections to same psm are allowed. we must allow this (for A2DP, for example)
 //todo: calls to lower layers shoudl be done without locks held if at all possible...
 //todo: connection update callback needs to move into worker thread
+//todo: properly send "invalid cid" responces when a channel is not found
 
 #include <pthread.h>
 #include <stdlib.h>
@@ -374,6 +375,7 @@ static uint8_t l2cSigSendInfoRsp(struct l2cAclConn *aclConn, uint8_t ident, uint
 static uint8_t l2cSigSendEchoRsp(struct l2cAclConn *aclConn, uint8_t ident, const void *echoData, uint32_t echoLen);
 static uint8_t l2cSigSendConnUpdateRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t result);
 static uint8_t l2cSigSendConnUpdateReq(struct l2cAclConn *aclConn, uint16_t intMin, uint16_t intMax, uint16_t latency, uint16_t timeoutMult);
+static uint8_t l2cSigSendDiscRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localCh, uint16_t remCh);
 
 /* our state */
 static pthread_mutex_t mUniqLock = PTHREAD_MUTEX_INITIALIZER;
@@ -1413,9 +1415,10 @@ static void l2cHandleConnUpdtRsp(struct l2cAclConn *conn, uint8_t ident, uint16_
         }
     }
 }
+
 /*
  * FUNCTION: l2cApiUpdateConnectionParams
- * USE:      Try to udpate params on an LE link
+ * USE:      Try to update params on an LE link
  * PARAMS:   handle - the handle
  *           intMin - minimum requester interval
  *           intMax - maximum requested interval
@@ -1423,7 +1426,6 @@ static void l2cHandleConnUpdtRsp(struct l2cAclConn *conn, uint8_t ident, uint16_
  *           timeoutMult - requester timeout multiplier
  * RETURN:   num bytes used/needed or 0 for error
  * NOTES:    NONE
- * NOTES:    call with mConnsLock held
  */
 bool l2cApiUpdateConnectionParams(l2c_handle_t handle, uint16_t intMin, uint16_t intMax, uint16_t latency, uint16_t timeout, l2cConnUpdateDoneCbk doneCbk, void *userData)
 {
@@ -1485,6 +1487,40 @@ bool l2cApiUpdateConnectionParams(l2c_handle_t handle, uint16_t intMin, uint16_t
 out:
     pthread_mutex_unlock(&mConnsLock);
     return ret;
+}
+
+/*
+ * FUNCTION: l2cHandleDiscReq
+ * USE:      Handle a disconnect request from peer
+ * PARAMS:   handle - the handle
+ *           ident - the ident in the response packet
+ *           localCh - local channel number
+ *           remCh - remote channel number
+ * RETURN:   NONE
+ * NOTES:    call with mConnsLock held
+ */
+void l2cHandleDiscReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localCh, uint16_t remCh)
+{
+    struct l2cConn *conn = NULL;
+
+    conn = mConns;
+    while (conn && (conn->acl != aclConn->uniq && conn->localCh != localCh || conn->remCh != remCh))
+        conn = conn->next;
+
+    if (!conn) {
+        logw("Unexpected Disconnection Request id %d for ch %d %d\n", ident, localCh, remCh);
+        return;
+    }
+
+    if (!conn->psm) {
+        logw("Unexpected Disconnection Request for a FixedCh conn chan %d %d\n", localCh, remCh);
+        return;
+    }
+
+    l2cConnClose(aclConn, conn, false);
+
+    if (!l2cSigSendDiscRsp(aclConn, ident, localCh, remCh))
+        loge("Failed to sent disconnect request response frame\n");
 }
 
 /*
