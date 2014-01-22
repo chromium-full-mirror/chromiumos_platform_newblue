@@ -21,17 +21,24 @@ int l2cInit(void);
 
 /* HIGHER LAYER INTERFACE API */
 
+
+/* callbacks for connections */
+#define L2C_STATE_OPEN       0 /* dataPtr points to l2c_handle_t */
+#define L2C_STATE_MTU        1 /* dataPtr points to a uint32_t mtu */
+#define L2C_STATE_RX         2 /* dataPtr points to data, len to length */
+#define L2C_STATE_CLOSED     3 /* or error on openining */ 
+typedef void (*l2cStateCbk)(void *userData, void* instance, uint8_t state, const void *data, uint32_t len);
+
 /* a PSM-based service is described thusly */
 struct l2cServicePsmDescriptor {
 
     void *userData; /* passed to all callbacks */
 
-    /* all these are null if connectionless only */
+    /* these are null if connectionless only */
     void* (*serviceInstanceAlloc)(void* userData, l2c_handle_t handle);
-    void (*serviceInstanceFree)(void* userData, void* instance);
-    void (*serviceInstanceRx)(void* userData, void* instance, const void *data, uint32_t size);
+    l2cStateCbk serviceInstanceStateCbk; /* free when called with the close state */
 
-    /* isnull if connection-oriented only */
+    /* is null if connection-oriented only */
     void (*serviceConnectionlessRx)(void* userData, l2c_handle_t handle, const void *data, uint32_t size);
 };
 
@@ -45,10 +52,7 @@ struct l2cServiceFixedChDescriptor {
     void* (*serviceFixedChAlloc)(void* userData, l2c_handle_t handle);
 
     /* called when data is received */
-    void (*serviceFixedChRx)(void* userData, void* instance, const void *data, uint32_t size);
-
-    /* called when the underlying connection is closed */
-    void (*serviceFixedChFree)(void* userData, void* instance);
+    l2cStateCbk serviceFixedChStateCbk; /* free when called with the close state */
 };
 
 
@@ -65,17 +69,12 @@ bool l2cApiServiceFixedChRegister(uint16_t chan, const struct l2cServiceFixedChD
 /* call this to unregister a FixedCh service. callback called when done, if provided */
 bool l2cApiServiceFixedChUnregister(uint16_t chan, void (*doneCbk)(void*), void* cbkData);
 
-/* callbacks for connections */
-#define L2C_STATE_OPEN       0 /* dataPtr points to l2c_handle_t, len has mtu */
-#define L2C_STATE_RX         1 /* dataPtr points to data, len to length */
-#define L2C_STATE_CLOSED     2 /* or error on openining */ 
-typedef void (*l2cStateCbk)(void *cbkData, uint8_t state, const void *data, uint32_t len);
 
 /* call this to connect to a remote PSM-based service */
-bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr *addr, l2cStateCbk stateCbk, void *cbkData);
+bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr *addr, l2cStateCbk stateCbk, void *userData, void* instance);
 
 /* call this to connect to a remote FixedCh service */
-bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr *addr, l2cStateCbk stateCbk, void *cbkData);
+bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr *addr, l2cStateCbk stateCbk, void *userData, void* instance);
 
 
 

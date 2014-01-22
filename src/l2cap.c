@@ -7,6 +7,7 @@
 //todo: close acl link when last psm link down, close acl link when last attempted psm link is cancelled, etc...
 //todo: timers/timouts for unspecced BT waits (config, etc)
 //todo: set flush timout at hci layer to 0xffff for a reliable link
+//todo: there are states where instance,stateCbk,userData are null. we shoudl care for them...
 
 #include <pthread.h>
 #include <stdlib.h>
@@ -246,14 +247,6 @@ struct l2cSvcWork {
             l2c_handle_t handle;
         } i_alloc;
         struct {
-            void* instance;
-        } i_free;
-        struct {
-            void* instance;
-            void* data;
-            uint32_t size;
-        } i_rx;
-        struct {
             l2c_handle_t handle;
             void* data;
             uint32_t size;
@@ -264,7 +257,8 @@ struct l2cSvcWork {
         } unreg;
         struct {
             l2cStateCbk stateCbk;
-            void *cbkData;
+            void *userData;
+            void *instance;
             uint8_t state;
             const void *data;
             uint32_t len;
@@ -272,15 +266,11 @@ struct l2cSvcWork {
     };
 };
 #define L2C_SVC_WORK_PSM_INST_ALLOC          0
-#define L2C_SVC_WORK_PSM_INST_FREE           1
-#define L2C_SVC_WORK_PSM_INST_RX             2
-#define L2C_SVC_WORK_PSM_CONNECTIONLESS_RX   3
-#define L2C_SVC_WORK_PSM_UNREGISTER          4 /* does not call service itself */
-#define L2C_SVC_WORK_FIXEDCH_INST_ALLOC      5
-#define L2C_SVC_WORK_FIXEDCH_INST_FREE       6
-#define L2C_SVC_WORK_FIXEDCH_INST_RX         7
-#define L2C_SVC_WORK_FIXEDCH_UNREGISTER      8 /* does not call service itself */
-#define L2C_SVC_WORK_STATE_CBK               9
+#define L2C_SVC_WORK_PSM_CONNECTIONLESS_RX   1
+#define L2C_SVC_WORK_PSM_UNREGISTER          2 /* does not call service itself */
+#define L2C_SVC_WORK_FIXEDCH_INST_ALLOC      3
+#define L2C_SVC_WORK_FIXEDCH_UNREGISTER      4 /* does not call service itself */
+#define L2C_SVC_WORK_STATE_CBK               5
 
 /* our per-service struct for PSM-based services */
 struct l2cPsmSvc {
@@ -315,13 +305,13 @@ struct l2cConn {
     };
     uint8_t            ident; /* for control channel ops */
     l2cStateCbk        stateCbk;
-    void              *cbkData;
+    void              *userData;
+    void              *instance;
     uniq_t             acl; /* the acl connection */
     psm_t              psm; /* 0 for fixedCh */
     uint16_t           localCh;
     uint16_t           remCh;
     uint16_t           mtu; /* for other side */
-    void*              instance; /* may be null */
 };
 #define L2C_CONN_STATE_CONN_WAIT       0 /* waiting for ACL link up */
 #define L2C_CONN_STATE_RX_OPEN_SVC     1 /* call to service in pipeline */
@@ -366,9 +356,12 @@ static struct l2cAclConn *mAclConns = NULL;
 static struct l2cConn *mConns = NULL;
 
 
+
+
+
 /*
  * FUNCTION: l2cUniqNext
- * USE:      PRoduce the next "forever"-unique number
+ * USE:      Produce the next "forever"-unique number
  * PARAMS:   NONE
  * RETURN:   the next "unique" number
  * NOTES:
@@ -563,76 +556,6 @@ static bool l2cSvcWorkSchedulePsmAlloc(psm_t psm, void* reqID, l2c_handle_t hand
 }
 
 /*
- * FUNCTION: l2cSvcWorkSchedulePsmFree
- * USE:      Schedule a service freeing
- * PARAMS:   psm - the psm which this is for
- *           reqID - request ID to signal completion
- *           instance - instance ptr to pass to the service free handler
- * RETURN:   NONE
- * NOTES:    actual call will happen in the worker thread
- */
-static bool l2cSvcWorkSchedulePsmFree(psm_t psm, void* reqID, void* instance)
-{
-    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_SVC_WORK_PSM_INST_FREE, psm, 0, reqID);
-
-    if (!w)
-        return false;
-
-    w->i_free.instance = instance;
-
-    if (workQueuePut(mServiceWork, w))
-        return true;
-
-    loge("Failed to enqueue service work for service instance freeing!\n");
-    free(w);
-    return false;
-}
-
-/*
- * FUNCTION: l2cSvcWorkSchedulePsmRx
- * USE:      Schedule a service data RX
- * PARAMS:   psm - the psm which this is for
- *           reqID - request ID to signal completion
- *           instance - instance ptr to pass to the service RX handler
- *           data - the data buffer (a copy will be made)
- *           size - length of the data buffer
- * RETURN:   NONE
- * NOTES:    actual call will happen in the worker thread. Buffer is copied
- */
-static bool l2cSvcWorkSchedulePsmRx(psm_t psm, void* reqID, void* instance, const void* data, uint32_t size)
-{
-    void* copy;
-    struct l2cSvcWork* w;
-
-
-    copy = malloc(size);
-    if (!copy) {
-        loge("Failed to allocate service work data copy for service instance RX!\n");
-        return false;
-    }
-
-    w = l2cSvcWorkAlloc(L2C_SVC_WORK_PSM_INST_RX, psm, 0, reqID);
-    if (!w) {
-        free(copy);
-        return false;
-    }
-
-    memcpy(copy, data, size);
-
-    w->i_rx.instance = instance;
-    w->i_rx.data = copy;
-    w->i_rx.size = size;
-
-    if (workQueuePut(mServiceWork, w))
-        return true;
-
-    loge("Failed to enqueue service work for service instance RX!\n");
-    free(copy);
-    free(w);
-    return false;
-}
-
-/*
  * FUNCTION: l2cSvcWorkSchedulePsmConnectionlessRx
  * USE:      Schedule a service data RX for connectionless data
  * PARAMS:   psm - the psm which this is for
@@ -703,76 +626,6 @@ static bool l2cSvcWorkScheduleFixedChAlloc(uint16_t chan, void* reqID, l2c_handl
 }
 
 /*
- * FUNCTION: l2cSvcWorkScheduleFixedChFree
- * USE:      Schedule a service freeing
- * PARAMS:   chan - the channel this is for
- *           reqID - request ID to signal completion
- *           instance - instance ptr to pass to the service free handler
- * RETURN:   NONE
- * NOTES:    actual call will happen in the worker thread
- */
-static bool l2cSvcWorkScheduleFixedChFree(uint16_t chan, void* reqID, void* instance)
-{
-    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_SVC_WORK_FIXEDCH_INST_FREE, 0, chan, reqID);
-
-    if (!w)
-        return false;
-
-    w->i_free.instance = instance;
-
-    if (workQueuePut(mServiceWork, w))
-        return true;
-
-    loge("Failed to enqueue service work for service instance freeing!\n");
-    free(w);
-    return false;
-}
-
-/*
- * FUNCTION: l2cSvcWorkScheduleFixedChRx
- * USE:      Schedule a service data RX
- * PARAMS:   chan - the channel this is for
- *           reqID - request ID to signal completion
- *           instance - instance ptr to pass to the service RX handler
- *           data - the data buffer (a copy will be made)
- *           size - length of the data buffer
- * RETURN:   NONE
- * NOTES:    actual call will happen in the worker thread. Buffer is copied
- */
-static bool l2cSvcWorkScheduleFixedChRx(uint16_t chan, void* reqID, void* instance, const void* data, uint32_t size)
-{
-    void* copy;
-    struct l2cSvcWork* w;
-
-
-    copy = malloc(size);
-    if (!copy) {
-        loge("Failed to allocate service work data copy for service instance RX!\n");
-        return false;
-    }
-
-    w = l2cSvcWorkAlloc(L2C_SVC_WORK_FIXEDCH_INST_RX, 0, chan, reqID);
-    if (!w) {
-        free(copy);
-        return false;
-    }
-
-    memcpy(copy, data, size);
-
-    w->i_rx.instance = instance;
-    w->i_rx.data = copy;
-    w->i_rx.size = size;
-
-    if (workQueuePut(mServiceWork, w))
-        return true;
-
-    loge("Failed to enqueue service work for service instance RX!\n");
-    free(copy);
-    free(w);
-    return false;
-}
-
-/*
  * FUNCTION: l2cSvcWorkScheduleFixedChUnregister
  * USE:      Schedule a service unregistering
  * PARAMS:   chan - the channel this is for
@@ -829,30 +682,30 @@ static bool l2cSvcWorkSchedulePsmUnregister(psm_t psm, void* reqID, void (*doneC
 }
 
 /*
- * FUNCTION: l2cSvcWorkScheduleStateCall
- * USE:      Schedule a "state" callback for a local-initiated connection
+ * FUNCTION: l2cSvcWorkScheduleStateCallDirect
+ * USE:      Schedule a "state" callback with directly-passed params
  * PARAMS:   reqID - request ID to signal completion
  *           stateCbk - the callback to call
- *           cbkData - data pointer to pass to the callback
+ *           userData - data pointer to pass to the callback
+ *           instance - second data pointer to pass to the callback
  *           state - state vaklue to pass to the callback
  *           data - buffer a copy of which is passed to the callback
- *           passed_len - the len value to call the callabck with (not same as buffer len possibly)
- *           buffer_len - the length of the buffer (not passed to callback, just used to make a copy)
+ *           len - the length of the buffer
  * RETURN:   NONE
  * NOTES:    actual call will happen in the worker thread. Buffer is copied
  */
-static bool l2cSvcWorkScheduleStateCall(void* reqID, l2cStateCbk stateCbk, void *cbkData, uint8_t state, const void *data, uint32_t passed_len, uint32_t buffer_len)
+static bool l2cSvcWorkScheduleStateCallDirect(void* reqID, l2cStateCbk stateCbk, void *userData, void *instance, uint8_t state, const void *data, uint32_t len)
 {
     struct l2cSvcWork* w;
     void* copy;
 
-    copy = malloc(buffer_len);
+    copy = malloc(len);
     if (!copy) {
         loge("Failed to allocate service work data copy for state call!\n");
         return false;
     }
 
-    memcpy(copy, data, buffer_len);
+    memcpy(copy, data, len);
 
 
     w = l2cSvcWorkAlloc(L2C_SVC_WORK_STATE_CBK, 0, 0, reqID);
@@ -862,10 +715,11 @@ static bool l2cSvcWorkScheduleStateCall(void* reqID, l2cStateCbk stateCbk, void 
     }
 
     w->state.stateCbk = stateCbk;
-    w->state.cbkData = cbkData;
+    w->state.userData = userData;
+    w->state.instance = instance;
     w->state.state = state;
     w->state.data = data;
-    w->state.len = passed_len;
+    w->state.len = len;
 
     if (workQueuePut(mServiceWork, w))
         return true;
@@ -874,6 +728,23 @@ static bool l2cSvcWorkScheduleStateCall(void* reqID, l2cStateCbk stateCbk, void 
     free(copy);
     free(w);
     return false;
+}
+
+
+/*
+ * FUNCTION: l2cSvcWorkScheduleStateCall
+ * USE:      Schedule a "state" callback for a connection
+ * PARAMS:   reqID - request ID to signal completion
+ *           conn - the connection
+ *           state - state vaklue to pass to the callback
+ *           data - buffer a copy of which is passed to the callback
+ *           len - the length of the buffer
+ * RETURN:   NONE
+ * NOTES:    actual call will happen in the worker thread. Buffer is copied
+ */
+static bool l2cSvcWorkScheduleStateCall(void* reqID, struct l2cConn* conn, uint8_t state, const void *data, uint32_t len)
+{
+    return l2cSvcWorkScheduleStateCallDirect(reqID, conn->stateCbk, conn->userData, conn->instance, state, data, len);
 }
 
 /*
@@ -915,7 +786,7 @@ static void l2cHandleConnReq(struct l2cAclConn *aclConn, uint8_t ident, psm_t ps
     conn->mtu = 0xFFFF;
     conn->instance = NULL;
     conn->stateCbk = NULL;
-    conn->cbkData = NULL;
+    conn->userData = NULL;
     conn->remCh = remCh;
     localCh = l2cAclFreeCid(aclConn);
     if (!localCh) {
@@ -929,7 +800,7 @@ static void l2cHandleConnReq(struct l2cAclConn *aclConn, uint8_t ident, psm_t ps
     conn->state = L2C_CONN_STATE_RX_OPEN_SVC;
 
     /* safe to call this enqueue here , since worker thread cannot work on it till we release this lock */
-    enqueued = l2cSvcWorkSchedulePsmAlloc(psm, NULL, l2cHandleCreate(aclConn->conn, localCh,remCh, psm));
+    enqueued = l2cSvcWorkSchedulePsmAlloc(psm, NULL, l2cHandleCreate(aclConn->conn, localCh, remCh, psm));
     if (enqueued) {
         conn->next = mConns;
         mConns = conn;
@@ -1012,7 +883,7 @@ static void l2cHandleConnRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
 
     if (result == L2C_SIG_CONN_RSP_BAD_PSM || result == L2C_SIG_CONN_RSP_BAD_SEC || result == L2C_SIG_CONN_RSP_NO_RSRC) {
         logi("Other side refused our connection for psm %d\n", conn->psm);
-        if (!l2cSvcWorkScheduleStateCall(NULL, conn->stateCbk, conn->cbkData, L2C_STATE_CLOSED, NULL, 0, 0))
+        if (!l2cSvcWorkScheduleStateCall(NULL, conn, L2C_STATE_CLOSED, NULL, 0))
             loge("Failed to schedule 'closed' state call\n");
         l2cConnStructDelete(conn);
         return;
@@ -1023,7 +894,7 @@ static void l2cHandleConnRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
         /* TODO: when we support unencrypted links, this code block will need to evolve */
 
         loge("Unexpected 'pending' reply to open request - we are not expecting this on a secure link\n");
-        if (!l2cSvcWorkScheduleStateCall(NULL, conn->stateCbk, conn->cbkData, L2C_STATE_CLOSED, NULL, 0, 0))
+        if (!l2cSvcWorkScheduleStateCall(NULL, conn, L2C_STATE_CLOSED, NULL, 0))
             loge("Failed to schedule 'closed' state call\n");
         l2cConnStructDelete(conn);
         return;
@@ -1032,7 +903,7 @@ static void l2cHandleConnRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
     if (result != L2C_SIG_CONN_RSP_OK) {
 
         loge("Unexpected result %d for connection to psm %d\n", result, conn->psm);
-        if (!l2cSvcWorkScheduleStateCall(NULL, conn->stateCbk, conn->cbkData, L2C_STATE_CLOSED, NULL, 0, 0))
+        if (!l2cSvcWorkScheduleStateCall(NULL, conn, L2C_STATE_CLOSED, NULL, 0))
             loge("Failed to schedule 'closed' state call\n");
         l2cConnStructDelete(conn);
         return;
@@ -1075,16 +946,29 @@ static void l2cPsmSendConfig(struct l2cAclConn *aclConn, struct l2cConn *conn)
         conn->cfgTxState = L2C_CFG_STATE_REQ_SENT;
     } else {
         loge("Failed to send config request on conn for chs %d %d on acl %d\n", conn->localCh, conn->remCh, aclConn->conn);
-        if (conn->stateCbk) {
-            if (!l2cSvcWorkScheduleStateCall(NULL, conn->stateCbk, conn->cbkData, L2C_STATE_CLOSED, NULL, 0, 0))
-                loge("Failed to schedule 'closed' state call\n");
-        } else if (conn->instance) {
-            if (!l2cSvcWorkSchedulePsmFree(conn->psm, NULL, conn->instance))
-                loge("Failed to schedule 'free' psm service call\n");
-        } else {
-            loge("internal error: how do i close this thing?\n");
-        }
+        if (!l2cSvcWorkScheduleStateCall(NULL, conn, L2C_STATE_CLOSED, NULL, 0))
+            loge("Failed to schedule 'closed' state call\n");
     }
+}
+
+/*
+ * FUNCTION: l2cChannelReadyForData
+ * USE:      Called when a channel is ready for data to flow
+ * PARAMS:   aclConn - the per-ACL-connection structure
+ *           conn - the connection struct
+ * RETURN:   NONE
+ * NOTES:    call with mConnsLock held
+ */
+static void l2cChannelReadyForData(struct l2cAclConn *aclConn, struct l2cConn *conn)
+{
+    l2c_handle_t handle = l2cHandleCreate(aclConn->conn, conn->localCh, conn->remCh, conn->psm);
+    uint32_t mtu = conn->mtu;
+
+    l2cSvcWorkScheduleStateCall(NULL, conn, L2C_STATE_OPEN, &handle, sizeof(handle));
+    if (conn->psm)
+        l2cSvcWorkScheduleStateCall(NULL, conn, L2C_STATE_MTU, &mtu, sizeof(mtu));
+
+    conn->state = L2C_CONN_STATE_ESTABLISHED;
 }
 
 /*
@@ -1253,7 +1137,7 @@ static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
     else {
         conn->cfgTxState = L2C_CFG_STATE_CFG_ACCEPTED;
         if (conn->cfgRxState)
-            l2cChannelConfigDone(aclConn, conn); //todo: send events up saying channel ready
+            l2cChannelReadyForData(aclConn, conn);
     }
 }
 
@@ -1323,7 +1207,7 @@ static void l2cHandleConfRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
     else {
         conn->cfgTxState = L2C_CFG_STATE_CFG_ACCEPTED;
         if (conn->cfgRxState)
-            l2cChannelConfigDone(aclConn, conn); //todo: send events up saying channel ready
+            l2cChannelReadyForData(aclConn, conn);
     }
 }
 
@@ -1682,7 +1566,7 @@ static bool l2cSendRxToChannel(struct l2cAclConn *aclConn, uint16_t chan, const 
         break;
     }
 
-    return cur && l2cSvcWorkScheduleStateCall(NULL, cur->stateCbk, cur->cbkData, L2C_STATE_RX, data, len, len);
+    return cur && l2cSvcWorkScheduleStateCall(NULL, cur, L2C_STATE_RX, data, len);
 }
 
 /*
@@ -1802,12 +1686,14 @@ static struct l2cFixedChSvc* l2cFixedChSvcFindByChan(uint16_t chan)
  * FUNCTION: l2cPsmSvcInstAllocDone
  * USE:      Called when a service call to allocate a PSM service instance finishes
  * PARAMS:   reqID - request ID originally passed to l2cSvcWorkSchedulePsmAlloc
+ *           l2cStateCbk - the state cbk for this conn
+ *           userData - param for state callbacks
  *           instance - the allocated instance or NULL
  *           handle - the handle param for the connection
  * RETURN:   NONE
  * NOTES:
  */
-static void l2cPsmSvcInstAllocDone(void *reqID, void *instance, l2c_handle_t handle)
+static void l2cPsmSvcInstAllocDone(void *reqID, l2cStateCbk stateCbk, void *userData, void *instance, l2c_handle_t handle)
 {
     struct l2cConn* conn;
     struct l2cAclConn* aclConn;
@@ -1843,6 +1729,9 @@ static void l2cPsmSvcInstAllocDone(void *reqID, void *instance, l2c_handle_t han
         goto out;
     }
 
+    conn->stateCbk = stateCbk;
+    conn->userData = userData;
+    conn->instance = instance;
     conn->state = L2C_CONN_STATE_CFG;
     conn->cfgTxState = L2C_CFG_STATE_INITIAL;
     conn->cfgRxState = L2C_CFG_STATE_INITIAL;
@@ -1856,12 +1745,14 @@ out:
  * FUNCTION: l2cFixedChSvcInstAllocDone
  * USE:      Called when a service call to allocate a FixedCh service instance finishes
  * PARAMS:   reqID - request ID originally passed to l2cSvcWorkScheduleFixedChAlloc
+ *           l2cStateCbk - the state cbk for this conn
+ *           userData - param for state callbacks
  *           instance - the allocated instance or NULL
  *           handle - the handle param for the connection
  * RETURN:   NONE
  * NOTES:
  */
-static void l2cFixedChSvcInstAllocDone(void *reqID, void *instance, l2c_handle_t handle)
+static void l2cFixedChSvcInstAllocDone(void *reqID, l2cStateCbk stateCbk, void *userData, void *instance, l2c_handle_t handle)
 {
     struct l2cConn* conn;
     struct l2cAclConn* aclConn;
@@ -1889,7 +1780,10 @@ static void l2cFixedChSvcInstAllocDone(void *reqID, void *instance, l2c_handle_t
 
     logd("Service up for FixedCh %d\n", conn->localCh);
 
-    conn->state = L2C_CONN_STATE_ESTABLISHED;
+    conn->stateCbk = stateCbk;
+    conn->userData = userData;
+    conn->instance = instance;
+    l2cChannelReadyForData(aclConn, conn);
 
 out:
     pthread_mutex_unlock(&mConnsLock);
@@ -1926,39 +1820,12 @@ static void* l2cSvcWorker(void* unused)
             if (svc->beingRemoved) {
                 logi("Ignoring instance alloc for service (psm=%d) being removed\n",
                     work->psm);
-                l2cPsmSvcInstAllocDone(work->reqID, NULL, work->i_alloc.handle);
+                l2cPsmSvcInstAllocDone(work->reqID, NULL, NULL, NULL, work->i_alloc.handle);
             } else {
-                l2cPsmSvcInstAllocDone(work->reqID,
-                    svc->desc.serviceInstanceAlloc(svc->desc.userData,
+                l2cPsmSvcInstAllocDone(work->reqID, svc->desc.serviceInstanceStateCbk, svc->desc.userData,
+                    svc->desc.serviceInstanceAlloc(svc->desc.userData, 
                     work->i_alloc.handle), work->i_alloc.handle);
             }
-            break;
-        }
-        case L2C_SVC_WORK_PSM_INST_FREE: {
-            struct l2cPsmSvc *svc = l2cPsmSvcFindByPsm(work->psm);
-            if (!svc) {
-                logw("Got work for a not-found PSM-based service %d\n", work->psm);
-                break;
-            }
-            svc->desc.serviceInstanceFree(svc->desc.userData,
-                    work->i_free.instance);
-            l2cPsmSvcInstFreeDone(work->reqID); //should delete the connection struct
-            break;
-        }
-        case L2C_SVC_WORK_PSM_INST_RX: {
-            struct l2cPsmSvc *svc = l2cPsmSvcFindByPsm(work->psm);
-            if (!svc) {
-                logw("Got work for a not-found PSM-based service %d\n", work->psm);
-                break;
-            }
-            if (svc->beingRemoved) {
-                logi("Ignoring instance rx for service (psm=%d) being removed\n",
-                    work->psm);
-            } else {
-                svc->desc.serviceInstanceRx(svc->desc.userData,
-                    work->i_rx.instance, work->i_rx.data, work->i_rx.size);
-            }
-            free(work->i_rx.data);
             break;
         }
         case L2C_SVC_WORK_PSM_CONNECTIONLESS_RX: {
@@ -2005,39 +1872,12 @@ static void* l2cSvcWorker(void* unused)
             if (svc->beingRemoved) {
                 logi("Ignoring instance alloc for service (chan=%d) being removed\n",
                     work->chan);
-                l2cFixedChSvcInstAllocDone(work->reqID, NULL, work->i_alloc.handle);
+                l2cFixedChSvcInstAllocDone(work->reqID, NULL, NULL, NULL, work->i_alloc.handle);
             } else {
-                l2cFixedChSvcInstAllocDone(work->reqID,
+                l2cFixedChSvcInstAllocDone(work->reqID, svc->desc.serviceFixedChStateCbk, svc->desc.userData,
                     svc->desc.serviceFixedChAlloc(svc->desc.userData,
                     work->i_alloc.handle), work->i_alloc.handle);
             }
-            break;
-        }
-        case L2C_SVC_WORK_FIXEDCH_INST_FREE: {
-            struct l2cFixedChSvc *svc = l2cFixedChSvcFindByChan(work->chan);
-            if (!svc) {
-                logw("Got work for a not-found FixedCh service %d\n", work->chan);
-                break;
-            }
-            svc->desc.serviceFixedChFree(svc->desc.userData,
-                    work->i_free.instance);
-            l2cFixedChSvcInstFreeDone(work->reqID); //should delete the connection struct
-            break;
-        }
-        case L2C_SVC_WORK_FIXEDCH_INST_RX: {
-            struct l2cFixedChSvc *svc = l2cFixedChSvcFindByChan(work->chan);
-            if (!svc) {
-                logw("Got work for a not-found FixedCh service %d\n", work->chan);
-                break;
-            }
-            if (svc->beingRemoved) {
-                logi("Ignoring instance rx for service (chan=%d) being removed\n",
-                    work->chan);
-            } else {
-                svc->desc.serviceFixedChRx(svc->desc.userData,
-                    work->i_rx.instance, work->i_rx.data, work->i_rx.size);
-            }
-            free(work->i_rx.data);
             break;
         }
         default: {
@@ -2985,13 +2825,14 @@ static struct l2cAclConn* l2cCreateAndOpenNewConn(const struct bt_addr* addr)
  *           addr - the peer address
  *           mtu - the mtu we're willing to accept
  *           doneCbk - function to call when action completes
- *           cbkData - data to pass to doneCbk() 
+ *           userData - data to pass to stateCbk
+ *           instance - data to pass to stateCbk
  * RETURN:   true is a send was requested. False on immediate error.
  * NOTES:    callback may be called before this function returns, if
  *           true was returned, at least one call to the callback
  *           will happen
  */
-bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr* addr, l2cStateCbk stateCbk, void* cbkData)
+bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr* addr, l2cStateCbk stateCbk, void* userData, void* instance)
 {
     struct l2cAclConn *aclConn;
     struct l2cConn *conn = NULL, *t;
@@ -3040,9 +2881,9 @@ bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr* addr, l2cStateCb
     conn->acl = aclConn->uniq;
     conn->psm = psm;
     conn->mtu = 0xFFFF;
-    conn->instance = NULL;
     conn->stateCbk = stateCbk;
-    conn->cbkData = cbkData;
+    conn->userData = userData;
+    conn->instance = instance;
 
     if (aclConn->conn & L2C_CONN_IN_PROGRESS)
         conn->state = L2C_CONN_STATE_CONN_WAIT;
@@ -3057,7 +2898,7 @@ bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr* addr, l2cStateCb
 
         ident = l2cSigSendConnectionReq(aclConn, psm, localCh);
         if (!ident) {
-            l2cSvcWorkScheduleStateCall(NULL, stateCbk, cbkData, L2C_STATE_CLOSED, NULL, 0, 0);
+            l2cSvcWorkScheduleStateCallDirect(NULL, stateCbk, userData, instance, L2C_STATE_CLOSED, NULL, 0);
             loge("Failed to request opening of a psm channel\n");
             goto out;
         }
@@ -3082,14 +2923,15 @@ out:
  * USE:      Request a FixedCh connection be created
  * PARAMS:   chan - the channel to connect to
  *           addr - the peer address
- *           doneCbk - function to call when action completes
- *           cbkData - data to pass to doneCbk() 
+ *           stateCbk - function to call with state
+ *           userData - data to pass to stateCbk
+ *           instance - data to pass to stateCbk
  * RETURN:   true is a send was requested. False on immediate error.
  * NOTES:    callback may be called before this function returns, if
  *           true was returned, at least one call to the callback
  *           will happen
  */
-bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr* addr, l2cStateCbk stateCbk, void* cbkData)
+bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr* addr, l2cStateCbk stateCbk, void* userData, void* instance)
 {
     struct l2cAclConn *aclConn;
     struct l2cConn *conn = NULL, *t;
@@ -3136,16 +2978,14 @@ bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr* addr, l2
     conn->localCh = chan;
     conn->remCh = chan;
     conn->mtu = 0xFFFF;
-    conn->instance = NULL;
     conn->stateCbk = stateCbk;
-    conn->cbkData = cbkData;
+    conn->userData = userData;
+    conn->instance = instance;
     if (aclConn->conn & L2C_CONN_IN_PROGRESS)
         conn->state = L2C_CONN_STATE_CONN_WAIT;
-    else {
-        l2c_handle_t handle = l2cHandleCreate(aclConn->conn, chan, chan, 0);
-        l2cSvcWorkScheduleStateCall(NULL, stateCbk, cbkData, L2C_STATE_OPEN, &handle, 0/*no mtu for fixedCh*/, sizeof(handle));
-        conn->state = L2C_CONN_STATE_ESTABLISHED;
-    }
+    else
+        l2cChannelReadyForData(aclConn, conn);
+
     conn->prev = NULL;
     conn->next = mConns;
     mConns = conn;
@@ -3221,9 +3061,7 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr)
             }
 
             if (!conn->psm) { /* FixedCh */
-                l2c_handle_t handle = l2cHandleCreate(aclConn->conn, conn->remCh, conn->remCh, 0);
-                conn->state = L2C_CONN_STATE_ESTABLISHED;
-                l2cSvcWorkScheduleStateCall(NULL, conn->stateCbk, conn->cbkData, L2C_STATE_OPEN, &handle, 0/*no mtu for fixedCh*/, sizeof(handle));
+                l2cChannelReadyForData(aclConn, conn);
                 continue;
             }
 
@@ -3235,7 +3073,7 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr)
             }
 
             if (!ident) {
-                l2cSvcWorkScheduleStateCall(NULL, conn->stateCbk, conn->cbkData, L2C_STATE_CLOSED, NULL, 0, 0);
+                l2cSvcWorkScheduleStateCall(NULL, conn, L2C_STATE_CLOSED, NULL, 0);
                 loge("Failed to request opening of a psm channel\n");
                 //TODO: drop it appropriately
             }
