@@ -31,7 +31,7 @@ static void utilSetLE64(void *buf, uint64_t val);
 
 
 
-
+#define __packed __attribute__ ((__packed__))
 
 
 /* internal use only */
