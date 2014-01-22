@@ -15,5 +15,14 @@ struct bt_addr {
 #define BT_ADDR_IS_EDR(addr)     ((addr).type == BT_ADDR_TYPE_EDR)
 #define BT_ADDR_IS_LE(addr)      ((addr).type != BT_ADDR_TYPE_EDR)
 
+#define BT_LE_CONN_INTERVAL_MIN  6
+#define BT_LE_CONN_INTERVAL_MAX  3200
+#define BT_LE_LATENCY_MAX        499
+#define BT_LE_TIMEOUT_MIN        10
+#define BT_LE_TIMEOUT_MAX        3200
+
+/* calc minimum valid LE timeout for given other parems */
+#define BT_LE_TIMEOUT_MIN_VALID(int, lat)    (((int) * ((lat) + 1) * 2 + 7) / 8)
+
 #endif
 
