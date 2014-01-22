@@ -889,7 +889,7 @@ static void l2cHandleConnRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
 
 
     conn = mConns;
-    while (conn && conn->localCh != localCh)
+    while (conn && (conn->acl != aclConn->uniq || conn->localCh != localCh))
         conn = conn->next;
 
     if (!conn) {
@@ -1029,7 +1029,7 @@ static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
     uint16_t result = L2C_SIG_CONF_RSP_OK;
 
     conn = mConns;
-    while (conn && conn->localCh != localCh)
+    while (conn && (conn->acl != aclConn->uniq || conn->localCh != localCh))
         conn = conn->next;
 
     if (!conn) {
@@ -1197,7 +1197,7 @@ static void l2cHandleConfRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
     struct l2cConn *conn = NULL;
 
     conn = mConns;
-    while (conn && conn->localCh != localCh)
+    while (conn && (conn->acl != aclConn->uniq || conn->localCh != localCh))
         conn = conn->next;
 
     if (!conn) {
