@@ -107,7 +107,7 @@ void l2cAclLinkDown(uint16_t aclConn);
 void l2cAclDataRx(uint16_t aclConn, const void *data, uint32_t len);
 /* this layer calls this to send ACL data */
 void l2cAclDataTx(uint16_t aclConn, const void *data, uint32_t len);
-/* this layer calls this to establish a link */
+/* this layer calls this to establish a link. *addr need not stay valid after call */
 void l2cAclLinkEstablish(const struct bt_addr *addr);
 /* this layer calls this to close a link, or cancel one being opened */
 void l2cAclLinkClose(const struct bt_addr *addr);

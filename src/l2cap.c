@@ -305,6 +305,9 @@ struct l2cSvcWork {
             void *cbkData;
             bool success;
         } connUpdtCbk;
+        struct {
+            struct bt_addr addr;
+        } openAclLink;
     };
 };
 #define L2C_WORK_PSM_INST_ALLOC          0
@@ -314,6 +317,7 @@ struct l2cSvcWork {
 #define L2C_WORK_FIXEDCH_UNREGISTER      4 /* does not call service itself */
 #define L2C_WORK_STATE_CBK               5
 #define L2C_WORK_CONN_UPDT_CBK           6
+#define L2C_WORK_OPEN_ACL_LINK           7
 
 /* our per-service struct for PSM-based services */
 struct l2cPsmSvc {
@@ -815,6 +819,29 @@ static bool l2cSvcWorkScheduleConnUpdtCbk(void* reqID, l2cConnUpdateDoneCbk done
         return true;
 
     loge("Failed to enqueue service work for connection update callback!\n");
+    free(w);
+    return false;
+}
+
+/*
+ * FUNCTION: l2cSvcWorkScheduleOpenAclLink
+ * USE:      Schedule a n ACL link open call to the lower layer
+ * PARAMS:   reqID - request ID to signal completion
+ *           addr - the address of peer to connect to
+ * RETURN:   NONE
+ * NOTES:    actual call will happen in the worker thread.
+ */
+static bool l2cSvcWorkScheduleOpenAclLink(void* reqID, const struct bt_addr *addr)
+{
+    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_OPEN_ACL_LINK, reqID);
+    if (!w)
+        return false;
+
+    memcpy(&w->openAclLink.addr, addr, sizeof(struct bt_addr));
+    if (workQueuePut(mServiceWork, w))
+        return true;
+
+    loge("Failed to enqueue service work for ACL link open!\n");
     free(w);
     return false;
 }
@@ -2328,6 +2355,9 @@ static void* l2cSvcWorker(void* unused)
         case L2C_WORK_CONN_UPDT_CBK:
             work->connUpdtCbk.doneCbk(work->connUpdtCbk.cbkData, work->connUpdtCbk.success);
             break;
+        case L2C_WORK_OPEN_ACL_LINK:
+            l2cAclLinkEstablish(&work->openAclLink.addr);
+            break;
         default: {
             loge("Unknown work type %d\n", work->type);
             break;
@@ -3291,11 +3321,15 @@ static struct l2cAclConn* l2cCreateAndOpenNewConn(const struct bt_addr* addr)
     conn->uniq = l2cUniqNext();
     conn->conn = L2C_CONN_IN_PROGRESS;
     conn->prev = NULL;
-    conn->next = mAclConns;
-    mAclConns->prev = conn;
-    mAclConns = conn;
 
-    l2cAclLinkEstablish(addr);
+    if (!l2cSvcWorkScheduleOpenAclLink(NULL, &conn->addr)) {
+        free(conn);
+        conn = NULL;
+    } else {
+        conn->next = mAclConns;
+        mAclConns->prev = conn;
+        mAclConns = conn;
+    }
 
     return conn;
 }
