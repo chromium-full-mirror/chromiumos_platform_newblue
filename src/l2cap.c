@@ -307,7 +307,7 @@ struct l2cSvcWork {
         } connUpdtCbk;
         struct {
             struct bt_addr addr;
-        } openAclLink;
+        } aclLink;
     };
 };
 #define L2C_WORK_PSM_INST_ALLOC          0
@@ -317,7 +317,8 @@ struct l2cSvcWork {
 #define L2C_WORK_FIXEDCH_UNREGISTER      4 /* does not call service itself */
 #define L2C_WORK_STATE_CBK               5
 #define L2C_WORK_CONN_UPDT_CBK           6
-#define L2C_WORK_OPEN_ACL_LINK           7
+#define L2C_WORK_ACL_LINK_OPEN           7
+#define L2C_WORK_ACL_LINK_CLOSE          8
 
 /* our per-service struct for PSM-based services */
 struct l2cPsmSvc {
@@ -824,20 +825,20 @@ static bool l2cSvcWorkScheduleConnUpdtCbk(void* reqID, l2cConnUpdateDoneCbk done
 }
 
 /*
- * FUNCTION: l2cSvcWorkScheduleOpenAclLink
+ * FUNCTION: l2cSvcWorkScheduleAclLinkOpen
  * USE:      Schedule a n ACL link open call to the lower layer
  * PARAMS:   reqID - request ID to signal completion
  *           addr - the address of peer to connect to
  * RETURN:   NONE
  * NOTES:    actual call will happen in the worker thread.
  */
-static bool l2cSvcWorkScheduleOpenAclLink(void* reqID, const struct bt_addr *addr)
+static bool l2cSvcWorkScheduleAclLinkOpen(void* reqID, const struct bt_addr *addr)
 {
-    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_OPEN_ACL_LINK, reqID);
+    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_ACL_LINK_OPEN, reqID);
     if (!w)
         return false;
 
-    memcpy(&w->openAclLink.addr, addr, sizeof(struct bt_addr));
+    memcpy(&w->aclLink.addr, addr, sizeof(struct bt_addr));
     if (workQueuePut(mServiceWork, w))
         return true;
 
@@ -846,6 +847,28 @@ static bool l2cSvcWorkScheduleOpenAclLink(void* reqID, const struct bt_addr *add
     return false;
 }
 
+/*
+ * FUNCTION: l2cSvcWorkScheduleAclLinkClose
+ * USE:      Schedule a n ACL link close call to the lower layer
+ * PARAMS:   reqID - request ID to signal completion
+ *           addr - the address of peer to disconnect from
+ * RETURN:   NONE
+ * NOTES:    actual call will happen in the worker thread.
+ */
+static bool l2cSvcWorkScheduleAclLinkClose(void* reqID, const struct bt_addr *addr)
+{
+    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_ACL_LINK_CLOSE, reqID);
+    if (!w)
+        return false;
+
+    memcpy(&w->aclLink.addr, addr, sizeof(struct bt_addr));
+    if (workQueuePut(mServiceWork, w))
+        return true;
+
+    loge("Failed to enqueue service work for ACL link close!\n");
+    free(w);
+    return false;
+}
 
 /*
  * FUNCTION: l2cHandleConnReq
@@ -2355,8 +2378,11 @@ static void* l2cSvcWorker(void* unused)
         case L2C_WORK_CONN_UPDT_CBK:
             work->connUpdtCbk.doneCbk(work->connUpdtCbk.cbkData, work->connUpdtCbk.success);
             break;
-        case L2C_WORK_OPEN_ACL_LINK:
-            l2cAclLinkEstablish(&work->openAclLink.addr);
+        case L2C_WORK_ACL_LINK_OPEN:
+            l2cAclLinkEstablish(&work->aclLink.addr);
+            break;
+        case L2C_WORK_ACL_LINK_CLOSE:
+            l2cAclLinkClose(&work->aclLink.addr);
             break;
         default: {
             loge("Unknown work type %d\n", work->type);
@@ -2896,7 +2922,8 @@ static void l2cConnRequestClose(struct l2cAclConn* acl, struct l2cConn *conn, bo
      * instead of doing it here.
      */
     if (closeLink)
-        l2cAclLinkClose(&acl->addr);
+        if (!l2cSvcWorkScheduleAclLinkClose(NULL, &acl->addr))
+            loge("Failed to schedule call to close ACL link %d\n", acl->conn);
 }
 
 /*
@@ -3322,7 +3349,7 @@ static struct l2cAclConn* l2cCreateAndOpenNewConn(const struct bt_addr* addr)
     conn->conn = L2C_CONN_IN_PROGRESS;
     conn->prev = NULL;
 
-    if (!l2cSvcWorkScheduleOpenAclLink(NULL, &conn->addr)) {
+    if (!l2cSvcWorkScheduleAclLinkOpen(NULL, &conn->addr)) {
         free(conn);
         conn = NULL;
     } else {
