@@ -305,14 +305,20 @@ struct l2cSvcWork {
             void *data;
             uint32_t len;
         } state;
+        struct {
+            l2cConnUpdateDoneCbk doneCbk;
+            void *cbkData;
+            bool success;
+        } connUpdtCbk;
     };
 };
-#define L2C_SVC_WORK_PSM_INST_ALLOC          0
-#define L2C_SVC_WORK_PSM_CONNECTIONLESS_RX   1
-#define L2C_SVC_WORK_PSM_UNREGISTER          2 /* does not call service itself */
-#define L2C_SVC_WORK_FIXEDCH_INST_ALLOC      3
-#define L2C_SVC_WORK_FIXEDCH_UNREGISTER      4 /* does not call service itself */
-#define L2C_SVC_WORK_STATE_CBK               5
+#define L2C_WORK_PSM_INST_ALLOC          0
+#define L2C_WORK_PSM_CONNECTIONLESS_RX   1
+#define L2C_WORK_PSM_UNREGISTER          2 /* does not call service itself */
+#define L2C_WORK_FIXEDCH_INST_ALLOC      3
+#define L2C_WORK_FIXEDCH_UNREGISTER      4 /* does not call service itself */
+#define L2C_WORK_STATE_CBK               5
+#define L2C_WORK_CONN_UPDT_CBK           6
 
 /* our per-service struct for PSM-based services */
 struct l2cPsmSvc {
@@ -578,7 +584,7 @@ static struct l2cSvcWork* l2cSvcWorkAlloc(int type, void* reqID)
  */
 static bool l2cSvcWorkSchedulePsmAlloc(psm_t psm, void* reqID, l2c_handle_t handle)
 {
-    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_SVC_WORK_PSM_INST_ALLOC, reqID);
+    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_PSM_INST_ALLOC, reqID);
 
     if (!w)
         return false;
@@ -617,7 +623,7 @@ static bool l2cSvcWorkSchedulePsmConnectionlessRx(psm_t psm, void* reqID, l2c_ha
         return false;
     }
 
-    w = l2cSvcWorkAlloc(L2C_SVC_WORK_PSM_CONNECTIONLESS_RX, reqID);
+    w = l2cSvcWorkAlloc(L2C_WORK_PSM_CONNECTIONLESS_RX, reqID);
     if (!w) {
         free(copy);
         return false;
@@ -650,7 +656,7 @@ static bool l2cSvcWorkSchedulePsmConnectionlessRx(psm_t psm, void* reqID, l2c_ha
  */
 static bool l2cSvcWorkScheduleFixedChAlloc(uint16_t chan, void* reqID, l2c_handle_t handle)
 {
-    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_SVC_WORK_FIXEDCH_INST_ALLOC, reqID);
+    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_FIXEDCH_INST_ALLOC, reqID);
 
     if (!w)
         return false;
@@ -678,7 +684,7 @@ static bool l2cSvcWorkScheduleFixedChAlloc(uint16_t chan, void* reqID, l2c_handl
  */
 static bool l2cSvcWorkScheduleFixedChUnregister(uint16_t chan, void* reqID, void (*doneCbk)(void*), void *cbkData)
 {
-    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_SVC_WORK_FIXEDCH_UNREGISTER, reqID);
+    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_FIXEDCH_UNREGISTER, reqID);
 
     if (!w)
         return false;
@@ -707,7 +713,7 @@ static bool l2cSvcWorkScheduleFixedChUnregister(uint16_t chan, void* reqID, void
  */
 static bool l2cSvcWorkSchedulePsmUnregister(psm_t psm, void* reqID, void (*doneCbk)(void*), void *cbkData)
 {
-    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_SVC_WORK_PSM_UNREGISTER, reqID);
+    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_PSM_UNREGISTER, reqID);
 
     if (!w)
         return false;
@@ -751,7 +757,7 @@ static bool l2cSvcWorkScheduleStateCallDirect(void* reqID, l2cStateCbk stateCbk,
     memcpy(copy, data, len);
 
 
-    w = l2cSvcWorkAlloc(L2C_SVC_WORK_STATE_CBK, reqID);
+    w = l2cSvcWorkAlloc(L2C_WORK_STATE_CBK, reqID);
     if (!w) {
         free(copy);
         return false;
@@ -773,7 +779,6 @@ static bool l2cSvcWorkScheduleStateCallDirect(void* reqID, l2cStateCbk stateCbk,
     return false;
 }
 
-
 /*
  * FUNCTION: l2cSvcWorkScheduleStateCall
  * USE:      Schedule a "state" callback for a connection
@@ -789,6 +794,36 @@ static bool l2cSvcWorkScheduleStateCall(void* reqID, struct l2cConn* conn, uint8
 {
     return l2cSvcWorkScheduleStateCallDirect(reqID, conn->stateCbk, conn->userData, conn->instance, state, data, len);
 }
+
+
+/*
+ * FUNCTION: l2cSvcWorkScheduleConnUpdtCbk
+ * USE:      Schedule a "connection update" callback
+ * PARAMS:   reqID - request ID to signal completion
+ *           doneCbk - the callback to call
+ *           cbkData - data pointer to pass to the callback
+ *           success - success sttaus to pass to the callback
+ * RETURN:   NONE
+ * NOTES:    actual call will happen in the worker thread.
+ */
+static bool l2cSvcWorkScheduleConnUpdtCbk(void* reqID, l2cConnUpdateDoneCbk doneCbk, void *cbkData, bool success)
+{
+    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_CONN_UPDT_CBK, reqID);
+    if (!w)
+        return false;
+
+    w->connUpdtCbk.doneCbk = doneCbk;
+    w->connUpdtCbk.cbkData = cbkData;
+    w->connUpdtCbk.success = success;
+
+    if (workQueuePut(mServiceWork, w))
+        return true;
+
+    loge("Failed to enqueue service work for connection update callback!\n");
+    free(w);
+    return false;
+}
+
 
 /*
  * FUNCTION: l2cHandleConnReq
@@ -1420,8 +1455,9 @@ static void l2cHandleConnUpdtRsp(struct l2cAclConn *conn, uint8_t ident, uint16_
         loge("Unexpected connection update response for a connection we had no request on (%d)\n", conn->conn);
     else {
         conn->connUpdtRequestIdent = 0;
-        if (conn->connUpdtDoneCbk) { //todo: this needs to go through worker thread
-            conn->connUpdtDoneCbk(conn->connUpdtDoneCbkData, result == L2C_SIG_CONN_UPDT_OK);
+        if (conn->connUpdtDoneCbk) {
+            if (!l2cSvcWorkScheduleConnUpdtCbk(NULL, conn->connUpdtDoneCbk, conn->connUpdtDoneCbkData, result == L2C_SIG_CONN_UPDT_OK))
+                loge("Failed to schedule connection update callback\n");
             conn->connUpdtDoneCbk = NULL;
         }
     }
@@ -2190,7 +2226,7 @@ static void* l2cSvcWorker(void* unused)
 
         pthread_mutex_lock(&mSvcsLock);
         switch (work->type) {
-        case L2C_SVC_WORK_PSM_INST_ALLOC:
+        case L2C_WORK_PSM_INST_ALLOC:
             psmSvc = l2cPsmSvcFindByPsm(psm);
             if (!psmSvc) {
                 logw("Got work for a not-found PSM-based service %d\n", psm);
@@ -2205,7 +2241,7 @@ static void* l2cSvcWorker(void* unused)
                     work->i_alloc.handle), work->i_alloc.handle);
             }
             break;
-        case L2C_SVC_WORK_PSM_CONNECTIONLESS_RX:
+        case L2C_WORK_PSM_CONNECTIONLESS_RX:
             psmSvc = l2cPsmSvcFindByPsm(psm);
             if (!psmSvc) {
                 logw("Got work for a not-found PSM-based service %d\n", psm);
@@ -2219,7 +2255,7 @@ static void* l2cSvcWorker(void* unused)
             }
             free(work->cl_rx.data);
             break;
-        case L2C_SVC_WORK_PSM_UNREGISTER:
+        case L2C_WORK_PSM_UNREGISTER:
             psmSvc = l2cPsmSvcFindByPsm(psm);
             if (!psmSvc) {
                 logw("Got work for a not-found PSM-based service %d\n", psm);
@@ -2237,7 +2273,7 @@ static void* l2cSvcWorker(void* unused)
             if (work->unreg.doneCbk)
                 work->unreg.doneCbk(work->unreg.cbkData);
             break;
-        case L2C_SVC_WORK_FIXEDCH_INST_ALLOC:
+        case L2C_WORK_FIXEDCH_INST_ALLOC:
             fixedSvc = l2cFixedChSvcFindByChan(chan);
             if (!fixedSvc) {
                 logw("Got work for a not-found FixedCh service %d\n", chan);
@@ -2252,7 +2288,7 @@ static void* l2cSvcWorker(void* unused)
                     work->i_alloc.handle), work->i_alloc.handle);
             }
             break;
-        case L2C_SVC_WORK_FIXEDCH_UNREGISTER:
+        case L2C_WORK_FIXEDCH_UNREGISTER:
             fixedSvc = l2cFixedChSvcFindByChan(chan);
             if (!fixedSvc) {
                 logw("Got work for a not-found FixedCh service %d\n", chan);
@@ -2270,10 +2306,13 @@ static void* l2cSvcWorker(void* unused)
             if (work->unreg.doneCbk)
                 work->unreg.doneCbk(work->unreg.cbkData);
             break;
-        case L2C_SVC_WORK_STATE_CBK :
+        case L2C_WORK_STATE_CBK:
             work->state.stateCbk(work->state.userData, work->state.instance, work->state.state, work->state.data, work->state.len);
             if (work->state.data)
                 free(work->state.data);
+            break;
+        case L2C_WORK_CONN_UPDT_CBK:
+            work->connUpdtCbk.doneCbk(work->connUpdtCbk.cbkData, work->connUpdtCbk.success);
             break;
         default: {
             loge("Unknown work type %d\n", work->type);
@@ -3557,7 +3596,8 @@ void l2cAclLinkParamsChange(uint16_t aclConn, bool success, uint16_t interval, u
             loge("Failed to sent connection update response frame\n");
         conn->connUpdtRequestIdent = 0;
     } else if (conn->connUpdtDoneCbk) {
-        conn->connUpdtDoneCbk(conn->connUpdtDoneCbkData, success); //todo: this should be done in the worker thread
+        if (!l2cSvcWorkScheduleConnUpdtCbk(NULL, conn->connUpdtDoneCbk, conn->connUpdtDoneCbkData, success))
+            loge("Failed to schedule connection update callback\n");
         conn->connUpdtDoneCbk = NULL;
     }
     pthread_mutex_unlock(&mConnsLock);
