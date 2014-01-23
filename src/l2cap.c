@@ -308,6 +308,13 @@ struct l2cSvcWork {
         struct {
             struct bt_addr addr;
         } aclLink;
+        struct {
+            uint16_t aclConn;
+            uint16_t minInt;
+            uint16_t maxInt;
+            uint16_t lat;
+            uint16_t to;
+        } connUpdt;
     };
 };
 #define L2C_WORK_PSM_INST_ALLOC          0
@@ -319,6 +326,7 @@ struct l2cSvcWork {
 #define L2C_WORK_CONN_UPDT_CBK           6
 #define L2C_WORK_ACL_LINK_OPEN           7
 #define L2C_WORK_ACL_LINK_CLOSE          8
+#define L2C_WORK_ACL_CONN_UPDT           9
 
 /* our per-service struct for PSM-based services */
 struct l2cPsmSvc {
@@ -826,7 +834,7 @@ static bool l2cSvcWorkScheduleConnUpdtCbk(void* reqID, l2cConnUpdateDoneCbk done
 
 /*
  * FUNCTION: l2cSvcWorkScheduleAclLinkOpen
- * USE:      Schedule a n ACL link open call to the lower layer
+ * USE:      Schedule an ACL link open call to the lower layer
  * PARAMS:   reqID - request ID to signal completion
  *           addr - the address of peer to connect to
  * RETURN:   NONE
@@ -849,7 +857,7 @@ static bool l2cSvcWorkScheduleAclLinkOpen(void* reqID, const struct bt_addr *add
 
 /*
  * FUNCTION: l2cSvcWorkScheduleAclLinkClose
- * USE:      Schedule a n ACL link close call to the lower layer
+ * USE:      Schedule an ACL link close call to the lower layer
  * PARAMS:   reqID - request ID to signal completion
  *           addr - the address of peer to disconnect from
  * RETURN:   NONE
@@ -866,6 +874,38 @@ static bool l2cSvcWorkScheduleAclLinkClose(void* reqID, const struct bt_addr *ad
         return true;
 
     loge("Failed to enqueue service work for ACL link close!\n");
+    free(w);
+    return false;
+}
+
+/*
+ * FUNCTION: l2cSvcWorkScheduleAclConnUpdt
+ * USE:      Schedule a connection update call to the lower layer
+ * PARAMS:   reqID - request ID to signal completion
+ *           aclConn - the connection ID
+ *           minInt - update command parameter
+ *           maxInt - update command parameter
+ *           lat - update command parameter
+ *           to - update command parameter
+ * RETURN:   NONE
+ * NOTES:    actual call will happen in the worker thread.
+ */
+static bool l2cSvcWorkScheduleAclConnUpdt(void* reqID, uint16_t aclConn, uint16_t minInt, uint16_t maxInt, uint16_t lat, uint16_t to)
+{
+    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_ACL_CONN_UPDT, reqID);
+    if (!w)
+        return false;
+
+    w->connUpdt.aclConn = aclConn;
+    w->connUpdt.minInt = minInt;
+    w->connUpdt.maxInt = maxInt;
+    w->connUpdt.lat = lat;
+    w->connUpdt.to = to;
+
+    if (workQueuePut(mServiceWork, w))
+        return true;
+
+    loge("Failed to enqueue service work for ACL connection update!\n");
     free(w);
     return false;
 }
@@ -1472,8 +1512,11 @@ static void l2cHandleConnUpdtReq(struct l2cAclConn *conn, uint8_t ident, uint16_
         goto error;
 
     /* try to execute it */
-    if (l2cAclUpdateParams(conn->conn, intMin, intMax, latency, timeoutMult))
+    if (!l2cSvcWorkScheduleAclConnUpdt(NULL, conn->conn, intMin, intMax, latency, timeoutMult))
+        loge("Failed to schedule connection update work call\n");
+    else
         return;
+    
 
 error:
     logw("Unable to request connection update to {[%d, %d], %d, %d}, inflight=%d master=%d\n",
@@ -1559,7 +1602,9 @@ bool l2cApiUpdateConnectionParams(l2c_handle_t handle, uint16_t intMin, uint16_t
     if (aclConn->isMaster) {
         aclConn->connUpdtDoneCbk = doneCbk;
         aclConn->connUpdtDoneCbkData = userData;
-        ret = l2cAclUpdateParams(aclConn->conn, intMin, intMax, latency, timeout);
+        ret = l2cSvcWorkScheduleAclConnUpdt(NULL, aclConn->conn, intMin, intMax, latency, timeout);
+        if (!ret)
+            loge("Failed to schedule connection update work\n");
     }
     else if (aclConn->connUpdtRequestIdent)
         logw("Connection update request while another still in progress (%d) Ignored\n", aclConn->conn);
@@ -2383,6 +2428,9 @@ static void* l2cSvcWorker(void* unused)
             break;
         case L2C_WORK_ACL_LINK_CLOSE:
             l2cAclLinkClose(&work->aclLink.addr);
+            break;
+        case L2C_WORK_ACL_CONN_UPDT:
+            l2cAclUpdateParams(work->connUpdt.aclConn, work->connUpdt.minInt, work->connUpdt.maxInt, work->connUpdt.lat, work->connUpdt.to);
             break;
         default: {
             loge("Unknown work type %d\n", work->type);

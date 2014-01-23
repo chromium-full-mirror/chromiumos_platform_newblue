@@ -112,7 +112,7 @@ void l2cAclLinkEstablish(const struct bt_addr *addr);
 /* this layer calls this to close a link, or cancel one being opened */
 void l2cAclLinkClose(const struct bt_addr *addr);
 /* this layer calls this to udpate a connection's LE parameters */
-bool l2cAclUpdateParams(uint16_t aclConn, uint16_t minInt, uint16_t maxInt, uint16_t lat, uint16_t to);
+void l2cAclUpdateParams(uint16_t aclConn, uint16_t minInt, uint16_t maxInt, uint16_t lat, uint16_t to);
 /* lower layer calls this when connection parameters change */
 void l2cAclLinkParamsChange(uint16_t aclConn, bool success, uint16_t interval, uint16_t latency, uint16_t timeout);
 
