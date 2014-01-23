@@ -5,11 +5,9 @@
 //todo: set flush timout at hci layer to 0xffff for a reliable link
 //todo: there are states where instance,stateCbk,userData are null. we shoudl care for them...
 //todo: check all lengths followed, all log levels correct
-//todo: calls to lower layers shoudl be done without locks held if at all possible...
 //todo: properly send "invalid cid" responces when a channel is not found
 //todo: be mroe careful figuring out who startred a connection wrt psms
 //todo: after service alloc see if we're in teardown state and dealloc svc and tell other side to fuck off...
-//todo: do not ignore return vals of funcs like l2cSvcWorkScheduleStateCallDirect
 //todo: close state calls shoudl call apropriate callbacks here and there, as needed
 
 
