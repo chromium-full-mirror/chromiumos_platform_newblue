@@ -1551,7 +1551,7 @@ void l2cHandleDiscReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localC
     struct l2cConn *conn = NULL;
 
     conn = mConns;
-    while (conn && (conn->acl != aclConn->uniq && conn->localCh != localCh || conn->remCh != remCh))
+    while (conn && (conn->acl != aclConn->uniq || conn->localCh != localCh || conn->remCh != remCh))
         conn = conn->next;
 
     if (!conn) {
@@ -3021,7 +3021,7 @@ bool l2cApiServiceFixedChUnregister(uint16_t chan, void (*doneCbk)(void*), void*
     struct l2cConn *conn;
     bool anythingDone;
 
-    /* terminate all connections with that psm */
+    /* terminate all connections to that FixedCh */
     pthread_mutex_lock(&mConnsLock);
     do {
          anythingDone = false;
@@ -3057,7 +3057,9 @@ bool l2cApiServiceFixedChUnregister(uint16_t chan, void (*doneCbk)(void*), void*
  * USE:      Find a connection structure by handle
  * PARAMS:   handle - the handle
  * RETURN:   connection structure or NULL
- * NOTES:    Call with mConnsLock held
+ * NOTES:    Call with mConnsLock held. Not possible for connections
+ *           in conn-wait state since they do not have valid handles
+ *           due to lack of an acl channel if
  */
 static struct l2cConn* l2cFindConnByHandle(l2c_handle_t handle)
 {
@@ -3073,6 +3075,7 @@ static struct l2cConn* l2cFindConnByHandle(l2c_handle_t handle)
 
         if (conn->psm == psm && conn->state != L2C_CONN_STATE_CONN_WAIT &&
             conn->localCh == localCh && conn->remCh == remCh) {
+
             struct l2cAclConn *aclConn;
             aclConn = l2cAclConnFindByUniq(conn->acl);
             if (aclConn && aclConn->conn == aclConnID)
@@ -3423,7 +3426,7 @@ bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr* addr, l2
     }
     /* check is same FixedCh already exists */
     t = mConns;
-    while(t && t->acl != aclConn->uniq && (t->psm || t->localCh != chan))
+    while(t && (t->acl != aclConn->uniq || t->psm || t->localCh != chan))
         t = t->next;
     if (t) {
         logi("Ignoring attempt to open FixedCh %d conn when existing exists\n", chan);
