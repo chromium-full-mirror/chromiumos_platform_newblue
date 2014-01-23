@@ -3333,14 +3333,7 @@ bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr* addr, l2cStateCb
         loge("Failed to create/open/find ACL conn\n");
         goto out;
     }
-    /* check is same PSM already exists */
-    t = mConns;
-    while(t && t->acl != aclConn->uniq && t->psm != psm)
-        t = t->next;
-    if (t) {
-        logi("Ignoring attempt to open psm %d conn when existing exists\n", psm);
-        goto out;
-    }
+
     /* create the conn */
     conn->acl = aclConn->uniq;
     conn->psm = psm;
