@@ -1,16 +1,11 @@
 //todo: idea: sending thread get blocke don actual sending code which is blocke don hci buffer. l2cap layer itself ahs a send buffer, and a send thread whcih is also blocked. l2c's send data always higher priority than all other, so as long as it exists, all other send data waits...
-//todo: peer & i both open psm connection ot each other @ same time. discuss...
 //todo: do we close fixedch and psm services properly?
 //todo: close acl link when last psm link down, close acl link when last attempted psm link is cancelled, etc...
 //todo: timers/timouts for unspecced BT waits (config, etc)
 //todo: set flush timout at hci layer to 0xffff for a reliable link
 //todo: there are states where instance,stateCbk,userData are null. we shoudl care for them...
-//todo: at acl link up send info req for connectionless mtu just so we know it...
 //todo: check all lengths followed, all log levels correct
-//todo: audit all errors from l2cSigSendConnUpdateRsp and hwo we handle them
-//todo: multiple connections to same psm are allowed. we must allow this (for A2DP, for example)
 //todo: calls to lower layers shoudl be done without locks held if at all possible...
-//todo: connection update callback needs to move into worker thread
 //todo: properly send "invalid cid" responces when a channel is not found
 //todo: be mroe careful figuring out who startred a connection wrt psms
 //todo: after service alloc see if we're in teardown state and dealloc svc and tell other side to fuck off...
@@ -1629,7 +1624,8 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigConnReq *params = (struct l2cSigConnReq*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Connection Request packet on a non-EDR link\n");
-                l2cSigSendErrCmdNotUnderstood(conn, ident);
+                if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
+                    loge("Failed to send command not understood msg to the other side\n");
             } else if (len < sizeof(*params))
                 logw("Got a short Connection Request packet\n");
             else {
@@ -1644,7 +1640,8 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigConnRsp *params = (struct l2cSigConnRsp*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Connection Response packet on a non-EDR link\n");
-                l2cSigSendErrCmdNotUnderstood(conn, ident);
+                if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
+                    loge("Failed to send command not understood msg to the other side\n");
             } else if (len < sizeof(*params))
                 logw("Got a short Connection Response packet\n");
             else {
@@ -1661,7 +1658,8 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigConfReq *params = (struct l2cSigConfReq*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Configuration Request packet on a non-EDR link\n");
-                l2cSigSendErrCmdNotUnderstood(conn, ident);
+                if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
+                    loge("Failed to send command not understood msg to the other side\n");
             } else if (len < sizeof(*params))
                 logw("Got a short Configuration Request packet\n");
             else {
@@ -1677,7 +1675,8 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigConfRsp *params = (struct l2cSigConfRsp*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Configuration Response packet on a non-EDR link\n");
-                l2cSigSendErrCmdNotUnderstood(conn, ident);
+               if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
+                    loge("Failed to send command not understood msg to the other side\n");
             } else if (len < sizeof(*params))
                 logw("Got a short Configuration Response packet\n");
             else {
@@ -1694,7 +1693,8 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigDiscReq *params = (struct l2cSigDiscReq*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Disconnect Request packet on a non-EDR link\n");
-                l2cSigSendErrCmdNotUnderstood(conn, ident);
+                if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
+                    loge("Failed to send command not understood msg to the other side\n");
             } else if (len < sizeof(*params))
                 logw("Got a short Disconnect Request packet\n");
             else {
@@ -1709,7 +1709,8 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigDiscRsp *params = (struct l2cSigDiscRsp*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Disconnect Response packet on a non-EDR link\n");
-                l2cSigSendErrCmdNotUnderstood(conn, ident);
+                if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
+                    loge("Failed to send command not understood msg to the other side\n");
             } else if (len < sizeof(*params))
                 logw("Got a short Disconnect Response packet\n");
             else {
@@ -1723,7 +1724,8 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
         case L2C_SIG_ECHO_REQ: {
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Echo Request packet on a non-EDR link\n");
-                l2cSigSendErrCmdNotUnderstood(conn, ident);
+                if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
+                    loge("Failed to send command not understood msg to the other side\n");
             } else
                 l2cHandleEchoReq(conn, ident, paramsP, len);
             break;
@@ -1732,7 +1734,8 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
         case L2C_SIG_ECHO_RSP: {
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Echo Response packet on a non-EDR link\n");
-                l2cSigSendErrCmdNotUnderstood(conn, ident);
+                if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
+                    loge("Failed to send command not understood msg to the other side\n");
             } else
                 l2cHandleEchoRsp(conn, ident, paramsP, len);
             break;
@@ -1742,7 +1745,8 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigInfoReq *params = (struct l2cSigInfoReq*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Info Request packet on a non-EDR link\n");
-                l2cSigSendErrCmdNotUnderstood(conn, ident);
+                if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
+                    loge("Failed to send command not understood msg to the other side\n");
             } else if (len < sizeof(*params))
                 logw("Got a short Info Request packet\n");
             else {
@@ -1756,7 +1760,8 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigInfoRsp *params = (struct l2cSigInfoRsp*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Info Response packet on a non-EDR link\n");
-                l2cSigSendErrCmdNotUnderstood(conn, ident);
+                if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
+                    loge("Failed to send command not understood msg to the other side\n");
             } else if (len < sizeof(*params))
                 logw("Got a short Info Response packet\n");
             else {
@@ -1773,7 +1778,8 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigChCreatReq *params = (struct l2cSigChCreatReq*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Channel Create Request packet on a non-EDR link\n");
-                l2cSigSendErrCmdNotUnderstood(conn, ident);
+                if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
+                    loge("Failed to send command not understood msg to the other side\n");
             } else if (len < sizeof(*params))
                 logw("Got a short Channel Create Request packet\n");
             else {
@@ -1789,7 +1795,8 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigChCreatRsp *params = (struct l2cSigChCreatRsp*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Channel Create Response packet on a non-EDR link\n");
-                l2cSigSendErrCmdNotUnderstood(conn, ident);
+                if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
+                    loge("Failed to send command not understood msg to the other side\n");
             } else if (len < sizeof(*params))
                 logw("Got a short Channel Create Response packet\n");
             else {
@@ -1806,7 +1813,8 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigChMoveReq *params = (struct l2cSigChMoveReq*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Channel Move Request packet on a non-EDR link\n");
-                l2cSigSendErrCmdNotUnderstood(conn, ident);
+                if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
+                    loge("Failed to send command not understood msg to the other side\n");
             } else if (len < sizeof(*params))
                 logw("Got a short Channel Move Request packet\n");
             else {
@@ -1821,7 +1829,8 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigChMoveRsp *params = (struct l2cSigChMoveRsp*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Channel Move Response packet on a non-EDR link\n");
-                l2cSigSendErrCmdNotUnderstood(conn, ident);
+                if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
+                    loge("Failed to send command not understood msg to the other side\n");
             } else if (len < sizeof(*params))
                 logw("Got a short Channel Move Response packet\n");
             else {
@@ -1836,7 +1845,8 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigChMoveCnfReq *params = (struct l2cSigChMoveCnfReq*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Channel Move Confirmation packet on a non-EDR link\n");
-                l2cSigSendErrCmdNotUnderstood(conn, ident);
+                if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
+                    loge("Failed to send command not understood msg to the other side\n");
             } else if (len < sizeof(*params))
                 logw("Got a short Channel Move Confirmation packet\n");
             else {
@@ -1852,7 +1862,8 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Channel Move Confirmation Response "
                     "packet on a non-EDR link\n");
-                l2cSigSendErrCmdNotUnderstood(conn, ident);
+                if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
+                    loge("Failed to send command not understood msg to the other side\n");
             } else if (len < sizeof(*params))
                 logw("Got a short Channel Move Confirmation Response packet\n");
             else {
@@ -1867,7 +1878,8 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigConnUpdtReq *params = (struct l2cSigConnUpdtReq*)paramsP;
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Connection Update Request packet on an EDR link\n");
-                l2cSigSendErrCmdNotUnderstood(conn, ident);
+                if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
+                    loge("Failed to send command not understood msg to the other side\n");
             } else if (len < sizeof(*params))
                 logw("Got a short Connection Update Request packet\n");
             else {
@@ -1884,7 +1896,8 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
             struct l2cSigConnUpdtRsp *params = (struct l2cSigConnUpdtRsp*)paramsP;
             if (!BT_ADDR_IS_LE(conn->addr)) {
                 logw("Got a Connection Update Response packet on a non-LE link\n");
-                l2cSigSendErrCmdNotUnderstood(conn, ident);
+                if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
+                    loge("Failed to send command not understood msg to the other side\n");
             } else if (len < sizeof(*params))
                 logw("Got a short Connection Update Response packet\n");
             else {
@@ -1896,7 +1909,8 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
         }
         default: {
             logw("Got unknown code %d on signalling channel\n", code);
-            l2cSigSendErrCmdNotUnderstood(conn, ident);
+            if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
+                loge("Failed to send command not understood msg to the other side\n");
         }
         }
 
@@ -2841,7 +2855,8 @@ static void l2cConnRequestClose(struct l2cAclConn* acl, struct l2cConn *conn, bo
         if (!l2cSvcWorkScheduleStateCallDirect(NULL, conn->stateCbk, conn->userData, conn->instance, L2C_STATE_CLOSED, NULL, 0))
             loge("Failed to tell our side that connection is closed\n");
     if (tellOtherSide)
-        l2cSigSendDiscReq(acl, conn->localCh, conn->remCh);
+        if (!l2cSigSendDiscReq(acl, conn->localCh, conn->remCh))
+             loge("Failed to send disc req msg to the other side\n");
     if (destroyStruct)
         l2cConnStructDelete(conn);
     /*
