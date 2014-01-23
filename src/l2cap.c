@@ -18,7 +18,7 @@
 //todo: be mroe careful figuring out who startred a connection wrt psms
 //todo: after service alloc see if we're in teardown state and dealloc svc and tell other side to fuck off...
 //todo: do not ignore return vals of funcs like l2cSvcWorkScheduleStateCallDirect
-//todo: l2cSvcWorkScheduleFixedChFree & l2cSvcWorkSchedulePsmFree shoudl call appropriate callbacks
+//todo: close state calls shoudl call apropriate callbacks
 
 
 #include <pthread.h>
@@ -2092,7 +2092,7 @@ static void l2cPsmSvcInstAllocDone(void *reqID, l2cStateCbk stateCbk, void *user
 
     if (!l2cSigSendConnectionRsp(aclConn, conn->ident, conn->localCh, conn->remCh, L2C_SIG_CONN_RSP_OK, 0)) {
         loge("Failed to sent positive connection request response frame - dropping connection\n");
-        if (!l2cSvcWorkSchedulePsmFree(conn->psm, NULL, instance))
+        if (!l2cSvcWorkScheduleStateCall(NULL, conn, L2C_STATE_CLOSED, NULL, 0))
             loge("Failed to free instance. this will cause a memory leak\n");
         l2cConnStructDelete(conn);
         goto out;
@@ -2962,7 +2962,7 @@ bool l2cApiServiceFixedChUnregister(uint16_t chan, void (*doneCbk)(void*), void*
          if (!conn->psm && conn->localCh == chan) {
 
              if (conn->instance)
-                 l2cSvcWorkScheduleFixedChFree(chan, conn, conn->instance);
+                 l2cSvcWorkScheduleStateCall(NULL, conn, L2C_STATE_CLOSED, NULL, 0);
              else {
                  logw("no instance found for fixed ch %d while unregistering\n", chan);
                  l2cConnStructDelete(conn);
