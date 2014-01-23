@@ -1,9 +1,6 @@
-//#define L2C_STATE_OPEN       0 /* dataPtr points to l2c_handle_t, len has mtu */    - make sure len has mtu when we call it
 //todo: idea: sending thread get blocke don actual sending code which is blocke don hci buffer. l2cap layer itself ahs a send buffer, and a send thread whcih is also blocked. l2c's send data always higher priority than all other, so as long as it exists, all other send data waits...
-//TODO: audit lock sequence everywhere...
 //todo: peer & i both open psm connection ot each other @ same time. discuss...
 //todo: do we close fixedch and psm services properly?
-//todo: stateCbk for peer-initiated connections is null. this should work. will it?
 //todo: close acl link when last psm link down, close acl link when last attempted psm link is cancelled, etc...
 //todo: timers/timouts for unspecced BT waits (config, etc)
 //todo: set flush timout at hci layer to 0xffff for a reliable link
@@ -260,6 +257,9 @@ struct l2cAclConn {
     uint16_t           connectionlessMtu;
     struct bt_addr     addr;
     bool               isMaster;
+
+    uint8_t            reqIdent; /* ident for an outstanding request */
+
     struct {
         union { /* LE-only data */
             l2cConnUpdateDoneCbk connUpdtDoneCbk;
@@ -1323,6 +1323,12 @@ static void l2cHandleInfoRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
         return;
     }
 
+    if (ident != aclConn->reqIdent) {
+        logw("Got info resp with mismatching ident (got %d wanted %d)\n", ident, aclConn->reqIdent);
+        return;
+    }
+
+    aclConn->reqIdent = 0;
     val = utilGetLE16(infoData);
     if (val < L2C_MIN_CONNECTIONLESS_MTU) {
         logi("Peer reports connectionless mtu %d for acl conn %d. correcting to %d\n", val, aclConn->conn, L2C_MIN_CONNECTIONLESS_MTU);
@@ -3442,6 +3448,11 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr, bool isMaster)
         aclConn->connUpdtRequestIdent = 0;
         aclConn->nextChan = L2C_NUM_FIXED_CHANNELS;
         aclConn->conn = aclConnID;
+
+        /* send an info req */
+        aclConn->reqIdent = l2cSigSendInfoReq(aclConn, L2C_SIG_INFO_TYPE_UNCONN_MTU);
+        if (!aclConn->reqIdent)
+            logw("Failed to send req for connectionless mtu for %d. It will not be known\n", aclConn->conn);
 
         /* handle all pending-open connections */
         connIter = mConns;
