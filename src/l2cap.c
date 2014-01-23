@@ -302,7 +302,7 @@ struct l2cSvcWork {
             void *userData;
             void *instance;
             uint8_t state;
-            const void *data;
+            void *data;
             uint32_t len;
         } state;
     };
@@ -761,7 +761,7 @@ static bool l2cSvcWorkScheduleStateCallDirect(void* reqID, l2cStateCbk stateCbk,
     w->state.userData = userData;
     w->state.instance = instance;
     w->state.state = state;
-    w->state.data = data;
+    w->state.data = copy;
     w->state.len = len;
 
     if (workQueuePut(mServiceWork, w))
@@ -2269,6 +2269,11 @@ static void* l2cSvcWorker(void* unused)
             free(fixedSvc);
             if (work->unreg.doneCbk)
                 work->unreg.doneCbk(work->unreg.cbkData);
+            break;
+        case L2C_SVC_WORK_STATE_CBK :
+            work->state.stateCbk(work->state.userData, work->state.instance, work->state.state, work->state.data, work->state.len);
+            if (work->state.data)
+                free(work->state.data);
             break;
         default: {
             loge("Unknown work type %d\n", work->type);
