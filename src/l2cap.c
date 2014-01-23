@@ -15,6 +15,11 @@
 //todo: calls to lower layers shoudl be done without locks held if at all possible...
 //todo: connection update callback needs to move into worker thread
 //todo: properly send "invalid cid" responces when a channel is not found
+//todo: be mroe careful figuring out who startred a connection wrt psms
+//todo: after service alloc see if we're in teardown state and dealloc svc and tell other side to fuck off...
+//todo: do not ignore return vals of funcs like l2cSvcWorkScheduleStateCallDirect
+//todo: l2cSvcWorkScheduleFixedChFree & l2cSvcWorkSchedulePsmFree shoudl call appropriate callbacks
+
 
 #include <pthread.h>
 #include <stdlib.h>
@@ -352,9 +357,8 @@ struct l2cConn {
 #define L2C_CONN_STATE_CFG             3 /* configuration ongoing */
 #define L2C_CONN_STATE_ESTABLISHED     4 /* connected */
 #define L2C_CONN_STATE_DIE_REQD        5 /* we closed, call to svc in pipeline */
-#define L2C_CONN_STATE_DIE_TXED        6 /* we closed, request sent to peer */
-#define L2C_CONN_STATE_DIE_RXED        7 /* other side closed, call to svc in pipeline */
-#define L2C_CONN_STATE_TEARDOWN        8 /* tearing down */
+#define L2C_CONN_STATE_DIE_RXED        6 /* other side closed, call to svc in pipeline */
+#define L2C_CONN_STATE_TEARDOWN        7 /* tearing down */
 
 #define L2C_CFG_STATE_INITIAL          0
 #define L2C_CFG_STATE_REQ_SENT         1
@@ -376,6 +380,8 @@ static uint8_t l2cSigSendEchoRsp(struct l2cAclConn *aclConn, uint8_t ident, cons
 static uint8_t l2cSigSendConnUpdateRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t result);
 static uint8_t l2cSigSendConnUpdateReq(struct l2cAclConn *aclConn, uint16_t intMin, uint16_t intMax, uint16_t latency, uint16_t timeoutMult);
 static uint8_t l2cSigSendDiscRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localCh, uint16_t remCh);
+static void l2cConnRequestClose(struct l2cAclConn* aclConn, struct l2cConn *conn, bool tellOtherSide);
+
 
 /* our state */
 static pthread_mutex_t mUniqLock = PTHREAD_MUTEX_INITIALIZER;
@@ -524,15 +530,15 @@ static void l2cHandleDecode(l2c_handle_t handle, uint16_t *aclConnP, uint16_t *l
         *psmP = handle & 0xFFFF;
     handle >>= 16;
 
-    if(remChP)
+    if (remChP)
         *remChP = handle & 0xFFFF;
     handle >>= 16;
 
-    if(localChP)
+    if (localChP)
         *localChP = handle & 0xFFFF;
     handle >>= 16;
 
-    if(aclConnP)
+    if (aclConnP)
         *aclConnP = handle & 0xFFFF;
 }
 
@@ -1409,7 +1415,7 @@ static void l2cHandleConnUpdtRsp(struct l2cAclConn *conn, uint8_t ident, uint16_
         loge("Unexpected connection update response for a connection we had no request on (%d)\n", conn->conn);
     else {
         conn->connUpdtRequestIdent = 0;
-        if(conn->connUpdtDoneCbk) { //todo: this needs to go through worker thread
+        if (conn->connUpdtDoneCbk) { //todo: this needs to go through worker thread
             conn->connUpdtDoneCbk(conn->connUpdtDoneCbkData, result == L2C_SIG_CONN_UPDT_OK);
             conn->connUpdtDoneCbk = NULL;
         }
@@ -1517,10 +1523,26 @@ void l2cHandleDiscReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localC
         return;
     }
 
-    l2cConnClose(aclConn, conn, false);
+    l2cConnRequestClose(aclConn, conn, false);
 
     if (!l2cSigSendDiscRsp(aclConn, ident, localCh, remCh))
         loge("Failed to sent disconnect request response frame\n");
+}
+
+/*
+ * FUNCTION: l2cHandleDiscRsp
+ * USE:      Handle a disconnect response from peer
+ * PARAMS:   handle - the handle
+ *           ident - the ident in the response packet
+ *           localCh - local channel number
+ *           remCh - remote channel number
+ * RETURN:   NONE
+ * NOTES:    call with mConnsLock held
+ */
+void l2cHandleDiscRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t remCh, uint16_t localCh)
+{
+    /* We do not care about this, really. We commit to the disconnect whenwe send the request */
+    logi("Disconnect response from %d for ch %d %d\n", aclConn->conn, localCh, remCh);
 }
 
 /*
@@ -1997,6 +2019,38 @@ static struct l2cFixedChSvc* l2cFixedChSvcFindByChan(uint16_t chan)
 }
 
 /*
+ * FUNCTION: l2cCommonSvcInstAllocDone
+ * USE:      Called when a service call to allocate a PSM of a FixedCh service instance finishes
+ * PARAMS:   handle - the handle param for the connection
+ *           connP - where to put pointer to per-conn struct
+ *           aclConnP - where to put pointer to per-ACL-link struct
+ * RETURN:   true if all was successful, false else
+ * NOTES:    call with mConnsLock held
+ */
+static bool l2cCommonSvcInstAllocDone(l2c_handle_t handle, struct l2cConn **connP, struct l2cAclConn **aclConnP)
+{
+    struct l2cConn *conn;
+    struct l2cAclConn *aclConn;
+
+    conn = l2cFindConnByHandle(handle);
+    if (!conn) {
+        loge("Connection not found\n");
+        return false;
+    }
+
+    aclConn = l2cAclConnFindByUniq(conn->acl);
+    if (!aclConn) {
+        loge("ACL link not found\n");
+        return false;
+    }
+
+    *connP = conn;
+    *aclConnP = aclConn;
+
+    return true;
+}
+
+/*
  * FUNCTION: l2cPsmSvcInstAllocDone
  * USE:      Called when a service call to allocate a PSM service instance finishes
  * PARAMS:   reqID - request ID originally passed to l2cSvcWorkSchedulePsmAlloc
@@ -2014,15 +2068,16 @@ static void l2cPsmSvcInstAllocDone(void *reqID, l2cStateCbk stateCbk, void *user
 
     pthread_mutex_lock(&mConnsLock);
 
-    conn = l2cFindConnByHandle(handle);
-    if (!conn) {
-        loge("Connection not found\n");
+    if (!l2cCommonSvcInstAllocDone(handle, &conn, &aclConn))
         goto out;
-    }
 
-    aclConn = l2cAclConnFindByUniq(conn->acl);
-    if (!aclConn) {
-        loge("ACL link not found\n");
+    if (conn->state == L2C_CONN_STATE_TEARDOWN) {
+        if (!l2cSvcWorkScheduleStateCallDirect(NULL, stateCbk, userData, instance, L2C_STATE_CLOSED, NULL, 0))
+            loge("Failed to close PSM after teardown request in alloc done handler\n");
+        /* this is the closes error code to what we want here */
+        if (!l2cSigSendConnectionRsp(aclConn, conn->ident, 0, conn->remCh, L2C_SIG_CONN_RSP_NO_RSRC, 0))
+            loge("Failed to sent negative connection request response frame\n");
+        l2cConnStructDelete(conn);
         goto out;
     }
 
@@ -2073,15 +2128,13 @@ static void l2cFixedChSvcInstAllocDone(void *reqID, l2cStateCbk stateCbk, void *
 
     pthread_mutex_lock(&mConnsLock);
 
-    conn = l2cFindConnByHandle(handle);
-    if (!conn) {
-        loge("Connection not found\n");
+    if (!l2cCommonSvcInstAllocDone(handle, &conn, &aclConn))
         goto out;
-    }
 
-    aclConn = l2cAclConnFindByUniq(conn->acl);
-    if (!aclConn) {
-        loge("ACL link not found\n");
+    if (conn->state == L2C_CONN_STATE_TEARDOWN) {
+        if (!l2cSvcWorkScheduleStateCallDirect(NULL, stateCbk, userData, instance, L2C_STATE_CLOSED, NULL, 0))
+            loge("Failed to close FixedCh after teardown request in alloc done handler\n");
+        l2cConnStructDelete(conn);
         goto out;
     }
 
@@ -2652,56 +2705,86 @@ static uint8_t l2cSigSendErrInvalidCid(struct l2cAclConn *aclConn, uint8_t ident
  * RETURN:   ident if request was sent, else 0
  * NOTES:    Call with mConnsLock held. Will call service's free(), cbk if appropriate
  */
-static void l2cConnRequestClose(struct l2cConn *conn)
+static void l2cConnRequestClose(struct l2cAclConn* acl, struct l2cConn *conn, bool tellOtherSide)
 {
-    struct l2cAclConn *acl;
+    struct l2cConn *t = mConns;
+    uint32_t numConnsOnThisAcl = 0;
+    bool destroyStruct = false;
+    bool tellOurSide = true;
+    bool closeLink = false;
 
-    acl = l2cAclConnFindByUniq(conn->acl); //todo: we should check if this is truly th eonly waiting connection for this ACL link. perhaps keep a "num_waiters" in the aclConn struct?
+    /* find the ACL connection, if none was given */
+    if (!acl)
+        acl = l2cAclConnFindByUniq(conn->acl);
 
-    switch (conn->state) {
-    case L2C_CONN_STATE_RX_OPEN_SVC:
-        conn->state = L2C_CONN_STATE_TEARDOWN;
+    if (!acl) {
+        loge("Failed to close connection psm %d chs %d %d because acl link was not found\n", conn->psm, conn->localCh, conn->remCh);
+        return;
+    }
+
+    /* see how many connections exist on this ACL link */
+    while (t)
+        if (t->acl == acl->uniq)
+            numConnsOnThisAcl++;
+
+    if (!numConnsOnThisAcl) {
+        loge("Unexpected number of connections %d on ACL link %d. Fixing to 1\n", numConnsOnThisAcl, acl->conn);
+        numConnsOnThisAcl = 1;
+    }
+
+    switch (conn->state) { //todo: mark the acl as being torn down so nobody else uses it..., timeout before doing this...
+    case L2C_CONN_STATE_CONN_WAIT:
+        if (numConnsOnThisAcl == 1)
+            destroyStruct = true;
+        tellOtherSide = false;
+        closeLink = true;
         break;
+    case L2C_CONN_STATE_RX_OPEN_SVC:
+        /* cannot destroy struct now, mark it for deletion when service alloc is done */
+        conn->state = L2C_CONN_STATE_TEARDOWN;
+        tellOtherSide = tellOurSide = false; /* we do not need to do this now */
+        break;
+    case L2C_CONN_STATE_TX_OPEN_TXED:
+        /*
+         * The spec has no way for us to cancel a connection request, and we don't want
+         * to bother waiting for an unbound time for establishment. We'll just drop it
+         * and let the other side deal with it. XXX: should we be wiser about this?
+         */
+        destroyStruct = true;
+        break;
+
     case L2C_CONN_STATE_CFG:
     case L2C_CONN_STATE_ESTABLISHED:
-        
-        if (conn->instance) {
-            if(conn->psm)
-                l2cSvcWorkSchedulePsmFree(conn->psm, conn, conn->instance);
-            else
-                l2cSvcWorkScheduleFixedChFree(conn->localCh, conn, conn->instance);
-            conn->state = L2C_CONN_STATE_DIE_REQD;
-        } else {
-            if (acl){
-                l2cSigSendDiscReq(acl, conn->localCh, conn->remCh);
-                conn->state = L2C_CONN_STATE_DIE_TXED;
-            } else {
-                /* let other side, if any, care */
-                l2cConnStructDelete(conn);
-            }
-        }
+        destroyStruct = true;
         break;
-    case L2C_CONN_STATE_CONN_WAIT:
-        /* cancel an in-progress connection, if we're the last one waiting for it */
-        if (acl) //todo: we should check if this is truly th eonly waiting connection for this ACL link. perhaps keep a "num_waiters" in the aclConn struct?
-            l2cAclLinkClose(&acl->addr);
-        else
-            logw("Cannot close in-progress acl conn - not found\n");
 
-        /* fallthrough intentional */
-    case L2C_CONN_STATE_TX_OPEN_TXED:
-        /* let other side care */
-        l2cConnStructDelete(conn);
-        break;
     case L2C_CONN_STATE_DIE_REQD:
-    case L2C_CONN_STATE_DIE_TXED:
     case L2C_CONN_STATE_DIE_RXED:
     case L2C_CONN_STATE_TEARDOWN:
-        /* we're already on it - nothing to do */
+        /* nothing to do here - we're already on it*/
+        tellOtherSide = tellOurSide = false; /* we do not need to do this now */
         break;
+
     default:
-        logw("Unexpected connection state %d when trying to close\n", conn->state);
+       loge("Unknown state %d in disc. this is invariably bad.", conn->state);
+       destroyStruct = true;
+       break;
     }
+    if (tellOurSide)
+        if (!l2cSvcWorkScheduleStateCallDirect(NULL, conn->stateCbk, conn->userData, conn->instance, L2C_STATE_CLOSED, NULL, 0))
+            loge("Failed to tell our side that connection is closed\n");
+    if (tellOtherSide)
+        l2cSigSendDiscReq(acl, conn->localCh, conn->remCh);
+    if (destroyStruct)
+        l2cConnStructDelete(conn);
+    /*
+     * If you ever have both tellOtherSide and closeLink set, you'll have a bad time
+     * since data may not go out befor elink dies. we do not do that, but if you ever
+     * want to, heed this warning and add acl link destruction to the work queue
+     * instead of doing it here.
+     */
+    if (closeLink)
+        l2cAclLinkClose(&acl->addr);
 }
 
 /*
@@ -2794,7 +2877,7 @@ bool l2cApiServicePsmUnregister(psm_t psm, void (*doneCbk)(void*), void* cbkData
          conn = mConns;
          if (conn->psm == psm) {
 
-             l2cConnRequestClose(conn);
+             l2cConnRequestClose(NULL, conn, true);
              anythingDone = true;
          }
 
@@ -2976,7 +3059,7 @@ void l2cSvcDisconnect(l2c_handle_t handle)
 
     conn = l2cFindConnByHandle(handle);
     if (conn)
-        l2cConnRequestClose(conn);
+        l2cConnRequestClose(NULL, conn, true);
     else
         logw("Got request to close nonexistent handle "HANDLEFMT"\n", HANDLECNV(handle));
 
