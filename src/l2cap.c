@@ -15,7 +15,7 @@
 //todo: be mroe careful figuring out who startred a connection wrt psms
 //todo: after service alloc see if we're in teardown state and dealloc svc and tell other side to fuck off...
 //todo: do not ignore return vals of funcs like l2cSvcWorkScheduleStateCallDirect
-//todo: close state calls shoudl call apropriate callbacks
+//todo: close state calls shoudl call apropriate callbacks here and there, as needed
 
 
 #include <pthread.h>
@@ -3467,7 +3467,8 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr, bool isMaster)
 
             if (conn->state != L2C_CONN_STATE_CONN_WAIT) { /* wrong state? */
                 loge("L2C connection for new acl link %d not in wait state on link up! Dropping\n", aclConnID);
-                //todo: drop it appropriately (is this even possible, given how confused we aleady are about its state?)
+                /* There is no sure way to delete this - we have no idea what state it is in. Do our best to not make it worse and do nothing */
+                l2cConnStructDelete(conn);
                 continue;
             }
 
@@ -3486,7 +3487,8 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr, bool isMaster)
             if (!ident) {
                 l2cSvcWorkScheduleStateCall(NULL, conn, L2C_STATE_CLOSED, NULL, 0);
                 loge("Failed to request opening of a psm channel\n");
-                //TODO: drop it appropriately
+                l2cConnStructDelete(conn);
+                continue;
             }
             conn->state = L2C_CONN_STATE_TX_OPEN_TXED;
             conn->ident = ident;
