@@ -273,23 +273,27 @@ struct l2cAclConn {
 
 
 /* our work struct for service worker theread */
+union l2cPsmOrChan {
+    psm_t psm;
+    uint16_t chan;
+};
+
 struct l2cSvcWork {
     int type;
     void* reqID;
-    union{
-        psm_t psm;
-        uint16_t chan;
-    };
     union {
         struct {
             l2c_handle_t handle;
+            union l2cPsmOrChan which;
         } i_alloc;
         struct {
             l2c_handle_t handle;
             void* data;
             uint32_t size;
+            union l2cPsmOrChan which;
         } cl_rx;
         struct {
+            union l2cPsmOrChan which;
             void (*doneCbk)(void*);
             void *cbkData;
         } unreg;
@@ -546,27 +550,17 @@ static void l2cHandleDecode(l2c_handle_t handle, uint16_t *aclConnP, uint16_t *l
  * FUNCTION: l2cSvcWorkAlloc
  * USE:      Allocate a work item for the service worker
  * PARAMS:   type - the type of work
- *           psm - the psm this pertains to (or 0 is chan is used)
- *           chan - the channel this pertains to (or 0 if psm is used)
  *           reqID - the request ID used to signal completion
  * RETURN:   work item or null
  * NOTES:
  */
-static struct l2cSvcWork* l2cSvcWorkAlloc(int type, psm_t psm, uint16_t chan, void* reqID)
+static struct l2cSvcWork* l2cSvcWorkAlloc(int type, void* reqID)
 {
     struct l2cSvcWork* w = (struct l2cSvcWork*)malloc(sizeof(struct l2cSvcWork));
 
     if (w) {
         w->type = type;
         w->reqID = reqID;
-        if (psm)
-            w->psm = psm;
-        else if (chan)
-            w->chan = chan;
-        else {
-            w->psm = 0;
-            w->chan = 0;
-        }
     } else
         loge("Failed to allocate service work item\n");
 
@@ -584,12 +578,13 @@ static struct l2cSvcWork* l2cSvcWorkAlloc(int type, psm_t psm, uint16_t chan, vo
  */
 static bool l2cSvcWorkSchedulePsmAlloc(psm_t psm, void* reqID, l2c_handle_t handle)
 {
-    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_SVC_WORK_PSM_INST_ALLOC, psm, 0, reqID);
+    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_SVC_WORK_PSM_INST_ALLOC, reqID);
 
     if (!w)
         return false;
 
     w->i_alloc.handle = handle;
+    w->i_alloc.which.psm = psm;
 
     if (workQueuePut(mServiceWork, w))
         return true;
@@ -622,7 +617,7 @@ static bool l2cSvcWorkSchedulePsmConnectionlessRx(psm_t psm, void* reqID, l2c_ha
         return false;
     }
 
-    w = l2cSvcWorkAlloc(L2C_SVC_WORK_PSM_CONNECTIONLESS_RX, psm, 0, reqID);
+    w = l2cSvcWorkAlloc(L2C_SVC_WORK_PSM_CONNECTIONLESS_RX, reqID);
     if (!w) {
         free(copy);
         return false;
@@ -633,6 +628,7 @@ static bool l2cSvcWorkSchedulePsmConnectionlessRx(psm_t psm, void* reqID, l2c_ha
     w->cl_rx.handle = handle;
     w->cl_rx.data = copy;
     w->cl_rx.size = size;
+    w->cl_rx.which.psm = psm;
 
     if (workQueuePut(mServiceWork, w))
         return true;
@@ -654,12 +650,13 @@ static bool l2cSvcWorkSchedulePsmConnectionlessRx(psm_t psm, void* reqID, l2c_ha
  */
 static bool l2cSvcWorkScheduleFixedChAlloc(uint16_t chan, void* reqID, l2c_handle_t handle)
 {
-    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_SVC_WORK_FIXEDCH_INST_ALLOC, 0, chan, reqID);
+    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_SVC_WORK_FIXEDCH_INST_ALLOC, reqID);
 
     if (!w)
         return false;
 
     w->i_alloc.handle = handle;
+    w->i_alloc.which.chan = chan;
 
     if (workQueuePut(mServiceWork, w))
         return true;
@@ -681,13 +678,14 @@ static bool l2cSvcWorkScheduleFixedChAlloc(uint16_t chan, void* reqID, l2c_handl
  */
 static bool l2cSvcWorkScheduleFixedChUnregister(uint16_t chan, void* reqID, void (*doneCbk)(void*), void *cbkData)
 {
-    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_SVC_WORK_FIXEDCH_UNREGISTER, 0, chan, reqID);
+    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_SVC_WORK_FIXEDCH_UNREGISTER, reqID);
 
     if (!w)
         return false;
 
     w->unreg.doneCbk = doneCbk;
     w->unreg.cbkData = cbkData;
+    w->unreg.which.chan = chan;
 
     if (workQueuePut(mServiceWork, w))
         return true;
@@ -709,13 +707,14 @@ static bool l2cSvcWorkScheduleFixedChUnregister(uint16_t chan, void* reqID, void
  */
 static bool l2cSvcWorkSchedulePsmUnregister(psm_t psm, void* reqID, void (*doneCbk)(void*), void *cbkData)
 {
-    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_SVC_WORK_PSM_UNREGISTER, psm, 0, reqID);
+    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_SVC_WORK_PSM_UNREGISTER, reqID);
 
     if (!w)
         return false;
 
     w->unreg.doneCbk = doneCbk;
     w->unreg.cbkData = cbkData;
+    w->unreg.which.psm = psm;
 
     if (workQueuePut(mServiceWork, w))
         return true;
@@ -752,7 +751,7 @@ static bool l2cSvcWorkScheduleStateCallDirect(void* reqID, l2cStateCbk stateCbk,
     memcpy(copy, data, len);
 
 
-    w = l2cSvcWorkAlloc(L2C_SVC_WORK_STATE_CBK, 0, 0, reqID);
+    w = l2cSvcWorkAlloc(L2C_SVC_WORK_STATE_CBK, reqID);
     if (!w) {
         free(copy);
         return false;
@@ -2172,87 +2171,105 @@ out:
 static void* l2cSvcWorker(void* unused)
 {
     struct l2cSvcWork *work;
+    struct l2cPsmSvc *psmSvc;
+    struct l2cFixedChSvc *fixedSvc;
+    psm_t psm;
+    uint16_t chan;
     int status;
 
     while(1) {
 
         status = workQueueGet(mServiceWork, (void**)&work);
 
-        /* only one thing we use the work queue status for - exiting */
+        /* The only one thing we use the work queue status for - exiting */
         if (status)
             break;
 
+        psm = work->i_alloc.which.psm;
+        chan = work->i_alloc.which.chan;
+
         pthread_mutex_lock(&mSvcsLock);
         switch (work->type) {
-        case L2C_SVC_WORK_PSM_INST_ALLOC: {
-            struct l2cPsmSvc *svc = l2cPsmSvcFindByPsm(work->psm);
-            if (!svc) {
-                logw("Got work for a not-found PSM-based service %d\n", work->psm);
+        case L2C_SVC_WORK_PSM_INST_ALLOC:
+            psmSvc = l2cPsmSvcFindByPsm(psm);
+            if (!psmSvc) {
+                logw("Got work for a not-found PSM-based service %d\n", psm);
                 break;
             }
-            if (svc->beingRemoved) {
-                logi("Ignoring instance alloc for service (psm=%d) being removed\n",
-                    work->psm);
+            if (psmSvc->beingRemoved) {
+                logi("Ignoring instance alloc for service (psm=%d) being removed\n", psm);
                 l2cPsmSvcInstAllocDone(work->reqID, NULL, NULL, NULL, work->i_alloc.handle);
             } else {
-                l2cPsmSvcInstAllocDone(work->reqID, svc->desc.serviceInstanceStateCbk, svc->desc.userData,
-                    svc->desc.serviceInstanceAlloc(svc->desc.userData, 
+                l2cPsmSvcInstAllocDone(work->reqID, psmSvc->desc.serviceInstanceStateCbk, psmSvc->desc.userData,
+                    psmSvc->desc.serviceInstanceAlloc(psmSvc->desc.userData, 
                     work->i_alloc.handle), work->i_alloc.handle);
             }
             break;
-        }
-        case L2C_SVC_WORK_PSM_CONNECTIONLESS_RX: {
-            struct l2cPsmSvc *svc = l2cPsmSvcFindByPsm(work->psm);
-            if (!svc) {
-                logw("Got work for a not-found PSM-based service %d\n", work->psm);
+        case L2C_SVC_WORK_PSM_CONNECTIONLESS_RX:
+            psmSvc = l2cPsmSvcFindByPsm(psm);
+            if (!psmSvc) {
+                logw("Got work for a not-found PSM-based service %d\n", psm);
                 break;
             }
-            if (svc->beingRemoved) {
-                logi("Ignoring connectionless rx for service (psm=%d) being removed\n",
-                    work->psm);
+            if (psmSvc->beingRemoved) {
+                logi("Ignoring connectionless rx for service (psm=%d) being removed\n", psm);
             } else {
-                svc->desc.serviceConnectionlessRx(svc->desc.userData,
+                psmSvc->desc.serviceConnectionlessRx(psmSvc->desc.userData,
                     work->cl_rx.handle, work->cl_rx.data, work->cl_rx.size);
             }
             free(work->cl_rx.data);
             break;
-        }
-        case L2C_SVC_WORK_PSM_UNREGISTER: {
-            struct l2cPsmSvc *svc = l2cPsmSvcFindByPsm(work->psm);
-            if (!svc) {
-                logw("Got work for a not-found PSM-based service %d\n", work->psm);
+        case L2C_SVC_WORK_PSM_UNREGISTER:
+            psmSvc = l2cPsmSvcFindByPsm(psm);
+            if (!psmSvc) {
+                logw("Got work for a not-found PSM-based service %d\n", psm);
                 break;
             }
-            if (!svc->beingRemoved)
-                logw("Unregistering a service (psm=%d) unexpectedly\n", work->psm);
-            if (svc->next)
-                svc->next->prev = svc->prev;
-            if (svc->prev)
-                svc->prev->next = svc->next;
+            if (!psmSvc->beingRemoved)
+                logw("Unregistering a service (psm=%d) unexpectedly\n", psm);
+            if (psmSvc->next)
+                psmSvc->next->prev = psmSvc->prev;
+            if (psmSvc->prev)
+                psmSvc->prev->next = psmSvc->next;
             else
-                mPsmSvcs = svc->next;
-            free(svc);
+                mPsmSvcs = psmSvc->next;
+            free(psmSvc);
             if (work->unreg.doneCbk)
                 work->unreg.doneCbk(work->unreg.cbkData);
             break;
-        }
-        case L2C_SVC_WORK_FIXEDCH_INST_ALLOC: {
-            struct l2cFixedChSvc *svc = l2cFixedChSvcFindByChan(work->chan);
-            if (!svc) {
-                logw("Got work for a not-found FixedCh service %d\n", work->chan);
+        case L2C_SVC_WORK_FIXEDCH_INST_ALLOC:
+            fixedSvc = l2cFixedChSvcFindByChan(chan);
+            if (!fixedSvc) {
+                logw("Got work for a not-found FixedCh service %d\n", chan);
                 break;
             }
-            if (svc->beingRemoved) {
-                logi("Ignoring instance alloc for service (chan=%d) being removed\n",
-                    work->chan);
+            if (fixedSvc->beingRemoved) {
+                logi("Ignoring instance alloc for service (chan=%d) being removed\n", chan);
                 l2cFixedChSvcInstAllocDone(work->reqID, NULL, NULL, NULL, work->i_alloc.handle);
             } else {
-                l2cFixedChSvcInstAllocDone(work->reqID, svc->desc.serviceFixedChStateCbk, svc->desc.userData,
-                    svc->desc.serviceFixedChAlloc(svc->desc.userData,
+                l2cFixedChSvcInstAllocDone(work->reqID, fixedSvc->desc.serviceFixedChStateCbk, fixedSvc->desc.userData,
+                    fixedSvc->desc.serviceFixedChAlloc(fixedSvc->desc.userData,
                     work->i_alloc.handle), work->i_alloc.handle);
             }
             break;
-        }
+        case L2C_SVC_WORK_FIXEDCH_UNREGISTER:
+            fixedSvc = l2cFixedChSvcFindByChan(chan);
+            if (!fixedSvc) {
+                logw("Got work for a not-found FixedCh service %d\n", chan);
+                break;
+            }
+            if (!fixedSvc->beingRemoved)
+                logw("Unregistering a service (chan=%d) unexpectedly\n", chan);
+            if (fixedSvc->next)
+                fixedSvc->next->prev = fixedSvc->prev;
+            if (fixedSvc->prev)
+                fixedSvc->prev->next = fixedSvc->next;
+            else
+                mFixedSvcs = fixedSvc->next;
+            free(fixedSvc);
+            if (work->unreg.doneCbk)
+                work->unreg.doneCbk(work->unreg.cbkData);
+            break;
         default: {
             loge("Unknown work type %d\n", work->type);
             break;
