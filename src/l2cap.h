@@ -1,6 +1,7 @@
 #ifndef _L2CAP_H_
 #define _L2CAP_H_
 
+#include "uniq.h"
 #include "types.h"
 #include "bt.h"
 
@@ -8,9 +9,9 @@
 #define OUR_MTU  0xEFFF /* no reason to limit it pointlessly */
 
 typedef uint16_t psm_t;
-typedef uint64_t l2c_handle_t; /* a 0-valued handle is invalid and indicates error */
+typedef uniq_t l2c_handle_t; /* a 0-valued handle is invalid and indicates error */
 #define HANDLEFMT "0x%016llx"
-#define HANDLECNV (long long unsigned)
+#define HANDLECNV (unsigned long long)
 
 
 /* ONE_TIME L2CAP INIT */
@@ -78,23 +79,26 @@ bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr *addr, l2cStateCb
 /* call this to connect to a remote FixedCh service */
 bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr *addr, l2cStateCbk stateCbk, void *userData, void *instance);
 
+/* call this to popen the connectionless channel to a device */
+bool l2cApiCreateConnectionlesConnection(const struct bt_addr *addr, l2cStateCbk stateCbk, void *userData, void *instance);
+
+
 /* call this to request a connection parameter update for a given connection */
 typedef void (*l2cConnUpdateDoneCbk)(void *userData, bool success);
 bool l2cApiUpdateConnectionParams(l2c_handle_t handle, uint16_t intMin, uint16_t intMax, uint16_t latency, uint16_t timeout, l2cConnUpdateDoneCbk doneCbk, void *userData);
 
 
+/* external code can use this to get remote's bt addr */
+bool l2cApiGetBtAddr(l2c_handle_t handle, struct bt_addr *addrP);
 
-/* SERVICE INTERFACE API */
+/* external code can use this to disconnect a channel */
+void l2cApiDisconnect(l2c_handle_t handle);
 
-/* service code can use this to get remote's bt addr */
-bool l2cSvcGetBtAddr(l2c_handle_t handle, struct bt_addr *addrP);
+/* external code can use this to send to the other side */
+bool l2cApiDataTx(l2c_handle_t handle, const void *data, uint32_t size);
 
-/* service code can use this to disconnect a channel */
-void l2cSvcDisconnect(l2c_handle_t handle);
-
-/* service code can use this to send to the other side */
-bool l2cSvcDataTx(l2c_handle_t handle, const void *data, uint32_t size);
-
+/* special case for connectionless tx */
+bool l2cApiConnectionlessDataTx(l2c_handle_t handle, psm_t psm, const void *data, uint32_t size);
 
 
 /* LOWER LAYER INTERFACE API */
