@@ -366,8 +366,8 @@ struct l2cConn {
     void              *instance;
     uniq_t             acl; /* the acl connection */
     psm_t              psm; /* 0 for fixedCh */
-    uint16_t           localCh;
-    uint16_t           remCh;
+    uint16_t           localCh; /* both this & remCh ==0 means */
+    uint16_t           remCh; /* this is connectionless conn struct */
     uint16_t           mtu; /* for other side */
 };
 #define L2C_CONN_STATE_CONN_WAIT       0 /* waiting for ACL link up */
@@ -3247,15 +3247,16 @@ static bool l2cConnectionlessRequestSend(struct l2cAclConn *aclConn, psm_t psm, 
 } 
 
 /*
- * FUNCTION: l2cApiDataTx
+ * FUNCTION: l2cDoDataTx
  * USE:      Request a send on a pipe
  * PARAMS:   handle - the handle
+ *           psm - the PSM to send to for connectionless or 0 for connection-oriented pipe
  *           data - the data
  *           size - how much data there is
  * RETURN:   true is a send was requested. False on immediate error.
  * NOTES:    A copy of the data is made
  */
-bool l2cApiDataTx(l2c_handle_t handle, const void* data, uint32_t size)
+static bool l2cDoDataTx(l2c_handle_t handle, psm_t psm, const void *data, uint32_t size)
 {
     struct l2cConn *conn;
     struct l2cAclConn *aclConn = NULL;
@@ -3272,13 +3273,58 @@ bool l2cApiDataTx(l2c_handle_t handle, const void* data, uint32_t size)
         logw("Request send on invalid ACL handle "HANDLEFMT"\n", HANDLECNV(conn->acl));
     else if (conn->state != L2C_CONN_STATE_ESTABLISHED)
         logw("Attempt to send data over connection in state %d\n", conn->state);
-    else if (!conn->localCh && !conn->remCh)
-        logw("Attempt to send data over connectionless connection via l2cApiDataTx()\n");
-    else
-        ret = l2cConnRequestSend(conn, data, size);
+    else {
+        bool isConnectionlessConn = conn->localCh || conn->remCh;
+
+        if (psm && isConnectionlessConn)
+            ret = l2cConnectionlessRequestSend(aclConn, psm, data, size);
+        else if (!psm && !isConnectionlessConn)
+            ret = l2cConnRequestSend(conn, data, size);
+        else if (psm)
+            logw("Attempt to send data over connectionless connection via l2cApiDataTx()\n");
+        else
+            logw("Attempt to send connection-oriented data over connectionless connection via l2cApiConnectionlessDataTx()\n");
+    }
     pthread_mutex_unlock(&mConnsLock);
 
     return ret;
+}
+
+/*
+ * FUNCTION: l2cApiDataTx
+ * USE:      Request a send on a pipe
+ * PARAMS:   handle - the handle
+ *           data - the data
+ *           size - how much data there is
+ * RETURN:   true is a send was requested. False on immediate error.
+ * NOTES:    A copy of the data is made
+ */
+bool l2cApiDataTx(l2c_handle_t handle, const void* data, uint32_t size)
+{
+    return l2cDoDataTx(handle, 0, data, size);
+}
+
+/*
+ * FUNCTION: l2cApiDataTx
+ * USE:      Request a send on a pipe
+ * PARAMS:   handle - the handle
+ *           psm - the PSM to send to
+ *           data - the data
+ *           size - how much data there is
+ * RETURN:   true is a send was requested. False on immediate error.
+ * NOTES:    A copy of the data is made
+ */
+bool l2cApiConnectionlessDataTx(l2c_handle_t handle, psm_t psm, const void *data, uint32_t size)
+{
+    struct l2cConn *conn;
+    struct l2cAclConn *aclConn = NULL;
+    bool ret = false;
+
+    if (!l2cPsmValid(psm)) {
+        logw("Invalid PSM %d\n", psm);
+        return false;
+    }
+    return l2cDoDataTx(handle, psm, data, size);
 }
 
 /*
