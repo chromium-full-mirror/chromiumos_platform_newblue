@@ -1,8 +1,8 @@
 #ifndef _L2CAP_H_
 #define _L2CAP_H_
 
-#include "uniq.h"
 #include "types.h"
+#include "uniq.h"
 #include "bt.h"
 
 
@@ -79,14 +79,10 @@ bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr *addr, l2cStateCb
 /* call this to connect to a remote FixedCh service. Do not expect an MTU callback. */
 bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr *addr, l2cStateCbk stateCbk, void *userData, void *instance);
 
-/* call this to popen the connectionless channel to a device */
-bool l2cApiCreateConnectionlesConnection(const struct bt_addr *addr, l2cStateCbk stateCbk, void *userData, void *instance);
-
 
 /* call this to request a connection parameter update for a given connection */
 typedef void (*l2cConnUpdateDoneCbk)(void *userData, bool success);
 bool l2cApiUpdateConnectionParams(l2c_handle_t handle, uint16_t intMin, uint16_t intMax, uint16_t latency, uint16_t timeout, l2cConnUpdateDoneCbk doneCbk, void *userData);
-
 
 /* external code can use this to get remote's bt addr */
 bool l2cApiGetBtAddr(l2c_handle_t handle, struct bt_addr *addrP);

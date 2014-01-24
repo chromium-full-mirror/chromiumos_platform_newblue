@@ -13,6 +13,7 @@
 #include "workQueue.h"
 #include "config.h"
 #include "l2cap.h"
+#include "timer.h"
 #include "util.h"
 #include "uniq.h"
 #include "log.h"
@@ -987,13 +988,17 @@ static void l2cHandleConnRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
 
     if (conn->state != L2C_CONN_STATE_TX_OPEN_TXED) {
         logw("Connection Response for connection in bad state %d %d for ch %d %d with result %d\n", conn->state, ident, localCh, remCh, result);
-        //todo: what to do here?
+        if (!l2cSvcWorkScheduleStateCall(NULL, conn, L2C_STATE_CLOSED, NULL, 0))
+            loge("Failed to schedule 'closed' state call\n");
+        l2cConnStructDelete(conn);
         return;
     }
 
     if (!conn->stateCbk) {
         logw("Connection Response for connection we did not create\n");
-        //todo: what to do here?
+        if (!l2cSvcWorkScheduleStateCall(NULL, conn, L2C_STATE_CLOSED, NULL, 0))
+            loge("Failed to schedule 'closed' state call\n");
+        l2cConnStructDelete(conn);
         return;
     }
 
@@ -1051,8 +1056,7 @@ static void l2cPsmSendConfig(struct l2cAclConn *aclConn, struct l2cConn *conn)
     };
 
     if (conn->cfgTxState != L2C_CFG_STATE_INITIAL) {
-
-        //todo: properly abort
+        loge("Unexpectred call to l2cPsmSendConfig with state %d\n", conn->cfgTxState);
         return;
     }
 
@@ -1122,7 +1126,6 @@ static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
 
     if (conn->state != L2C_CONN_STATE_CFG) {
         logw("Configuration Request for connection in bad state %d for ch %d with flags %d\n", conn->state, localCh, flags);
-        //todo: what to do here?
         return;
     }
 
@@ -1133,7 +1136,6 @@ static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
     end = reply = (uint8_t*)malloc(len);
     if (!reply) {
         loge("Cannot allocate a conf reply\n");
-        //todo: drop it? send error?
         return;
     }
 
@@ -1146,7 +1148,7 @@ static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
 
         if (optLen > len) {
             logw("Got invalid conf req option len %d/%d\n", optLen, len);
-            //todo: send comamdn not understood
+            optLen = len;
             break;
         }
         opt = data;
@@ -1240,7 +1242,6 @@ static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
     if (len) {
         free(reply);
         logw("Conf req not processed: %d\n", len);
-        //todo: send command not understood
         return;
     }
 
@@ -1295,7 +1296,6 @@ static void l2cHandleConfRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
 
     if (conn->state != L2C_CONN_STATE_CFG) {
         logw("Configuration Response for connection in bad state %d %d for ch %d with result %d\n", conn->state, ident, localCh, result);
-        //todo: what to do here?
         return;
     }
 
@@ -1304,14 +1304,14 @@ static void l2cHandleConfRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
         result == L2C_SIG_CONF_RSP_FLOW_SPEC_REJ) {
 
         logi("Other side refused our configuration for psm %d\n", conn->psm);
-        //todo: close it properly
+        l2cConnRequestClose(aclConn, conn, true);
         return;
     }
 
     if (result != L2C_SIG_CONF_RSP_OK) {
 
         loge("Unexpected result %d for connection to psm %d\n", result, conn->psm);
-        //todo: close it properly
+        l2cConnRequestClose(aclConn, conn, true);
         return;
     }
 
