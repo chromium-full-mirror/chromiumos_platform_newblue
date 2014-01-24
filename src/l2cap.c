@@ -19,6 +19,7 @@
 #include "config.h"
 #include "l2cap.h"
 #include "util.h"
+#include "uniq.h"
 #include "log.h"
 #include "hci.h"
 
@@ -43,7 +44,6 @@
 #define L2C_CH_SIGNALLING_LE     0x0005
 
 
-typedef uint64_t uniq_t;
 
 /* L2CAP signalling packet codes and respective formats */
 #define L2C_SIG_CMD_REJ           0x01
@@ -400,9 +400,6 @@ static void l2cConnRequestClose(struct l2cAclConn* aclConn, struct l2cConn *conn
 
 
 /* our state */
-static pthread_mutex_t mUniqLock = PTHREAD_MUTEX_INITIALIZER;
-static uniq_t mUniq = 1;
-
 static pthread_t mSvcWorker;
 static struct workQueue *mServiceWork = NULL;
 
@@ -418,22 +415,6 @@ static struct l2cConn *mConns = NULL;
 
 
 
-
-/*
- * FUNCTION: l2cUniqNext
- * USE:      Produce the next "forever"-unique number
- * PARAMS:   NONE
- * RETURN:   the next "unique" number
- * NOTES:
- */
-static uniq_t l2cUniqNext(void)
-{
-    uniq_t ret;
-    pthread_mutex_lock(&mUniqLock);
-    ret = mUniq++;
-    pthread_mutex_unlock(&mUniqLock);
-    return ret;
-}
 
 /*
  * FUNCTION: l2cAclConnFindById
@@ -3391,7 +3372,7 @@ static struct l2cAclConn* l2cCreateAndOpenNewConn(const struct bt_addr* addr)
     }
 
     memcpy(&conn->addr, addr, sizeof(conn->addr));
-    conn->uniq = l2cUniqNext();
+    conn->uniq = uniqGetNext();
     conn->conn = L2C_CONN_IN_PROGRESS;
     conn->prev = NULL;
 
@@ -3610,7 +3591,7 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr, bool isMaster)
             logd("Remote-initiated ACL connection up %d\n", aclConnID);
             aclConn = (struct l2cAclConn*)malloc(sizeof(struct l2cAclConn));
             if (aclConn) {
-                aclConn->uniq = l2cUniqNext();
+                aclConn->uniq = uniqGetNext();
                 aclConn->prev = NULL;
                 aclConn->next = mAclConns;
                 mAclConns->prev = aclConn;
