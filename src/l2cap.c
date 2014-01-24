@@ -9,7 +9,6 @@
 //todo: be mroe careful figuring out who startred a connection wrt psms
 //todo: after service alloc see if we're in teardown state and dealloc svc and tell other side to fuck off...
 //todo: close state calls shoudl call apropriate callbacks here and there, as needed
-//todo: implement l2cApiConnectionlessDataTx and  l2cApiCreateConnectionlesConnection
 //todo: on acl luink up when we create FixedCh services immediately, they need to get connection structs made for them too, no?
 
 
@@ -841,6 +840,36 @@ static bool l2cSvcWorkScheduleAclConnUpdt(void* reqID, uint16_t aclConn, uint16_
 }
 
 /*
+ * FUNCTION: l2cNewConnStruct
+ * USE:      Create a new l2cConn and prepopulate with some  values
+ * PARAMS:   acl - acl connection handle
+ *           state - state value to set
+ *           localCh - localCh value to set
+ *           remCh - remCh value to set
+ *           psm - psm value to set
+ *           remCh - the remote channel used to make the request
+ * RETURN:   The struct or NULL on error
+ * NOTES:
+ */
+static struct l2cConn* l2cNewConnStruct(uint8_t state, uniq_t acl, uint16_t localCh, uint16_t remCh, psm_t psm)
+{
+    struct l2cConn* conn = (struct l2cConn*)calloc(1, sizeof(struct l2cConn));
+
+    if (!conn)
+        return NULL;
+
+    conn->acl = acl;
+    conn->psm = psm;
+    conn->mtu = 0xFFFF;
+    conn->handle = uniqGetNext();
+    conn->remCh = remCh;
+    conn->localCh = localCh;
+    conn->state = state;
+
+    return conn;
+}
+
+/*
  * FUNCTION: l2cHandleConnReq
  * USE:      Process request to open a PSM channel
  * PARAMS:   aclConn - the per-ACL-connection structure
@@ -869,29 +898,19 @@ static void l2cHandleConnReq(struct l2cAclConn *aclConn, uint8_t ident, psm_t ps
     if (!svc)
         goto out_svcs_lock;
 
-    conn = (struct l2cConn*)malloc(sizeof(struct l2cConn));
+    conn = l2cNewConnStruct(L2C_CONN_STATE_RX_OPEN_SVC, aclConn->handle, 0, remCh, psm);
     if (!conn) {
         loge("Failed to allocate an L2C conn\n");
         goto out_svcs_lock;
     }
-    conn->acl = aclConn->handle;
-    conn->psm = psm;
-    conn->mtu = 0xFFFF;
-    conn->handle = uniqGetNext();
-    conn->instance = NULL;
-    conn->stateCbk = NULL;
-    conn->userData = NULL;
-    conn->remCh = remCh;
     localCh = l2cAclFreeCid(aclConn);
     if (!localCh) {
         logw("No free channels for conn %d\n", aclConn->conn);
         free(conn);
         goto out_svcs_lock;
     }
-    conn->prev = NULL;
     conn->localCh = localCh;
     conn->ident = ident;
-    conn->state = L2C_CONN_STATE_RX_OPEN_SVC;
 
     /* safe to call this enqueue here , since worker thread cannot work on it till we release this lock */
     enqueued = l2cSvcWorkSchedulePsmAlloc(psm, NULL, conn->handle);
@@ -3371,7 +3390,7 @@ static struct l2cAclConn* l2cCreateAndOpenNewConn(const struct bt_addr* addr)
 bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr* addr, l2cStateCbk stateCbk, void* userData, void* instance)
 {
     struct l2cAclConn *aclConn;
-    struct l2cConn *conn = NULL, *t;
+    struct l2cConn *conn = NULL;
     bool ret = false;
 
     if (!stateCbk) {
@@ -3389,12 +3408,6 @@ bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr* addr, l2cStateCb
         return false;
     }
 
-    conn = (struct l2cConn*)malloc(sizeof(struct l2cConn));
-    if (!conn) {
-        loge("Failed to allocate an L2C conn\n");
-        return false;
-    }
-
     pthread_mutex_lock(&mConnsLock);
     aclConn = l2cAclConnFindByAddr(addr);
     if (!aclConn) {
@@ -3406,18 +3419,18 @@ bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr* addr, l2cStateCb
         goto out;
     }
 
+    conn = l2cNewConnStruct(L2C_CONN_STATE_CONN_WAIT, aclConn->handle, 0, 0, psm);
+    if (!conn) {
+        loge("Failed to allocate an L2C conn\n");
+        goto out;
+    }
+
     /* create the conn */
-    conn->acl = aclConn->handle;
-    conn->psm = psm;
-    conn->mtu = 0xFFFF;
-    conn->handle = uniqGetNext();
     conn->stateCbk = stateCbk;
     conn->userData = userData;
     conn->instance = instance;
 
-    if (aclConn->conn & L2C_CONN_IN_PROGRESS)
-        conn->state = L2C_CONN_STATE_CONN_WAIT;
-    else {
+    if (!(aclConn->conn & L2C_CONN_IN_PROGRESS)) {
         uint8_t ident;
         uint16_t localCh = l2cAclFreeCid(aclConn);
 
@@ -3436,14 +3449,13 @@ bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr* addr, l2cStateCb
         conn->state = L2C_CONN_STATE_TX_OPEN_TXED;
         conn->ident = ident;
     }
-    conn->prev = NULL;
     conn->next = mConns;
     mConns = conn;
     ret = true;
 
 out:
     pthread_mutex_unlock(&mConnsLock);
-    if (!ret)
+    if (!ret && conn)
         free(conn);
     return ret;
 }
@@ -3464,7 +3476,7 @@ out:
 bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr* addr, l2cStateCbk stateCbk, void* userData, void* instance)
 {
     struct l2cAclConn *aclConn;
-    struct l2cConn *conn = NULL, *t;
+    struct l2cConn *conn = NULL;
     bool ret = false;
 
     if (chan == L2C_CH_SIGNALLING_EDR || chan == L2C_CH_CONNECTIONLESS ||
@@ -3478,12 +3490,6 @@ bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr* addr, l2
         return false;
     }
 
-    conn = (struct l2cConn*)malloc(sizeof(struct l2cConn));
-    if (!conn) {
-        loge("Failed to allocate an L2C conn\n");
-        return false;
-    }
-
     pthread_mutex_lock(&mConnsLock);
     aclConn = l2cAclConnFindByAddr(addr);
     if (!aclConn) {
@@ -3494,37 +3500,39 @@ bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr* addr, l2
         loge("Failed to create/open/find ACL conn\n");
         goto out;
     }
+
     /* check is same FixedCh already exists */
-    t = mConns;
-    while(t && (t->acl != aclConn->handle || t->psm || t->localCh != chan))
-        t = t->next;
-    if (t) {
+    conn = mConns;
+    while(conn && (conn->acl != aclConn->handle || conn->psm || conn->localCh != chan))
+         conn = conn->next;
+    if (conn) {
         logi("Ignoring attempt to open FixedCh %d conn when existing exists\n", chan);
         goto out;
     }
+
+    conn = l2cNewConnStruct(L2C_CONN_STATE_CONN_WAIT, aclConn->handle, chan, chan, 0);
+    if (!conn) {
+        loge("Failed to allocate an L2C conn\n");
+        return false;
+    }
+
     /* create the conn */
-    conn->acl = aclConn->handle;
-    conn->psm = 0;
-    conn->localCh = chan;
-    conn->remCh = chan;
-    conn->mtu = 0xFFFF;
     conn->handle = uniqGetNext();
     conn->stateCbk = stateCbk;
     conn->userData = userData;
     conn->instance = instance;
-    if (aclConn->conn & L2C_CONN_IN_PROGRESS)
-        conn->state = L2C_CONN_STATE_CONN_WAIT;
-    else
+
+    if (!(aclConn->conn & L2C_CONN_IN_PROGRESS))
         l2cChannelReadyForData(aclConn, conn);
 
-    conn->prev = NULL;
     conn->next = mConns;
     mConns = conn;
     ret = true;
 
 out:
     pthread_mutex_unlock(&mConnsLock);
-    free(conn);
+    if (!ret && conn)
+        free(conn);
     return ret;
 }
 
