@@ -73,10 +73,10 @@ bool l2cApiServiceFixedChRegister(uint16_t chan, const struct l2cServiceFixedChD
 bool l2cApiServiceFixedChUnregister(uint16_t chan, void (*doneCbk)(void*), void *cbkData);
 
 
-/* call this to connect to a remote PSM-based service */
+/* call this to connect to a remote PSM-based service Expect an MTU callback. */
 bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr *addr, l2cStateCbk stateCbk, void *userData, void *instance);
 
-/* call this to connect to a remote FixedCh service */
+/* call this to connect to a remote FixedCh service. Do not expect an MTU callback. */
 bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr *addr, l2cStateCbk stateCbk, void *userData, void *instance);
 
 /* call this to popen the connectionless channel to a device */
@@ -97,8 +97,8 @@ void l2cApiDisconnect(l2c_handle_t handle);
 /* external code can use this to send to the other side */
 bool l2cApiDataTx(l2c_handle_t handle, const void *data, uint32_t size);
 
-/* special case for connectionless tx */
-bool l2cApiConnectionlessDataTx(l2c_handle_t handle, psm_t psm, const void *data, uint32_t size);
+/* if no connection exists, one will *not* be created */
+bool l2cApiConnectionlessDataTx(const struct bt_addr *addr, psm_t psm, const void *data, uint32_t size);
 
 
 /* LOWER LAYER INTERFACE API */
