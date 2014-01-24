@@ -5,7 +5,6 @@
 //todo: set flush timout at hci layer to 0xffff for a reliable link
 //todo: there are states where instance,stateCbk,userData are null. we shoudl care for them...
 //todo: check all lengths followed, all log levels correct
-//todo: properly send "invalid cid" responces when a channel is not found
 //todo: be mroe careful figuring out who startred a connection wrt psms
 //todo: after service alloc see if we're in teardown state and dealloc svc and tell other side to fuck off...
 //todo: close state calls shoudl call apropriate callbacks here and there, as needed
@@ -1107,6 +1106,8 @@ static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
 
     if (!conn) {
         logw("Unexpected Configuration Request id %d for ch %d with result %d\n", ident, localCh, result);
+        if (!l2cSigSendErrInvalidCid(aclConn, ident, localCh, 0))
+            loge("Failed to send 'invalid cid' reply\n");
         return;
     }
 
@@ -1594,6 +1595,8 @@ void l2cHandleDiscReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localC
 
     if (!conn) {
         logw("Unexpected Disconnection Request id %d for ch %d %d\n", ident, localCh, remCh);
+        if (!l2cSigSendErrInvalidCid(aclConn, ident, localCh, remCh))
+            loge("Failed to send 'invalid cid' reply\n");
         return;
     }
 
