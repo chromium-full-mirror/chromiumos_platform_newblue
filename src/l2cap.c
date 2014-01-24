@@ -347,25 +347,31 @@ struct l2cFixedChSvc {
 /* our per-l2c connection struct */
 /* also used for fixed ch "connections" */
 struct l2cConn {
+    uniq_t             handle;
     struct l2cConn    *next;
     struct l2cConn    *prev;
+
+    l2cStateCbk        stateCbk;
+    void              *userData;
+    void              *instance;
+
+    uniq_t             acl; /* the acl connection */
+    uint8_t            ident; /* for control channel ops */
+
     uint8_t            state;
+
+    psm_t              psm; /* 0 for fixedCh */
+    uint16_t           localCh; /* both this & remCh ==0 means */
+    uint16_t           remCh; /* this is connectionless conn struct */
+    uint16_t           mtu; /* for other side */
+
+
     union {            /* per-state info */
         struct {       /*  config */
             uint8_t cfgTxState;
             uint8_t cfgRxState;
         };
     };
-    uniq_t             handle;
-    uint8_t            ident; /* for control channel ops */
-    l2cStateCbk        stateCbk;
-    void              *userData;
-    void              *instance;
-    uniq_t             acl; /* the acl connection */
-    psm_t              psm; /* 0 for fixedCh */
-    uint16_t           localCh; /* both this & remCh ==0 means */
-    uint16_t           remCh; /* this is connectionless conn struct */
-    uint16_t           mtu; /* for other side */
 };
 #define L2C_CONN_STATE_CONN_WAIT       0 /* waiting for ACL link up */
 #define L2C_CONN_STATE_RX_OPEN_SVC     1 /* call to service in pipeline */
