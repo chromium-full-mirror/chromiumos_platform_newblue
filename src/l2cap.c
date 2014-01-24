@@ -365,6 +365,7 @@ struct l2cConn {
     uint16_t           remCh; /* this is connectionless conn struct */
     uint16_t           mtu; /* for other side */
 
+    bool               weOpened; /* true if we acked for this, false if peer */
 
     union {            /* per-state info */
         struct {       /*  config */
@@ -852,10 +853,11 @@ static bool l2cSvcWorkScheduleAclConnUpdt(void* reqID, uint16_t aclConn, uint16_
  *           remCh - remCh value to set
  *           psm - psm value to set
  *           remCh - the remote channel used to make the request
+ *           weOpened - true if we're opening this conn, false if peer
  * RETURN:   The struct or NULL on error
  * NOTES:
  */
-static struct l2cConn* l2cNewConnStruct(uint8_t state, uniq_t acl, uint16_t localCh, uint16_t remCh, psm_t psm)
+static struct l2cConn* l2cNewConnStruct(uint8_t state, uniq_t acl, uint16_t localCh, uint16_t remCh, psm_t psm, bool weOpened)
 {
     struct l2cConn* conn = (struct l2cConn*)calloc(1, sizeof(struct l2cConn));
 
@@ -869,6 +871,7 @@ static struct l2cConn* l2cNewConnStruct(uint8_t state, uniq_t acl, uint16_t loca
     conn->remCh = remCh;
     conn->localCh = localCh;
     conn->state = state;
+    conn->weOpened = weOpened;
 
     return conn;
 }
@@ -902,7 +905,7 @@ static void l2cHandleConnReq(struct l2cAclConn *aclConn, uint8_t ident, psm_t ps
     if (!svc)
         goto out_svcs_lock;
 
-    conn = l2cNewConnStruct(L2C_CONN_STATE_RX_OPEN_SVC, aclConn->handle, 0, remCh, psm);
+    conn = l2cNewConnStruct(L2C_CONN_STATE_RX_OPEN_SVC, aclConn->handle, 0, remCh, psm, false);
     if (!conn) {
         loge("Failed to allocate an L2C conn\n");
         goto out_svcs_lock;
@@ -3430,7 +3433,7 @@ bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr* addr, l2cStateCb
         goto out;
     }
 
-    conn = l2cNewConnStruct(L2C_CONN_STATE_CONN_WAIT, aclConn->handle, 0, 0, psm);
+    conn = l2cNewConnStruct(L2C_CONN_STATE_CONN_WAIT, aclConn->handle, 0, 0, psm, true);
     if (!conn) {
         loge("Failed to allocate an L2C conn\n");
         goto out;
@@ -3521,7 +3524,7 @@ bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr* addr, l2
         goto out;
     }
 
-    conn = l2cNewConnStruct(L2C_CONN_STATE_CONN_WAIT, aclConn->handle, chan, chan, 0);
+    conn = l2cNewConnStruct(L2C_CONN_STATE_CONN_WAIT, aclConn->handle, chan, chan, 0, true);
     if (!conn) {
         loge("Failed to allocate an L2C conn\n");
         return false;
@@ -3658,7 +3661,7 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr, bool isMaster)
                     continue;
                 }
 
-                conn = l2cNewConnStruct(L2C_CONN_STATE_RX_OPEN_SVC, aclConn->handle, svc->chan, svc->chan, 0);
+                conn = l2cNewConnStruct(L2C_CONN_STATE_RX_OPEN_SVC, aclConn->handle, svc->chan, svc->chan, 0, false);
                 if (!conn) {
                     logw("Not initing FixedCh %d svc - cannot alloc conn struct\n", svc->chan);
                     continue;
