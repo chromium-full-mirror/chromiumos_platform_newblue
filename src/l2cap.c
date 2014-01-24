@@ -9,7 +9,6 @@
 //todo: be mroe careful figuring out who startred a connection wrt psms
 //todo: after service alloc see if we're in teardown state and dealloc svc and tell other side to fuck off...
 //todo: close state calls shoudl call apropriate callbacks here and there, as needed
-//todo: on acl luink up when we create FixedCh services immediately, they need to get connection structs made for them too, no?
 
 
 #include <pthread.h>
@@ -2040,7 +2039,7 @@ void l2cAclDataRx(uint16_t aclConn, const void *data, uint32_t datalen)
     if (conn) {
 
         if (len != datalen) {
-            logw("XXX: packet len=%d datalen=%d\n", len, datalen);
+            logw("Packet len mismatch: packet len=%d datalen=%d\n", len, datalen);
             if (len > datalen)
                 len = datalen;
         }
@@ -2234,6 +2233,9 @@ static void l2cFixedChSvcInstAllocDone(void *reqID, l2cStateCbk stateCbk, void *
         l2cConnStructDelete(conn);
         goto out;
     }
+
+    if (conn->state != L2C_CONN_STATE_RX_OPEN_SVC)
+        logw("Unexpected FixedCh conn state %d after alloc\n", conn->state);
 
     if (!instance) {
         logi("Service allocations failed for FixedCh %d\n", conn->localCh);
@@ -3634,9 +3636,28 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr, bool isMaster)
         pthread_mutex_lock(&mSvcsLock);
         svc = mFixedSvcs;
         while (svc) {
-            if (!svc->beingRemoved)
-                if (!l2cSvcWorkScheduleFixedChAlloc(svc->chan, NULL, 0/*XXX: we need a conn struct here, see TODO above*/))
+            if (!svc->beingRemoved) {
+                /* See if a conn is already pending. If so we'll not instantiate the service.
+                 * This may seem strange, but unlike PSM world, here we cannot have two FixedCh
+                 * connections at the same time */
+                struct l2cConn *conn = mConns;
+                while (conn && (conn->acl != aclConn->handle || conn->psm || conn->localCh != svc->chan))
+                    conn = conn->next;
+
+                if (conn) {
+                    logi("Not initing FixedCh %d svc since connection is pending\n", svc->chan);
+                    continue;
+                }
+
+                conn = l2cNewConnStruct(L2C_CONN_STATE_RX_OPEN_SVC, aclConn->handle, svc->chan, svc->chan, 0);
+                if (!conn) {
+                    logw("Not initing FixedCh %d svc - cannot alloc conn struct\n", svc->chan);
+                    continue;
+                }
+
+                if (!l2cSvcWorkScheduleFixedChAlloc(svc->chan, NULL, conn->handle))
                     loge("Failed to schedule FixedCh alloc for ch %d\n", svc->chan);
+            }
             svc = svc->next;
         }
         pthread_mutex_unlock(&mSvcsLock);
