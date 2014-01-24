@@ -1,13 +1,11 @@
 //todo: idea: sending thread get blocke don actual sending code which is blocke don hci buffer. l2cap layer itself ahs a send buffer, and a send thread whcih is also blocked. l2c's send data always higher priority than all other, so as long as it exists, all other send data waits...
-//todo: do we close fixedch and psm services properly?
 //todo: close acl link when last psm link down, close acl link when last attempted psm link is cancelled, etc...
 //todo: timers/timouts for unspecced BT waits (config, etc)
 //todo: set flush timout at hci layer to 0xffff for a reliable link
 //todo: there are states where instance,stateCbk,userData are null. we shoudl care for them...
 //todo: check all lengths followed, all log levels correct
-//todo: be mroe careful figuring out who startred a connection wrt psms
-//todo: after service alloc see if we're in teardown state and dealloc svc and tell other side to fuck off...
 //todo: close state calls shoudl call apropriate callbacks here and there, as needed
+//todo: aclLinkDown work
 
 
 #include <pthread.h>
@@ -3022,12 +3020,12 @@ bool l2cApiServicePsmUnregister(psm_t psm, void (*doneCbk)(void*), void* cbkData
     struct l2cConn *conn;
     bool anythingDone;
 
-    /* terminate all connections with that psm */
+    /* terminate all connections with that psm that the other side opened */
     pthread_mutex_lock(&mConnsLock);
     do {
          anythingDone = false;
          conn = mConns;
-         if (conn->psm == psm) {
+         if (conn->psm == psm && !conn->weOpened) {
 
              l2cConnRequestClose(NULL, conn, true);
              anythingDone = true;
@@ -3106,12 +3104,12 @@ bool l2cApiServiceFixedChUnregister(uint16_t chan, void (*doneCbk)(void*), void*
     struct l2cConn *conn;
     bool anythingDone;
 
-    /* terminate all connections to that FixedCh */
+    /* terminate all connections to that FixedCh that the other side opened */
     pthread_mutex_lock(&mConnsLock);
     do {
          anythingDone = false;
          conn = mConns;
-         if (!conn->psm && conn->localCh == chan) {
+         if (!conn->psm && conn->localCh == chan && !conn->weOpened) {
 
              if (conn->instance)
                  l2cSvcWorkScheduleStateCall(NULL, conn, L2C_STATE_CLOSED, NULL, 0);
