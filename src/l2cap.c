@@ -2,9 +2,7 @@
 //todo: close acl link when last psm link down, close acl link when last attempted psm link is cancelled, etc...
 //todo: timers/timouts for unspecced BT waits (config, etc)
 //todo: set flush timout at hci layer to 0xffff for a reliable link
-//todo: there are states where instance,stateCbk,userData are null. we shoudl care for them...
 //todo: check all lengths followed, all log levels correct
-//todo: close state calls shoudl call apropriate callbacks here and there, as needed
 //todo: aclLinkDown work
 
 
@@ -961,7 +959,7 @@ out_nolocks:
  *           result - the result the remote side sent
  *           status - the status from the remote side
  * RETURN:   NONE
- * NOTES:    call with mConnsLock held
+ * NOTES:    call with mConnsLock held. May destroy your conn
  */
 static void l2cHandleConnRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t remCh, uint16_t localCh, uint16_t result, uint16_t status)
 {
@@ -1042,7 +1040,7 @@ static void l2cHandleConnRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
  * PARAMS:   aclConn - the per-ACL-connection structure
  *           conn - the l2c connection struct
  * RETURN:   NONE
- * NOTES:    call with mConnsLock held, when *first* entering config state
+ * NOTES:    call with mConnsLock held, when *first* entering config state. May destroy your conn
  */
 static void l2cPsmSendConfig(struct l2cAclConn *aclConn, struct l2cConn *conn)
 {
@@ -1064,8 +1062,7 @@ static void l2cPsmSendConfig(struct l2cAclConn *aclConn, struct l2cConn *conn)
         conn->cfgTxState = L2C_CFG_STATE_REQ_SENT;
     } else {
         loge("Failed to send config request on conn for chs %d %d on acl %d\n", conn->localCh, conn->remCh, aclConn->conn);
-        if (!l2cSvcWorkScheduleStateCall(NULL, conn, L2C_STATE_CLOSED, NULL, 0))
-            loge("Failed to schedule 'closed' state call\n");
+        l2cConnRequestClose(aclConn, conn, true);
     }
 }
 
@@ -2165,7 +2162,7 @@ static bool l2cCommonSvcInstAllocDone(l2c_handle_t handle, struct l2cConn **conn
  *           instance - the allocated instance or NULL
  *           handle - the handle param for the connection
  * RETURN:   NONE
- * NOTES:
+ * NOTES:    May destroy your conn
  */
 static void l2cPsmSvcInstAllocDone(void *reqID, l2cStateCbk stateCbk, void *userData, void *instance, l2c_handle_t handle)
 {
@@ -2198,9 +2195,7 @@ static void l2cPsmSvcInstAllocDone(void *reqID, l2cStateCbk stateCbk, void *user
 
     if (!l2cSigSendConnectionRsp(aclConn, conn->ident, conn->localCh, conn->remCh, L2C_SIG_CONN_RSP_OK, 0)) {
         loge("Failed to sent positive connection request response frame - dropping connection\n");
-        if (!l2cSvcWorkScheduleStateCall(NULL, conn, L2C_STATE_CLOSED, NULL, 0))
-            loge("Failed to free instance. this will cause a memory leak\n");
-        l2cConnStructDelete(conn);
+        l2cConnRequestClose(aclConn, conn, false);
         goto out;
     }
 
