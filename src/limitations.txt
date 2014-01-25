@@ -12,3 +12,5 @@ we do not handle security in l2cap layer - hci layer shall encrypt all links by 
 
 timer support prefers system with at least Linux 2.6.39 kernel for CLOCK_BOOTTIME support
 all others will have issues...
+
+timer assumes pointers are no more than 64-bits on your system

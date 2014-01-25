@@ -1,6 +1,8 @@
+#include <semaphore.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <time.h>
 #include "timer.h"
 #include "uniq.h"
@@ -9,11 +11,11 @@
 
 
 struct timer {
-    struct timer *next;
-    uniq_t        handle;
-    uint64_t      fireTime;
-    timerCbk      cbk;
-    void         *cbkData;
+    uniq_t            handle;
+    struct timer     *next;
+    uint64_t          fireTime;
+    timerCbk          cbk;
+    uint64_t          cbkData;
 };
 
 static pthread_mutex_t mTimersLock = PTHREAD_MUTEX_INITIALIZER;
@@ -27,8 +29,8 @@ static clockid_t mClock;
  * USE:      Get current time in milliseconds
  * PARAMS:   unused - unused
  * RETURN:   the time
- * NOTES:    Time returned here need only be monotonicly increating,
- *           it need not be base don any particular base time, nor
+ * NOTES:    Time returned here need only be monotonically increasing,
+ *           it need not be based on any particular base time, nor
  *           is it required to be the same base every reboot.
  */
 static uint64_t timerCurTime(void)
@@ -63,7 +65,7 @@ static void* timersThread(void *unused)
 
         pthread_mutex_lock(&mTimersLock);
         do {
-            struct timer *p;
+            struct timer *p = NULL;
             uint64_t curTime, nextTime;
 
             /* grab the part of the list that is due, disconnect it, save head to "toFire" */
@@ -72,7 +74,6 @@ static void* timersThread(void *unused)
             nextTime = 0;
 
             t = mTimers;
-            p = NULL;
             while (t && t->fireTime <= curTime) {
                 p = t;
                 t = t->next;
@@ -168,9 +169,9 @@ static void timersInit(void)
  * RETURN:   uniq_t handle of the timer or 0 for failure
  * NOTES:
  */
-uniq_t timerSet(uint64_t msec, timerCbk cbk, void *cbkData)
+uniq_t timerSet(uint64_t msec, timerCbk cbk, uint64_t cbkData)
 {
-    struct timer *t, *c, *p;
+    struct timer *t, *c, *p = NULL;
     bool wake = false;
     uniq_t ret = 0;
 
@@ -190,7 +191,6 @@ uniq_t timerSet(uint64_t msec, timerCbk cbk, void *cbkData)
 
     /* find where it belongs */
     c = mTimers;
-    p = NULL;
     while (c && c->fireTime < t->fireTime) {
         p = c;
         c = c->next;
@@ -221,11 +221,65 @@ uniq_t timerSet(uint64_t msec, timerCbk cbk, void *cbkData)
  */
 bool timerCancel(uniq_t timer)
 {
+    struct timer *t, *p = NULL;
+
     timersInit();
+
     pthread_mutex_lock(&mTimersLock);
 
+    t = mTimers;
+    
+    while (t && t->handle != timer) {
+        p = t;
+        t = t->next;
+    }
+
+    if (t) {
+        if (p)
+            p->next = t->next;
+        else
+            mTimers = t->next;
+
+        free(t);
+    }
+
     pthread_mutex_unlock(&mTimersLock);
+
+    return !!t;
 }
 
 
+/*
+ * FUNCTION: timerSyncCbk
+ * USE:      Used by timerSync to flush the "toFire" queue
+ * PARAMS:   NONE
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void timerSyncCbk(uniq_t which, uint64_t cbkData)
+{
+    sem_post((sem_t*)cbkData);
+}
+
+/*
+ * FUNCTION: timerSync
+ * USE:      Make sure al cancelled timers have either fired or will not fire for sure
+ * PARAMS:   NONE
+ * RETURN:   NONE
+ * NOTES:    May block for a while
+ */
+void timerSync(void)
+{
+    sem_t sem;
+
+    if (!sem_init(&sem, 0, 0)) {
+        loge("Timersync fails: sem_init\n");
+        return;
+    }
+
+    timerSet(0, timerSyncCbk, (uint64_t)&sem);
+    while(EAGAIN == sem_wait(&sem));
+
+    sem_destroy(&sem);
+}
 
