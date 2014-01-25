@@ -4,6 +4,7 @@
 //todo: set flush timout at hci layer to 0xffff for a reliable link
 //todo: check all lengths followed, all log levels correct
 //todo: aclLinkDown work
+//todo: use l2cAclDownTimerStart & l2cAclDownTimerStop as needed
 
 
 #include <pthread.h>
@@ -240,12 +241,14 @@ struct l2cAclConn {
     struct l2cAclConn *next;
     struct l2cAclConn *prev;
     uniq_t             handle;
+    uniq_t             teardownTimer;
     uint8_t            ident; /* next ident to use */
     uint16_t           nextChan; /* a guess to a currently-free channel */
     uint16_t           conn;
     uint16_t           connectionlessMtu;
     struct bt_addr     addr;
-    bool               isMaster;
+    uint8_t            isMaster  : 1;
+    uint8_t            goingDown : 1;
 
     uint8_t            reqIdent; /* ident for an outstanding request */
 
@@ -392,6 +395,7 @@ static uint16_t l2cAclFreeCid(struct l2cAclConn *aclConn);
 static uint8_t l2cSigSendConnectionRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localCh, uint16_t remCh, uint16_t result, uint16_t status);
 static struct l2cConn* l2cConnFindByHandle(l2c_handle_t handle);
 static void l2cConnStructDelete(struct l2cConn *conn);
+static void l2cAclConnStructDelete(struct l2cAclConn *conn);
 static void l2cPsmSendConfig(struct l2cAclConn *aclConn, struct l2cConn *conn);
 static uint8_t l2cSigSendConfigReq(struct l2cAclConn *aclConn, uint16_t remCh, uint16_t flags, const void *cfgData, uint32_t cfgLen);
 static uint8_t l2cSigSendConfigRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t remCh, uint16_t flags, uint16_t result, const void *cfgData, uint32_t cfgLen);
@@ -401,6 +405,7 @@ static uint8_t l2cSigSendConnUpdateRsp(struct l2cAclConn *aclConn, uint8_t ident
 static uint8_t l2cSigSendConnUpdateReq(struct l2cAclConn *aclConn, uint16_t intMin, uint16_t intMax, uint16_t latency, uint16_t timeoutMult);
 static uint8_t l2cSigSendDiscRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localCh, uint16_t remCh);
 static void l2cConnRequestClose(struct l2cAclConn* aclConn, struct l2cConn *conn, bool tellOtherSide);
+static void l2cAclDownTimerStart(struct l2cAclConn *aclConn);
 
 
 /* our state */
@@ -2445,7 +2450,7 @@ int l2cInit(void)
 
 /*
  * FUNCTION: l2cConnStructDelete
- * USE:      Delete a conn structure
+ * USE:      Delete an l2cConn structure
  * PARAMS:   conn - the connection structure
  * RETURN:   NONE
  * NOTES:    Call with mConnsLock held.
@@ -2458,6 +2463,25 @@ static void l2cConnStructDelete(struct l2cConn *conn)
         conn->prev->next = conn->next;
     else
         mConns = conn->next;
+
+    free(conn);
+}
+
+/*
+ * FUNCTION: l2cAclConnStructDelete
+ * USE:      Delete an l2cAclConn structure
+ * PARAMS:   conn - the connection structure
+ * RETURN:   NONE
+ * NOTES:    Call with mConnsLock held.
+ */
+static void l2cAclConnStructDelete(struct l2cAclConn *conn)
+{
+    if (conn->next)
+        conn->next = conn->prev;
+    if (conn->prev)
+        conn->prev->next = conn->next;
+    else
+        mAclConns = conn->next;
 
     free(conn);
 }
@@ -2928,8 +2952,7 @@ static void l2cConnRequestClose(struct l2cAclConn* acl, struct l2cConn *conn, bo
      * instead of doing it here.
      */
     if (closeLink)
-        if (!l2cSvcWorkScheduleAclLinkClose(NULL, &acl->addr))
-            loge("Failed to schedule call to close ACL link %d\n", acl->conn);
+        l2cAclDownTimerStart(acl);
 }
 
 /*
@@ -3544,6 +3567,65 @@ out:
 }
 
 /*
+ * FUNCTION: l2cAclConnTeardownTimerCbk
+ * USE:      Timer callback for ACL link down
+ * PARAMS:   which - timer handle
+ *           cbkData - the callback data
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void l2cAclConnTeardownTimerCbk(uniq_t which, uint64_t cbkData)
+{
+    uniq_t aclHandle = (uniq_t)cbkData;
+    struct l2cAclConn *aclConn;
+
+    pthread_mutex_lock(&mConnsLock);
+    aclConn = l2cAclConnFindByHandle(aclHandle);
+    if (aclConn && aclConn->teardownTimer == which) {
+        logd("ACL link timer expired for %d. Closing\n", aclConn->conn);
+        aclConn->goingDown = true;
+        if (!l2cSvcWorkScheduleAclLinkClose(NULL, &aclConn->addr))
+            loge("Failed to schedule call to close ACL link %d\n", aclConn->conn);
+        l2cAclConnStructDelete(aclConn);
+    }
+    pthread_mutex_unlock(&mConnsLock);
+}
+
+/*
+ * FUNCTION: l2cAclDownTimerStart
+ * USE:      Schedule a timer for ACL link shutdown
+ * PARAMS:   aclConn - the connection
+ * RETURN:   NONE
+ * NOTES:    Call this when you're done with the link and you're the last one.
+ *           Call with mConnsLock held
+ */
+static void l2cAclDownTimerStart(struct l2cAclConn *aclConn)
+{
+    if (aclConn->teardownTimer) 
+        timerCancel(aclConn->teardownTimer);
+
+    aclConn->teardownTimer = timerSet(L2C_ACL_LINK_TIMOUT, l2cAclConnTeardownTimerCbk, aclConn->handle);
+    if (!aclConn->teardownTimer)
+        loge("Failed to set ACL teardown timer for %d\n", aclConn->conn);
+}
+
+
+/*
+ * FUNCTION: l2cAclDownTimerStop
+ * USE:      Remove a timer for ACL link shutdown
+ * PARAMS:   aclConn - the connection
+ * RETURN:   NONE
+ * NOTES:    Call this when you start using a link
+ *           Call with mConnsLock held
+ */
+static void l2cAclDownTimerStop(struct l2cAclConn *aclConn)
+{
+    if (aclConn->teardownTimer) 
+        timerCancel(aclConn->teardownTimer);
+    aclConn->teardownTimer = 0;
+}
+
+/*
  * FUNCTION: l2cAclLinkUp
  * USE:      Called when a new ACL link comes up
  * PARAMS:   aclConn - the conection ID
@@ -3556,6 +3638,7 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr, bool isMaster)
     struct l2cAclConn *aclConn;
     struct l2cConn *connIter;
     struct l2cFixedChSvc *svc;
+    bool inUse = false;
 
     pthread_mutex_lock(&mConnsLock);
     if (l2cAclConnFindById(aclConnID))
@@ -3586,7 +3669,9 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr, bool isMaster)
         }
         memcpy(&aclConn->addr, addr, sizeof(aclConn->addr));
         aclConn->ident = 1;
-        aclConn->isMaster = isMaster;
+        aclConn->teardownTimer = 0;
+        aclConn->isMaster = isMaster ? 1 : 0;
+        aclConn->goingDown = 0;
         aclConn->connectionlessMtu = L2C_MIN_CONNECTIONLESS_MTU;
         aclConn->connUpdtRequestIdent = 0;
         aclConn->nextChan = L2C_NUM_FIXED_CHANNELS;
@@ -3616,6 +3701,7 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr, bool isMaster)
             }
 
             if (!conn->psm) { /* FixedCh */
+                inUse = true;
                 l2cChannelReadyForData(aclConn, conn);
                 continue;
             }
@@ -3627,7 +3713,9 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr, bool isMaster)
                  conn->localCh = localCh;
             }
 
-            if (!ident) {
+            if (ident)
+                inUse = true;
+            else {
                 l2cSvcWorkScheduleStateCall(NULL, conn, L2C_STATE_CLOSED, NULL, 0);
                 loge("Failed to request opening of a psm channel\n");
                 l2cConnStructDelete(conn);
@@ -3660,12 +3748,21 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr, bool isMaster)
                     continue;
                 }
 
-                if (!l2cSvcWorkScheduleFixedChAlloc(svc->chan, NULL, conn->handle))
+                if (l2cSvcWorkScheduleFixedChAlloc(svc->chan, NULL, conn->handle))
+                    inUse = true;
+                else
                     loge("Failed to schedule FixedCh alloc for ch %d\n", svc->chan);
             }
             svc = svc->next;
         }
         pthread_mutex_unlock(&mSvcsLock);
+
+        if (!inUse) {
+            l2cAclDownTimerStart(aclConn);
+            aclConn->teardownTimer = timerSet(L2C_ACL_LINK_TIMOUT, l2cAclConnTeardownTimerCbk, aclConn->handle);
+            if (!aclConn->teardownTimer)
+                loge("Failed to set ACL teardown timer for %d\n", aclConn->conn);
+        }
     }
 
 out:
