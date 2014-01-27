@@ -1,9 +1,7 @@
 //todo: idea: sending thread get blocke don actual sending code which is blocke don hci buffer. l2cap layer itself ahs a send buffer, and a send thread whcih is also blocked. l2c's send data always higher priority than all other, so as long as it exists, all other send data waits...
-//todo: close acl link when last psm link down, close acl link when last attempted psm link is cancelled, etc...
 //todo: timers/timouts for unspecced BT waits (config, etc)
 //todo: set flush timout at hci layer to 0xffff for a reliable link
 //todo: check all lengths followed, all log levels correct
-//todo: aclLinkDown work
 
 
 #include <pthread.h>
@@ -407,6 +405,7 @@ static uint8_t l2cSigSendDiscRsp(struct l2cAclConn *aclConn, uint8_t ident, uint
 static void l2cConnRequestClose(struct l2cAclConn* aclConn, struct l2cConn *conn, bool tellOtherSide);
 static void l2cAclDownTimerStart(struct l2cAclConn *aclConn);
 static void l2cAclDownTimerStop(struct l2cAclConn *aclConn);
+static void l2cAclLinkDownInt(struct l2cAclConn *aclConn, bool alreadyClosed);
 
 
 /* our state */
@@ -2963,21 +2962,8 @@ static void l2cConnRequestClose(struct l2cAclConn* acl, struct l2cConn *conn, bo
      * want to, heed this warning and add acl link destruction to the work queue
      * instead of doing it here.
      */
-    if (closeLink) {
-        /* we still need to properly close all thosenot-in-use connections */
-        t = mConns;
-        while (t)
-            if (t->acl == acl->handle && !t->inUse) {
-                if (t->state == L2C_CONN_STATE_RX_OPEN_SVC)
-                    t->state = L2C_CONN_STATE_TEARDOWN;
-                else
-                    if (!l2cSvcWorkScheduleStateCallDirect(NULL, t->stateCbk, t->userData, t->instance, L2C_STATE_CLOSED, NULL, 0))
-                        loge("Failed to tell our side that inactive connection is closed\n");
-            }
-
-        /* shut the ACL link down */
+    if (closeLink)
         l2cAclDownTimerStart(acl);
-    }
 }
 
 /*
@@ -3622,8 +3608,7 @@ static void l2cAclConnTeardownTimerCbk(uniq_t which, uint64_t cbkData)
         aclConn->goingDown = true;
         if (!l2cSvcWorkScheduleAclLinkClose(NULL, &aclConn->addr))
             loge("Failed to schedule call to close ACL link %d\n", aclConn->conn);
-        l2cAclLinkDownInt(aclConn);
-        l2cAclConnStructDelete(aclConn);
+        l2cAclLinkDownInt(aclConn, false);
     }
     pthread_mutex_unlock(&mConnsLock);
 }
@@ -3838,6 +3823,26 @@ void l2cAclLinkParamsChange(uint16_t aclConn, bool success, uint16_t interval, u
 }
 
 /*
+ * FUNCTION: l2cAclLinkDownInt
+ * USE:      Called when an ACL link goes down or is about to go down
+ *           Shuts down all our state for said link.
+ * PARAMS:   aclConn - the ACL connection struct
+ * RETURN:   NONE
+ * NOTES:    call withmConnsLock held
+ */
+static void l2cAclLinkDownInt(struct l2cAclConn *aclConn, bool alreadyClosed)
+{
+    struct l2cConn *conn = mConns, *t;
+
+    while (conn && conn->acl == aclConn->handle) {
+        t = conn;
+        conn = conn->next;
+        l2cConnRequestClose(aclConn, t, !alreadyClosed);
+    }
+    l2cAclConnStructDelete(aclConn);
+}
+
+/*
  * FUNCTION: l2cAclLinkDown
  * USE:      Called when a new ACL link goes down
  * PARAMS:   aclConn - the conection ID
@@ -3852,8 +3857,7 @@ void l2cAclLinkDown(uint16_t aclConnID)
     aclConn = l2cAclConnFindById(aclConnID);
     if (aclConn) {
         logd("ACL link actually down. Handling\n", aclConn->conn);
-        l2cAclLinkDownInt(aclConn);
-        l2cAclConnStructDelete(aclConn);
+        l2cAclLinkDownInt(aclConn, true);
     } else
         logd("ACL link down %d\n", aclConnID);
     pthread_mutex_unlock(&mConnsLock);
