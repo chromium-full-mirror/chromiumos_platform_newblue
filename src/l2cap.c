@@ -1,7 +1,7 @@
 //todo: idea: sending thread get blocke don actual sending code which is blocke don hci buffer. l2cap layer itself ahs a send buffer, and a send thread whcih is also blocked. l2c's send data always higher priority than all other, so as long as it exists, all other send data waits...
-//todo: timers/timouts for unspecced BT waits (config, etc)
 //todo: set flush timout at hci layer to 0xffff for a reliable link
 //todo: check all lengths followed, all log levels correct
+//todo: are we handing config correctly?
 
 
 #include <pthread.h>
@@ -238,6 +238,7 @@ struct l2cAclConn {
     struct l2cAclConn *next;
     struct l2cAclConn *prev;
     uniq_t             handle;
+    uniq_t             openTimer;
     uniq_t             teardownTimer;
     uint8_t            ident; /* next ident to use */
     uint16_t           nextChan; /* a guess to a currently-free channel */
@@ -347,6 +348,7 @@ struct l2cConn {
     uniq_t             handle;
     struct l2cConn    *next;
     struct l2cConn    *prev;
+    uniq_t             timer;
 
     l2cStateCbk        stateCbk;
     void              *userData;
@@ -405,7 +407,7 @@ static uint8_t l2cSigSendDiscRsp(struct l2cAclConn *aclConn, uint8_t ident, uint
 static void l2cConnRequestClose(struct l2cAclConn* aclConn, struct l2cConn *conn, bool tellOtherSide);
 static void l2cAclDownTimerStart(struct l2cAclConn *aclConn);
 static void l2cAclDownTimerStop(struct l2cAclConn *aclConn);
-static void l2cAclLinkDownInt(struct l2cAclConn *aclConn, bool alreadyClosed);
+static void l2cAclLinkDownInt(struct l2cAclConn *aclConn, bool tellOtherSide);
 
 
 /* our state */
@@ -846,6 +848,78 @@ static bool l2cSvcWorkScheduleAclConnUpdt(void* reqID, uint16_t aclConn, uint16_
     return false;
 }
 
+
+/*
+ * FUNCTION: l2cConnTimeout
+ * USE:      Timer timeout callback for per-connection timers
+ * PARAMS:   timerH - the timer handle
+ *           connH - the connection handle
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void l2cConnTimeout(uniq_t timerH,  uint64_t connH)
+{
+    struct l2cConn *conn;
+
+    pthread_mutex_lock(&mConnsLock);
+    conn = l2cConnFindByHandle(connH);
+    if (!conn)
+        logw("Timer callback "HANDLEFMT" for nonexistent connection "HANDLEFMT"\n", HANDLECNV(timerH), HANDLECNV(connH));
+    else if (conn->timer != timerH)
+        logd("Stale timer callback "HANDLEFMT" for nonexistent connection "HANDLEFMT"\n", HANDLECNV(timerH), HANDLECNV(connH));
+    else {
+        /* We found a genuine timeout - figure out what kind by looking at state
+         * Note that this is purely for logging purposes, since we handle them all
+         * the same - by closing the connection.
+         */
+        switch (conn->state) {
+        case L2C_CONN_STATE_CONN_WAIT:
+        case L2C_CONN_STATE_RX_OPEN_SVC:
+        case L2C_CONN_STATE_ESTABLISHED:
+        case L2C_CONN_STATE_DIE_REQD:
+        case L2C_CONN_STATE_DIE_RXED:
+        case L2C_CONN_STATE_TEARDOWN:
+            loge("Unexpected timout in state %d for "HANDLEFMT" - closing connection\n", conn->state, HANDLECNV(connH));
+            break;
+        case L2C_CONN_STATE_TX_OPEN_TXED:
+            logi("Connection open timeout for "HANDLEFMT" - closing connection\n", HANDLECNV(connH));
+            break;
+        case L2C_CONN_STATE_CFG:
+            logi("Connection configuration timeout for "HANDLEFMT" - closing connection\n", HANDLECNV(connH));
+            break;
+        default:
+            loge("Unknown state %d for "HANDLEFMT" at timeout time - closing connection\n", conn->state, HANDLECNV(connH));
+            break;
+        }
+        l2cConnRequestClose(NULL, conn, true);
+    }
+    pthread_mutex_unlock(&mConnsLock);
+}
+
+
+/*
+ * FUNCTION: l2cConnTimer
+ * USE:      Set or clear a per-L2C-connection timer
+ * PARAMS:   conn - the connection
+ *           timeout - time to set ot 0 to clear
+ * RETURN:   NONE
+ * NOTES:    call mConnsLock held
+ */
+static void l2cConnTimer(struct l2cConn *conn, uint64_t timeout)
+{
+    if (conn->timer) {
+        logd("Removing existing timer "HANDLEFMT" for conn "HANDLEFMT"\n", HANDLECNV(conn->timer), HANDLECNV(conn->handle));
+        timerCancel(conn->timer);
+        conn->timer = 0;
+    }
+    if (timeout) {
+        logd("Setting a timer for %llu ms for conn "HANDLEFMT"\n", (unsigned long long)timeout, HANDLECNV(conn->handle));
+        conn->timer = timerSet(timeout, l2cConnTimeout, conn->handle);
+        if (!conn->timer)
+            loge("Failed to set per-conn timer\n");
+    }
+}
+
 /*
  * FUNCTION: l2cNewConnStruct
  * USE:      Create a new l2cConn and prepopulate with some  values
@@ -874,6 +948,7 @@ static struct l2cConn* l2cNewConnStruct(uint8_t state, uniq_t acl, uint16_t loca
     conn->localCh = localCh;
     conn->state = state;
     conn->weOpened = weOpened ? 1 : 0;
+    conn->timer = 0;
 
     return conn;
 }
@@ -1001,13 +1076,7 @@ static void l2cHandleConnRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
         return;
     }
 
-    if (!conn->stateCbk) {
-        logw("Connection Response for connection we did not create\n");
-        if (!l2cSvcWorkScheduleStateCall(NULL, conn, L2C_STATE_CLOSED, NULL, 0))
-            loge("Failed to schedule 'closed' state call\n");
-        l2cConnStructDelete(conn);
-        return;
-    }
+    l2cConnTimer(conn, 0);
 
     if (result == L2C_SIG_CONN_RSP_BAD_PSM || result == L2C_SIG_CONN_RSP_BAD_SEC || result == L2C_SIG_CONN_RSP_NO_RSRC) {
         logi("Other side refused our connection for psm %d\n", conn->psm);
@@ -1038,6 +1107,7 @@ static void l2cHandleConnRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
     }
 
     conn->state = L2C_CONN_STATE_CFG;
+    l2cConnTimer(conn, L2C_L2CAP_CONFIG_TIMEOUT);
     conn->cfgTxState = L2C_CFG_STATE_INITIAL;
     conn->cfgRxState = L2C_CFG_STATE_INITIAL;
     conn->remCh = remCh;
@@ -1260,8 +1330,10 @@ static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
         logi("Conf Rsp continues\n");
     else {
         conn->cfgTxState = L2C_CFG_STATE_CFG_ACCEPTED;
-        if (conn->cfgRxState)
+        if (conn->cfgRxState) {
+            l2cConnTimer(conn, 0);
             l2cChannelReadyForData(aclConn, conn);
+        }
     }
 }
 
@@ -1329,8 +1401,10 @@ static void l2cHandleConfRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
         logi("Conf Rsp continues\n");
     else {
         conn->cfgTxState = L2C_CFG_STATE_CFG_ACCEPTED;
-        if (conn->cfgRxState)
+        if (conn->cfgRxState) {
             l2cChannelReadyForData(aclConn, conn);
+            l2cConnTimer(conn, 0);
+        }
     }
 }
 
@@ -2219,6 +2293,7 @@ static void l2cPsmSvcInstAllocDone(void *reqID, l2cStateCbk stateCbk, void *user
     conn->userData = userData;
     conn->instance = instance;
     conn->state = L2C_CONN_STATE_CFG;
+    l2cConnTimer(conn, L2C_L2CAP_CONFIG_TIMEOUT);
     conn->cfgTxState = L2C_CFG_STATE_INITIAL;
     conn->cfgRxState = L2C_CFG_STATE_INITIAL;
     l2cPsmSendConfig(aclConn, conn);
@@ -2879,7 +2954,9 @@ static uint8_t l2cSigSendErrInvalidCid(struct l2cAclConn *aclConn, uint8_t ident
 /*
  * FUNCTION: l2cConnRequestClose
  * USE:      Request an orderly closing of a channel
- * PARAMS:   con - the connection structure
+ * PARAMS:   acl - the ACL link structure (pass NULL to auto-find it)
+ *           conn - the connection struct
+ *           tellOtherSide - TX a message to other side?
  * RETURN:   ident if request was sent, else 0
  * NOTES:    Call with mConnsLock held. Will call service's free(), cbk if appropriate
  */
@@ -3381,20 +3458,49 @@ bool l2cApiConnectionlessDataTx(const struct bt_addr *addr, psm_t psm, const voi
 }
 
 /*
- * FUNCTION: l2cCreateAndOpenNewConn
+ * FUNCTION: l2ccAclLinkUpTimeout
+ * USE:      Timeout timer for ACL link opening
+ * PARAMS:   which - the timer ID
+ *           aclConnHandle - acl connection handle
+ * RETURN:   tNONE
+ * NOTES:
+ */
+static void l2cAclLinkUpTimeout(uniq_t which,  uint64_t aclConnHandle)
+{
+    struct l2cAclConn *aclConn;
+
+    pthread_mutex_lock(&mConnsLock);
+    aclConn = l2cAclConnFindByHandle(aclConnHandle);
+    if (aclConn && aclConn->openTimer == which) {
+        logi("ACL link open failed for "HANDLEFMT"\n", HANDLECNV(aclConn->handle));
+        aclConn->goingDown = true;
+        if (!l2cSvcWorkScheduleAclLinkClose(NULL, &aclConn->addr))
+            loge("Failed to schedule call to close ACL link "HANDLEFMT"\n", HANDLECNV(aclConn->handle));
+        l2cAclLinkDownInt(aclConn, false);
+    }
+    pthread_mutex_unlock(&mConnsLock);
+}
+
+/*
+ * FUNCTION: l2cCreateAndOpenNewAclConn
  * USE:      Request an ACL connection be created
  * PARAMS:   addr - the peer address
  * RETURN:   true is it was requested. False on immediate error.
  * NOTES:    call with mConnsLock held
  */
-static struct l2cAclConn* l2cCreateAndOpenNewConn(const struct bt_addr* addr)
+static struct l2cAclConn* l2cCreateAndOpenNewAclConn(const struct bt_addr* addr)
 {
     struct l2cAclConn *conn;
 
     conn = l2cAclConnFindByAddr(addr);
     if (conn) {
-        logw("Asked to establish existing ACL conn\n");
-        return conn;
+        if (conn->goingDown) {
+            logw("Asked to establish existing ACL conn as it goes down. Bad luck\n");
+            return NULL;
+        } else {
+            logw("Asked to establish existing ACL conn\n");
+            return conn;
+        }
     }
 
     conn = (struct l2cAclConn*)malloc(sizeof(struct l2cAclConn));
@@ -3415,6 +3521,9 @@ static struct l2cAclConn* l2cCreateAndOpenNewConn(const struct bt_addr* addr)
         conn->next = mAclConns;
         mAclConns->prev = conn;
         mAclConns = conn;
+        conn->openTimer = timerSet(L2C_ACL_LINK_UP_TIMEOUT, l2cAclLinkUpTimeout, conn->handle);
+        if (!conn->openTimer)
+            loge("Failed to set open timeout for ACL link\n");
     }
 
     return conn;
@@ -3457,9 +3566,12 @@ bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr* addr, l2cStateCb
 
     pthread_mutex_lock(&mConnsLock);
     aclConn = l2cAclConnFindByAddr(addr);
-    if (!aclConn) {
+    if (aclConn && aclConn->goingDown) {
+        logw("Trying to open a connection over a going-down ACL link. Bad luck\n");
+        goto out;
+    } else if (!aclConn) {
         logd("acl not found for connection requested, making one\n");
-        aclConn = l2cCreateAndOpenNewConn(addr);
+        aclConn = l2cCreateAndOpenNewAclConn(addr);
     }
     if (!aclConn) {
         loge("Failed to create/open/find ACL conn\n");
@@ -3497,6 +3609,7 @@ bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr* addr, l2cStateCb
         conn->state = L2C_CONN_STATE_TX_OPEN_TXED;
         conn->ident = ident;
         l2cAclDownTimerStop(aclConn);
+        l2cConnTimer(conn, L2C_L2CAP_OPEN_TIMEOUT);
     }
     conn->next = mConns;
     mConns = conn;
@@ -3541,9 +3654,12 @@ bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr* addr, l2
 
     pthread_mutex_lock(&mConnsLock);
     aclConn = l2cAclConnFindByAddr(addr);
-    if (!aclConn) {
+    if (aclConn && aclConn->goingDown) {
+        logw("Trying to open a connection over a going-down ACL link. Bad luck\n");
+        goto out;
+    } else if (!aclConn) {
         logd("acl not found for connection requested, making one\n");
-        aclConn = l2cCreateAndOpenNewConn(addr);
+        aclConn = l2cCreateAndOpenNewAclConn(addr);
     }
     if (!aclConn) {
         loge("Failed to create/open/find ACL conn\n");
@@ -3608,7 +3724,7 @@ static void l2cAclConnTeardownTimerCbk(uniq_t which, uint64_t cbkData)
         aclConn->goingDown = true;
         if (!l2cSvcWorkScheduleAclLinkClose(NULL, &aclConn->addr))
             loge("Failed to schedule call to close ACL link %d\n", aclConn->conn);
-        l2cAclLinkDownInt(aclConn, false);
+        l2cAclLinkDownInt(aclConn, true);
     }
     pthread_mutex_unlock(&mConnsLock);
 }
@@ -3668,9 +3784,10 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr, bool isMaster)
     else {
         aclConn = l2cAclConnFindByAddr(addr);
         if (aclConn) {
-            if (aclConn->conn & L2C_CONN_IN_PROGRESS)
+            if (aclConn->conn & L2C_CONN_IN_PROGRESS) {
+                aclConn->openTimer = 0;
                 logd("Us-initiated ACL connection up %d\n", aclConnID);
-            else {
+            } else {
                 loge("Duplicate ACL link up with same address and different connID (old %d new %d)."
                     " Ignored.\n", aclConn->conn, aclConnID);
                 goto out;
@@ -3745,6 +3862,7 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr, bool isMaster)
             }
             conn->state = L2C_CONN_STATE_TX_OPEN_TXED;
             conn->ident = ident;
+            l2cConnTimer(conn, L2C_L2CAP_OPEN_TIMEOUT);
         }
 
         /* Bring up all FixedCh services */
@@ -3830,14 +3948,14 @@ void l2cAclLinkParamsChange(uint16_t aclConn, bool success, uint16_t interval, u
  * RETURN:   NONE
  * NOTES:    call withmConnsLock held
  */
-static void l2cAclLinkDownInt(struct l2cAclConn *aclConn, bool alreadyClosed)
+static void l2cAclLinkDownInt(struct l2cAclConn *aclConn, bool tellOtherSide)
 {
     struct l2cConn *conn = mConns, *t;
 
     while (conn && conn->acl == aclConn->handle) {
         t = conn;
         conn = conn->next;
-        l2cConnRequestClose(aclConn, t, !alreadyClosed);
+        l2cConnRequestClose(aclConn, t, tellOtherSide);
     }
     l2cAclConnStructDelete(aclConn);
 }
@@ -3857,7 +3975,7 @@ void l2cAclLinkDown(uint16_t aclConnID)
     aclConn = l2cAclConnFindById(aclConnID);
     if (aclConn) {
         logd("ACL link actually down. Handling\n", aclConn->conn);
-        l2cAclLinkDownInt(aclConn, true);
+        l2cAclLinkDownInt(aclConn, false);
     } else
         logd("ACL link down %d\n", aclConnID);
     pthread_mutex_unlock(&mConnsLock);
