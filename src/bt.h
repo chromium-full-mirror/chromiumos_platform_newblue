@@ -3,8 +3,10 @@
 
 #include "types.h"
 
+#define BT_MAC_LEN                6
+
 struct bt_addr {
-    uint8_t addr[6];
+    uint8_t addr[BT_MAC_LEN];
     uint8_t type;
 };
 #define BT_ADDR_TYPE_EDR         0

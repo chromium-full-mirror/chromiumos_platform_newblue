@@ -14,3 +14,5 @@ timer support prefers system with at least Linux 2.6.39 kernel for CLOCK_BOOTTIM
 all others will have issues...
 
 timer assumes pointers are no more than 64-bits on your system
+
+bt_vendor_lib.h is a copy from bluedroid and is needed. once we are in the build system, we can use the real h file and delete this copy
