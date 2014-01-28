@@ -1,7 +1,6 @@
 //todo: idea: sending thread get blocke don actual sending code which is blocke don hci buffer. l2cap layer itself ahs a send buffer, and a send thread whcih is also blocked. l2c's send data always higher priority than all other, so as long as it exists, all other send data waits...
 //todo: set flush timout at hci layer to 0xffff for a reliable link
 //todo: check all lengths followed, all log levels correct
-//todo: are we handing config correctly?
 
 
 #include <pthread.h>
@@ -1329,8 +1328,8 @@ static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
     if (flags & L2C_SIG_CONF_FLAG_C)
         logi("Conf Rsp continues\n");
     else {
-        conn->cfgTxState = L2C_CFG_STATE_CFG_ACCEPTED;
-        if (conn->cfgRxState) {
+        conn->cfgRxState = L2C_CFG_STATE_CFG_ACCEPTED;
+        if (conn->cfgTxState == L2C_CFG_STATE_CFG_ACCEPTED) {
             l2cConnTimer(conn, 0);
             l2cChannelReadyForData(aclConn, conn);
         }
@@ -1401,7 +1400,7 @@ static void l2cHandleConfRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
         logi("Conf Rsp continues\n");
     else {
         conn->cfgTxState = L2C_CFG_STATE_CFG_ACCEPTED;
-        if (conn->cfgRxState) {
+        if (conn->cfgRxState == L2C_CFG_STATE_CFG_ACCEPTED) {
             l2cChannelReadyForData(aclConn, conn);
             l2cConnTimer(conn, 0);
         }
