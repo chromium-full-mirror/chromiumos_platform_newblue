@@ -5,6 +5,7 @@
 
 #include <semaphore.h>
 #include <pthread.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <stdio.h>
@@ -41,71 +42,260 @@ static pthread_t mWorkerThread;
 static int mWorkerClosePipe;
 
 
-
+/* as per vendor lib docs */
+typedef struct
+{
+    uint16_t          event;
+    uint16_t          len;
+    uint16_t          offset;
+    uint16_t          layer_specific;
+} HC_BT_HDR;
 
 /*
- * FUNCTION: vcbkFwCfg
- * USE:      Called when FW upload finishes
+ * FUNCTION: vcbkSomeConfigDone
+ * USE:      Called when one of the types of configs is done
  * PARAMS:   NONE
- * RETURN:   success
- * NOTES:    Only needs to be done once.
- *           Keep it open from then on.
+ * RETURN:   NONE
+ * NOTES:
  */
-static void vcbkFwCfg(bt_vendor_op_result_t result)
+static void vcbkSomeConfigDone(bt_vendor_op_result_t result)
 {
+    logi("Some vendor config done\n");
     mCbkResult = result == BT_VND_OP_RESULT_SUCCESS;
     sem_post(&mInitSem);
 }
 
-static void vcbkScoCfg(bt_vendor_op_result_t result)
-{
-    //todo
-}
-
-static void vcbkLbm(bt_vendor_op_result_t result)
-{
-    //todo
-}
-
+/*
+ * FUNCTION: vcbkAlloc
+ * USE:      Alloc a buffer for vendor lib pass pointer to it past HC_BT_HDR, pre-fill hdr
+ * PARAMS:   size
+ * RETURN:   pointer
+ * NOTES:    yes, this is weird. but the spec says so
+ */
 static void* vcbkAlloc(int size)
 {
-    //todo
+    HC_BT_HDR *h = (HC_BT_HDR*)malloc(sizeof(HC_BT_HDR) + size);
+    if (!h) {
+        loge("vendor alloc cbk fails for size %u\n", size);
+        return NULL;
+    }
+
+    h->event = 0x2000;
+    h->len = size;
+    h->offset = 0;
+    h->layer_specific = 0;
+
+    return h + 1;
 }
 
+/*
+ * FUNCTION: vcbkDealloc
+ * USE:      Free a buffer allocated by vcbkAlloc
+ * PARAMS:   buffer
+ * RETURN:   NONE
+ * NOTES:    yes, this is weird. but the spec says so
+ */ 
 static void vcbkDealloc(void *p_buf)
 {
-    //todo
+    HC_BT_HDR* h = (HC_BT_HDR*)p_buf;
+    free(h - 1);
 }
 
+/*
+ * FUNCTION: vcbkXmit
+ * USE:      Send a command on behalf of the vendor lib
+ * PARAMS:   opcode - the opcode sent (for matching reply)
+ *           p_buf - the buffer containing the command
+ *           p_cback - the callback to call when reply arrives
+ * RETURN:   NONE
+ * NOTES:    We do nto implement it since the spec is unclear and nobody uses this
+ */ 
 static uint8_t vcbkXmit(uint16_t opcode, void *p_buf, tINT_CMD_CBACK p_cback)
 {
-    //todo
+    loge("Unsupported vcbkXmit call with opcode %04X\n", opcode);
+    return 0; /* fail */
 }
 
-static void vcbkEpilog(bt_vendor_op_result_t result)
+/*
+ * FUNCTION: rread
+ * USE:      Read while handing EINTR
+ * PARAMS:   fd - the fd
+ *           buf - where to read to
+ *           sz - the size
+ * RETURN:   0 is all ok, else error
+ * NOTES:
+ */
+static int rread(int fd, void *buf, uint32_t sz)
 {
-    logi("Epilog done\n");
-    sem_post(&mInitSem);
+    uint8_t *dst = (uint8_t*)buf;
+    int ret;
+
+    while (sz) {
+
+        ret = read(fd, dst, sz);
+        if (ret < 0) {
+            if (errno == EINTR)
+                continue;
+            return errno ? errno : -1;
+        } else if (!ret)
+            logw("Read returned 0 unexpectedly\n");
+        dst += ret;
+        sz -= ret;
+    }
+
+    return 0;
+}
+
+
+/*
+ * FUNCTION: rwrite
+ * USE:      Write while handing EINTR
+ * PARAMS:   fd - the fd
+ *           buf - where to write from
+ *           sz - the size
+ * RETURN:   0 is all ok, else error
+ * NOTES:
+ */
+static int rwrite(int fd, const void *buf, uint32_t sz)
+{
+    const uint8_t *dst = (const uint8_t*)buf;
+    int ret;
+
+    while (sz) {
+
+        ret = write(fd, dst, sz);
+        if (ret < 0) {
+            if (errno == EINTR)
+                continue;
+            return errno ? errno : -1;
+        } else if (!ret)
+            logw("Write returned 0 unexpectedly\n");
+        dst += ret;
+        sz -= ret;
+    }
+
+    return 0;
 }
 
 /*
  * FUNCTION: vendorWorker
  * USE:      Vendor lib worker thread
- * PARAMS:   pipe - actually an int - the fd with th epipe used to tell us to quit
+ * PARAMS:   pipe - actually an int - the fd with the pipe used to tell us to quit
  * RETURN:   unused
  * NOTES:
  */
-static void* vendorWorker(void *pipeP)
+static void* vendorWorker(void *pipeFdP)
 {
-    int pipeFd = (int)(uintptr_t)pipeP;
+    int pipeFd = (uintptr_t)pipeFdP;
+    int i, ret;
 
     while (1) {
-        struct pollfd pollfds[MAX_CH + 1];
-        int numfds = 0;
+        struct pollfd pollfds[CH_MAX + 1] = {{0,},};
+        int numfds = 0, exitPipeIdx;
+        int firstFd = -1;
+        int secondFd = -1;
 
-        //add pipe, add others, wait, see...
+        /* add our pipe for signaling a shutdown */
+        pollfds[numfds].fd = pipeFd;
+        pollfds[numfds].events = POLLIN | POLLPRI | POLLERR;
+        exitPipeIdx = numfds++;
 
+        /* add others */
+        if (mFdAclIn) {
+            pollfds[numfds].fd = mFdAclIn;
+            pollfds[numfds].events = POLLIN;
+            numfds++;
+        }
+        if (mFdEvtIn != mFdAclIn) {
+            pollfds[numfds].fd = mFdEvtIn;
+            pollfds[numfds].events = POLLIN;
+            numfds++;
+        }
+
+        /* wait for action */
+        while(EINTR == (ret = poll(pollfds, numfds, -1)));
+        if (ret < 0) {
+            loge("Unexpected poll error %d\n", ret);
+            continue;
+        } else if (!ret) {
+            loge("Unexpected poll timeout\n");
+            continue;
+        }
+
+        if (pollfds[exitPipeIdx].revents) {
+            logi("Vendor worker shutdown with events %u\n", pollfds[exitPipeIdx].revents);
+            break;
+        }
+
+        for(i = 0; i < numfds; i++) {
+            uint8_t buf[5], extraSz = 0;
+            uint32_t sz;
+            uint8_t *packet;
+
+            if (i == exitPipeIdx)
+                continue;
+
+            if (!pollfds[i].revents)
+                continue;
+
+            /* read the packet */
+            ret = rread(pollfds[i].fd, buf, 1);
+            if (ret != 1) {
+                loge("Failed to read packet type: %d\n", ret);
+                continue;
+            }
+            switch (buf[0]) {
+            case HCI_PKT_TYP_ACL:
+                ret = rread(pollfds[i].fd, buf + 1, 4);
+                if (ret) {
+                    loge("Failed to read ACL hdr: %d\n", ret);
+                    continue;
+                }
+                sz = utilGetLE16(buf + 3);
+                break;
+            case HCI_PKT_TYP_SCO:
+                ret = rread(pollfds[i].fd, buf + 1, 3);
+                if (ret) {
+                    loge("Failed to read SCO hdr: %d\n", ret);
+                    continue;
+                }
+                sz = utilGetLE8(buf + 3);
+                break;
+            case HCI_PKT_TYP_EVT:
+                ret = rread(pollfds[i].fd, buf + 1, 2);
+                if (ret) {
+                    loge("Failed to read EVT hdr: %d\n", ret);
+                    continue;
+                }
+                sz = utilGetLE8(buf + 2);
+                break;
+            default:
+                loge("Unknown HCI packet type %d\n", buf[0]);
+                continue;
+            }
+            packet = (uint8_t*)malloc(sz + ret);
+            if (!packet) {
+                loge("Failed to alloc %u bytes for packet\n", sz + ret);
+                /* read it anyways to avoid desync */
+                while(sz--)
+                    rread(pollfds[i].fd, buf, 1);
+                continue;
+            }
+            memcpy(packet, buf + 1, ret);
+            sz += ret;
+            ret = rread(pollfds[i].fd, packet + ret, sz - ret);
+            if (ret) {
+                loge("Failed to read packet remainder of a %ub packet\n", sz);
+                free(packet);
+                continue;
+            }
+            mCbkRx(mCbkData, buf[0], packet, sz);
+        }
     }
+
+    /* clean up on exit */
+    close(pipeFd);
+    return NULL;
 }
 
 /*
@@ -178,19 +368,19 @@ out:
  * RETURN:   success
  * NOTES:
  */
-bool vendorUp(const uint8_t *addr, vendorCbkChipHwUp chipUpCbk, vendorCbkRx dataRxCbk, void *chipCbkData)
+bool vendorUp(const uint8_t *addr, vendorCbkChipUp chipUpCbk, vendorCbkRx dataRxCbk, void *chipCbkData)
 {
     int ret, fds[CH_MAX], pipeFds[2];
     static unsigned char local_addr[BT_MAC_LEN];
     static const bt_vendor_callbacks_t vendorCbks = {
         .size      = sizeof(bt_vendor_callbacks_t),
-        .fwcfg_cb  = vcbkFwCfg,
-        .scocfg_cb = vcbkScoCfg,
-        .lpm_cb    = vcbkLbm,
+        .fwcfg_cb  = vcbkSomeConfigDone,
+        .scocfg_cb = vcbkSomeConfigDone,
+        .lpm_cb    = vcbkSomeConfigDone,
         .alloc     = vcbkAlloc,
         .dealloc   = vcbkDealloc,
         .xmit_cb   = vcbkXmit,
-        .epilog_cb = vcbkEpilog,
+        .epilog_cb = vcbkSomeConfigDone,
     };
 
     if (!chipUpCbk || !dataRxCbk) {
@@ -241,6 +431,8 @@ bool vendorUp(const uint8_t *addr, vendorCbkChipHwUp chipUpCbk, vendorCbkRx data
     if (ret == 1) {
         mFdCmdOut = fds[CH_CMD];
         mFdEvtIn = fds[CH_CMD];
+        mFdAclIn = fds[CH_CMD];
+        mFdAclOut = fds[CH_CMD];
     } else if (ret == 2) {
         mFdCmdOut = fds[CH_CMD];
         mFdEvtIn = fds[CH_CMD];
@@ -301,7 +493,28 @@ out_need_close:
  */
 bool vendorTx(uint8_t typ, const void *data, uint32_t len)
 {
-    //todo
+    int fd, ret;
+
+    switch (typ) {
+    case HCI_PKT_TYP_CMD:
+        fd = mFdCmdOut;
+        break;
+    case HCI_PKT_TYP_ACL:
+        fd = mFdAclOut;
+        break;
+    case HCI_PKT_TYP_SCO:
+        fd = mFdAclOut; /* may be a reasonable guess */
+        break;
+    default:
+        loge("Unknown packet send type: %d\n", typ);
+        return false;
+    }
+
+    ret = rwrite(fd, data, len);
+    if (ret)
+        loge("Write failed for %d: %d\n", fd, ret);
+
+    return !ret;   
 }
 
 
