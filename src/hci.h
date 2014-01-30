@@ -10,7 +10,7 @@
 
 
 /* bring chip communications up or down */
-bool hciUp(void);
+bool hciUp(const uint8_t *addr);
 void hciDown(void);
 
 
