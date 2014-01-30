@@ -8,7 +8,7 @@
 typedef void (*vendorCbkChipUp)(void* cbkData, bool fw, bool up);
 
 /* callback for data rx. do not block int this for long. buf is allocated by vendor lib, freed by callback */
-typedef void (*vendorCbkRx)(void* cbkData, uint8_t typ, const void *data, uint32_t len);
+typedef void (*vendorCbkRx)(void* cbkData, uint8_t typ, void *data, uint32_t len);
 
 /* open the lib itself - done once ever */
 bool vendorOpen(void);
