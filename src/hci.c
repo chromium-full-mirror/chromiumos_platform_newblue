@@ -15,20 +15,24 @@ struct hciAclHdr {
     uint16_t hdr;
     uint16_t len;
 } __packed;
-#define ACL_HDR_MASK_CONN_ID  0x0FFF
-#define ACL_HDR_MASK_PB       0x3000
-#define ACL_HDR_MASK_BC       0xC000
+#define ACL_HDR_MASK_CONN_ID     0x0FFF
+#define ACL_HDR_MASK_PB          0x3000
+#define ACL_HDR_MASK_BC          0xC000
+#define ACL_HDR_PB_FIRST_NONAUTO 0x0000
+#define ACL_HDR_PB_CONINUED      0x1000
+#define ACL_HDR_PB_FIRST_AUTO    0x2000
+#define ACL_HDR_PB_COMPLETE      0x3000
 
 struct hciScoHdr {
     uint16_t hdr;
     uint8_t len;
 } __packed;
-#define SCO_HDR_MASK_CONN_ID  0x0FFF
-#define SCO_HDR_MASK_STATUS   0x3000
-#define SCO_STATUS_ALL_OK     0x0000
-#define SCO_STATUS_UNKNOWN    0x1000
-#define SCO_STATUS_NO_DATA    0x2000
-#define SCO_STATUS_SOME_DATA  0x3000
+#define SCO_HDR_MASK_CONN_ID     0x0FFF
+#define SCO_HDR_MASK_STATUS      0x3000
+#define SCO_STATUS_ALL_OK        0x0000
+#define SCO_STATUS_UNKNOWN       0x1000
+#define SCO_STATUS_NO_DATA       0x2000
+#define SCO_STATUS_SOME_DATA     0x3000
 
 struct hciEvtHdr {
     uint8_t code;
@@ -84,6 +88,29 @@ static void hciRxSco(uint16_t hdr, void *data, uint8_t len)
     }
 
     mScoRxF(hdr & SCO_HDR_MASK_CONN_ID, data, len, loss);
+}
+
+/*
+ * FUNCTION: hciRxAcl
+ * USE:      Called with a valid ACL packet/fragment
+ * PARAMS:   hdr - packet header
+ *           data - the thing we got
+ *           len - data length
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void hciRxAcl(uint16_t hdr, void *data, uint16_t len)
+{
+    uint16_t pb = hdr & ACL_HDR_MASK_PB;
+    uint16_t bc = hdr & ACL_HDR_MASK_BC;
+
+
+    if (pb == ACL_HDR_PB_FIRST_NONAUTO || pb == ACL_HDR_PB_COMPLETE) {
+        logw("Invalid acl.pb flag from chp: 0x%04X. Dropped\n", pb);
+        return;
+    }
+
+    mAclRxF(hdr & SCO_HDR_MASK_CONN_ID, data, len, pb == ACL_HDR_PB_FIRST_AUTO);
 }
 
 /*

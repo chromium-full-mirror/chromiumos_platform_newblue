@@ -9,7 +9,7 @@
 #define HCI_PKT_TYP_EVT         0x04
 
 /* various callbacks */
-typedef void (*hciAclRxCbk)(uint16_t aclConn, const void *data, uint32_t len);
+typedef void (*hciAclRxCbk)(uint16_t aclConn, const void *data, uint32_t len, bool first);
 typedef void (*hciScoRxCbk)(uint16_t aclConn, const void *data, uint8_t len, uint8_t lossAmount);
 #define SCO_LOSS_AMOUNT_NONE    0
 #define SCO_LOSS_AMOUNT_SOME    1
