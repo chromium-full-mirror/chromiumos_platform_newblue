@@ -104,7 +104,7 @@ void l2cAclLinkUp(uint16_t aclConn, const struct bt_addr *addr, bool isMaster);
 /* lower layer calls this when an ACL link is down */
 void l2cAclLinkDown(uint16_t aclConn);
 /* lower layer calls this when new ACL data arrives */
-void l2cAclDataRx(uint16_t aclConn, const void *data, uint32_t len);
+void l2cAclDataRx(uint16_t aclConn, const void *data, uint32_t len, bool first);
 /* this layer calls this to send ACL data */
 void l2cAclDataTx(uint16_t aclConn, const void *data, uint32_t len);
 /* this layer calls this to establish a link. *addr need not stay valid after call */

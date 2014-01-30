@@ -237,6 +237,9 @@ struct l2cAclConn {
     uniq_t             handle;
     uniq_t             openTimer;
     uniq_t             teardownTimer;
+    uint8_t           *reassBuf;
+    uint32_t           reassLen;
+
     uint8_t            ident; /* next ident to use */
     uint16_t           nextChan; /* a guess to a currently-free channel */
     uint16_t           conn;
@@ -2107,80 +2110,143 @@ static bool l2cSendRxToChannel(struct l2cAclConn *aclConn, uint16_t chan, const 
 }
 
 /*
+ * FUNCTION: l2cAclDataRxCompletePacket
+ * USE:      Called when a complete reassembled packet has arrived
+ * PARAMS:   aclConn - the connection ID
+ *           data - buffer with the data
+ *           len - how much data there is
+ * RETURN:   NONE
+ * NOTES:    call with mConnsLock held
+ */
+static void l2cAclDataRxCompletePacket(struct l2cAclConn *conn, uint16_t cid, const void *data, uint32_t len)
+{
+    if (cid == L2C_CH_SIGNALLING_EDR) {
+        if (!BT_ADDR_IS_EDR(conn->addr))
+            loge("Received EDR signalling packet on non-EDR link. Dropping.\n");
+        else
+            l2cSignallingRx(conn, data, len);
+    } else if (cid == L2C_CH_SIGNALLING_LE) {
+        if (!BT_ADDR_IS_LE(conn->addr))
+            loge("Received LE signalling packet on non-LE link. Dropping.\n");
+        else
+            l2cSignallingRx(conn, data, len);
+    } else if (cid == L2C_CH_CONNECTIONLESS) {
+        psm_t psm;
+
+        if (len < sizeof(psm_t))
+            loge("Short connectionless L2CAP data RXed: %db\n", len);
+        else {
+
+            psm = utilGetLE16(data);
+            data = ((uint16_t*)data) + 1;
+            len -= sizeof(uint16_t);
+            if (!l2cSvcWorkSchedulePsmConnectionlessRx(psm, NULL, conn->handle, data, len))
+                loge("Failed to schedule call to connectionless RX for psm %d\n", psm);
+        }
+    } else {
+        if (!l2cSendRxToChannel(conn, cid, data, len)) {
+            if (cid < L2C_NUM_FIXED_CHANNELS)
+                logw("Dropping RXed FixedCh data for cid %d\n", cid);
+            else
+                logw("Dropping RXed PSM data for unknown cid %d\n", cid);
+        }
+    }
+}
+
+/*
+ * FUNCTION: l2cAclDataRxProcessIfComplete
+ * USE:      Called with a [partially] RXed packet to see if it is
+ *           complete, and if so process it
+ * PARAMS:   conn - the ACL connection struct
+ *           data - buffer with the data
+ *           len - how much data there is
+ * RETURN:   true if packet was compelte and was processed
+ *           false if more data is needed
+ * NOTES:    call with mConnsLock held
+ */
+static bool l2cAclDataRxProcessIfComplete(struct l2cAclConn *conn, const void *data, uint32_t len)
+{
+    const struct l2cFrm *frm = (struct l2cFrm*)data;
+    uint16_t frmLen, totalLen;
+
+    /* must be long enough to fit a header */
+    if (len < sizeof(struct l2cFrm))
+        return false;
+
+    frmLen = utilGetLE16(&frm->len);
+    totalLen = frmLen + sizeof(struct l2cFrm);
+
+    /* must fit header and data */
+    if (totalLen > len)
+        return false;
+
+    /* throw a warning if extra data */
+    if (totalLen < len)
+        logw("ACL data packet %ub but L2C expects %ub\n", len, totalLen);
+
+    /* full packet - process it */
+    l2cAclDataRxCompletePacket(conn, utilGetLE16(&frm->cid), frm + 1, frmLen);
+    return true;
+}
+
+
+/*
  * FUNCTION: l2cAclDataRx
  * USE:      Called by lower layers when ACL data arrives
  * PARAMS:   aclConn - the connection ID
  *           data - buffer with the data
  *           len - how much data there is
- * RETURN:   num bytes used/needed or 0 for error
+ *           first - whethere this is first or continued packet
+ * RETURN:   NONE
  * NOTES:
  */
-void l2cAclDataRx(uint16_t aclConn, const void *data, uint32_t datalen)
+void l2cAclDataRx(uint16_t aclConn, const void *data, uint32_t datalen, bool first)
 {
-    const struct l2cFrm *frm;
-    uint16_t len, cid;
     struct l2cAclConn *conn;
-
-
-    if (datalen < sizeof(struct l2cFrm)) {
-
-        loge("Short L2CAP frame RXed: %db\n", datalen);
-        return;
-    }
-
-    /* get the header */
-    frm = (struct l2cFrm*)data;
-    len = utilGetLE16(&frm->len);
-    cid = utilGetLE16(&frm->cid);
-
-    /* re-point data to point to the actual post-header data */
-    data = (const void*)(frm + 1);
-    datalen -= sizeof(struct l2cFrm);
 
     pthread_mutex_lock(&mConnsLock);
     conn = l2cAclConnFindById(aclConn);
     if (conn) {
-
-        if (len != datalen) {
-            logw("Packet len mismatch: packet len=%d datalen=%d\n", len, datalen);
-            if (len > datalen)
-                len = datalen;
-        }
-
-        if (cid == L2C_CH_SIGNALLING_EDR) {
-            if (!BT_ADDR_IS_EDR(conn->addr))
-                loge("Received EDR signalling packet on non-EDR link. Dropping.\n");
-            else
-                l2cSignallingRx(conn, data, len);
-        } else if (cid == L2C_CH_SIGNALLING_LE) {
-            if (!BT_ADDR_IS_LE(conn->addr))
-                loge("Received LE signalling packet on non-LE link. Dropping.\n");
-            else
-                l2cSignallingRx(conn, data, len);
-        } else if (cid == L2C_CH_CONNECTIONLESS) {
-            psm_t psm;
-
-            if (len < sizeof(psm_t))
-                loge("Short connectionless L2CAP data RXed: %db\n", len);
-            else {
-
-                psm = utilGetLE16(data);
-                data = ((uint16_t*)data) + 1;
-                len -= sizeof(uint16_t);
-                if (!l2cSvcWorkSchedulePsmConnectionlessRx(psm, NULL, conn->handle, data, len))
-                    loge("Failed to schedule call to connectionless RX for psm %d\n", psm);
-            }
+        if (!first && !conn->reassBuf) {
+            logw("Got %ub non-first fragment while no reassemble buffer. Dropping\n", datalen);
         } else {
-            if (!l2cSendRxToChannel(conn, cid, data, len)) {
-                if (cid < L2C_NUM_FIXED_CHANNELS)
-                    logw("Dropping RXed FixedCh data for cid %d\n", cid);
-                else
-                    logw("Dropping RXed PSM data for unknown cid %d\n", cid);
+            if (first) {
+                if (conn->reassBuf) {
+                    logw("Got a first packet while reassemble buffer has %ub. Dropping previous fragment\n", conn->reassLen);
+                    free(conn->reassBuf);
+                    conn->reassBuf = NULL;
+                }
+                if (!l2cAclDataRxProcessIfComplete(conn, data, datalen)) {
+                    conn->reassBuf = (uint8_t*)malloc(datalen);
+                    if (!conn->reassBuf)
+                        loge("Failed to alloc %ub reassembly buffer. frame dropped\n", datalen);
+                    else {
+                        memcpy(conn->reassBuf, data, datalen);
+                        conn->reassLen = datalen;
+                    }
+                }
+            } else if (!conn->reassBuf)
+                logw("Got non-first packet when reassembly buffer empty. Dropping %ud\n", datalen);
+            else {
+                uint8_t *tmp = (uint8_t*)realloc(conn->reassBuf, conn->reassLen + datalen);
+                if (!tmp) {
+                    loge("Failed to realloc %ub + %ub reassembly buffer. frame dropped\n", conn->reassLen, datalen);
+                    free(conn->reassBuf);
+                    conn->reassBuf = NULL;
+                } else {
+                    conn->reassBuf = tmp;
+                    memcpy(conn->reassBuf + conn->reassLen, data, datalen);
+                    conn->reassLen += datalen;
+                    if (l2cAclDataRxProcessIfComplete(conn, conn->reassBuf, conn->reassLen)) {
+                        free(conn->reassBuf);
+                        conn->reassBuf = NULL;
+                    }
+                }
             }
         }
-    } else {
+    } else
         loge("Unable to find ACL connection %d. Dropping packet\n", aclConn);
-    }
+
     pthread_mutex_unlock(&mConnsLock);
 }
 
@@ -2658,6 +2724,11 @@ static void l2cConnStructDelete(struct l2cConn *conn)
  */
 static void l2cAclConnStructDelete(struct l2cAclConn *conn)
 {
+    if (conn->reassBuf) {
+        logw("ACL conn struct delete with %ub still in reassembly buffer\n", conn->reassLen);
+        free(conn->reassBuf);
+    }
+
     if (conn->next)
         conn->next = conn->prev;
     if (conn->prev)
@@ -3601,6 +3672,8 @@ static struct l2cAclConn* l2cCreateAndOpenNewAclConn(const struct bt_addr* addr)
     conn->handle = uniqGetNext();
     conn->conn = L2C_CONN_IN_PROGRESS;
     conn->prev = NULL;
+    conn->reassBuf = NULL;
+    conn->reassLen = 0;
 
     if (!l2cSvcWorkScheduleAclLinkOpen(NULL, &conn->addr)) {
         free(conn);
@@ -3886,6 +3959,8 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr, bool isMaster)
             if (aclConn) {
                 aclConn->handle = uniqGetNext();
                 aclConn->prev = NULL;
+                aclConn->reassBuf = NULL;
+                aclConn->reassLen = 0;
                 aclConn->next = mAclConns;
                 mAclConns->prev = aclConn;
                 mAclConns = aclConn;
