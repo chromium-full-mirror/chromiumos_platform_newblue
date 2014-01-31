@@ -2627,7 +2627,7 @@ static void* l2cSigTxWorker(void* unused)
 
     while(1) {
 
-        status = workQueueGet(mServiceWork, (void**)&work);
+        status = workQueueGet(mSigTxWork, (void**)&work);
 
         /* The only one thing we use the work queue status for - exiting */
         if (status)
@@ -2639,6 +2639,44 @@ static void* l2cSigTxWorker(void* unused)
     }
 
     return NULL;
+}
+
+/*
+ * FUNCTION: l2cWorkFreeSigTx
+ * USE:      Called to cleanup each item of signalling TX queue at deinit time
+ * PARAMS:   workItem - a work item
+ * RETURN:   NONE
+ * NOTES:
+ */
+void l2cWorkFreeSigTx(void *workItem)
+{
+    struct l2cSigFrameWork *work = (struct l2cSigFrameWork*)workItem;
+
+    free(work->data);
+    free(work);
+}
+
+/*
+ * FUNCTION: l2cWorkFreeService
+ * USE:      Called to cleanup each item of work queue at deinit time
+ * PARAMS:   workItem - a work item
+ * RETURN:   NONE
+ * NOTES:
+ */
+void l2cWorkFreeService(void *workItem)
+{
+    struct l2cSvcWork *work = (struct l2cSvcWork*)workItem;
+
+    switch (work->type) {
+    case L2C_WORK_PSM_CONNECTIONLESS_RX:
+        free(work->cl_rx.data);
+        break;
+    case L2C_WORK_STATE_CBK:
+        if (work->state.data)
+            free(work->state.data);
+            break;
+    }
+    free(work);
 }
 
 /*
@@ -2687,10 +2725,10 @@ out_sig_thread:
     pthread_join(mSvcWorker, NULL);
 
 out_service_thread:
-    workQueueFree(mSigTxWork, NULL);
+    workQueueFree(mSigTxWork, l2cWorkFreeSigTx);
 
 out_sig_q:
-    workQueueFree(mServiceWork, NULL);
+    workQueueFree(mServiceWork, l2cWorkFreeService);
 
 out_service_q:
     return ret;
