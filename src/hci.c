@@ -70,7 +70,28 @@ struct hciEvtWaitState {
 
     bool                    persistent; /* do not delete when it fires */
 };
-        
+
+
+struct hciCmdSendWorkItem {
+
+    /* first even handler, if any */
+    uint8_t firstEvtType;
+    uint16_t firstEvtExtra;
+    hciEvtCbk firstEvtCbk;
+    void *firstEvtCbkData1;
+    void *firstEvtCbkData2;
+
+    /* second even handler, if any */
+    uint8_t secondEvtType;
+    uint16_t secondEvtExtra;
+    hciEvtCbk secondEvtCbk;
+    void *secondEvtCbkData1;
+    void *secondEvtCbkData2;
+
+    /* command itself goes here */
+    struct hciCmdHdr cmd[];
+};
+
 
 /* our state */
 
@@ -426,7 +447,7 @@ static void hciCallbackWorkDeallocator(void *workItem)
  */
 static void hciCmdSendWorkDeallocator(void *workItem)
 {
-    //todo: this
+    free(workItem);
 }
 
 /*
@@ -622,7 +643,32 @@ static bool hciCmdSubmit(const struct hciCmdHdr *cmd,
                          uint8_t secondEvtType, uint16_t secondEvtExtra, hciEvtCbk secondEvtCbk,
                          void *secondEvtCbkData1, void *secondEvtCbkData2)
 {
-    //todo: this
+    uint16_t cmdSz = utilGetLE8(&cmd->paramLen) + sizeof(struct hciCmdHdr);
+    struct hciCmdSendWorkItem *w;
+
+    w = (struct hciCmdSendWorkItem*)malloc(sizeof(struct hciCmdSendWorkItem) + cmdSz);
+    if (!w) {
+        loge("Failed to alloc command work for cmd size %ub\n", cmdSz);
+        return false;
+    }
+    w->firstEvtType = firstEvtType;
+    w->firstEvtExtra = firstEvtExtra;
+    w->firstEvtCbk = firstEvtCbk;
+    w->firstEvtCbkData1 = firstEvtCbkData2;
+    w->firstEvtCbkData2 = firstEvtCbkData2;
+    w->secondEvtType = secondEvtType;
+    w->secondEvtExtra = secondEvtExtra;
+    w->secondEvtCbk = secondEvtCbk;
+    w->secondEvtCbkData1 = secondEvtCbkData2;
+    w->secondEvtCbkData2 = secondEvtCbkData2;
+    memcpy(w + 1, cmd, cmdSz);
+
+    if (workQueuePut(mCmdsSendWork, w))
+        return true;
+
+    free(w);
+    loge("Failed to enqueue command\n");
+    return false;
 }
 
 /*
