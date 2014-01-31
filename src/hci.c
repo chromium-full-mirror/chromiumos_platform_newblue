@@ -89,7 +89,12 @@ struct hciCmdSendWorkItem {
     void *secondEvtCbkData2;
 
     /* command itself goes here */
-    struct hciCmdHdr cmd[];
+};
+
+struct hciCbkWorkItem {
+    hciOpDoneCbk  cbk;
+    void         *cbkData;
+    bool          success;
 };
 
 
@@ -98,10 +103,11 @@ struct hciCmdSendWorkItem {
 static hciAclRxCbk mAclRxF;
 static hciScoRxCbk mScoRxF;
 
-static pthread_mutex_t mCmdEvtLock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t mCmdWaitLock = PTHREAD_MUTEX_INITIALIZER;
 static struct hciEvtWaitState *mEvtWaitHead = NULL;
 static struct hciEvtWaitState *mEvtWaitTail = NULL;
 
+static pthread_mutex_t mCmdLock = PTHREAD_MUTEX_INITIALIZER;
 static sem_t mCmdSendSem;
 static struct workQueue* mCmdsSendWork;
 static pthread_t mCmdsSendThread;
@@ -117,7 +123,7 @@ static pthread_t mCallbackThread;
  * USE:      Dequeue a handler for an event we expect
  * PARAMS:   ws - the handler struct
  * RETURN:   NONE
- * NOTES:    call with mCmdEvtLock held
+ * NOTES:    call with mCmdWaitLock held
  */
 static void hciEvtWaitDequeueInt(struct hciEvtWaitState *ws)
 {
@@ -146,7 +152,7 @@ static bool hciEvtWaitDequeue(uniq_t evtWaitStateID)
     struct hciEvtWaitState *ws;
     bool found = true;
 
-    pthread_mutex_lock(&mCmdEvtLock);
+    pthread_mutex_lock(&mCmdWaitLock);
 
     ws = mEvtWaitHead;
     while (ws && ws->evtWaitStateID != evtWaitStateID)
@@ -157,7 +163,7 @@ static bool hciEvtWaitDequeue(uniq_t evtWaitStateID)
     else
         found = false;
 
-    pthread_mutex_unlock(&mCmdEvtLock);
+    pthread_mutex_unlock(&mCmdWaitLock);
 
     return found;
 }
@@ -172,10 +178,12 @@ static bool hciEvtWaitDequeue(uniq_t evtWaitStateID)
  *           cbk - the callabck to call
  *           cbkData1 - the 1st data to pass to the callback
  *           cbkData2 - the 2nd data to pass to the callback
+ *           persistent - if set, handler will not be removed
+ *                       when it fires and must be removed manually
  * RETURN:   uniq_t identifying this event wait object or 0 on failure
  * NOTES:
  */
-static uniq_t hciEvtWaitEnqueue(uint8_t evtType, uint16_t extra, hciEvtCbk cbk, void *cbkData1, void *cbkData2)
+static uniq_t hciEvtWaitEnqueue(uint8_t evtType, uint16_t extra, hciEvtCbk cbk, void *cbkData1, void *cbkData2, bool persistent)
 {
     struct hciEvtWaitState *ws = (struct hciEvtWaitState*)malloc(sizeof(struct hciEvtWaitState));
     uniq_t ret;
@@ -190,17 +198,18 @@ static uniq_t hciEvtWaitEnqueue(uint8_t evtType, uint16_t extra, hciEvtCbk cbk, 
     ws->cbkData2 = cbkData2;
     ws->evtType = evtType;
     ws->extra = extra;
+    ws->persistent = persistent;
     ws->next = NULL;
     ws->evtWaitStateID = ret = uniqGetNext();
 
-    pthread_mutex_lock(&mCmdEvtLock);
+    pthread_mutex_lock(&mCmdWaitLock);
     ws->prev = mEvtWaitTail;
     mEvtWaitTail = ws;
     if (ws->prev)
         ws->prev->next = ws;
     else
         mEvtWaitHead = ws;
-    pthread_mutex_unlock(&mCmdEvtLock);
+    pthread_mutex_unlock(&mCmdWaitLock);
 
     return ret;
 }
@@ -303,7 +312,7 @@ static void hciRxEvt(struct hciEvtHdr *evt)
         handled = true;
 
     if (!handled) {
-        pthread_mutex_lock(&mCmdEvtLock);
+        pthread_mutex_lock(&mCmdWaitLock);
         ws = mEvtWaitHead;
         while (ws && !handled) {
             cur = ws;
@@ -349,7 +358,7 @@ static void hciRxEvt(struct hciEvtHdr *evt)
         if (handled && ws && !ws->persistent)
             hciEvtWaitDequeueInt(ws);
 
-        pthread_mutex_unlock(&mCmdEvtLock);
+        pthread_mutex_unlock(&mCmdWaitLock);
     }
 
     if (addCredit)
@@ -435,7 +444,7 @@ static void hciRx(void *cbkData, uint8_t typ, void *data, uint32_t datalen)
  */
 static void hciCallbackWorkDeallocator(void *workItem)
 {
-    //todo: this
+    free(workItem);
 }
 
 /*
@@ -468,7 +477,8 @@ static void* hciCbkWorker(void *unused)
         if (ret)
             break;
 
-        //todo: this
+        w->cbk(w->cbkData, w->success);
+        free(w);
     }
     logd("HCI callback worker exiting\n");
 
@@ -485,6 +495,9 @@ static void* hciCbkWorker(void *unused)
 static void* hciCmdSendWorker(void *unused)
 {
     struct hciCmdSendWorkItem *w;
+    struct hciCmdHdr *cmd;
+    uniq_t h1 = 0, h2 = 0;
+    uint16_t len;
     int ret;
 
     while (1) {
@@ -494,7 +507,46 @@ static void* hciCmdSendWorker(void *unused)
         if (ret)
             break;
 
-        //todo: this
+        cmd = (struct hciCmdHdr*)(w + 1);
+        len = sizeof(struct hciCmdHdr) + utilGetLE8(&cmd->paramLen);
+
+        /*
+         * This lock makes sure adding a handler for an event and sending the
+         * corresponding command are handled as one atomic unit.
+         */
+        pthread_mutex_lock(&mCmdLock);
+
+        if (w->firstEvtType) {
+            h1 = hciEvtWaitEnqueue(w->firstEvtType, w->firstEvtExtra, w->firstEvtCbk, w->firstEvtCbkData1, w->firstEvtCbkData2, false);
+            if (!h1) {
+                loge("Failed to enqueue first handler\n");
+                goto failed_1st;
+            }
+        }
+
+        if (w->secondEvtType) {
+            h2 = hciEvtWaitEnqueue(w->secondEvtType, w->secondEvtExtra, w->secondEvtCbk, w->secondEvtCbkData1, w->secondEvtCbkData2, false);
+            if (!h2) {
+                loge("Failed to enqueue second handler\n");
+                goto failed_2nd;
+            }
+        }
+
+        if (vendorTx(HCI_PKT_TYP_CMD, cmd, len))
+            goto success;
+
+        loge("Failed to TX\n");
+        hciEvtWaitDequeue(h2);
+
+failed_2nd:
+        hciEvtWaitDequeue(h1);
+
+failed_1st:
+        loge("Command 0x%04X not sent\n", utilGetLE16(&cmd->opcode));
+
+success:
+        pthread_mutex_unlock(&mCmdLock);
+        free(w);
     }
     logd("HCI command send worker exiting\n");
 
@@ -595,12 +647,12 @@ out_lib_open:
 void hciDown(void)
 {
     logd("Cancelling all event waiters\n");
-    pthread_mutex_lock(&mCmdEvtLock);
+    pthread_mutex_lock(&mCmdWaitLock);
     while (mEvtWaitHead) {
         mEvtWaitHead->cbk(NULL, mEvtWaitHead->cbkData1, mEvtWaitHead->cbkData2, mEvtWaitHead->evtWaitStateID);
         hciEvtWaitDequeueInt(mEvtWaitHead);
     }
-    pthread_mutex_unlock(&mCmdEvtLock);
+    pthread_mutex_unlock(&mCmdWaitLock);
 
     
 
