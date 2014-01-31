@@ -486,6 +486,39 @@ static void* hciCbkWorker(void *unused)
 }
 
 /*
+ * FUNCTION: hciScheduleOpDoneCbk
+ * USE:      Enqueue a done callback to be called
+ * PARAMS:   cbk - the callback to call
+ *           cbkData - the data for said callback
+ *           success - the result to pass to said callback
+ * RETURN:   true if enqueue, false else
+ * NOTES:
+ */
+static bool hciScheduleOpDoneCbk(hciOpDoneCbk cbk, void *cbkData, bool success)
+{
+    struct hciCbkWorkItem *w;
+
+    if (!cbk) {
+        logw("Not scheduling done callback with a NULL function pointer\n");
+        return true;
+    }
+
+    w = (struct hciCbkWorkItem*)malloc(sizeof(struct hciCbkWorkItem));
+    if (!w)
+        return false;
+
+    w->cbk = cbk;
+    w->cbkData = cbkData;
+    w->success = success;
+
+    if (workQueuePut(mCallbackWork, w))
+        return true;
+
+    free(w);
+    return false;
+}
+
+/*
  * FUNCTION: hciCmdSendWorker
  * USE:      Worker thread for sending commands to the chip
  * PARAMS:   unused - unused
@@ -746,7 +779,8 @@ static bool hciCmdSimpleCompleteCbk(struct hciEvtHdr *evt, void *cbkData1, void 
     }
 
     status = utilGetLE8(paramP);
-    hciScheduleOpDoneCbk((hciOpDoneCbk)cbkData1, cbkData2, !status);
+    if (!hciScheduleOpDoneCbk((hciOpDoneCbk)cbkData1, cbkData2, !status))
+        loge("Failed to scheduel done callback for simple command complete handler\n");
 
     return true;
 }
@@ -788,7 +822,8 @@ static bool hciCmdSimpleStatusCbk(struct hciEvtHdr *evt, void *cbkData1, void *c
     hciOpDoneCbk cbkF = (hciOpDoneCbk)cbkData1;
     uint8_t status = utilGetLE8(&sta->status);
 
-    hciScheduleOpDoneCbk((hciOpDoneCbk)cbkData1, cbkData2, !status);
+    if (!hciScheduleOpDoneCbk((hciOpDoneCbk)cbkData1, cbkData2, !status))
+        loge("Failed to scheduel done callback for simple command status handler\n");
 
     return true;
 }
