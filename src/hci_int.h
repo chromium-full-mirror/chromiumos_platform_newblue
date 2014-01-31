@@ -92,6 +92,10 @@ struct hciCmdWriteLocalName {
 #define HCI_CMD_Write_Encryption_Mode                            0x0022
 #define HCI_CMD_Read_Class_Of_Device                             0x0023
 #define HCI_CMD_Write_Class_Of_Device                            0x0024
+struct hciCmdWriteClassOfDevice {
+    uint8_t cls[3]; /* 24-bit value */
+} __packed;
+
 #define HCI_CMD_Read_Voice_Setting                               0x0025
 #define HCI_CMD_Voice_Setting                                    0x0026
 #define HCI_CMD_Read_Automatic_Flush_Timeout                     0x0027

@@ -25,6 +25,7 @@ void hciDown(void);
 
 /* misc api. False on error, true if expect callback */
 bool hciSetLocalName(const char *name, hciOpDoneCbk cbkDone, void *cbkData);
+bool hciSetDeviceClass(uint32_t cls, hciOpDoneCbk cbkDone, void *cbkData);
 
 #endif
 

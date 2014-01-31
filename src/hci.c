@@ -876,5 +876,28 @@ bool hciSetLocalName(const char *name, hciOpDoneCbk cbkDone, void *cbkData)
     return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
 }
 
+/*
+ * FUNCTION: hciSetDeviceClass
+ * USE:      Set local device class
+ * PARAMS:   class - the class value
+ *           cbkDone - callback to call when operation completes
+ *           cbkData - data to pass to the callback
+ * RETURN:   false on error, tru if you shoudl expect callback call
+ * NOTES:
+ */
+bool hciSetDeviceClass(uint32_t cls, hciOpDoneCbk cbkDone, void *cbkData)
+{
+    uint8_t buf[sizeof(struct hciCmdHdr) + sizeof(struct hciCmdWriteClassOfDevice)];
+    struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
+    struct hciCmdWriteClassOfDevice *cmd = (struct hciCmdWriteClassOfDevice*)(buf + 1);
 
+    if (cls >> 24) 
+        logw("Truncating device class to 24 bits\n");
+
+    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Class_Of_Device);
+    hdr->paramLen = sizeof(struct hciCmdWriteLocalName);
+    utilSetLE24(cmd->cls, cls);
+
+    return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
+}
 
