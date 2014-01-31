@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
+#include "workQueue.h"
 #include "vendorLib.h"
 #include "hci_int.h"
 #include "config.h"
@@ -76,10 +77,18 @@ struct hciEvtWaitState {
 static hciAclRxCbk mAclRxF;
 static hciScoRxCbk mScoRxF;
 
-static sem_t mCmdSendSem;
 static pthread_mutex_t mCmdEvtLock = PTHREAD_MUTEX_INITIALIZER;
 static struct hciEvtWaitState *mEvtWaitHead = NULL;
 static struct hciEvtWaitState *mEvtWaitTail = NULL;
+
+static sem_t mCmdSendSem;
+static struct workQueue* mCmdsSendWork;
+static pthread_t mCmdsSendThread;
+
+static struct workQueue* mCallbackWork;
+static pthread_t mCallbackThread;
+
+
 
 
 /*
@@ -397,6 +406,81 @@ static void hciRx(void *cbkData, uint8_t typ, void *data, uint32_t datalen)
 }
 
 /*
+ * FUNCTION: hciCallbackWorkDeallocator
+ * USE:      Called to cleanup each item of callback workqueue at deinit time
+ * PARAMS:   workItem - a work item
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void hciCallbackWorkDeallocator(void *workItem)
+{
+    //todo: this
+}
+
+/*
+ * FUNCTION: hciCallbackWorkDeallocator
+ * USE:      Called to cleanup each item of command send workqueue at deinit time
+ * PARAMS:   workItem - a work item
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void hciCmdSendWorkDeallocator(void *workItem)
+{
+    //todo: this
+}
+
+/*
+ * FUNCTION: hciCbkWorker
+ * USE:      Worker thread for calling callbacks for HCI completed items
+ * PARAMS:   unused - unused
+ * RETURN:   unused
+ * NOTES:
+ */
+static void* hciCbkWorker(void *unused)
+{
+    struct hciCbkWorkItem *w;
+    int ret;
+
+    while (1) {
+
+        ret = workQueueGet(mCallbackWork, (void**)&w);
+        if (ret)
+            break;
+
+        //todo: this
+    }
+    logd("HCI callback worker exiting\n");
+
+    return NULL;
+}
+
+/*
+ * FUNCTION: hciCmdSendWorker
+ * USE:      Worker thread for sending commands to the chip
+ * PARAMS:   unused - unused
+ * RETURN:   unused
+ * NOTES:
+ */
+static void* hciCmdSendWorker(void *unused)
+{
+    struct hciCmdSendWorkItem *w;
+    int ret;
+
+    while (1) {
+
+        sem_wait(&mCmdSendSem);
+        ret = workQueueGet(mCmdsSendWork, (void**)&w);
+        if (ret)
+            break;
+
+        //todo: this
+    }
+    logd("HCI command send worker exiting\n");
+
+    return NULL;
+}
+
+/*
  * FUNCTION: hciUp
  * USE:      Bring up HCI (comms to bt chip)
  * PARAMS:   NONE
@@ -424,12 +508,50 @@ bool hciUp(const uint8_t *addr, hciAclRxCbk aclRxF, hciScoRxCbk scoRxF)
         goto out_sem;
     }
 
+    mCmdsSendWork = workQueueAlloc(HCI_NUM_OUTSTANDING_CMDS);
+    if (!mCmdsSendWork) {
+        loge("Failed to create command send workqueue\n");
+        goto out_cmd_workq;
+    }
+
+    mCallbackWork = workQueueAlloc(HCI_NUM_OUTSTANDING_CBKS);
+    if (!mCallbackWork) {
+        loge("Failed to create hci callback workqueue\n");
+        goto out_cbk_workq;
+    }
+
+    ret = pthread_create(&mCallbackThread, NULL, hciCbkWorker, NULL);
+    if (ret) {
+        loge("Failed(%d) to create hci callback worker\n", ret);
+        goto out_cbk_worker;
+    }
+
+    ret = pthread_create(&mCmdsSendThread, NULL, hciCmdSendWorker, NULL);
+    if (ret) {
+        loge("Failed(%d) to create hci cmd send worker\n", ret);
+        goto out_cmd_worker;
+    }
+
+
     //more init here
 
     mAclRxF = aclRxF;
     mScoRxF = scoRxF;
 
     return true;
+
+out_cmd_worker:
+    workQueueWakeAll(mCallbackWork, 1);
+    pthread_join(mCallbackThread, NULL);
+
+out_cbk_worker:
+    workQueueFree(mCallbackWork, hciCallbackWorkDeallocator);
+
+out_cbk_workq:
+    workQueueFree(mCmdsSendWork, hciCmdSendWorkDeallocator);
+
+out_cmd_workq:
+    sem_destroy(&mCmdSendSem);
 
 out_sem:
     vendorDown();
@@ -459,14 +581,23 @@ void hciDown(void)
     }
     pthread_mutex_unlock(&mCmdEvtLock);
 
+    
+
     //more deinit here
+    workQueueWakeAll(mCallbackWork, 1);
+    workQueueWakeAll(mCmdsSendWork, 1);
+    sem_post(&mCmdSendSem); /* wakes up cmdSend worker if it is waiting on a cmd credit */
+    pthread_join(mCallbackThread, NULL);
+    pthread_join(mCmdsSendThread, NULL);
+    workQueueFree(mCallbackWork, hciCallbackWorkDeallocator);
+    workQueueFree(mCmdsSendWork, hciCmdSendWorkDeallocator);
     sem_destroy(&mCmdSendSem);
     vendorDown();
     vendorClose();
 }
 
 /*
- * FUNCTION: hciCmdSubmitCommon
+ * FUNCTION: hciCmdSubmit
  * USE:      Enqueue a command to be sent to the chip that will reply with a
  *           simple command complete/command status event. IF status, status
  *           will be used as the basis of callback "success" value. If

@@ -3,6 +3,17 @@
 
 
 
+
+/*
+ * HCI layer will queue up only this many cmds at a time
+ */
+#define HCI_NUM_OUTSTANDING_CMDS           64
+
+/*
+ * HCI layer will queue up only this many callbacks at a time
+ */
+#define HCI_NUM_OUTSTANDING_CBKS           256
+
 /*
  * L2CAP layer will allow at most this many concurrent outstanding work requests
  * to the services running on top of it / under it. If you have a lot of
@@ -10,7 +21,6 @@
  * overflow this limit will be dropped.
  */
 #define L2C_SVC_NUM_OUTSTANDING_REQS       512
-
 
 /*
  * L2CAP layer will allow at most this many concurrent outstanding signalling frames
