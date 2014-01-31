@@ -1,5 +1,7 @@
+#include <semaphore.h>
 #include <pthread.h>
 #include <stdlib.h>
+#include <string.h>
 #include <stdio.h>
 #include <errno.h>
 #include "vendorLib.h"
@@ -11,29 +13,37 @@
 #include "hci.h"
 #include "log.h"
 
+struct hciCmdHdr {
+    uint16_t opcode;
+    uint8_t paramLen;
+} __packed;
+#define CMD_MAKE_OPCODE(ogf, ocf) ((((uint16_t)((ogf) & 0x3f)) << 10) | ((ocf) & 0x03ff))
+#define CMD_GET_OGF(opcode)       (((opcode) >> 10) & 0x3f)
+#define CMD_GET_OCF(opcode)       ((opcode) & 0x03ff)
+
 
 struct hciAclHdr {
     uint16_t hdr;
     uint16_t len;
 } __packed;
-#define ACL_HDR_MASK_CONN_ID     0x0FFF
-#define ACL_HDR_MASK_PB          0x3000
-#define ACL_HDR_MASK_BC          0xC000
-#define ACL_HDR_PB_FIRST_NONAUTO 0x0000
-#define ACL_HDR_PB_CONINUED      0x1000
-#define ACL_HDR_PB_FIRST_AUTO    0x2000
-#define ACL_HDR_PB_COMPLETE      0x3000
+#define ACL_HDR_MASK_CONN_ID      0x0FFF
+#define ACL_HDR_MASK_PB           0x3000
+#define ACL_HDR_MASK_BC           0xC000
+#define ACL_HDR_PB_FIRST_NONAUTO  0x0000
+#define ACL_HDR_PB_CONINUED       0x1000
+#define ACL_HDR_PB_FIRST_AUTO     0x2000
+#define ACL_HDR_PB_COMPLETE       0x3000
 
 struct hciScoHdr {
     uint16_t hdr;
     uint8_t len;
 } __packed;
-#define SCO_HDR_MASK_CONN_ID     0x0FFF
-#define SCO_HDR_MASK_STATUS      0x3000
-#define SCO_STATUS_ALL_OK        0x0000
-#define SCO_STATUS_UNKNOWN       0x1000
-#define SCO_STATUS_NO_DATA       0x2000
-#define SCO_STATUS_SOME_DATA     0x3000
+#define SCO_HDR_MASK_CONN_ID      0x0FFF
+#define SCO_HDR_MASK_STATUS       0x3000
+#define SCO_STATUS_ALL_OK         0x0000
+#define SCO_STATUS_UNKNOWN        0x1000
+#define SCO_STATUS_NO_DATA        0x2000
+#define SCO_STATUS_SOME_DATA      0x3000
 
 struct hciEvtHdr {
     uint8_t code;
@@ -42,7 +52,7 @@ struct hciEvtHdr {
 
 
 /* returns true if this is the event we wanted, false else. Do not block! If evt is passed as NULL, stack is shutting down */
-typedef bool (*hciEvtCbk)(struct hciEvtHdr *evt, void *userData, uniq_t evtWaitStateID);
+typedef bool (*hciEvtCbk)(struct hciEvtHdr *evt, void *cbkData1, void *cbkData2, uniq_t evtWaitStateID);
 
 struct hciEvtWaitState {
     uniq_t                  evtWaitStateID;
@@ -51,20 +61,25 @@ struct hciEvtWaitState {
     struct hciEvtWaitState *prev;
 
     hciEvtCbk               cbk;
-    void                   *cbkData;
+    void                   *cbkData1;
+    void                   *cbkData2;
 
     uint16_t                extra; /* cmd for cmd complete/statue, subever for LE */
     uint8_t                 evtType;
+
+    bool                    persistent; /* do not delete when it fires */
 };
         
 
 /* our state */
+
 static hciAclRxCbk mAclRxF;
 static hciScoRxCbk mScoRxF;
 
-static pthread_mutex_t mEvtWaitLock = PTHREAD_MUTEX_INITIALIZER;
-struct hciEvtWaitState *mEvtWaitHead = NULL;
-struct hciEvtWaitState *mEvtWaitTail = NULL;
+static sem_t mCmdSendSem;
+static pthread_mutex_t mCmdEvtLock = PTHREAD_MUTEX_INITIALIZER;
+static struct hciEvtWaitState *mEvtWaitHead = NULL;
+static struct hciEvtWaitState *mEvtWaitTail = NULL;
 
 
 /*
@@ -72,7 +87,7 @@ struct hciEvtWaitState *mEvtWaitTail = NULL;
  * USE:      Dequeue a handler for an event we expect
  * PARAMS:   ws - the handler struct
  * RETURN:   NONE
- * NOTES:    call with mEvtWaitLock held
+ * NOTES:    call with mCmdEvtLock held
  */
 static void hciEvtWaitDequeueInt(struct hciEvtWaitState *ws)
 {
@@ -101,7 +116,7 @@ static bool hciEvtWaitDequeue(uniq_t evtWaitStateID)
     struct hciEvtWaitState *ws;
     bool found = true;
 
-    pthread_mutex_lock(&mEvtWaitLock);
+    pthread_mutex_lock(&mCmdEvtLock);
 
     ws = mEvtWaitHead;
     while (ws && ws->evtWaitStateID != evtWaitStateID)
@@ -112,7 +127,7 @@ static bool hciEvtWaitDequeue(uniq_t evtWaitStateID)
     else
         found = false;
 
-    pthread_mutex_unlock(&mEvtWaitLock);
+    pthread_mutex_unlock(&mCmdEvtLock);
 
     return found;
 }
@@ -125,11 +140,12 @@ static bool hciEvtWaitDequeue(uniq_t evtWaitStateID)
  *                   code for command complete/status, LE
  *                   subevent code for LE metaevent)
  *           cbk - the callabck to call
- *           cbkData - the data to pass to the callback
+ *           cbkData1 - the 1st data to pass to the callback
+ *           cbkData2 - the 2nd data to pass to the callback
  * RETURN:   uniq_t identifying this event wait object or 0 on failure
  * NOTES:
  */
-static uniq_t hciEvtWaitEnqueue(uint8_t evtType, uint16_t extra, hciEvtCbk cbk, void *cbkData)
+static uniq_t hciEvtWaitEnqueue(uint8_t evtType, uint16_t extra, hciEvtCbk cbk, void *cbkData1, void *cbkData2)
 {
     struct hciEvtWaitState *ws = (struct hciEvtWaitState*)malloc(sizeof(struct hciEvtWaitState));
     uniq_t ret;
@@ -140,20 +156,21 @@ static uniq_t hciEvtWaitEnqueue(uint8_t evtType, uint16_t extra, hciEvtCbk cbk, 
     }
 
     ws->cbk = cbk;
-    ws->cbkData = cbkData;
+    ws->cbkData1 = cbkData1;
+    ws->cbkData2 = cbkData2;
     ws->evtType = evtType;
     ws->extra = extra;
     ws->next = NULL;
     ws->evtWaitStateID = ret = uniqGetNext();
 
-    pthread_mutex_lock(&mEvtWaitLock);
+    pthread_mutex_lock(&mCmdEvtLock);
     ws->prev = mEvtWaitTail;
     mEvtWaitTail = ws;
     if (ws->prev)
         ws->prev->next = ws;
     else
         mEvtWaitHead = ws;
-    pthread_mutex_unlock(&mEvtWaitLock);
+    pthread_mutex_unlock(&mCmdEvtLock);
 
     return ret;
 }
@@ -235,65 +252,81 @@ static void hciRxAcl(uint16_t hdr, void *data, uint16_t len)
  */
 static void hciRxEvt(struct hciEvtHdr *evt)
 {
-    struct hciEvtWaitState *ws, *cur;
-    bool handled = false;
+    struct hciEvtWaitState *ws = NULL, *cur;
+    bool handled = false, addCredit = false;
     uint8_t evtType = utilGetLE8(&evt->code);
     uint8_t len = utilGetLE8(&evt->len);
     struct hciEvtLeMeta *leMeta = (struct hciEvtLeMeta*)(evt + 1);
     struct hciEvtCmdComplete *cmdComplete = (struct hciEvtCmdComplete*)(evt + 1);
     struct hciEvtCmdStatus *cmdStatus = (struct hciEvtCmdStatus*)(evt + 1);
 
-    pthread_mutex_lock(&mEvtWaitLock);
-    ws = mEvtWaitHead;
-    while (ws) {
-        cur = ws;
-        ws = ws->next;
+    /* handle the cases of credits: command complete */
+    if (evtType == HCI_EVT_Command_Complete_Event && utilGetLE8(&cmdComplete->numCmdCredits))
+        addCredit = true;
 
-        /* type match? If no, do not go on */
-        if (evtType != ws->evtType)
-            continue;
+    /* handle the cases of credits: command status */
+    if (evtType == HCI_EVT_Command_Status_Event && utilGetLE8(&cmdStatus->numCmdCredits))
+        addCredit = true;
 
-        /* if LE event, check code and skip handler if wrong */
-        if (evtType == HCI_EVT_LE_Meta_Event) {
-            if(len < sizeof(struct hciEvtLeMeta)) {
-                logw("Got LE meta event of len %ub\n", len);
-                break;
-            }
-            if (utilGetLE8(&leMeta->subevent) != ws->extra)
+    /* handle command complete with ocf == 0 and ogf == 0 by ignoring it as per spec */
+    if (evtType == HCI_EVT_Command_Complete_Event && !utilGetLE16(&cmdComplete->opcode))
+        handled = true;
+
+    if (!handled) {
+        pthread_mutex_lock(&mCmdEvtLock);
+        ws = mEvtWaitHead;
+        while (ws && !handled) {
+            cur = ws;
+            ws = ws->next;
+
+            /* type match? If no, do not go on */
+            if (evtType != ws->evtType)
                 continue;
-        }
 
-        /* same for command complete */
-        if (evtType == HCI_EVT_Command_Complete_Event) {
-            if(len < sizeof(struct hciEvtCmdComplete)) {
-                logw("Got command complete event of len %ub\n", len);
-                break;
+            /* if LE event, check code and skip handler if wrong */
+            if (evtType == HCI_EVT_LE_Meta_Event) {
+                if(len < sizeof(struct hciEvtLeMeta)) {
+                    logw("Got LE meta event of len %ub\n", len);
+                    break;
+                }
+                if (utilGetLE8(&leMeta->subevent) != ws->extra)
+                    continue;
             }
-            if (utilGetLE8(&cmdComplete->opcode) != ws->extra)
-                continue;
-        }
 
-        /* same for command status */
-        if (evtType == HCI_EVT_Command_Status_Event) {
-            if(len < sizeof(struct hciEvtCmdStatus)) {
-                logw("Got command status event of len %ub\n", len);
-                break;
+            /* same for command complete */
+            if (evtType == HCI_EVT_Command_Complete_Event) {
+                if(len < sizeof(struct hciEvtCmdComplete)) {
+                    logw("Got command complete event of len %ub\n", len);
+                    break;
+                }
+                if (utilGetLE8(&cmdComplete->opcode) != ws->extra)
+                    continue;
             }
-            if (utilGetLE8(&cmdStatus->opcode) != ws->extra)
-                continue;
-        }
 
-        /* if we're here, this handler matches - let's see what it says */
-        handled = ws->cbk(evt, ws->cbkData, ws->evtWaitStateID);
-        if (handled) {
+            /* same for command status */
+            if (evtType == HCI_EVT_Command_Status_Event) {
+                if(len < sizeof(struct hciEvtCmdStatus)) {
+                    logw("Got command status event of len %ub\n", len);
+                    break;
+                }
+                if (utilGetLE8(&cmdStatus->opcode) != ws->extra)
+                    continue;
+            }
+
+            /* if we're here, this handler matches - let's see what it says */
+            handled = ws->cbk(evt, ws->cbkData1, ws->cbkData2, ws->evtWaitStateID);
+        }
+        if (handled && ws && !ws->persistent)
             hciEvtWaitDequeueInt(ws);
-            break;
-        }
+
+        pthread_mutex_unlock(&mCmdEvtLock);
     }
-    pthread_mutex_unlock(&mEvtWaitLock);
+
+    if (addCredit)
+        sem_post(&mCmdSendSem);
 
     if (!handled)
-        logw("Unahdneld HCI event code 0x%02X with %ub of params\n", evtType, len);
+        logw("Unhandled HCI event code 0x%02X with %ub of params\n", evtType, len);
 }
 
 /*
@@ -372,6 +405,9 @@ static void hciRx(void *cbkData, uint8_t typ, void *data, uint32_t datalen)
  */
 bool hciUp(const uint8_t *addr, hciAclRxCbk aclRxF, hciScoRxCbk scoRxF)
 {
+    int ret;
+
+
     if (!vendorOpen()) {
         loge("Failed to open vendor lib\n");
         goto out_lib_open;
@@ -382,11 +418,21 @@ bool hciUp(const uint8_t *addr, hciAclRxCbk aclRxF, hciScoRxCbk scoRxF)
         goto out_chip_up;
     }
 
+    ret = sem_init(&mCmdSendSem, 0, 1);
+    if (ret) {
+        loge("Sem init failure\n");
+        goto out_sem;
+    }
+
     //more init here
+
     mAclRxF = aclRxF;
     mScoRxF = scoRxF;
 
     return true;
+
+out_sem:
+    vendorDown();
 
 out_chip_up:
     vendorClose();
@@ -394,7 +440,6 @@ out_chip_up:
 out_lib_open:
     return false;
 }
-
 
 /*
  * FUNCTION: hciDown
@@ -407,14 +452,15 @@ out_lib_open:
 void hciDown(void)
 {
     logd("Cancelling all event waiters\n");
-    pthread_mutex_lock(&mEvtWaitLock);
+    pthread_mutex_lock(&mCmdEvtLock);
     while (mEvtWaitHead) {
-        mEvtWaitHead->cbk(NULL, mEvtWaitHead->cbkData, mEvtWaitHead->evtWaitStateID);
+        mEvtWaitHead->cbk(NULL, mEvtWaitHead->cbkData1, mEvtWaitHead->cbkData2, mEvtWaitHead->evtWaitStateID);
         hciEvtWaitDequeueInt(mEvtWaitHead);
     }
-    pthread_mutex_unlock(&mEvtWaitLock);
+    pthread_mutex_unlock(&mCmdEvtLock);
 
     //more deinit here
+    sem_destroy(&mCmdSendSem);
     vendorDown();
     vendorClose();
 }
