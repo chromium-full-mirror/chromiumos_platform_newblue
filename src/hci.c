@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <errno.h>
 #include "vendorLib.h"
+#include "hci_int.h"
 #include "config.h"
 #include "l2cap.h"
 #include "util.h"
@@ -40,10 +41,122 @@ struct hciEvtHdr {
 } __packed;
 
 
+/* returns true if this is the event we wanted, false else. Do not block! If evt is passed as NULL, stack is shutting down */
+typedef bool (*hciEvtCbk)(struct hciEvtHdr *evt, void *userData, uniq_t evtWaitStateID);
+
+struct hciEvtWaitState {
+    uniq_t                  evtWaitStateID;
+
+    struct hciEvtWaitState *next;
+    struct hciEvtWaitState *prev;
+
+    hciEvtCbk               cbk;
+    void                   *cbkData;
+
+    uint16_t                extra; /* cmd for cmd complete/statue, subever for LE */
+    uint8_t                 evtType;
+};
+        
+
 /* our state */
 static hciAclRxCbk mAclRxF;
 static hciScoRxCbk mScoRxF;
 
+static pthread_mutex_t mEvtWaitLock = PTHREAD_MUTEX_INITIALIZER;
+struct hciEvtWaitState *mEvtWaitHead = NULL;
+struct hciEvtWaitState *mEvtWaitTail = NULL;
+
+
+/*
+ * FUNCTION: hciEvtWaitDequeueInt
+ * USE:      Dequeue a handler for an event we expect
+ * PARAMS:   ws - the handler struct
+ * RETURN:   NONE
+ * NOTES:    call with mEvtWaitLock held
+ */
+static void hciEvtWaitDequeueInt(struct hciEvtWaitState *ws)
+{
+    if (ws->next)
+        ws->next->prev = ws->prev;
+    else
+        mEvtWaitTail = ws->prev;
+
+    if (ws->prev)
+        ws->prev->next = ws->next;
+    else
+        mEvtWaitHead = ws->next;
+
+    free(ws);
+}
+
+/*
+ * FUNCTION: hciEvtWaitDequeue
+ * USE:      Dequeue a handler for an event we expect
+ * PARAMS:   evtWaitStateID - wait state ID from hciEvtWaitEnqueue()
+ * RETURN:   true if dequeued, false if not found (already fired or never existed)
+ * NOTES:
+ */
+static bool hciEvtWaitDequeue(uniq_t evtWaitStateID)
+{
+    struct hciEvtWaitState *ws;
+    bool found = true;
+
+    pthread_mutex_lock(&mEvtWaitLock);
+
+    ws = mEvtWaitHead;
+    while (ws && ws->evtWaitStateID != evtWaitStateID)
+        ws = ws->next;
+
+    if (ws)
+        hciEvtWaitDequeueInt(ws);
+    else
+        found = false;
+
+    pthread_mutex_unlock(&mEvtWaitLock);
+
+    return found;
+}
+
+/*
+ * FUNCTION: hciEvtWaitEnqueue
+ * USE:      Enqueue a handler for an event we expect
+ * PARAMS:   evtType - the expected event
+ *           extra - more info on expected event (command
+ *                   code for command complete/status, LE
+ *                   subevent code for LE metaevent)
+ *           cbk - the callabck to call
+ *           cbkData - the data to pass to the callback
+ * RETURN:   uniq_t identifying this event wait object or 0 on failure
+ * NOTES:
+ */
+static uniq_t hciEvtWaitEnqueue(uint8_t evtType, uint16_t extra, hciEvtCbk cbk, void *cbkData)
+{
+    struct hciEvtWaitState *ws = (struct hciEvtWaitState*)malloc(sizeof(struct hciEvtWaitState));
+    uniq_t ret;
+
+    if (!ws) {
+        loge("Failed to enqueue handler for event 0x%02X.%04X\n", evtType, extra);
+        return 0;
+    }
+
+    ws->cbk = cbk;
+    ws->cbkData = cbkData;
+    ws->evtType = evtType;
+    ws->extra = extra;
+    ws->next = NULL;
+    ws->evtWaitStateID = ret = uniqGetNext();
+
+    pthread_mutex_lock(&mEvtWaitLock);
+    ws->prev = mEvtWaitTail;
+    mEvtWaitTail = ws;
+    if (ws->prev)
+        ws->prev->next = ws;
+    else
+        mEvtWaitHead = ws;
+    pthread_mutex_unlock(&mEvtWaitLock);
+
+    return ret;
+}
 
 /*
  * FUNCTION: hciCbkChipHwUp
@@ -54,7 +167,7 @@ static hciScoRxCbk mScoRxF;
  * RETURN:   true on success, false else
  * NOTES:
  */
-static void hciCbkChipHwUp(void* cbkData, bool fw, bool up)
+static void hciCbkChipHwUp(void *cbkData, bool fw, bool up)
 {
     logi("BT %cW %s!\n", fw ? 'F' : 'H', up ? "UP" : "DOWN");
 }
@@ -114,6 +227,76 @@ static void hciRxAcl(uint16_t hdr, void *data, uint16_t len)
 }
 
 /*
+ * FUNCTION: hciRxEvt
+ * USE:      Called with a valid EVT packet
+ * PARAMS:   evt - the event
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void hciRxEvt(struct hciEvtHdr *evt)
+{
+    struct hciEvtWaitState *ws, *cur;
+    bool handled = false;
+    uint8_t evtType = utilGetLE8(&evt->code);
+    uint8_t len = utilGetLE8(&evt->len);
+    struct hciEvtLeMeta *leMeta = (struct hciEvtLeMeta*)(evt + 1);
+    struct hciEvtCmdComplete *cmdComplete = (struct hciEvtCmdComplete*)(evt + 1);
+    struct hciEvtCmdStatus *cmdStatus = (struct hciEvtCmdStatus*)(evt + 1);
+
+    pthread_mutex_lock(&mEvtWaitLock);
+    ws = mEvtWaitHead;
+    while (ws) {
+        cur = ws;
+        ws = ws->next;
+
+        /* type match? If no, do not go on */
+        if (evtType != ws->evtType)
+            continue;
+
+        /* if LE event, check code and skip handler if wrong */
+        if (evtType == HCI_EVT_LE_Meta_Event) {
+            if(len < sizeof(struct hciEvtLeMeta)) {
+                logw("Got LE meta event of len %ub\n", len);
+                break;
+            }
+            if (utilGetLE8(&leMeta->subevent) != ws->extra)
+                continue;
+        }
+
+        /* same for command complete */
+        if (evtType == HCI_EVT_Command_Complete_Event) {
+            if(len < sizeof(struct hciEvtCmdComplete)) {
+                logw("Got command complete event of len %ub\n", len);
+                break;
+            }
+            if (utilGetLE8(&cmdComplete->opcode) != ws->extra)
+                continue;
+        }
+
+        /* same for command status */
+        if (evtType == HCI_EVT_Command_Status_Event) {
+            if(len < sizeof(struct hciEvtCmdStatus)) {
+                logw("Got command status event of len %ub\n", len);
+                break;
+            }
+            if (utilGetLE8(&cmdStatus->opcode) != ws->extra)
+                continue;
+        }
+
+        /* if we're here, this handler matches - let's see what it says */
+        handled = ws->cbk(evt, ws->cbkData, ws->evtWaitStateID);
+        if (handled) {
+            hciEvtWaitDequeueInt(ws);
+            break;
+        }
+    }
+    pthread_mutex_unlock(&mEvtWaitLock);
+
+    if (!handled)
+        logw("Unahdneld HCI event code 0x%02X with %ub of params\n", evtType, len);
+}
+
+/*
  * FUNCTION: hciRx
  * USE:      Called when the chip gives us data/events
  * PARAMS:   cbkData - unused 
@@ -123,7 +306,7 @@ static void hciRxAcl(uint16_t hdr, void *data, uint16_t len)
  * RETURN:   true on success, false else
  * NOTES:    we must free the "data" buffer at some point in time - we own it now
  */
-static void hciRx(void* cbkData, uint8_t typ, void *data, uint32_t datalen)
+static void hciRx(void *cbkData, uint8_t typ, void *data, uint32_t datalen)
 {
     struct hciAclHdr *hdrAcl = (struct hciAclHdr*)data;
     struct hciScoHdr *hdrSco = (struct hciScoHdr*)data;
@@ -171,7 +354,7 @@ static void hciRx(void* cbkData, uint8_t typ, void *data, uint32_t datalen)
             loge("EVT packet claims %ub but had %ub\n", len, datalen);
             break;
         }
-        hciRxEvt(utilGetLE8(&hdrEvt->code), hdrSco + 1, len);
+        hciRxEvt(hdrEvt);
         break;
     default:
         loge("Dropping unknown packet with type %d\n", typ);
@@ -223,7 +406,17 @@ out_lib_open:
  */
 void hciDown(void)
 {
+    logd("Cancelling all event waiters\n");
+    pthread_mutex_lock(&mEvtWaitLock);
+    while (mEvtWaitHead) {
+        mEvtWaitHead->cbk(NULL, mEvtWaitHead->cbkData, mEvtWaitHead->evtWaitStateID);
+        hciEvtWaitDequeueInt(mEvtWaitHead);
+    }
+    pthread_mutex_unlock(&mEvtWaitLock);
+
     //more deinit here
     vendorDown();
     vendorClose();
 }
+
+
