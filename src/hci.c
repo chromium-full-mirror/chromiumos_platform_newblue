@@ -465,4 +465,152 @@ void hciDown(void)
     vendorClose();
 }
 
+/*
+ * FUNCTION: hciCmdSubmitCommon
+ * USE:      Enqueue a command to be sent to the chip that will reply with a
+ *           simple command complete/command status event. IF status, status
+ *           will be used as the basis of callback "success" value. If
+ *           complete, first byte of params.
+ * PARAMS:   cmd - the command to send
+ *           firstEvtType - first event to look for
+ *           firstEvtExtra - extra data for first event search
+ *           firstEvtCbk - event callback for first event
+ *           firstEvtCbkData1 - 1st data for first event callback
+ *           firstEvtCbkData2 - 2nd data for first event callback
+ *           secondEvtType - second event to look for
+ *           secondEvtExtra - extra data for second event search
+ *           secondEvtCbk - event callback for second event
+ *           secondEvtCbkData1 - 1st data for second event callback
+ *           secondEvtCbkData2 - 2nd data for second event callback
+ * RETURN:   false on error, true if you should expect callback call(s)
+ * NOTES:
+ */
+static bool hciCmdSubmit(const struct hciCmdHdr *cmd,
+                         uint8_t firstEvtType, uint16_t firstEvtExtra, hciEvtCbk firstEvtCbk,
+                         void *firstEvtCbkData1, void *firstEvtCbkData2,
+                         uint8_t secondEvtType, uint16_t secondEvtExtra, hciEvtCbk secondEvtCbk,
+                         void *secondEvtCbkData1, void *secondEvtCbkData2)
+{
+    //todo: this
+}
+
+/*
+ * FUNCTION: hciCmdSimpleCompleteCbk
+ * USE:      Event callback for command complete event used by hciCmdSubmitWithCmdComplete()
+ * PARAMS:   evt - the arrived event
+ *           cbkData1 - 1st callback data (actually the original hciOpDoneCbk)
+ *           cbkData2 - 2nd callback data (actually original data for hciOpDoneCbk)
+ *           evtWaitStateID - the wait state ID for original evt wait request (unused here)
+ * RETURN:   true if we handled the event (always yes)
+ * NOTES:
+ */
+static bool hciCmdSimpleCompleteCbk(struct hciEvtHdr *evt, void *cbkData1, void *cbkData2, uniq_t evtWaitStateID)
+{
+    struct hciEvtCmdComplete *cmpl = (struct hciEvtCmdComplete*)(evt + 1);
+    uint8_t *paramP = (uint8_t*)(cmpl + 1);
+    hciOpDoneCbk cbkF = (hciOpDoneCbk)cbkData1;
+    uint8_t status, len = utilGetLE8(&evt->len);
+
+    if (len < sizeof(struct hciEvtCmdComplete) + 1) {
+        logw("hciCmdSimpleCompleteCbk called with command with params only %ub in size!\n", len);
+        return false;
+    }
+
+    status = utilGetLE8(paramP);
+    hciScheduleOpDoneCbk((hciOpDoneCbk)cbkData1, cbkData2, !status);
+
+    return true;
+}
+
+/*
+ * FUNCTION: hciCmdSubmitWithCmdComplete
+ * USE:      Enqueue a command to be sent to the chip that will reply with a
+ *           simple command complete event whose first byte of params is a
+ *           status can be used as the basis of the "success/fail" reply to 
+ *           the caller.
+ * PARAMS:   cmd - the command to send
+ *           cbkDone - callback to call when operation completes
+ *           cbkData - data to pass to the callback
+ * RETURN:   false on error, true if you should expect callback call
+ * NOTES:
+ */
+static bool hciCmdSubmitWithCmdComplete(const struct hciCmdHdr *cmd, hciOpDoneCbk cbkDone, void *cbkData)
+{
+    uint16_t opcode = utilGetLE16(&cmd->opcode);
+
+    return hciCmdSubmit(cmd,
+        HCI_EVT_Command_Complete_Event, opcode, hciCmdSimpleCompleteCbk, (void*)cbkDone, cbkData,
+        0, 0, NULL, NULL, NULL);
+}
+
+/*
+ * FUNCTION: hciCmdSimpleStatusCbk
+ * USE:      Event callback for command status event used by hciCmdSubmitWithCmdStatus()
+ * PARAMS:   evt - the arrived event
+ *           cbkData1 - 1st callback data (actually the original hciOpDoneCbk)
+ *           cbkData2 - 2nd callback data (actually original data for hciOpDoneCbk)
+ *           evtWaitStateID - the wait state ID for original evt wait request (unused here)
+ * RETURN:   true if we handled the event (always yes)
+ * NOTES:
+ */
+static bool hciCmdSimpleStatusCbk(struct hciEvtHdr *evt, void *cbkData1, void *cbkData2, uniq_t evtWaitStateID)
+{
+    struct hciEvtCmdStatus *sta = (struct hciEvtCmdStatus*)(evt + 1);
+    hciOpDoneCbk cbkF = (hciOpDoneCbk)cbkData1;
+    uint8_t status = utilGetLE8(&sta->status);
+
+    hciScheduleOpDoneCbk((hciOpDoneCbk)cbkData1, cbkData2, !status);
+
+    return true;
+}
+
+/*
+ * FUNCTION: hciCmdSubmitWithCmdStatus
+ * USE:      Enqueue a command to be sent to the chip that will reply with a
+ *           simple command status event and then another event
+ * PARAMS:   cmd - the command to send
+ *           cbkDone - callback to call when operation completes
+ *           cbkData - data to pass to the callback
+ *           finalEvtType - final event to look for
+ *           finalEvtExtra - extra data for final event search
+ *           finalEvtCbk - event callback for final event
+ *           finalEvtCbkData1 - 1st data for final event callback
+ *           finalEvtCbkData2 - 2nd data for final event callback
+ * RETURN:   false on error, true if you should expect callback call
+ * NOTES:
+ */
+static bool hciCmdSubmitWithCmdStatus(const struct hciCmdHdr *cmd, hciOpDoneCbk cbkDone, void *cbkData,
+                                      uint8_t finalEvtType, uint16_t finalEvtExtra, hciEvtCbk finalEvtCbk,
+                                      void *finalEvtCbkData1, void *finalEvtCbkData2)
+{
+    uint16_t opcode = utilGetLE16(&cmd->opcode);
+
+    return hciCmdSubmit(cmd,
+        HCI_EVT_Command_Status_Event, opcode, hciCmdSimpleStatusCbk, (void*)cbkDone, cbkData,
+        finalEvtType, finalEvtExtra, finalEvtCbk, finalEvtCbkData1, finalEvtCbkData2);
+}
+
+/*
+ * FUNCTION: hciSetLocalName
+ * USE:      Set local device name
+ * PARAMS:   name - the name (up to 248 non-NULL chars, NULL-terminated)
+ *           cbkDone - callback to call when operation completes
+ *           cbkData - data to pass to the callback
+ * RETURN:   false on error, tru if you shoudl expect callback call
+ * NOTES:
+ */
+bool hciSetLocalName(const char *name, hciOpDoneCbk cbkDone, void *cbkData)
+{
+    uint8_t buf[sizeof(struct hciCmdHdr) + sizeof(struct hciCmdWriteLocalName)];
+    struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
+    struct hciCmdWriteLocalName *cmd = (struct hciCmdWriteLocalName*)(buf + 1);
+
+    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Local_Name);
+    hdr->paramLen = sizeof(struct hciCmdWriteLocalName);
+    memcpy(cmd->name, name, sizeof(cmd->name));
+
+    return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
+}
+
+
 
