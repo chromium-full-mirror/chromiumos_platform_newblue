@@ -18,3 +18,6 @@ timer assumes pointers are no more than 64-bits on your system
 bt_vendor_lib.h is a copy from bluedroid and is needed. once we are in the build system, we can use the real h file and delete this copy
 
 vendor lib does not support xmit callback
+
+bt 1.2 is minimum supported version
+
