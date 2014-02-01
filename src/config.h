@@ -2,7 +2,10 @@
 #define _CONFIG_H_
 
 
-
+/*
+ * How long our chip should keep trying to connect ot a peer in units of 0.625 ms
+ */
+#define HCI_CONN_TIMEOUT                   7800
 
 /*
  * HCI layer will queue up only this many cmds at a time

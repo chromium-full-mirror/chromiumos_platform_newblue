@@ -8,6 +8,9 @@
 #define HCI_PKT_TYP_SCO         0x03
 #define HCI_PKT_TYP_EVT         0x04
 
+
+#define HCI_EIR_DATA_LEN        240
+
 /* various callbacks */
 typedef void (*hciOpDoneCbk)(void *cbkData, bool success);
 
@@ -26,6 +29,7 @@ void hciDown(void);
 /* misc api. False on error, true if expect callback */
 bool hciSetLocalName(const char *name, hciOpDoneCbk cbkDone, void *cbkData);
 bool hciSetDeviceClass(uint32_t cls, hciOpDoneCbk cbkDone, void *cbkData);
+bool hciSetEirData(const uint8_t *data, uint8_t dlen, bool fecRequired, hciOpDoneCbk cbkDone, void *cbkData);
 
 #endif
 

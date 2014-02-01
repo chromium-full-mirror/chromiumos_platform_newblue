@@ -860,7 +860,7 @@ static bool hciCmdSubmitWithCmdStatus(const struct hciCmdHdr *cmd, hciOpDoneCbk 
  * PARAMS:   name - the name (up to 248 non-NULL chars, NULL-terminated)
  *           cbkDone - callback to call when operation completes
  *           cbkData - data to pass to the callback
- * RETURN:   false on error, tru if you shoudl expect callback call
+ * RETURN:   false on error, true if you should expect callback call
  * NOTES:
  */
 bool hciSetLocalName(const char *name, hciOpDoneCbk cbkDone, void *cbkData)
@@ -882,7 +882,7 @@ bool hciSetLocalName(const char *name, hciOpDoneCbk cbkDone, void *cbkData)
  * PARAMS:   class - the class value
  *           cbkDone - callback to call when operation completes
  *           cbkData - data to pass to the callback
- * RETURN:   false on error, tru if you shoudl expect callback call
+ * RETURN:   false on error, true if you should expect callback call
  * NOTES:
  */
 bool hciSetDeviceClass(uint32_t cls, hciOpDoneCbk cbkDone, void *cbkData)
@@ -895,9 +895,264 @@ bool hciSetDeviceClass(uint32_t cls, hciOpDoneCbk cbkDone, void *cbkData)
         logw("Truncating device class to 24 bits\n");
 
     hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Class_Of_Device);
-    hdr->paramLen = sizeof(struct hciCmdWriteLocalName);
+    hdr->paramLen = sizeof(struct hciCmdWriteClassOfDevice);
     utilSetLE24(cmd->cls, cls);
 
     return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
 }
 
+/*
+ * FUNCTION: hciReset
+ * USE:      Reset the chip
+ * PARAMS:   cbkDone - callback to call when operation completes
+ *           cbkData - data to pass to the callback
+ * RETURN:   false on error, true if you should expect callback call
+ * NOTES:
+ */
+static bool hciReset(hciOpDoneCbk cbkDone, void *cbkData)
+{
+    uint8_t buf[sizeof(struct hciCmdHdr)];
+    struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
+
+    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Reset);
+    hdr->paramLen = 0;
+
+    return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
+}
+
+/*
+ * FUNCTION: hciSetEventMask
+ * USE:      Set event mask
+ * PARAMS:   mask - the wanted mask
+ *           cbkDone - callback to call when operation completes
+ *           cbkData - data to pass to the callback
+ * RETURN:   false on error, true if you should expect callback call
+ * NOTES:
+ */
+static bool hciSetEventMask(uint64_t mask, hciOpDoneCbk cbkDone, void *cbkData)
+{
+    uint8_t buf[sizeof(struct hciCmdHdr) + sizeof(struct hciCmdSetEventMask)];
+    struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
+    struct hciCmdSetEventMask *cmd = (struct hciCmdSetEventMask*)(buf + 1);
+
+    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Set_Event_Mask);
+    hdr->paramLen = sizeof(struct hciCmdSetEventMask);
+    utilSetLE64(&cmd->mask, mask);
+
+    return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
+}
+
+/*
+ * FUNCTION: hciWritePinType
+ * USE:      Set whether we have a fixed or variable PIN
+ * PARAMS:   isFixed - is the pin fixed?
+ *           cbkDone - callback to call when operation completes
+ *           cbkData - data to pass to the callback
+ * RETURN:   false on error, true if you should expect callback call
+ * NOTES:
+ */
+static bool hciWritePinType(bool isFixed, hciOpDoneCbk cbkDone, void *cbkData)
+{
+    uint8_t buf[sizeof(struct hciCmdHdr) + sizeof(struct hciWritePinType)];
+    struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
+    struct hciWritePinType *cmd = (struct hciWritePinType*)(buf + 1);
+
+    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_PIN_Type);
+    hdr->paramLen = sizeof(struct hciWritePinType);
+    utilSetLE8(&cmd->isFixed, isFixed ? 1 : 0);
+
+    return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
+}
+
+/*
+ * FUNCTION: hciWritePageTimeout
+ * USE:      Set how long we try to connect at link layer
+ * PARAMS:   timeout - the timeout in unit of 0.625ms
+ *           cbkDone - callback to call when operation completes
+ *           cbkData - data to pass to the callback
+ * RETURN:   false on error, true if you should expect callback call
+ * NOTES:
+ */
+static bool hciWritePageTimeout(uint16_t timeout, hciOpDoneCbk cbkDone, void *cbkData)
+{
+    uint8_t buf[sizeof(struct hciCmdHdr) + sizeof(struct hciWritePageTimeout)];
+    struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
+    struct hciWritePageTimeout *cmd = (struct hciWritePageTimeout*)(buf + 1);
+
+    if (!timeout) {
+        loge("Invalid page timeout %d. Corrected to 1\n", timeout);
+        timeout = 1;
+    }
+
+    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Page_Timeout);
+    hdr->paramLen = sizeof(struct hciWritePageTimeout);
+    utilSetLE16(&cmd->timeout, timeout);
+
+    return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
+}
+
+/*
+ * FUNCTION: hciWriteScanEnable
+ * USE:      Set whether we reply to page or inqury scane (are connectable & discoverable)
+ * PARAMS:   state - the state to send in the command (bitfield of HCI_SCAN_ENABLE_* )
+ *           cbkDone - callback to call when operation completes
+ *           cbkData - data to pass to the callback
+ * RETURN:   false on error, true if you should expect callback call
+ * NOTES:
+ */
+static bool hciWriteScanEnable(uint8_t state, hciOpDoneCbk cbkDone, void *cbkData)
+{
+    uint8_t buf[sizeof(struct hciCmdHdr) + sizeof(struct hciWriteScanEnable)];
+    struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
+    struct hciWriteScanEnable *cmd = (struct hciWriteScanEnable*)(buf + 1);
+
+    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Scan_Enable);
+    hdr->paramLen = sizeof(struct hciWriteScanEnable);
+    utilSetLE8(&cmd->state, state);
+
+    return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
+}
+
+/*
+ * FUNCTION: hciWriteAuthEnable
+ * USE:      Set whether we require authentication for all connections
+ * PARAMS:   authRequired - set if we requite auth on all connection
+ *           cbkDone - callback to call when operation completes
+ *           cbkData - data to pass to the callback
+ * RETURN:   false on error, true if you should expect callback call
+ * NOTES:
+ */
+static bool hciWriteAuthEnable(bool authRequired, hciOpDoneCbk cbkDone, void *cbkData)
+{
+    uint8_t buf[sizeof(struct hciCmdHdr) + sizeof(struct hciWriteAuthEnable)];
+    struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
+    struct hciWriteAuthEnable *cmd = (struct hciWriteAuthEnable*)(buf + 1);
+
+    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Authentication_Enable);
+    hdr->paramLen = sizeof(struct hciWriteAuthEnable);
+    utilSetLE8(&cmd->authRequired, authRequired ? 1 : 0);
+
+    return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
+}
+
+/*
+ * FUNCTION: hciWriteAutoFlushTimeout
+ * USE:      Set how long a packet is retired before it is abandonned
+ * PARAMS:   conn - the ACL connection this pertains to
+ *           timeout - the timeout (in units of 0.625 ms, 0 => inifinite)
+ *           cbkDone - callback to call when operation completes
+ *           cbkData - data to pass to the callback
+ * RETURN:   false on error, true if you should expect callback call
+ * NOTES:
+ */
+static bool hciWriteAutoFlushTimeout(uint16_t conn, uint16_t timeout, hciOpDoneCbk cbkDone, void *cbkData)
+{
+    uint8_t buf[sizeof(struct hciCmdHdr) + sizeof(struct hciWriteAutoFlushTimeout)];
+    struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
+    struct hciWriteAutoFlushTimeout *cmd = (struct hciWriteAutoFlushTimeout*)(buf + 1);
+
+    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Automatic_Flush_Timeout);
+    hdr->paramLen = sizeof(struct hciWriteAutoFlushTimeout);
+    utilSetLE16(&cmd->conn, conn);
+    utilSetLE16(&cmd->timeout, timeout);
+
+    return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
+}
+
+
+/*
+ * FUNCTION: hciWriteSyncFlowCtrlEnable
+ * USE:      Set whether we get command complete packets for SCO data
+ * PARAMS:   syncFlowCtrlOn - set if we will get thos epckaets, false else
+ *           cbkDone - callback to call when operation completes
+ *           cbkData - data to pass to the callback
+ * RETURN:   false on error, true if you should expect callback call
+ * NOTES:
+ */
+static bool hciWriteSyncFlowCtrlEnable(bool syncFlowCtrlOn, hciOpDoneCbk cbkDone, void *cbkData)
+{
+    uint8_t buf[sizeof(struct hciCmdHdr) + sizeof(struct hciWriteSyncFlowCtrl)];
+    struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
+    struct hciWriteSyncFlowCtrl *cmd = (struct hciWriteSyncFlowCtrl*)(buf + 1);
+
+    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_SCO_Flow_Control_Enable);
+    hdr->paramLen = sizeof(struct hciWriteSyncFlowCtrl);
+    utilSetLE8(&cmd->syncFlowCtrlOn, syncFlowCtrlOn ? 1 : 0);
+
+    return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
+}
+
+/*
+ * FUNCTION: hciWriteInquiryMode
+ * USE:      Set what kind of inquiry result we want
+ * PARAMS:   inqMode - the result format (INQ_MODE_*)
+ *           cbkDone - callback to call when operation completes
+ *           cbkData - data to pass to the callback
+ * RETURN:   false on error, true if you should expect callback call
+ * NOTES:
+ */
+static bool hciWriteInquiryMode(uint8_t inqMode, hciOpDoneCbk cbkDone, void *cbkData)
+{
+    uint8_t buf[sizeof(struct hciCmdHdr) + sizeof(struct hciWriteInquryMode)];
+    struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
+    struct hciWriteInquryMode *cmd = (struct hciWriteInquryMode*)(buf + 1);
+
+    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_InquiryMode);
+    hdr->paramLen = sizeof(struct hciWriteInquryMode);
+    utilSetLE8(&cmd->inqMode, inqMode);
+
+    return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
+}
+
+/*
+ * FUNCTION: hciSetEirData
+ * USE:      Set our EIR data and EIR FEC settings
+ * PARAMS:   data - the EIR data
+ *           dlen - length of said data
+ *           fecRequired - send data with error correction?
+ *           cbkDone - callback to call when operation completes
+ *           cbkData - data to pass to the callback
+ * RETURN:   false on error, true if you should expect callback call
+ * NOTES:
+ */
+bool hciSetEirData(const uint8_t *data, uint8_t dlen, bool fecRequired, hciOpDoneCbk cbkDone, void *cbkData)
+{
+    uint8_t buf[sizeof(struct hciCmdHdr) + sizeof(struct hciWriteEIR)];
+    struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
+    struct hciWriteEIR *cmd = (struct hciWriteEIR*)(buf + 1);
+
+    if (dlen > sizeof(cmd->data)) {
+        logw("EIR data cut off after %ub\n", (int)sizeof(cmd->data));
+        dlen = sizeof(cmd->data);
+    }
+
+    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Extended_Inquiry_Response);
+    hdr->paramLen = sizeof(struct hciWriteEIR);
+    cmd->useFec = fecRequired ? 1 : 0;
+    memset(cmd->data, 0, sizeof(cmd->data));
+    memcpy(cmd->data, data, dlen);
+
+    return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
+}
+
+/*
+ * FUNCTION: hciWriteSimplePairingMode
+ * USE:      Enable/disable SSP
+ * PARAMS:   sspOn - use ssp?
+ *           cbkDone - callback to call when operation completes
+ *           cbkData - data to pass to the callback
+ * RETURN:   false on error, true if you should expect callback call
+ * NOTES:
+ */
+static bool hciWriteSimplePairingMode(bool sspOn, hciOpDoneCbk cbkDone, void *cbkData)
+{
+    uint8_t buf[sizeof(struct hciCmdHdr) + sizeof(struct hciWriteSimplePairingMore)];
+    struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
+    struct hciWriteSimplePairingMore *cmd = (struct hciWriteSimplePairingMore*)(buf + 1);
+
+    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_InquiryMode);
+    hdr->paramLen = sizeof(struct hciWriteSimplePairingMore);
+    utilSetLE8(&cmd->useSsp, sspOn ? 1 : 0);
+
+    return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
+}
