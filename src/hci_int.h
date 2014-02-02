@@ -36,7 +36,6 @@
 #define HCI_PKT_TYP_SCO_NO_2_EV5                                 0x0100 /* BT 2.1+ */
 #define HCI_PKT_TYP_SCO_NO_3_EV5                                 0x0200 /* BT 2.1+ */
 
-
 #define HCI_DISPLAY_CAP_DISPLAY_ONLY                             0
 #define HCI_DISPLAY_CAP_DISPLAY_YES_NO                           1
 #define HCI_DISPLAY_CAP_KEYBOARD_ONLY                            2
@@ -55,7 +54,80 @@
 #define HCI_LINK_POLICY_ENABLE_SNIFF_MODE                        0x0004
 #define HCI_LINK_POLICY_ENABLE_PARK_MODE                         0x0008
 
+#define HCI_EVENT_INQUIRY_COMPLETE                               0x0000000000000001ULL /* BT 1.2+ */
+#define HCI_EVENT_INQUIRY_RESULT                                 0x0000000000000002ULL /* BT 1.2+ */
+#define HCI_EVENT_CONN_COMPLETE                                  0x0000000000000004ULL /* BT 1.2+ */
+#define HCI_EVENT_CONN_REQUEST                                   0x0000000000000008ULL /* BT 1.2+ */
+#define HCI_EVENT_DISCONNECTION_COMPLETE                         0x0000000000000010ULL /* BT 1.2+ */
+#define HCI_EVENT_AUTH_COMPLETE                                  0x0000000000000020ULL /* BT 1.2+ */
+#define HCI_EVENT_REMOTE_NAME_REQUEST_COMPLETE                   0x0000000000000040ULL /* BT 1.2+ */
+#define HCI_EVENT_ENCR_CHANGE                                    0x0000000000000080ULL /* BT 1.2+ */
+#define HCI_EVENT_CHANGE_CONN_LINK_KEY_COMPLETE                  0x0000000000000100ULL /* BT 1.2+ */
+#define HCI_EVENT_MASTER_LINK_KEY_COMPLETE                       0x0000000000000200ULL /* BT 1.2+ */
+#define HCI_EVENT_READ_REMOTE_SUPPORTED_FEATURES_COMPLETE        0x0000000000000400ULL /* BT 1.2+ */
+#define HCI_EVENT_READ_REMOTE_VERSON_INFO_COMPLETE               0x0000000000000800ULL /* BT 1.2+ */
+#define HCI_EVENT_QOS_SETUP_COMPLETE                             0x0000000000001000ULL /* BT 1.2+ */
+#define HCI_EVENT_HARDWARE_ERROR                                 0x0000000000008000ULL /* BT 1.2+ */
+#define HCI_EVENT_FLUSH_OCCURED                                  0x0000000000010000ULL /* BT 1.2+ */
+#define HCI_EVENT_ROLE_CHANGE                                    0x0000000000020000ULL /* BT 1.2+ */
+#define HCI_EVENT_MODE_CHANGE                                    0x0000000000080000ULL /* BT 1.2+ */
+#define HCI_EVENT_RETURN_LINK_KEYS                               0x0000000000100000ULL /* BT 1.2+ */
+#define HCI_EVENT_PIN_CODE_REQUEST                               0x0000000000200000ULL /* BT 1.2+ */
+#define HCI_EVENT_LINK_KEY_REQUEST                               0x0000000000400000ULL /* BT 1.2+ */
+#define HCI_EVENT_LINK_KEY_NOTIFICATION                          0x0000000000800000ULL /* BT 1.2+ */
+#define HCI_EVENT_LOOPBACK_COMMAND                               0x0000000001000000ULL /* BT 1.2+ */
+#define HCI_EVENT_DATA_BUFFER_OVERFLOW                           0x0000000002000000ULL /* BT 1.2+ */
+#define HCI_EVENT_MAX_SLOTS_CHANGE                               0x0000000004000000ULL /* BT 1.2+ */
+#define HCI_EVENT_READ_CLOCK_OFFSET_COMPLETE                     0x0000000008000000ULL /* BT 1.2+ */
+#define HCI_EVENT_CONN_PACKET_TYPE_CHANGED                       0x0000000010000000ULL /* BT 1.2+ */
+#define HCI_EVENT_QOS_VIOLATION                                  0x0000000020000000ULL /* BT 1.2+ */
+#define HCI_EVENT_PAGE_SCAN_MODE_CHANGE                          0x0000000040000000ULL /* BT 1.2+, obsolete @ BT1.2+ */
+#define HCI_EVENT_PAGE_SCAN_REPETITION_MODE_CHANGE               0x0000000080000000ULL /* BT 1.2+ */
+#define HCI_EVENT_FLOW_SPEC_COMPLETE                             0x0000000100000000ULL /* BT 1.2+ */
+#define HCI_EVENT_INQUIRY_RESULT_WITH_RSSI                       0x0000000200000000ULL /* BT 1.2+ */
+#define HCI_EVENT_READ_REMOTE_EXTENDED_FETURES_COMPLETE          0x0000000400000000ULL /* BT 1.2+ */
+#define HCI_EVENT_SYNC_CONN_COMPLETE_EVENT                       0x0000080000000000ULL /* BT 1.2+ */
+#define HCI_EVENT_SYNC_CONN_CHANGED_EVENT                        0x0000100000000000ULL /* BT 1.2+ */
+#define HCI_EVENT_ALL_BT_1_2                                     0x00001FFFFFFFFFFFULL /* also the default */
+#define HCI_EVENT_SNIFF_SUBRATING                                0x0000200000000000ULL /* BT 2.1+ */
+#define HCI_EVENT_EXTENDED_INQUIRY_RESULT                        0x0000400000000000ULL /* BT 2.1+ */
+#define HCI_EVENT_ENCR_KEY_REFRESH_COMPLETE                      0x0000800000000000ULL /* BT 2.1+ */
+#define HCI_EVENT_IO_CAPABILITY_REQUEST                          0x0001000000000000ULL /* BT 2.1+ */
+#define HCI_EVENT_IO_CAPABILITY_REQUEST_REPLY                    0x0002000000000000ULL /* BT 2.1+ */
+#define HCI_EVENT_USER_CONFIRMATION_REQUEST                      0x0004000000000000ULL /* BT 2.1+ */
+#define HCI_EVENT_USER_PASSKEY_REQUEST                           0x0008000000000000ULL /* BT 2.1+ */
+#define HCI_EVENT_REMOTE_OOB_DATA_REQUEST                        0x0010000000000000ULL /* BT 2.1+ */
+#define HCI_EVENT_SIMPLE_PAIRING_COMPLETE                        0x0020000000000000ULL /* BT 2.1+ */
+#define HCI_EVENT_LINK_SUPERVISION_TIMOUT_CHANGED                0x0080000000000000ULL /* BT 2.1+ */
+#define HCI_EVENT_ENHANCED_FLUSH_COMPLETE                        0x0100000000000000ULL /* BT 2.1+ */
+#define HCI_EVENT_USER_PASSKEY_NOTIFICATION                      0x0400000000000000ULL /* BT 2.1+ */
+#define HCI_EVENT_KEYPRESS_NOTIFICATION                          0x0800000000000000ULL /* BT 2.1+ */
+#define HCI_EVENT_REMOTE_HOST_SUPPORTED_FEATURES                 0x1000000000000000ULL /* BT 2.1+ */
+#define HCI_EVENT_ALL_BT_2_1                                     0x1DBFFFFFFFFFFFFFULL
+#define HCI_EVENT_ALL_BT_3_0                                     0x1DBFFFFFFFFFFFFFULL
+#define HCI_EVENT_LE_META                                        0x2000000000000000ULL /* BT 4.0+ */
+#define HCI_EVENT_ALL_BT_4_0                                     0x3DBFFFFFFFFFFFFFULL
 
+#define HCI_EVENT_P2_PHYS_LINK_COMPLETE                          0x0000000000000001ULL /* BT 3.0+ */
+#define HCI_EVENT_P2_CHANNEL_SELECTED                            0x0000000000000002ULL /* BT 3.0+ */
+#define HCI_EVENT_P2_DISCONNECTION_PHYSICAL_LINK                 0x0000000000000004ULL /* BT 3.0+ */
+#define HCI_EVENT_P2_PHYSICAL_LINK_LOSS_EARLY_WARNING            0x0000000000000008ULL /* BT 3.0+ */
+#define HCI_EVENT_P2_PHYSICAL_LINK_RECOVERY                      0x0000000000000010ULL /* BT 3.0+ */
+#define HCI_EVENT_P2_LOGICAL_LINK_COMPLETE                       0x0000000000000020ULL /* BT 3.0+ */
+#define HCI_EVENT_P2_DISCONNECTION_LOGICAL_LINK_COMPLETE         0x0000000000000040ULL /* BT 3.0+ */
+#define HCI_EVENT_P2_FLOW_SPEC_MODIFY_COMPLETE                   0x0000000000000080ULL /* BT 3.0+ */
+#define HCI_EVENT_P2_NUMBER_OF_COMPLETED_DATA_BLOCKS             0x0000000000000100ULL /* BT 3.0+ */
+#define HCI_EVENT_P2_AMP_START_TEST                              0x0000000000000200ULL /* BT 3.0+ */
+#define HCI_EVENT_P2_AMP_TEST_END                                0x0000000000000400ULL /* BT 3.0+ */
+#define HCI_EVENT_P2_AMP_RECEIVER_REPORT                         0x0000000000000800ULL /* BT 3.0+ */
+#define HCI_EVENT_P2_SHORT_RANGE_MODE_CHANGE_COMPLETE            0x0000000000001000ULL /* BT 3.0+ */
+#define HCI_EVENT_P2_AMP_STATUS_CHANGE                           0x0000000000002000ULL /* BT 3.0+ */
+
+#define HCI_LE_EVENT_CONN_COMPLETE                               0x0000000000000001ULL /* BT 4.0+ */
+#define HCI_LE_EVENT_ADV_REPORT                                  0x0000000000000002ULL /* BT 4.0+ */
+#define HCI_LE_EVENT_CONN_UPDATE_COMPLETE                        0x0000000000000004ULL /* BT 4.0+ */
+#define HCI_LE_EVENT_READ_REMOTE_USED_FEATURES_CMPLETE           0x0000000000000008ULL /* BT 4.0+ */
+#define HCI_LE_EVENT_LTK_REQUEST                                 0x0000000000000010ULL /* BT 4.0+ */
 
 
 
@@ -453,11 +525,12 @@ struct hciSniffSubrating {
 
 #define HCI_OGF_Controller_and_Baseband                          3
 
+
 /* ==== BT 1.2 ==== */
 
 #define HCI_CMD_Set_Event_Mask                                   0x0001
 struct hciCmdSetEventMask {
-    uint64_t mask;
+    uint64_t mask; /* bitmask of HCI_EVENT_* */
 } __packed;
 
 #define HCI_CMD_Reset                                            0x0003
@@ -571,12 +644,19 @@ struct hciWriteSimplePairingMore {
 
 /* ==== BT 3.0 ==== */
 
+#define HCI_CMD_Set_Event_Mask_Page_2                            0x0063
+struct hciSetEventMaskPage2 {
+    uint64_t evens; /* bitmask of HCI_EVENT_P2_* */
+} __packed;
+
 #define HCI_CMD_Read_Location_Data                               0x0064
 
 
 
 
+
 #define HCI_OGF_Informational                                    4
+
 
 /* ==== BT 1.2 ==== */
 
@@ -585,6 +665,11 @@ struct hciWriteSimplePairingMore {
 #define HCI_CMD_Read_Local_Supported_Commands                    0x0002
 
 #define HCI_CMD_Read_Local_Supported_Features                    0x0003
+
+#define HCI_CMD_Read_Local_Extended _Features                    0x0004
+struct hciReadLocalExtendedFeatures {
+    uint8_t page;
+} __packed;
 
 #define HCI_CMD_Read_Buffer_Size                                 0x0005
 
@@ -597,10 +682,242 @@ struct hciWriteSimplePairingMore {
 
 
 
+
+
 #define HCI_OGF_Status                                           5
 
 
-#define HCI_OGF_LE                                              8
+/* == BT 1.2 == */
+
+#define HCI_CMD_Read_Failed_Contact_Counter                      0x0001
+struct hciReadFailedContactCounter {
+    uint16_t conn;
+} __packed;
+
+#define HCI_CMD_Reset_Failed_Contact_Counter                     0x0002
+struct hciResetFailedContactCounter {
+    uint16_t conn;
+} __packed;
+
+#define HCI_CMD_Read_Link_Quality                                0x0003
+struct hciReadLinkQuality {
+    uint16_t conn;
+} __packed;
+
+#define HCI_CMD_Read_RSSI                                        0x0005
+struct hciReadRssi {
+    uint16_t conn;
+} __packed;
+
+#define HCI_CMD_Read_AFH_Channel_Map                             0x0006
+struct hciReadAfhChannelMap {
+    uint16_t conn;
+} __packed;
+
+
+#define HCI_CMD_Read_Clock                                       0x0007
+struct hciReadClock {
+    uint16_t conn;
+    uint8_t readRemote; /* else reads local and ignores conn */
+} __packed;
+
+
+/* ==== BT 3.0 ==== */
+
+#define HCI_CMD_Read_Encryption_Key_Size                         0x0008
+struct hciReadEncrKeySize {
+    uint16_t conn;
+} __packed;
+
+#define HCI_CMD_Read_Local_AMP_Info                              0x0009
+
+#define HCI_CMD_Read_Local_AMP_ASSOC                             0x000A
+struct hciReadLocalAmpAssoc {
+    uint8_t physiclaLinkHandle;
+    uint16_t lengthSoFar;
+    uint16_t ampAssocLen;
+} __packed;
+
+#define HCI_CMD_Write_Remote_AMP_ASSOC                           0x000B
+struct hciWriteRemoteAmpAssoc {
+    uint8_t physiclaLinkHandle;
+    uint16_t lengthSoFar;
+    uint16_t remaningLength;
+    uint8_t fragment[]; /* 248 bytes for all but last one */
+} __packed;
+
+
+
+
+
+#define HCI_OGF_LE                                               8
+
+
+/* ==== BT 4.0 ==== */
+
+#define HCI_CMD_LE_Set_Event_Mask                                0x0001
+struct hciLeSetEventMask {
+    uint64_t events; /* bitmask of HCI_LE_EVENT_* */
+} __packed;
+
+#define HCI_CMD_LE_Read_Buffer_Size                              0x0002
+
+#define HCI_CMD_LE_Read_Local_Supported_Features                 0x0003
+
+#define HCI_CMD_LE_Set_Random_Address                            0x0005
+struct hciLeSetRandomAddress{
+    uint8_t mac[6];
+} __packed;
+
+#define HCI_CMD_LE_Set_Adv_Params                                0x0006
+struct hciLeSetAdvParams {
+    uint16_t advIntervalMin;
+    uint16_t advIntervalMax;
+    uint8_t advType;
+    uint8_t useRandomAddress;
+    uint8_t directRandomAddress;
+    uint8_t directAddr[6];
+    uint8_t advChannelMap;
+    uint8_t advFilterPolicy;
+} __packed;
+
+#define HCI_CMD_LE_Read_Adv_Channel_TX_Power                     0x0007
+
+#define HCI_CMD_LE_Set_Advertising_Data                          0x0008
+struct hciLeSetAdvData {
+    uint8_t advDataLen;
+    uint8_t advData[31];
+} __packed;
+
+#define HCI_CMD_LE_Set_Scan_Response_Data                        0x0009
+struct hciSetScanREsponseData {
+    uint8_t scanRspDataLen;
+    uint8_t scanRspData[31];
+} __packed;
+
+#define HCI_CMD_LE_Set_Advertise_Enable                          0x000A
+struct hciLeSetAdvEnable {
+    uint8_t advOn;
+} __packed;
+
+#define HCI_CMD_LE_Set_Scan_Parameters                           0x000B
+struct hciLeSetScanParams {
+    uint8_t activeScan;
+    uint16_t scanInterval; /* in units of 0.625ms, 4..0x4000 */
+    uint16_t scanWindow; /* in units of 0.625ms, 4..0x4000 */
+    uint8_t useOwnRandomAddr;
+    uint8_t onlyWhitelist;
+} __packed;
+
+#define HCI_CMD_LE_Set_Scan_Enable                               0x000C
+struct hciLeSetScanEnable {
+    uint8_t scanOn;
+    uint8_t filterDuplicates;
+} __packed;
+
+#define HCI_CMD_LE_Create_Connection                             0x000D
+struct hciLeCreateConnection {
+    uint16_t scanInterval; /* in units of 0.625ms, 4..0x4000 */
+    uint16_t scanWindow; /* in units of 0.625ms, 4..0x4000 */
+    uint8_t connectToAnyWhitelistedDevice; /* if so, ignore next 2 params */
+    uint8_t peerRandomAddr;
+    uint8_t peerMac[6];
+    uint8_t useOwnRandomAddr;
+    uint16_t connIntervalMin; /* in units of 1.25ms, 6..0x0C80 */
+    uint16_t connIntervalMax; /* in units of 1.25ms, 6..0x0C80 */
+    uint16_t connLatency; /* 0..0x1F4 */
+    uint16_t supervisionTimeout; /* in units of 10ms, 0xA...0x0C80 */
+    uint16_t minConnLen; /* minimum conn len needed in units of 0.625ms 0..0xfff */
+    uint16_t maxConnLen; /* minimum conn len needed in units of 0.625ms 0..0xfff */
+} __packed;
+
+#define HCI_CMD_LE_Create_Connection_Cancel                      0x000E
+
+#define HCI_CMD_LE_Read_White_List_Size                          0x000F
+
+#define HCI_CMD_LE_Clear_White_List                              0x0010
+
+#define HCI_CMD_LE_Add_Device_To_White_List                      0x0011
+struct hciLeAddDeviceToWhiteList {
+    uint8_t randomAddr;
+    uint8_t mac[6];
+} __packed;
+
+#define HCI_CMD_LE_Remove_Device_From_White_List                 0x0012
+struct hciLeRemoveDeviceFromWhiteList {
+    uint8_t randomAddr;
+    uint8_t mac[6];
+} __packed;
+
+#define HCI_CMD_LE_Connection_Update                             0x0013
+struct hciLeConnectionUpdate {
+    uint16_t conn;
+    uint16_t connIntervalMin; /* in units of 1.25ms, 6..0x0C80 */
+    uint16_t connIntervalMax; /* in units of 1.25ms, 6..0x0C80 */
+    uint16_t connLatency; /* 0..0x1F4 */
+    uint16_t supervisionTimeout; /* in units of 10ms, 0xA...0x0C80 */
+    uint16_t minConnLen; /* minimum conn len needed in units of 0.625ms 0..0xfff */
+    uint16_t maxConnLen; /* minimum conn len needed in units of 0.625ms 0..0xfff */
+} __packed;
+
+#define HCI_CMD_LE_Set_Host_Channel_Classification               0x0014
+struct hciLeSetHostChannelClassification {
+    uint8_t chMap[5];
+} __packed;
+
+#define HCI_CMD_LE_Read_Channel_Map                              0x0015
+struct hciLeReadChannelMap {
+    uint16_t conn;
+} __packed;
+
+#define HCI_CMD_LE_Read_Remote_Used_Features                     0x0016
+struct hciLeReadRemoteUsedFeatures {
+    uint16_t conn;
+} __packed;
+
+#define HCI_CMD_LE_Encrypt                                       0x0017
+struct hciLeEncrypt {
+    uint8_t key[16];
+    uint8_t plaintext[16];
+} __packed;
+
+#define HCI_CMD_LE_Rand                                          0x0018
+
+#define HCI_CMD_LE_Start_Encryption                              0x0019
+struct hciLeStartEncryption {
+    uint16_t conn;
+    uint64_t rand;
+    uint16_t diversifier;
+    uint8_t LTK[16];
+} __packed;
+
+#define HCI_CMD_LE_LTK_Request_Reply                             0x001A
+struct hciLeLtkRequestReply {
+    uint16_t conn;
+    uint8_t LTK[16];
+} __packed;
+
+#define HCI_CMD_LE_LTK_Request_Negative_Reply                    0x001B
+struct hciLeLtkRequestNEgativeReply {
+    uint16_t conn;
+} __packed;
+
+#define HCI_CMD_LE_Read_Supported_States                         0x001C
+
+#define HCI_CMD_LE_Receiver_Test                                 0x001D
+struct hciLeReceiverTest {
+    uint8_t radioChannelNum; /* 2402 + radioChannelNum * 2 MHz */
+} __packed;
+
+#define HCI_CMD_LE_Transmitter_Test                              0x001E
+struct hciLeTransmitterTest {
+    uint8_t radioChannelNum; /* 2402 + radioChannelNum * 2 MHz */
+    uint8_t lengthOfTestData;
+    uint8_t testPacketDataType;
+} __packed;
+
+#define HCI_CMD_LE_Test_End                                      0x001F
+
 
 
 #define HCI_EVT_Inquiry_Complete_Event                           0x01
