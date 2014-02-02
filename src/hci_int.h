@@ -49,6 +49,12 @@
 #define HCI_AUTH_REQMENT_NO_MITM_PROT_GENERAL_BOND               4
 #define HCI_AUTH_REQMENT_MITM_PROT_GENERAL_BOND                  5
 
+#define HCI_LINK_POLICY_DISABLE_ALL_LM_MODES                     0x0000
+#define HCI_LINK_POLICY_ENABLE_ROLESWITCH                        0x0001
+#define HCI_LINK_POLICY_ENABLE_HOLD_MODE                         0x0002
+#define HCI_LINK_POLICY_ENABLE_SNIFF_MODE                        0x0004
+#define HCI_LINK_POLICY_ENABLE_PARK_MODE                         0x0008
+
 
 
 
@@ -344,21 +350,102 @@ struct hciFlowSpecModify {
 
 
 /* ==== BT 1.2 ==== */
+
 #define HCI_CMD_Hold_Mode                                        0x0001
+struct hciHoldMode {
+    uint16_t conn;
+    uint16_t holdModeMaxInt;
+    uint16_t holdModeMinInt;
+} __packed;
+
 #define HCI_CMD_Sniff_Mode                                       0x0003
+struct hciSniffMode {
+    uint16_t conn;
+    uint16_t sniffMaxInt;
+    uint16_t sniffMinInt;
+    uint16_t sniffAttempt;
+    uint16_t sniffTimeout;
+} __packed;
+
 #define HCI_CMD_Exit_Sniff_Mode                                  0x0004
-#define HCI_CMD_Park_Mode                                        0x0005
-#define HCI_CMD_Exit_Park_Mode                                   0x0006
+struct hciExitSniffMode {
+    uint16_t conn;
+} __packed;
+
+#define HCI_CMD_Park_State                                       0x0005
+struct hciParkState {
+    uint16_t conn;
+    uint16_t beaconMaxInt;
+    uint16_t beaconMinInt;
+} __packed;
+
+#define HCI_CMD_Exit_Park_State                                  0x0006
+struct hciExitParkState {
+    uint16_t conn;
+} __packed;
+
 #define HCI_CMD_QoS_Setup                                        0x0007
+struct hisQosSetup {
+    uint16_t conn;
+    uint8_t flags;
+    uint8_t serviceType;
+    uint32_t tokenRate;
+    uint32_t peakBandwidth;
+    uint32_t latency;
+    uint32_t delayVariation;
+} __packed;
+
 #define HCI_CMD_Role_Discovery                                   0x0009
+struct hciRoleDiscovery {
+    uint16_t conn;
+} __packed;
+
 #define HCI_CMD_Switch_Role                                      0x000B
+struct hciSwitchRole {
+    uint8_t mac[6];
+    uint8_t becomeSlave;
+} __packed;
+
 #define HCI_CMD_Read_Link_Policy_Settings                        0x000C
+struct hciReadLinkPolicySettings {
+    uint16_t conn;
+} __packed;
+
 #define HCI_CMD_Write_Link_Policy_Settings                       0x000D
+struct hciWriteLinkPolicySettings {
+    uint16_t conn;
+    uint16_t policy; /* HCI_LINK_POLICY_* */
+} __packed;
+
+#define HCI_CMD_Read_Default_Link_Policy_Settings                0x000E
+
+#define HCI_CMD_Write_Default_Link_Policy_Settings               0x000F
+struct hciWriteDefaultLinkPolicySettings {
+    uint16_t policy; /* HCI_LINK_POLICY_* */
+} __packed;
+
+#define HCI_CMD_Flow_Specification                               0x0010
+struct hisFlowSpecification {
+    uint16_t conn;
+    uint8_t flags;
+    uint8_t flowDirection;
+    uint8_t serviceType;
+    uint32_t tokenRate;
+    uint32_t tockenBucketSize;
+    uint32_t peakBandwidth;
+    uint32_t accessLatency;
+} __packed;
+
 
 /* ==== BT 2.1 ==== */
 
 #define HCI_CMD_Sniff_Subrating                                  0x0011
-
+struct hciSniffSubrating {
+    uint16_t conn;
+    uint16_t maxLatency;
+    uint16_t minRemoteTimeout;
+    uint16_t minLocalTimeout;
+} __packed;
 
 
 
