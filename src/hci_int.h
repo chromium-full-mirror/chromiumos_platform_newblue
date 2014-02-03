@@ -319,16 +319,16 @@
 
 /* ==== BT 1.1 ==== */
 
-#define HCI_CMD_Inquiry                                          0x0001
+#define HCI_CMD_Inquiry                                          0x0001 /* status */
 struct hciInquiry {
     uint8_t lap[3];
     uint8_t inqLen;
     uint8_t numResp;
 } __packed;
 
-#define HCI_CMD_Inquiry_Cancel                                   0x0002
+#define HCI_CMD_Inquiry_Cancel                                   0x0002 /* complete */
 
-#define HCI_CMD_Periodic_Inquiry_Mode                            0x0003
+#define HCI_CMD_Periodic_Inquiry_Mode                            0x0003 /* complete */
 struct hciPeriodicInquiryMode {
     uint16_t maxPeriodLen;
     uint16_t minPeriodLen;
@@ -337,9 +337,9 @@ struct hciPeriodicInquiryMode {
     uint8_t numResp;
 } __packed;
 
-#define HCI_CMD_Exit_Periodic_Inquiry_Mode                       0x0004
+#define HCI_CMD_Exit_Periodic_Inquiry_Mode                       0x0004 /* complete */
 
-#define HCI_CMD_Create_Connection                                0x0005
+#define HCI_CMD_Create_Connection                                0x0005 /* status */
 struct hciCreateConnection {
     uint8_t mac[6];
     uint16_t allowedPackets; /* HCI_PKT_TYP_* */
@@ -349,86 +349,86 @@ struct hciCreateConnection {
 } __packed;
 #define HCI_CLOCK_OFST_VALID  0x8000
 
-#define HCI_CMD_Disconnect                                       0x0006
+#define HCI_CMD_Disconnect                                       0x0006 /* status */
 struct hciDisconnect {
     uint16_t conn;
     uint8_t reason;
 } __packed;
 
-#define HCI_CMD_Add_SCO_Connection                               0x0007 /* deprecated in BT 1.2+ */
+#define HCI_CMD_Add_SCO_Connection                               0x0007 /* status */ /* deprecated in BT 1.2+ */
 struct hciAddScoConnection {
     uint16_t conn;
     uint16_t packetTypes; /* HCI_PKT_TYP_SCO_* */
 } __packed;
 
-#define HCI_CMD_Create_Connection_Cancel                         0x0008
+#define HCI_CMD_Create_Connection_Cancel                         0x0008 /* complete */
 struct hciCreateConnectionCancel {
     uint8_t mac[6];
 } __packed;
 
-#define HCI_CMD_Accept_Connection_Request                        0x0009
+#define HCI_CMD_Accept_Connection_Request                        0x0009 /* status */
 struct hciAcceptConnection {
     uint8_t mac[6];
     uint8_t remainSlave;
 } __packed;
 
-#define HCI_CMD_Reject_Connection_Request                        0x000A
+#define HCI_CMD_Reject_Connection_Request                        0x000A /* status */
 struct hciRejectConnection {
     uint8_t mac[6];
     uint8_t reason;
 } __packed;
 
-#define HCI_CMD_Link_Key_Request_Reply                           0x000B
+#define HCI_CMD_Link_Key_Request_Reply                           0x000B /* complete */
 struct hciLinkKeyRequestReply {
     uint8_t mac[6];
     uint8_t key[16];
 } __packed;
 
-#define HCI_CMD_Link_Key_Request_Negative_Reply                  0x000C
+#define HCI_CMD_Link_Key_Request_Negative_Reply                  0x000C /* complete */
 struct hciLinkKeyRequestNegativeReply {
     uint8_t mac[6];
 } __packed;
 
-#define HCI_CMD_PIN_Code_Request_Reply                           0x000D
+#define HCI_CMD_PIN_Code_Request_Reply                           0x000D /* complete */
 struct hciPinCodeRequestReply {
     uint8_t mac[6];
     uint8_t pinCodeLen;
     uint8_t pinCode[16];
 } __packed;
 
-#define HCI_CMD_PIN_Code_Request_Negative_Reply                  0x000E
+#define HCI_CMD_PIN_Code_Request_Negative_Reply                  0x000E /* complete */
 struct hciPinCodeRequestNegativeReply {
     uint8_t mac[6];
 } __packed;
 
-#define HCI_CMD_Change_Connection_Packet_Type                    0x000F
+#define HCI_CMD_Change_Connection_Packet_Type                    0x000F /* status */
 struct hciChangeConnectionPacketType {
     uint16_t conn;
     uint16_t allowedPackets; /* HCI_PKT_TYP_* */
 } __packed;
 
-#define HCI_CMD_Authentication_Requested                         0x0011
+#define HCI_CMD_Authentication_Requested                         0x0011 /* status */
 struct hciAuthRequested {
     uint16_t conn;
 } __packed;
 
-#define HCI_CMD_Set_Connection_Encryption                        0x0013
+#define HCI_CMD_Set_Connection_Encryption                        0x0013 /* status */
 struct hciSetConnectionEncryption {
     uint16_t conn;
     uint8_t encrOn;
 } __packed;
 
-#define HCI_CMD_Change_Connection_Link_Key                       0x0015
+#define HCI_CMD_Change_Connection_Link_Key                       0x0015 /* status */
 struct hciChangeConnLinkKey {
     uint16_t conn;
 } __packed;
 
-#define HCI_CMD_Master_Link_Key                                  0x0017
+#define HCI_CMD_Master_Link_Key                                  0x0017 /* status */
 struct hciMasterLinkKey {
     uint8_t useTempKey;
 } __packed;
 
-#define HCI_CMD_Remote_Name_Request                              0x0019
+#define HCI_CMD_Remote_Name_Request                              0x0019 /* status */
 struct hciNameRequest {
     uint8_t mac[6];
     uint8_t PSRM;
@@ -436,28 +436,28 @@ struct hciNameRequest {
     uint16_t clockOffset; /* possibly | HCI_CLOCK_OFST_VALID */
 } __packed;
 
-#define HCI_CMD_Remote_Name_Request_Cancel                       0x001A
+#define HCI_CMD_Remote_Name_Request_Cancel                       0x001A /* complete */
 struct hciNameRequestCancel {
     uint8_t mac[6];
 } __packed;
 
-#define HCI_CMD_Read_Remote_Supported_Features                   0x001B
+#define HCI_CMD_Read_Remote_Supported_Features                   0x001B /* status */
 struct hciReadRemoteSupportedFeatures {
     uint16_t conn;
 } __packed;
 
-#define HCI_CMD_Read_Remote_Extended_Features                    0x001C
+#define HCI_CMD_Read_Remote_Extended_Features                    0x001C /* status */
 struct hciReadRemoteExtendedFeatures {
     uint16_t conn;
     uint8_t page; /* BT1.2 max: 0 */
 } __packed;
 
-#define HCI_CMD_Read_Remote_Version_Information                  0x001D
+#define HCI_CMD_Read_Remote_Version_Information                  0x001D /* status */
 struct hciReadRemoteVersionInfo {
     uint16_t conn;
 } __packed;
 
-#define HCI_CMD_Read_Clock_Offset                                0x001F
+#define HCI_CMD_Read_Clock_Offset                                0x001F /* status */
 struct hciReadClockOffset {
     uint16_t conn;
 } __packed;
@@ -465,12 +465,12 @@ struct hciReadClockOffset {
 
 /* ==== BT 1.2 ==== */
 
-#define HCI_CMD_Read_Lmp_Handle                                  0x0020
+#define HCI_CMD_Read_Lmp_Handle                                  0x0020 /* complete */
 struct hciReadLmpHandle {
     uint16_t handle;
 } __packed;
 
-#define HCI_CMD_Setup_Synchronous_Connection                     0x0028
+#define HCI_CMD_Setup_Synchronous_Connection                     0x0028 /* status */
 struct hciSetupSyncConn {
     uint16_t conn;
     uint32_t txBandwidth;
@@ -481,7 +481,7 @@ struct hciSetupSyncConn {
     uint16_t allowedPacketsSco; /* HCI_PKT_TYP_SCO_* */
 } __packed;
 
-#define HCI_CMD_Accept_Synchronous_Connection_Request            0x0029
+#define HCI_CMD_Accept_Synchronous_Connection_Request            0x0029 /* status */
 struct hciAcceptSyncConn {
     uint8_t mac[6];
     uint32_t txBandwidth;
@@ -492,7 +492,7 @@ struct hciAcceptSyncConn {
     uint16_t allowedPacketsSco; /* HCI_PKT_TYP_SCO_* */
 } __packed;
 
-#define HCI_CMD_Reject_Synchronous_Connection_Request            0x002A
+#define HCI_CMD_Reject_Synchronous_Connection_Request            0x002A /* status */
 struct hciRejectSyncConn {
     uint8_t mac[6];
     uint8_t reason;
@@ -501,7 +501,7 @@ struct hciRejectSyncConn {
 
 /* ==== BR 2.1 ==== */
 
-#define HCI_CMD_IO_Capability_Request_Reply                      0x002B
+#define HCI_CMD_IO_Capability_Request_Reply                      0x002B /* complete */
 struct hciIoCapabilityRequestReply {
     uint8_t mac[6];
     uint8_t cap; /* HCI_DISPLAY_CAP_* */
@@ -509,40 +509,40 @@ struct hciIoCapabilityRequestReply {
     uint8_t authReqments; /* HCI_AUTH_REQMENT_* */
 } __packed;
 
-#define HCI_CMD_User_Confirmation_Request_Reply                  0x002C
+#define HCI_CMD_User_Confirmation_Request_Reply                  0x002C /* complete */
 struct hciUserConfRequestReply {
     uint8_t mac[6];
 } __packed;
 
-#define HCI_CMD_User_Confirmation_Request_Negative_Reply         0x002D
+#define HCI_CMD_User_Confirmation_Request_Negative_Reply         0x002D /* complete */
 struct hciUserConfRequestNegativeReply {
     uint8_t mac[6];
 } __packed;
 
-#define HCI_CMD_User_Passkey_Request_Reply                       0x002E
+#define HCI_CMD_User_Passkey_Request_Reply                       0x002E /* complete */
 struct hciUserPasskeyRequestReply {
     uint8_t mac[6];
     uint32_t num;
 } __packed;
 
-#define HCI_CMD_User_Passkey_Request_Negative_Reply              0x002F
+#define HCI_CMD_User_Passkey_Request_Negative_Reply              0x002F /* complete */
 struct hciUserPasskeyRequestNegativeReply {
     uint8_t mac[6];
 } __packed;
 
-#define HCI_CMD_Remote_OOB_Data_Request_Reply                    0x0030
+#define HCI_CMD_Remote_OOB_Data_Request_Reply                    0x0030 /* complete */
 struct hciRemoteOobDataRequestReply {
     uint8_t mac[6];
     uint8_t C[16];
     uint8_t R[16];
 } __packed;
 
-#define HCI_CMD_Remote_OOB_Data_Request_Negative_Reply           0x0033
+#define HCI_CMD_Remote_OOB_Data_Request_Negative_Reply           0x0033 /* complete */
 struct hciOobDataRequestNegativeReply {
     uint8_t mac[6];
 } __packed;
 
-#define HCI_CMD_IO_Capability_Request_Negative_Reply             0x0034
+#define HCI_CMD_IO_Capability_Request_Negative_Reply             0x0034 /* complete */
 struct hciIoCapabilityRequestNegativeReply {
     uint8_t mac[6];
     uint8_t reason;
@@ -551,7 +551,7 @@ struct hciIoCapabilityRequestNegativeReply {
 
 /* ==== BT 3.0 ==== */
 
-#define HCI_CMD_Create_Physical_link                             0x0035
+#define HCI_CMD_Create_Physical_link                             0x0035 /* status */
 struct hciCreatePhysicalLink {
     uint8_t physLinkHandle;
     uint8_t dedicatedAmpKeyLength;
@@ -559,7 +559,7 @@ struct hciCreatePhysicalLink {
     uint8_t dedicatedAmpKey;
 } __packed;
 
-#define HCI_CMD_Accept_Physical_link                             0x0036
+#define HCI_CMD_Accept_Physical_link                             0x0036 /* status */
 struct hciAcceptPhysicalLink {
     uint8_t physLinkHandle;
     uint8_t dedicatedAmpKeyLength;
@@ -567,38 +567,38 @@ struct hciAcceptPhysicalLink {
     uint8_t dedicatedAmpKey;
 } __packed;
 
-#define HCI_CMD_Disconnect_Physical_link                         0x0037
+#define HCI_CMD_Disconnect_Physical_link                         0x0037 /* status */
 struct hciDisconnectPhysicalLink {
     uint8_t physLinkHandle;
     uint8_t reason;
 } __packed;
 
-#define HCI_CMD_Create_Logical_link                              0x0038
+#define HCI_CMD_Create_Logical_link                              0x0038 /* status */
 struct hciCreateLogicalLink {
     uint8_t physLinkHandle;
     uint8_t txFlowSpec[16];
     uint8_t rxFlowSpec[16];
 } __packed;
 
-#define HCI_CMD_Accept_Logical_Link                              0x0039
+#define HCI_CMD_Accept_Logical_Link                              0x0039 /* status */
 struct hciAcceptLogicalLink {
     uint8_t physLinkHandle;
     uint8_t txFlowSpec[16];
     uint8_t rxFlowSpec[16];
 } __packed;
 
-#define HCI_CMD_Disconnect_Logical_link                          0x003A
+#define HCI_CMD_Disconnect_Logical_link                          0x003A /* status */
 struct hciDisconnectLogicalLink {
     uint8_t physLinkHandle;
 } __packed;
 
-#define HCI_CMD_Logical_Link_Cancel                              0x003B
+#define HCI_CMD_Logical_Link_Cancel                              0x003B /* complete */
 struct hciLogicalLinkCancel {
     uint8_t physLinkHandle;
     uint8_t txFlowSpecID;
 } __packed;
 
-#define HCI_CMD_Flow_Spec_Modify                                 0x003C
+#define HCI_CMD_Flow_Spec_Modify                                 0x003C /* status */
 struct hciFlowSpecModify {
     uint16_t handle;
     uint8_t txFlowSpec[16];
@@ -608,7 +608,7 @@ struct hciFlowSpecModify {
 
 /* ==== BT 4.1 ==== */
 
-#define HCI_CMD_Enhanced_Setup_Synchronous_Connection            0x003D
+#define HCI_CMD_Enhanced_Setup_Synchronous_Connection            0x003D /* status */
 struct hciEnhSetupSyncConn {
     uint16_t conn;
     uint32_t txBandwidth;
@@ -636,7 +636,7 @@ struct hciEnhSetupSyncConn {
     uint8_t retransmissionEffort;
 } __packed;
 
-#define HCI_CMD_Enhanced_Accept_Synchronous_Connection           0x003E
+#define HCI_CMD_Enhanced_Accept_Synchronous_Connection           0x003E /* status */
 struct hciEnhAcceptSyncConn {
     uint8_t mac[6];
     uint32_t txBandwidth;
@@ -664,19 +664,19 @@ struct hciEnhAcceptSyncConn {
     uint8_t retransmissionEffort;
 } __packed;
 
-#define HCI_CMD_Truncated_Page                                   0x003F
+#define HCI_CMD_Truncated_Page                                   0x003F /* status */
 struct hciTruncatedPage {
     uint8_t mac[6];
     uint8_t PSRM;
     uint16_t clockOffset; /* possibly | HCI_CLOCK_OFST_VALID */
 } __packed;
 
-#define HCI_CMD_Truncated_Page_Cancel                            0x0040
+#define HCI_CMD_Truncated_Page_Cancel                            0x0040 /* complete */
 struct hciTruncatedPageCancel {
     uint8_t mac[6];
 } __packed;
 
-#define HCI_CMD_Set_Connectionless_Slave_Broadcast               0x0041
+#define HCI_CMD_Set_Connectionless_Slave_Broadcast               0x0041 /* complete */
 struct hciSetConnectionlessSlaveBroadcast {
     uint8_t enabled;
     uint8_t ltAddr; /* 1..7 */
@@ -688,7 +688,7 @@ struct hciSetConnectionlessSlaveBroadcast {
 } __packed;
 
 
-#define HCI_CMD_Set_Connectionless_Slave_Broadcast_Receive       0x0042
+#define HCI_CMD_Set_Connectionless_Slave_Broadcast_Receive       0x0042 /* complete */
 struct hciSetConnectionlessSlaveBroadcastReceive {
     uint8_t enabled;
     uint8_t mac[6]; /* add rof tranmitter */
@@ -703,9 +703,9 @@ struct hciSetConnectionlessSlaveBroadcastReceive {
     uint8_t afhChannelMap[10];
 } __packed;
 
-#define HCI_CMD_Start_Synchronisation_Train                      0x0043
+#define HCI_CMD_Start_Synchronisation_Train                      0x0043 /* status */
 
-#define HCI_CMD_Receive_Synchronisation_Train                    0x0044
+#define HCI_CMD_Receive_Synchronisation_Train                    0x0044 /* status */
 struct hciReceiveSyncTrain {
     uint8_t mac[6];
     uint16_t syncScanTimeout;
@@ -713,7 +713,7 @@ struct hciReceiveSyncTrain {
     uint16_t syncScanInterval;
 } __packed;
 
-#define HCI_CMD_Remote_OOB_Extended_Data_Request_Reply           0x0045
+#define HCI_CMD_Remote_OOB_Extended_Data_Request_Reply           0x0045 /* complete */
 struct hciRemoteOobExtendedDataRequestReply {
     uint8_t mac[6];
     uint8_t C_192[16];
@@ -729,14 +729,14 @@ struct hciRemoteOobExtendedDataRequestReply {
 
 /* ==== BT 1.1 ==== */
 
-#define HCI_CMD_Hold_Mode                                        0x0001
+#define HCI_CMD_Hold_Mode                                        0x0001 /* status */
 struct hciHoldMode {
     uint16_t conn;
     uint16_t holdModeMaxInt;
     uint16_t holdModeMinInt;
 } __packed;
 
-#define HCI_CMD_Sniff_Mode                                       0x0003
+#define HCI_CMD_Sniff_Mode                                       0x0003 /* status */
 struct hciSniffMode {
     uint16_t conn;
     uint16_t sniffMaxInt;
@@ -745,24 +745,24 @@ struct hciSniffMode {
     uint16_t sniffTimeout;
 } __packed;
 
-#define HCI_CMD_Exit_Sniff_Mode                                  0x0004
+#define HCI_CMD_Exit_Sniff_Mode                                  0x0004 /* status */
 struct hciExitSniffMode {
     uint16_t conn;
 } __packed;
 
-#define HCI_CMD_Park_State                                       0x0005
+#define HCI_CMD_Park_State                                       0x0005 /* status */
 struct hciParkState {
     uint16_t conn;
     uint16_t beaconMaxInt;
     uint16_t beaconMinInt;
 } __packed;
 
-#define HCI_CMD_Exit_Park_State                                  0x0006
+#define HCI_CMD_Exit_Park_State                                  0x0006 /* status */
 struct hciExitParkState {
     uint16_t conn;
 } __packed;
 
-#define HCI_CMD_QoS_Setup                                        0x0007
+#define HCI_CMD_QoS_Setup                                        0x0007 /* status */
 struct hisQosSetup {
     uint16_t conn;
     uint8_t flags;
@@ -773,23 +773,23 @@ struct hisQosSetup {
     uint32_t delayVariation;
 } __packed;
 
-#define HCI_CMD_Role_Discovery                                   0x0009
+#define HCI_CMD_Role_Discovery                                   0x0009 /* complete */
 struct hciRoleDiscovery {
     uint16_t conn;
 } __packed;
 
-#define HCI_CMD_Switch_Role                                      0x000B
+#define HCI_CMD_Switch_Role                                      0x000B /* status */
 struct hciSwitchRole {
     uint8_t mac[6];
     uint8_t becomeSlave;
 } __packed;
 
-#define HCI_CMD_Read_Link_Policy_Settings                        0x000C
+#define HCI_CMD_Read_Link_Policy_Settings                        0x000C /* complete */
 struct hciReadLinkPolicySettings {
     uint16_t conn;
 } __packed;
 
-#define HCI_CMD_Write_Link_Policy_Settings                       0x000D
+#define HCI_CMD_Write_Link_Policy_Settings                       0x000D /* complete */
 struct hciWriteLinkPolicySettings {
     uint16_t conn;
     uint16_t policy; /* HCI_LINK_POLICY_* */
@@ -798,14 +798,14 @@ struct hciWriteLinkPolicySettings {
 
 /* ==== BT 1.2 ==== */
 
-#define HCI_CMD_Read_Default_Link_Policy_Settings                0x000E
+#define HCI_CMD_Read_Default_Link_Policy_Settings                0x000E /* complete */
 
-#define HCI_CMD_Write_Default_Link_Policy_Settings               0x000F
+#define HCI_CMD_Write_Default_Link_Policy_Settings               0x000F /* complete */
 struct hciWriteDefaultLinkPolicySettings {
     uint16_t policy; /* HCI_LINK_POLICY_* */
 } __packed;
 
-#define HCI_CMD_Flow_Specification                               0x0010
+#define HCI_CMD_Flow_Specification                               0x0010 /* status */
 struct hisFlowSpecification {
     uint16_t conn;
     uint8_t flags;
@@ -820,7 +820,7 @@ struct hisFlowSpecification {
 
 /* ==== BT 2.1 ==== */
 
-#define HCI_CMD_Sniff_Subrating                                  0x0011
+#define HCI_CMD_Sniff_Subrating                                  0x0011 /* complete */
 struct hciSniffSubrating {
     uint16_t conn;
     uint16_t maxLatency;
@@ -837,40 +837,40 @@ struct hciSniffSubrating {
 
 /* ==== BT 1.1 ==== */
 
-#define HCI_CMD_Set_Event_Mask                                   0x0001
+#define HCI_CMD_Set_Event_Mask                                   0x0001 /* complete */
 struct hciCmdSetEventMask {
     uint64_t mask; /* bitmask of HCI_EVENT_* */
 } __packed;
 
-#define HCI_CMD_Reset                                            0x0003
+#define HCI_CMD_Reset                                            0x0003 /* complete */
 
-#define HCI_CMD_Set_Event_Filter                                 0x0005
+#define HCI_CMD_Set_Event_Filter                                 0x0005 /* complete */
 struct hciSetEventFilter {
     uint8_t filterType; /* HCI_FILTER_TYPE_* */
     /* more things are optional here */
 } __packed;
 
-#define HCI_CMD_Flush                                            0x0008
+#define HCI_CMD_Flush                                            0x0008 /* complete */
 struct hciFlush {
     uint16_t conn;
 } __packed;
 
-#define HCI_CMD_Read_PIN_Type                                    0x0009
+#define HCI_CMD_Read_PIN_Type                                    0x0009 /* complete */
 
-#define HCI_CMD_Write_PIN_Type                                   0x000A
+#define HCI_CMD_Write_PIN_Type                                   0x000A /* complete */
 struct hciWritePinType {
     uint8_t isFixed;
 } __packed;
 
-#define HCI_CMD_Create_New_Unit_Key                              0x000B
+#define HCI_CMD_Create_New_Unit_Key                              0x000B /* complete */
 
-#define HCI_CMD_Read_Stored_Link_Key                             0x000D
+#define HCI_CMD_Read_Stored_Link_Key                             0x000D /* complete */
 struct hciReadStoredLinkKey {
     uint8_t mac[6];
     uint8_t readAll;
 } __packed;
 
-#define HCI_CMD_Write_Stored_Link_Key                            0x0011
+#define HCI_CMD_Write_Stored_Link_Key                            0x0011 /* complete */
 struct hciWriteStoredLinkKeyItem {
     uint8_t mac[6];
     uint8_t key[16];
@@ -880,128 +880,128 @@ struct hciWriteStoredLinkKey {
     struct hciWriteStoredLinkKeyItem items[];
 } __packed;
 
-#define HCI_CMD_Delete_Stored_Link_Key                           0x0012
+#define HCI_CMD_Delete_Stored_Link_Key                           0x0012 /* complete */
 struct hciDelteStoredLinkKey {
     uint8_t mac[6];
     uint8_t deleteAll;
 } __packed;
 
-#define HCI_CMD_Write_Local_Name                                 0x0013
+#define HCI_CMD_Write_Local_Name                                 0x0013 /* complete */
 struct hciCmdWriteLocalName {
     char name[248];
 } __packed;
 
-#define HCI_CMD_Read_Local_Name                                  0x0014
+#define HCI_CMD_Read_Local_Name                                  0x0014 /* complete */
 
-#define HCI_CMD_Read_Connection_Accept_Timeout                   0x0015
+#define HCI_CMD_Read_Connection_Accept_Timeout                   0x0015 /* complete */
 
-#define HCI_CMD_Write_Connection_Accept_Timeout                  0x0016
+#define HCI_CMD_Write_Connection_Accept_Timeout                  0x0016 /* complete */
 struct hciWriteConnAcceptTimeout {
     uint16_t timeout; /* in units of 0.625ms 1..0xB540 */
 } __packed;
 
-#define HCI_CMD_Read_Page_Timeout                                0x0017
+#define HCI_CMD_Read_Page_Timeout                                0x0017 /* complete */
 
-#define HCI_CMD_Write_Page_Timeout                               0x0018
+#define HCI_CMD_Write_Page_Timeout                               0x0018 /* complete */
 struct hciWritePageTimeout {
     uint16_t timeout;
 } __packed;
 
-#define HCI_CMD_Read_Scan_Enable                                 0x0019
+#define HCI_CMD_Read_Scan_Enable                                 0x0019 /* complete */
 
-#define HCI_CMD_Write_Scan_Enable                                0x001A
+#define HCI_CMD_Write_Scan_Enable                                0x001A /* complete */
 struct hciWriteScanEnable {
     uint8_t state; /* bitmask of HCI_SCAN_ENABLE_* */
 } __packed;
 
-#define HCI_CMD_Read_Page_Scan_Activity                          0x001B
+#define HCI_CMD_Read_Page_Scan_Activity                          0x001B /* complete */
 
-#define HCI_CMD_Write_Page_Scan_Activity                         0x001C
+#define HCI_CMD_Write_Page_Scan_Activity                         0x001C /* complete */
 struct hciWritePageScanActivity {
     uint16_t scanInterval;
     uint16_t scanWindow;
 } __packed;
 
-#define HCI_CMD_Read_Inquiry_Scan_Activity                       0x001D
+#define HCI_CMD_Read_Inquiry_Scan_Activity                       0x001D /* complete */
 
-#define HCI_CMD_Write_Inquiry_Scan_Activity                      0x001E
+#define HCI_CMD_Write_Inquiry_Scan_Activity                      0x001E /* complete */
 struct hciWriteInquiryScanActivity {
     uint16_t scanInterval;
     uint16_t scanWindow;
 } __packed;
 
-#define HCI_CMD_Read_Authentication_Enable                       0x001F
+#define HCI_CMD_Read_Authentication_Enable                       0x001F /* complete */
 
-#define HCI_CMD_Write_Authentication_Enable                      0x0020
+#define HCI_CMD_Write_Authentication_Enable                      0x0020 /* complete */
 struct hciWriteAuthEnable {
     uint8_t authRequired;
 } __packed;
 
-#define HCI_CMD_Read_Encryption_Mode                             0x0021
+#define HCI_CMD_Read_Encryption_Mode                             0x0021 /* complete */
 
-#define HCI_CMD_Write_Encryption_Mode                            0x0022
+#define HCI_CMD_Write_Encryption_Mode                            0x0022 /* complete */
 struct hciWriteencryptionMode {
     uint8_t encrRequired;
 } __packed;
 
-#define HCI_CMD_Read_Class_Of_Device                             0x0023
+#define HCI_CMD_Read_Class_Of_Device                             0x0023 /* complete */
 
-#define HCI_CMD_Write_Class_Of_Device                            0x0024
+#define HCI_CMD_Write_Class_Of_Device                            0x0024 /* complete */
 struct hciCmdWriteClassOfDevice {
     uint8_t cls[3];
 } __packed;
 
-#define HCI_CMD_Read_Voice_Setting                               0x0025
+#define HCI_CMD_Read_Voice_Setting                               0x0025 /* complete */
 
-#define HCI_CMD_Write_Voice_Setting                              0x0026
+#define HCI_CMD_Write_Voice_Setting                              0x0026 /* complete */
 struct hciWriteVoiceSetting {
     uint16_t voiceSetting;
 } __packed;
 
-#define HCI_CMD_Read_Automatic_Flush_Timeout                     0x0027
+#define HCI_CMD_Read_Automatic_Flush_Timeout                     0x0027 /* complete */
 struct hciReadAutoFlushTimeout {
     uint16_t conn;
 } __packed;
 
-#define HCI_CMD_Write_Automatic_Flush_Timeout                    0x0028
+#define HCI_CMD_Write_Automatic_Flush_Timeout                    0x0028 /* complete */
 struct hciWriteAutoFlushTimeout {
     uint16_t conn;
     uint16_t timeout;
 } __packed;
 
-#define HCI_CMD_Read_Num_Broadcast_Retransmissions               0x0029
+#define HCI_CMD_Read_Num_Broadcast_Retransmissions               0x0029 /* complete */
 
-#define HCI_CMD_Write_Num_Broadcast_Retransmissions              0x002A
+#define HCI_CMD_Write_Num_Broadcast_Retransmissions              0x002A /* complete */
 struct hciWriteNumBroadcastRetransmissions {
     uint8_t numRetransmissions; /* 0 .. 0xFE => 1 .. 255 TXes */
 } __packed;
 
-#define HCI_CMD_Read_Hold_Mode_Activity                          0x002B
+#define HCI_CMD_Read_Hold_Mode_Activity                          0x002B /* complete */
 
-#define HCI_CMD_Write_Hold_Mode_Activity                         0x002C
+#define HCI_CMD_Write_Hold_Mode_Activity                         0x002C /* complete */
 struct hciWriteHoldModeActivity {
     uint8_t holdModeActivity; /* bitfield if HCI_HOLD_MODE_SUSPEND_* */
 } __packed;
 
-#define HCI_CMD_Read_Transmit_Power_Level                        0x002D
+#define HCI_CMD_Read_Transmit_Power_Level                        0x002D /* complete */
 struct hciReadTransmitPowerLevel {
     uint16_t conn;
     uint8_t max; /* else current */
 } __packed;
 
-#define HCI_CMD_Read_SCO_Flow_Control_Enable                     0x002E
+#define HCI_CMD_Read_SCO_Flow_Control_Enable                     0x002E /* complete */
 
-#define HCI_CMD_Write_SCO_Flow_Control_Enable                    0x002F
+#define HCI_CMD_Write_SCO_Flow_Control_Enable                    0x002F /* complete */
 struct hciWriteSyncFlowCtrl {
     uint8_t syncFlowCtrlOn;
 } __packed;
 
-#define HCI_CMD_Set_Controller_To_Host_Flow_Control              0x0031
+#define HCI_CMD_Set_Controller_To_Host_Flow_Control              0x0031 /* complete */
 struct hciSetControllerToHostFlowControl {
     uint8_t chipToHostFlowCtrl; /* bitmask of HCI_TO_HOST_FLOW_CTRL_* */
 } __packed;
 
-#define HCI_CMD_Host_Buffer_Size                                 0x0033
+#define HCI_CMD_Host_Buffer_Size                                 0x0033 /* complete */
 struct hciHostBufferSize {
     uint16_t maxAclPacket;
     uint8_t maxScoPacket;
@@ -1009,7 +1009,7 @@ struct hciHostBufferSize {
     uint16_t numScoPackets;
 } __packed;
 
-#define HCI_CMD_Host_Number_Of_Completed_Packets                 0x0035
+#define HCI_CMD_Host_Number_Of_Completed_Packets                 0x0035 /* special: can be sent anytime (not subj to cmd flow control), does not generate events unless error */
 struct hciHostNumberOfCompletedPacketsItem {
     uint16_t conn;
     uint16_t numCompletedPackets;
@@ -1019,22 +1019,22 @@ struct hciHostNumberOfCompletedPackets {
     struct hciHostNumberOfCompletedPacketsItem items[];
 } __packed;
 
-#define HCI_CMD_Read_Link_Supervision_Timeout                    0x0036
+#define HCI_CMD_Read_Link_Supervision_Timeout                    0x0036 /* complete */
 struct hciReadLinkSupervisionTimeout {
     uint16_t conn;
 } __packed;
 
-#define HCI_CMD_Write_Link_Supervision_Timeout                   0x0037
+#define HCI_CMD_Write_Link_Supervision_Timeout                   0x0037 /* complete */
 struct hciWriteLinkSupervisionTimeout {
     uint16_t conn;
     uint16_t timeout; /* in units of 0.625ms allowed: 1..0xffff, required support 0x0190 - 0xffff */
 } __packed;
 
-#define HCI_CMD_Read_Number_Of_Supported_IAC                     0x0038
+#define HCI_CMD_Read_Number_Of_Supported_IAC                     0x0038 /* complete */
 
-#define HCI_CMD_Read_Current_IAC_LAP                             0x0039
+#define HCI_CMD_Read_Current_IAC_LAP                             0x0039 /* complete */
 
-#define HCI_CMD_Write_Current_IAC_LAP                            0x003A
+#define HCI_CMD_Write_Current_IAC_LAP                            0x003A /* complete */
 struct hciWriteCurrentIacLapItem {
     uint8_t iacLap[3];
 } __packed;
@@ -1043,16 +1043,16 @@ struct hciWriteCurrentIacLap {
     struct hciWriteCurrentIacLapItem items[];
 } __packed;
 
-#define HCI_CMD_Read_Page_Scan_Period_Mode                       0x003B
+#define HCI_CMD_Read_Page_Scan_Period_Mode                       0x003B /* complete */
 
-#define HCI_CMD_Write_Page_Scan_Period_Mode                      0x003C
+#define HCI_CMD_Write_Page_Scan_Period_Mode                      0x003C /* complete */
 struct hciWritePageScanPeriodMode {
     uint8_t mode;
 } __packed;
 
-#define HCI_CMD_Read_Page_Scan_Mode                              0x003D /* deprecated in BT 1.2 and later */
+#define HCI_CMD_Read_Page_Scan_Mode                              0x003D  /* complete *//* deprecated in BT 1.2 and later */
 
-#define HCI_CMD_Write_Page_Scan_Mode                             0x003E /* deprecated in BT 1.2 and later */
+#define HCI_CMD_Write_Page_Scan_Mode                             0x003E  /* complete *//* deprecated in BT 1.2 and later */
 struct hciWritePageScanMode {
     uint8_t pageScanMode; /* nonzero modes are optional */
 } __packed;
@@ -1060,35 +1060,35 @@ struct hciWritePageScanMode {
 
 /* ==== BT 1.2 ==== */
 
-#define HCI_CMD_Set_AFH_Host_Channel_Classification              0x003F
+#define HCI_CMD_Set_AFH_Host_Channel_Classification              0x003F /* complete */
 struct hciSetAfhHostChannelClassification {
     uint8_t channels[10];
 } __packed;
 
-#define HCI_CMD_Read_Inquiry_Scan_Type                           0x0042
+#define HCI_CMD_Read_Inquiry_Scan_Type                           0x0042 /* complete */
 
-#define HCI_CMD_Write_Inquiry_Scan_Type                          0x0043
+#define HCI_CMD_Write_Inquiry_Scan_Type                          0x0043 /* complete */
 struct hciWriteInquiryScanType {
     uint8_t interlaced; /* optional */
 } __packed;
 
-#define HCI_CMD_Read _Inquiry_Mode                               0x0044
+#define HCI_CMD_Read _Inquiry_Mode                               0x0044 /* complete */
 
-#define HCI_CMD_Write_Inquiry_Mode                               0x0045
+#define HCI_CMD_Write_Inquiry_Mode                               0x0045 /* complete */
 struct hciWriteInquryMode {
     uint8_t inqMode; /* HCI_INQ_MODE_* */
 } __packed;
 
-#define HCI_CMD_Read_Page_Scan_Type                              0x0046
+#define HCI_CMD_Read_Page_Scan_Type                              0x0046 /* complete */
 
-#define HCI_CMD_Write_Page_Scan_Type                             0x0047
+#define HCI_CMD_Write_Page_Scan_Type                             0x0047 /* complete */
 struct hciWritePageScanType {
     uint8_t interlaced; /* optional */
 } __packed;
 
-#define HCI_CMD_Read_AFH_Channel_Assessment_Mode                 0x0048
+#define HCI_CMD_Read_AFH_Channel_Assessment_Mode                 0x0048 /* complete */
 
-#define HCI_CMD_Write_AFH_Channel_Assessment_Mode                0x0049
+#define HCI_CMD_Write_AFH_Channel_Assessment_Mode                0x0049 /* complete */
 struct hciWriteAfhChannelAssessment {
     uint8_t channelAssessmentEnabled;
 } __packed;
@@ -1096,49 +1096,49 @@ struct hciWriteAfhChannelAssessment {
 
 /* ==== BT 2.1 ==== */
 
-#define HCI_CMD_Read_Extended_Inquiry_Reponse                    0x0051
+#define HCI_CMD_Read_Extended_Inquiry_Reponse                    0x0051 /* complete */
 
-#define HCI_CMD_Write_Extended_Inquiry_Response                  0x0052
+#define HCI_CMD_Write_Extended_Inquiry_Response                  0x0052 /* complete */
 struct hciWriteEIR {
     uint8_t useFec;
     uint8_t data[240];
 } __packed;
 
-#define HCI_CMD_Refresh_Encryption_Key                           0x0052
+#define HCI_CMD_Refresh_Encryption_Key                           0x0052 /* status */
 struct hciRefreshEncryptionKey {
     uint16_t conn;
 } __packed;
 
-#define HCI_CMD_Read_Simple_Pairing_Mode                         0x0055
+#define HCI_CMD_Read_Simple_Pairing_Mode                         0x0055 /* complete */
 
-#define HCI_CMD_Write_Simple_Pairing_Mode                        0x0056
+#define HCI_CMD_Write_Simple_Pairing_Mode                        0x0056 /* complete */
 struct hciWriteSimplePairingMore {
     uint8_t useSsp;
 } __packed;
 
-#define HCI_CMD_Read_Local_OOB_Data                              0x0057
+#define HCI_CMD_Read_Local_OOB_Data                              0x0057 /* complete */
 
-#define HCI_CMD_Read_Inquiry_Response_Transmit_Power_Level       0x0058
+#define HCI_CMD_Read_Inquiry_Response_Transmit_Power_Level       0x0058 /* complete */
 
-#define HCI_CMD_Write_Inquiry_Transmit_Power_Level               0x0059
+#define HCI_CMD_Write_Inquiry_Transmit_Power_Level               0x0059 /* complete */
 struct hciCmdWriteInquiryTransmitPowerLevel {
     uint8_t power;
 } __packed;
 
-#define HCI_CMD_Read_Default_Erroneous_Data_Reporting            0x005A
+#define HCI_CMD_Read_Default_Erroneous_Data_Reporting            0x005A /* complete */
 
-#define HCI_CMD_Write_Default_Erroneous_Data_Reporting           0x005B
+#define HCI_CMD_Write_Default_Erroneous_Data_Reporting           0x005B /* complete */
 struct hciWriteErroneousDataReporting {
     uint8_t reportingEnabled;
 } __packed;
 
-#define HCI_CMD_Enhanced_Flush                                   0x005F
+#define HCI_CMD_Enhanced_Flush                                   0x005F /* status */
 struct hciEnhancedFlush {
     uint16_t conn;
     uint8_t which; /* 0 is the only value - flush auto-flushable packets only */
 } __packed;
 
-#define HCI_CMD_Send_Keypress_Notification                       0x0060
+#define HCI_CMD_Send_Keypress_Notification                       0x0060 /* complete */
 struct hciSendKeypressNotification {
     uint8_t mac[6];
     uint8_t notifType; /* HCI_SSP_KEY_ENTRY_* */
@@ -1147,21 +1147,21 @@ struct hciSendKeypressNotification {
 
 /* ==== BT 3.0 ==== */
 
-#define HCI_CMD_Read_Logical_Link_Accept_Timeout                 0x0061
+#define HCI_CMD_Read_Logical_Link_Accept_Timeout                 0x0061 /* complete */
 
-#define HCI_CMD_Write_Logical_Link_Accept_Timeout                0x0062
+#define HCI_CMD_Write_Logical_Link_Accept_Timeout                0x0062 /* complete */
 struct hciWriteLogicalLinkTimeout {
     uint16_t timeout; /* inunits of 0.625ms 1..0xB540. Required support 0x00A0..0xB540 */
 } __packed;
 
-#define HCI_CMD_Set_Event_Mask_Page_2                            0x0063
+#define HCI_CMD_Set_Event_Mask_Page_2                            0x0063 /* complete */
 struct hciSetEventMaskPage2 {
     uint64_t evens; /* bitmask of HCI_EVENT_P2_* */
 } __packed;
 
-#define HCI_CMD_Read_Location_Data                               0x0064
+#define HCI_CMD_Read_Location_Data                               0x0064 /* complete */
 
-#define HCI_CMD_Write_Location_Data                              0x0065
+#define HCI_CMD_Write_Location_Data                              0x0065 /* complete */
 struct hciWriteLocationData {
     uint8_t regulatoryDomainKnown;
     uint16_t domain; /* ISO3166-1 code if known, else 0x5858 'XX' */
@@ -1169,33 +1169,33 @@ struct hciWriteLocationData {
     uint8_t mainsPowered;
 } __packed;
 
-#define HCI_CMD_Read_Flow_Control_Mode                           0x0066
+#define HCI_CMD_Read_Flow_Control_Mode                           0x0066 /* complete */
 
-#define HCI_CMD_Write_Flow_Control_mode                          0x0067
+#define HCI_CMD_Write_Flow_Control_mode                          0x0067 /* complete */
 struct hciWriteFlowcontrolMode {
     uint8_t blockBased; /* block based is for amp, packed-based is for BR/EDR */
 } __packed;
 
-#define HCI_CMD_Read_Best_Effort_Flush_Timeout                   0x0069
+#define HCI_CMD_Read_Best_Effort_Flush_Timeout                   0x0069 /* complete */
 struct hciReadBestEffortFlushTimeout {
     uint16_t logicalLinkHandle;
 } __packed;
 
-#define HCI_CMD_Write_Best_Effort_Flush_Timeout                  0x006A
+#define HCI_CMD_Write_Best_Effort_Flush_Timeout                  0x006A /* complete */
 struct hciWriteBestEffortFlushTimeout {
     uint16_t logicalLinkHandle;
     uint32_t bestEffortFlushTimeout; /* in microseconds */
 } __packed;
 
-#define HCI_CMD_Short_Range_Mode                                 0x006B
+#define HCI_CMD_Short_Range_Mode                                 0x006B /* status */
 struct hciShortRangeMode {
     uint8_t physicalLinkHandle;
     uint8_t shortRangeModeEnabled;
 } __packed;
 
-#define HCI_CMD_Read_LE_Host_Supported                           0x006C
+#define HCI_CMD_Read_LE_Host_Supported                           0x006C /* complete */
 
-#define HCI_CMD_Write_LE_Host_Supported                          0x006D
+#define HCI_CMD_Write_LE_Host_Supported                          0x006D /* complete */
 struct hciWriteLeHostSupported {
     uint8_t leSupportedHost;
     uint8_t simultaneousLeHost;
@@ -1204,7 +1204,7 @@ struct hciWriteLeHostSupported {
 
 /* ==== BT 4.1 ==== */
 
-#define HCI_CMD_Set_MWS_Channel_Parameters                       0x006E
+#define HCI_CMD_Set_MWS_Channel_Parameters                       0x006E /* complete */
 struct hciSetMwsChannelParams {
     uint8_t mwsEnabled;
     uint16_t mwsChannelRxCenterFreq; /* in MHz */
@@ -1214,7 +1214,7 @@ struct hciSetMwsChannelParams {
     uint8_t mwsChannelType;
 } __packed;
 
-#define HCI_CMD_Set_External_Frame_Configuration                 0x006F
+#define HCI_CMD_Set_External_Frame_Configuration                 0x006F /* complete */
 struct hciSetExternalFrameConfigItem {
     uint16_t periodDuration; /* in microseconds */
     uint8_t periodType; /* HCI_PERIOD_TYPE_* */
@@ -1227,7 +1227,7 @@ struct hciSetExternalFrameConfig {
     struct hciSetExternalFrameConfigItem items[];
 } __packed;
 
-#define HCI_CMD_Set_MWS_Signalling                               0x0070
+#define HCI_CMD_Set_MWS_Signalling                               0x0070 /* complete */
 struct hciSetMwsSignalling {
     uint16_t mwsRxAssertOffset; /* all of these are in microseconds */
     uint16_t mwsRxAssertJitter;
@@ -1246,14 +1246,14 @@ struct hciSetMwsSignalling {
     uint16_t mwsPriorityAssertOffsetRequest;
 } __packed;
 
-#define HCI_CMD_Set_MWS_Transport_Layer                          0x0071
+#define HCI_CMD_Set_MWS_Transport_Layer                          0x0071 /* complete */
 struct hciSetMwsTransportLayer {
     uint8_t transportLayer;
     uint32_t toMwsBaudRate; /* in byte/sec */
     uint32_t fromMwsBaudRate; /* in byte/sec */
 } __packed;
 
-#define HCI_CMD_Set_MWS_Scan_Frequency_Table                     0x0072
+#define HCI_CMD_Set_MWS_Scan_Frequency_Table                     0x0072 /* complete */
 struct hciSetMwsScanFrequencyTableItem {
     uint16_t scanFreqLow; /*in MHz */
     uint16_t scanFreqHigh; /*in MHz */
@@ -1263,7 +1263,7 @@ struct hciSetMwsScanFrequencyTable {
     struct hciSetMwsScanFrequencyTableItem items[];
 } __packed;
 
-#define HCI_CMD_Set_MWS_PATTERN_Configuration                    0x0073
+#define HCI_CMD_Set_MWS_PATTERN_Configuration                    0x0073 /* complete */
 struct hciSetMwsPatternConfigItem {
     uint16_t intervalDuration; /* in microseconds */
     uint8_t intervalType; /* HCI_MWS_INTERVAL_TYPE_* */
@@ -1274,17 +1274,17 @@ struct hciSetMwsPatternConfig {
     struct hciSetMwsPatternConfigItem items[];
 } __packed;
 
-#define HCI_CMD_Set_Reserved_LT_ADDR                             0x0074
+#define HCI_CMD_Set_Reserved_LT_ADDR                             0x0074 /* complete */
 struct hciSetReservedLtAddr {
     uint8_t ltAddr;
 } __packed;
 
-#define HCI_CMD_Delete_Reserved_LT_ADDR                          0x0075
+#define HCI_CMD_Delete_Reserved_LT_ADDR                          0x0075 /* complete */
 struct hciDeleteReservedLtAddr {
     uint8_t ltAddr;
 } __packed;
 
-#define HCI_CMD_Set_Connectionless_Slave_Broadcast_Data          0x0076
+#define HCI_CMD_Set_Connectionless_Slave_Broadcast_Data          0x0076 /* complete */
 struct hciSetConnlessSlaveBroadcastData {
     uint8_t ltAddr;
     uint8_t fragment; /* HCI_CONNLESS_FRAG_TYPE_* */
@@ -1292,9 +1292,9 @@ struct hciSetConnlessSlaveBroadcastData {
     uint8_t data[];
 } __packed;
 
-#define HCI_CMD_Read_Synchronisation_Train_Parameters            0x0077
+#define HCI_CMD_Read_Synchronisation_Train_Parameters            0x0077 /* complete */
 
-#define HCI_CMD_Write_Synchronisation_Train_Parameters           0x0078
+#define HCI_CMD_Write_Synchronisation_Train_Parameters           0x0078 /* complete */
 struct hciWriteSyncTrainParams {
     uint16_t intMin;
     uint16_t intMax;
@@ -1302,36 +1302,36 @@ struct hciWriteSyncTrainParams {
     uint8_t serviceData;
 } __packed;
 
-#define HCI_CMD_Read_Secure_Connections_Host_Support             0x0079
+#define HCI_CMD_Read_Secure_Connections_Host_Support             0x0079 /* complete */
 
-#define HCI_CMD_Write_Secure_Connections_Host_Support            0x007A
+#define HCI_CMD_Write_Secure_Connections_Host_Support            0x007A /* complete */
 struct hciWriteSecureConnectionsHostSupport {
     uint8_t secureConnectionsSupported;
 } __packed;
 
-#define HCI_CMD_Read_Authenticated_Payload_Timeout               0x007B
+#define HCI_CMD_Read_Authenticated_Payload_Timeout               0x007B /* complete */
 struct hciReadAuthedPayloadTimeout {
     uint16_t conn;
 } __packed;
 
-#define HCI_CMD_Write_Authenticated_Payload_Timeout              0x007C
+#define HCI_CMD_Write_Authenticated_Payload_Timeout              0x007C /* complete */
 struct hciWriteAuthedPayloadTimeout {
     uint16_t conn;
     uint16_t timeout; /* in units of 10ms, 1 .. 0xffff */
 } __packed;
 
-#define HCI_CMD_Read_Local_OOB_Extended_Data                     0x007D
+#define HCI_CMD_Read_Local_OOB_Extended_Data                     0x007D /* complete */
 
-#define HCI_CMD_Read_Extended_Page_Timeout                       0x007E
+#define HCI_CMD_Read_Extended_Page_Timeout                       0x007E /* complete */
 
-#define HCI_CMD_Write_Extended_Page_Timeout                      0x007F
+#define HCI_CMD_Write_Extended_Page_Timeout                      0x007F /* complete */
 struct hciWriteExtendedPageTimeout {
     uint16_t timeout; /* in units of 0.625ms 0..0xffff */
 } __packed;
 
-#define HCI_CMD_Read_Extended_Inquiry_Length                     0x0080
+#define HCI_CMD_Read_Extended_Inquiry_Length                     0x0080 /* complete */
 
-#define HCI_CMD_Write_Extended_Inquiry_Length                    0x0081
+#define HCI_CMD_Write_Extended_Inquiry_Length                    0x0081 /* complete */
 struct hciWriteExtendedInquiryLength {
     uint16_t timeout; /* in units of 0.625ms 0..0xffff */
 } __packed;
@@ -1345,31 +1345,31 @@ struct hciWriteExtendedInquiryLength {
 
 /* ==== BT 1.1 ==== */
 
-#define HCI_CMD_Read_Local_Version_Information                   0x0001
+#define HCI_CMD_Read_Local_Version_Information                   0x0001 /* complete */
 
-#define HCI_CMD_Read_Local_Supported_Commands                    0x0002
+#define HCI_CMD_Read_Local_Supported_Commands                    0x0002 /* complete */
 
-#define HCI_CMD_Read_Local_Supported_Features                    0x0003
+#define HCI_CMD_Read_Local_Supported_Features                    0x0003 /* complete */
 
-#define HCI_CMD_Read_Local_Extended _Features                    0x0004
+#define HCI_CMD_Read_Local_Extended _Features                    0x0004 /* complete */
 struct hciReadLocalExtendedFeatures {
     uint8_t page;
 } __packed;
 
-#define HCI_CMD_Read_Buffer_Size                                 0x0005
+#define HCI_CMD_Read_Buffer_Size                                 0x0005 /* complete */
 
-#define HCI_CMD_Read_BD_ADDR                                     0x0009
+#define HCI_CMD_Read_BD_ADDR                                     0x0009 /* complete */
 
 
 /* ==== BT 3.0 ==== */
 
-#define HCI_CMD_Read_Data_Block_Size                             0x000A
+#define HCI_CMD_Read_Data_Block_Size                             0x000A /* complete */
 
 
 
 /* ==== BT 4.1 ==== */
 
-#define HCI_CMD_Read_Local_Suported_Codecs                       0x000B
+#define HCI_CMD_Read_Local_Suported_Codecs                       0x000B /* complete */
 
 
 
@@ -1380,22 +1380,22 @@ struct hciReadLocalExtendedFeatures {
 
 /* == BT 1.1 == */
 
-#define HCI_CMD_Read_Failed_Contact_Counter                      0x0001
+#define HCI_CMD_Read_Failed_Contact_Counter                      0x0001 /* complete */
 struct hciReadFailedContactCounter {
     uint16_t conn;
 } __packed;
 
-#define HCI_CMD_Reset_Failed_Contact_Counter                     0x0002
+#define HCI_CMD_Reset_Failed_Contact_Counter                     0x0002 /* complete */
 struct hciResetFailedContactCounter {
     uint16_t conn;
 } __packed;
 
-#define HCI_CMD_Read_Link_Quality                                0x0003
+#define HCI_CMD_Read_Link_Quality                                0x0003 /* complete */
 struct hciReadLinkQuality {
     uint16_t conn;
 } __packed;
 
-#define HCI_CMD_Read_RSSI                                        0x0005
+#define HCI_CMD_Read_RSSI                                        0x0005 /* complete */
 struct hciReadRssi {
     uint16_t conn;
 } __packed;
@@ -1403,13 +1403,13 @@ struct hciReadRssi {
 
 /* ==== BT 1.2 ==== */
 
-#define HCI_CMD_Read_AFH_Channel_Map                             0x0006
+#define HCI_CMD_Read_AFH_Channel_Map                             0x0006 /* complete */
 struct hciReadAfhChannelMap {
     uint16_t conn;
 } __packed;
 
 
-#define HCI_CMD_Read_Clock                                       0x0007
+#define HCI_CMD_Read_Clock                                       0x0007 /* complete */
 struct hciReadClock {
     uint16_t conn;
     uint8_t readRemote; /* else reads local and ignores conn */
@@ -1418,21 +1418,21 @@ struct hciReadClock {
 
 /* ==== BT 3.0 ==== */
 
-#define HCI_CMD_Read_Encryption_Key_Size                         0x0008
+#define HCI_CMD_Read_Encryption_Key_Size                         0x0008 /* complete */
 struct hciReadEncrKeySize {
     uint16_t conn;
 } __packed;
 
-#define HCI_CMD_Read_Local_AMP_Info                              0x0009
+#define HCI_CMD_Read_Local_AMP_Info                              0x0009 /* complete */
 
-#define HCI_CMD_Read_Local_AMP_ASSOC                             0x000A
+#define HCI_CMD_Read_Local_AMP_ASSOC                             0x000A /* complete */
 struct hciReadLocalAmpAssoc {
     uint8_t physiclaLinkHandle;
     uint16_t lengthSoFar;
     uint16_t ampAssocLen;
 } __packed;
 
-#define HCI_CMD_Write_Remote_AMP_ASSOC                           0x000B
+#define HCI_CMD_Write_Remote_AMP_ASSOC                           0x000B /* complete */
 struct hciWriteRemoteAmpAssoc {
     uint8_t physiclaLinkHandle;
     uint16_t lengthSoFar;
@@ -1442,9 +1442,9 @@ struct hciWriteRemoteAmpAssoc {
 
 /* ==== BT 4.1 ==== */
 
-#define HCI_CMD_Get_MWS_Transport_Layer_Configuration            0x000C
+#define HCI_CMD_Get_MWS_Transport_Layer_Configuration            0x000C /* complete */
 
-#define HCI_CMD_Set_Triggered_Clock_Capture                      0x000D
+#define HCI_CMD_Set_Triggered_Clock_Capture                      0x000D /* complete */
 struct hciSetTriggeredClockCapture {
     uint16_t conn;
     uint8_t enable;
@@ -1462,21 +1462,21 @@ struct hciSetTriggeredClockCapture {
 
 /* ==== BT 4.0 ==== */
 
-#define HCI_CMD_LE_Set_Event_Mask                                0x0001
+#define HCI_CMD_LE_Set_Event_Mask                                0x0001 /* complete */
 struct hciLeSetEventMask {
     uint64_t events; /* bitmask of HCI_LE_EVENT_* */
 } __packed;
 
-#define HCI_CMD_LE_Read_Buffer_Size                              0x0002
+#define HCI_CMD_LE_Read_Buffer_Size                              0x0002 /* complete */
 
-#define HCI_CMD_LE_Read_Local_Supported_Features                 0x0003
+#define HCI_CMD_LE_Read_Local_Supported_Features                 0x0003 /* complete */
 
-#define HCI_CMD_LE_Set_Random_Address                            0x0005
+#define HCI_CMD_LE_Set_Random_Address                            0x0005 /* complete */
 struct hciLeSetRandomAddress{
     uint8_t mac[6];
 } __packed;
 
-#define HCI_CMD_LE_Set_Adv_Params                                0x0006
+#define HCI_CMD_LE_Set_Adv_Params                                0x0006 /* complete */
 struct hciLeSetAdvParams {
     uint16_t advIntervalMin;
     uint16_t advIntervalMax;
@@ -1488,26 +1488,26 @@ struct hciLeSetAdvParams {
     uint8_t advFilterPolicy;
 } __packed;
 
-#define HCI_CMD_LE_Read_Adv_Channel_TX_Power                     0x0007
+#define HCI_CMD_LE_Read_Adv_Channel_TX_Power                     0x0007 /* complete */
 
-#define HCI_CMD_LE_Set_Advertising_Data                          0x0008
+#define HCI_CMD_LE_Set_Advertising_Data                          0x0008 /* complete */
 struct hciLeSetAdvData {
     uint8_t advDataLen;
     uint8_t advData[31];
 } __packed;
 
-#define HCI_CMD_LE_Set_Scan_Response_Data                        0x0009
+#define HCI_CMD_LE_Set_Scan_Response_Data                        0x0009 /* complete */
 struct hciSetScanREsponseData {
     uint8_t scanRspDataLen;
     uint8_t scanRspData[31];
 } __packed;
 
-#define HCI_CMD_LE_Set_Advertise_Enable                          0x000A
+#define HCI_CMD_LE_Set_Advertise_Enable                          0x000A /* complete */
 struct hciLeSetAdvEnable {
     uint8_t advOn;
 } __packed;
 
-#define HCI_CMD_LE_Set_Scan_Parameters                           0x000B
+#define HCI_CMD_LE_Set_Scan_Parameters                           0x000B /* complete */
 struct hciLeSetScanParams {
     uint8_t activeScan;
     uint16_t scanInterval; /* in units of 0.625ms, 4..0x4000 */
@@ -1516,13 +1516,13 @@ struct hciLeSetScanParams {
     uint8_t onlyWhitelist;
 } __packed;
 
-#define HCI_CMD_LE_Set_Scan_Enable                               0x000C
+#define HCI_CMD_LE_Set_Scan_Enable                               0x000C /* complete */
 struct hciLeSetScanEnable {
     uint8_t scanOn;
     uint8_t filterDuplicates;
 } __packed;
 
-#define HCI_CMD_LE_Create_Connection                             0x000D
+#define HCI_CMD_LE_Create_Connection                             0x000D /* status */
 struct hciLeCreateConnection {
     uint16_t scanInterval; /* in units of 0.625ms, 4..0x4000 */
     uint16_t scanWindow; /* in units of 0.625ms, 4..0x4000 */
@@ -1538,25 +1538,25 @@ struct hciLeCreateConnection {
     uint16_t maxConnLen; /* minimum conn len needed in units of 0.625ms 0..0xfff */
 } __packed;
 
-#define HCI_CMD_LE_Create_Connection_Cancel                      0x000E
+#define HCI_CMD_LE_Create_Connection_Cancel                      0x000E /* complete */
 
-#define HCI_CMD_LE_Read_White_List_Size                          0x000F
+#define HCI_CMD_LE_Read_White_List_Size                          0x000F /* complete */
 
-#define HCI_CMD_LE_Clear_White_List                              0x0010
+#define HCI_CMD_LE_Clear_White_List                              0x0010 /* complete */
 
-#define HCI_CMD_LE_Add_Device_To_White_List                      0x0011
+#define HCI_CMD_LE_Add_Device_To_White_List                      0x0011 /* complete */
 struct hciLeAddDeviceToWhiteList {
     uint8_t randomAddr;
     uint8_t mac[6];
 } __packed;
 
-#define HCI_CMD_LE_Remove_Device_From_White_List                 0x0012
+#define HCI_CMD_LE_Remove_Device_From_White_List                 0x0012 /* complete */
 struct hciLeRemoveDeviceFromWhiteList {
     uint8_t randomAddr;
     uint8_t mac[6];
 } __packed;
 
-#define HCI_CMD_LE_Connection_Update                             0x0013
+#define HCI_CMD_LE_Connection_Update                             0x0013 /* status */
 struct hciLeConnectionUpdate {
     uint16_t conn;
     uint16_t connIntervalMin; /* in units of 1.25ms, 6..0x0C80 */
@@ -1567,30 +1567,30 @@ struct hciLeConnectionUpdate {
     uint16_t maxConnLen; /* minimum conn len needed in units of 0.625ms 0..0xfff */
 } __packed;
 
-#define HCI_CMD_LE_Set_Host_Channel_Classification               0x0014
+#define HCI_CMD_LE_Set_Host_Channel_Classification               0x0014 /* complete */
 struct hciLeSetHostChannelClassification {
     uint8_t chMap[5];
 } __packed;
 
-#define HCI_CMD_LE_Read_Channel_Map                              0x0015
+#define HCI_CMD_LE_Read_Channel_Map                              0x0015 /* complete */
 struct hciLeReadChannelMap {
     uint16_t conn;
 } __packed;
 
-#define HCI_CMD_LE_Read_Remote_Used_Features                     0x0016
+#define HCI_CMD_LE_Read_Remote_Used_Features                     0x0016 /* status */
 struct hciLeReadRemoteUsedFeatures {
     uint16_t conn;
 } __packed;
 
-#define HCI_CMD_LE_Encrypt                                       0x0017
+#define HCI_CMD_LE_Encrypt                                       0x0017 /* complete */
 struct hciLeEncrypt {
     uint8_t key[16];
     uint8_t plaintext[16];
 } __packed;
 
-#define HCI_CMD_LE_Rand                                          0x0018
+#define HCI_CMD_LE_Rand                                          0x0018 /* complete */
 
-#define HCI_CMD_LE_Start_Encryption                              0x0019
+#define HCI_CMD_LE_Start_Encryption                              0x0019 /* status */
 struct hciLeStartEncryption {
     uint16_t conn;
     uint64_t rand;
@@ -1598,37 +1598,37 @@ struct hciLeStartEncryption {
     uint8_t LTK[16];
 } __packed;
 
-#define HCI_CMD_LE_LTK_Request_Reply                             0x001A
+#define HCI_CMD_LE_LTK_Request_Reply                             0x001A /* complete */
 struct hciLeLtkRequestReply {
     uint16_t conn;
     uint8_t LTK[16];
 } __packed;
 
-#define HCI_CMD_LE_LTK_Request_Negative_Reply                    0x001B
+#define HCI_CMD_LE_LTK_Request_Negative_Reply                    0x001B /* complete */
 struct hciLeLtkRequestNEgativeReply {
     uint16_t conn;
 } __packed;
 
-#define HCI_CMD_LE_Read_Supported_States                         0x001C
+#define HCI_CMD_LE_Read_Supported_States                         0x001C /* complete */
 
-#define HCI_CMD_LE_Receiver_Test                                 0x001D
+#define HCI_CMD_LE_Receiver_Test                                 0x001D /* complete */
 struct hciLeReceiverTest {
     uint8_t radioChannelNum; /* 2402 + radioChannelNum * 2 MHz */
 } __packed;
 
-#define HCI_CMD_LE_Transmitter_Test                              0x001E
+#define HCI_CMD_LE_Transmitter_Test                              0x001E /* complete */
 struct hciLeTransmitterTest {
     uint8_t radioChannelNum; /* 2402 + radioChannelNum * 2 MHz */
     uint8_t lengthOfTestData;
     uint8_t testPacketDataType;
 } __packed;
 
-#define HCI_CMD_LE_Test_End                                      0x001F
+#define HCI_CMD_LE_Test_End                                      0x001F /* complete */
 
 
 /* ==== BT 4.1 ==== */
 
-#define HCI_CMD_Remote_Connection_Param_Request_Reply            0x0020
+#define HCI_CMD_Remote_Connection_Param_Request_Reply            0x0020 /* complete */
 struct hciRemoteConnParamRequestReply {
     uint16_t conn;
     uint16_t connIntervalMin; /* in units of 1.25ms, 6..0x0C80 */
@@ -1639,7 +1639,7 @@ struct hciRemoteConnParamRequestReply {
     uint16_t maxConnLen; /* minimum conn len needed in units of 0.625ms 0..0xfff */
 } __packed;
 
-#define HCI_CMD_Remote_Connection_Param_Request_Negative_Reply   0x0020
+#define HCI_CMD_Remote_Connection_Param_Request_Negative_Reply   0x0020 /* complete */
 struct hciRemoteConnParamRequestNegativeReply {
     uint16_t conn;
     uint8_t reason;
