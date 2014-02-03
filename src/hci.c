@@ -868,12 +868,12 @@ static bool hciCmdSubmitWithCmdStatus(const struct hciCmdHdr *cmd, hciOpDoneCbk 
  */
 bool hciSetLocalName(const char *name, hciOpDoneCbk cbkDone, void *cbkData)
 {
-    uint8_t buf[sizeof(struct hciCmdHdr) + sizeof(struct hciCmdWriteLocalName)];
+    uint8_t buf[sizeof(struct hciCmdHdr) + sizeof(struct hciWriteLocalName)];
     struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
-    struct hciCmdWriteLocalName *cmd = (struct hciCmdWriteLocalName*)(buf + 1);
+    struct hciWriteLocalName *cmd = (struct hciWriteLocalName*)(buf + 1);
 
     hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Local_Name);
-    hdr->paramLen = sizeof(struct hciCmdWriteLocalName);
+    hdr->paramLen = sizeof(struct hciWriteLocalName);
     memcpy(cmd->name, name, sizeof(cmd->name));
 
     return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
@@ -890,15 +890,15 @@ bool hciSetLocalName(const char *name, hciOpDoneCbk cbkDone, void *cbkData)
  */
 bool hciSetDeviceClass(uint32_t cls, hciOpDoneCbk cbkDone, void *cbkData)
 {
-    uint8_t buf[sizeof(struct hciCmdHdr) + sizeof(struct hciCmdWriteClassOfDevice)];
+    uint8_t buf[sizeof(struct hciCmdHdr) + sizeof(struct hciWriteClassOfDevice)];
     struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
-    struct hciCmdWriteClassOfDevice *cmd = (struct hciCmdWriteClassOfDevice*)(buf + 1);
+    struct hciWriteClassOfDevice *cmd = (struct hciWriteClassOfDevice*)(buf + 1);
 
     if (cls >> 24) 
         logw("Truncating device class to 24 bits\n");
 
     hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Class_Of_Device);
-    hdr->paramLen = sizeof(struct hciCmdWriteClassOfDevice);
+    hdr->paramLen = sizeof(struct hciWriteClassOfDevice);
     utilSetLE24(cmd->cls, cls);
 
     return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
