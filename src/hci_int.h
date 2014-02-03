@@ -123,6 +123,101 @@
 #define HCI_SCO_AIR_MODE_CVSD                                    0x02
 #define HCI_SCO_AIR_MODE_TRANSPARENT                             0x03
 
+#define HCI_MCA_500_PPM                                          0x00
+#define HCI_MCA_250_PPM                                          0x01
+#define HCI_MCA_150_PPM                                          0x02
+#define HCI_MCA_100_PPM                                          0x03
+#define HCI_MCA_75_PPM                                           0x04
+#define HCI_MCA_50_PPM                                           0x05
+#define HCI_MCA_30_PPM                                           0x06
+#define HCI_MCA_20_PPM                                           0x07
+
+#define HCI_ADV_TYPE_ADV_IND                                     0x00 /* connectable undirected */
+#define HCI_ADV_TYPE_ADV_DIRECT_IND                              0x01 /* connectable directed */
+#define HCI_ADV_TYPE_ADV_SCAN_IND                                0x02 /* scannable undirected */
+#define HCI_ADV_TYPE_ADV_NONCONN_IND                             0x03 /* non-connectable undirected */
+#define HCI_ADV_TYPE_SCAN_RSP                                    0x04 /* scan response */
+
+#define HCI_LMP_VERSION_1_0_B                                     0 /* BT 1.0b */
+#define HCI_LMP_VERSION_1_1                                       1 /* BT 1.1  */
+#define HCI_LMP_VERSION_1_2                                       2 /* BT 1.2  */
+#define HCI_LMP_VERSION_2_0                                       4 /* BT 2.0  */
+#define HCI_LMP_VERSION_2_1                                       3 /* BT 2.1  */
+#define HCI_LMP_VERSION_3_0                                       4 /* BT 3.0  */
+#define HCI_LMP_VERSION_4_0                                       6 /* BT 4.0  */
+#define HCI_LMP_VERSION_4_1                                       7 /* BT 4.1  */
+
+#define HCI_LMP_FTR_3_SLOT_PACKETS                               0x0000000000000001ULL /* BT 1.1+ */
+#define HCI_LMP_FTR_5_SLOT_PACKETS                               0x0000000000000002ULL /* BT 1.1+ */
+#define HCI_LMP_FTR_ENCRYPTION                                   0x0000000000000004ULL /* BT 1.1+ */
+#define HCI_LMP_FTR_SLOT_OFFSET                                  0x0000000000000008ULL /* BT 1.1+ */
+#define HCI_LMP_FTR_TIMING_ACCURACY                              0x0000000000000010ULL /* BT 1.1+ */
+#define HCI_LMP_FTR_SWITCH                                       0x0000000000000020ULL /* BT 1.1+ */
+#define HCI_LMP_FTR_HOLD_MODE                                    0x0000000000000040ULL /* BT 1.1+ */
+#define HCI_LMP_FTR_SNIFF_MODE                                   0x0000000000000080ULL /* BT 1.1+ */
+#define HCI_LMP_FTR_PARK_MODE                                    0x0000000000000100ULL /* BT 1.1+ */
+#define HCI_LMP_FTR_RSSI                                         0x0000000000000200ULL /* BT 1.1+ */
+#define HCI_LMP_FTR_CHANNEL_QUALITY_DRIVEN_DATA_RATE             0x0000000000000400ULL /* BT 1.1+ */
+#define HCI_LMP_FTR_SCO_LINKS                                    0x0000000000000800ULL /* BT 1.1+ */
+#define HCI_LMP_FTR_HV2_PACKETS                                  0x0000000000001000ULL /* BT 1.1+ */
+#define HCI_LMP_FTR_HV3_PACKETS                                  0x0000000000002000ULL /* BT 1.1+ */
+#define HCI_LMP_FTR_MU_LAW                                       0x0000000000004000ULL /* BT 1.1+ */
+#define HCI_LMP_FTR_A_LAW                                        0x0000000000008000ULL /* BT 1.1+ */
+#define HCI_LMP_FTR_CVSD                                         0x0000000000010000ULL /* BT 1.1+ */
+#define HCI_LMP_FTR_PAGING_SCHEME                                0x0000000000020000ULL /* BT 1.1+ */
+#define HCI_LMP_FTR_POWER_CONTROL                                0x0000000000040000ULL /* BT 1.1+ */
+#define HCI_LMP_FTR_TRANSPARENT_SCO_DATA                         0x0000000000080000ULL /* BT 1.1+ */
+#define HCI_LMP_FTR_FLOW_CONTROL_LAG_B0                          0x0000000000100000ULL /* BT 1.1+ */
+#define HCI_LMP_FTR_FLOW_CONTROL_LAG_B1                          0x0000000000200000ULL /* BT 1.1+ */
+#define HCI_LMP_FTR_FLOW_CONTROL_LAG_B2                          0x0000000000400000ULL /* BT 1.1+ */
+#define HCI_LMP_FTR_BROADCAST_ENCRYPTION                         0x0000000000800000ULL /* BT 1.2+ */
+#define HCI_LMP_FTR_ACL_2MBPS                                    0x0000000002000000ULL /* BT 2.1+ */
+#define HCI_LMP_FTR_ACL_3MBPS                                    0x0000000004000000ULL /* BT 2.1+ */
+#define HCI_LMP_FTR_ENHANCED_INQUIRY_SCAN                        0x0000000008000000ULL /* BT 2.1+ */
+#define HCI_LMP_FTR_INTERLACED_INQUIRY_SCAN                      0x0000000010000000ULL /* BT 2.1+ */
+#define HCI_LMP_FTR_INTERLACED_PAGE_SCAN                         0x0000000020000000ULL /* BT 2.1+ */
+#define HCI_LMP_FTR_RSSI_WITH_INQUIRY_RESULTS                    0x0000000040000000ULL /* BT 2.1+ */
+#define HCI_LMP_FTR_EXTENDED_SCO_LINK                            0x0000000080000000ULL /* BT 2.1+ */ /* EV3 packets */
+#define HCI_LMP_FTR_EV4_PACKETS                                  0x0000000100000000ULL /* BT 2.1+ */
+#define HCI_LMP_FTR_EV5_PACKETS                                  0x0000000200000000ULL /* BT 2.1+ */
+#define HCI_LMP_FTR_AFH_CAPABLE_SLAVE                            0x0000000800000000ULL /* BT 2.1+ */
+#define HCI_LMP_FTR_AFH_CLASSIFICATION_SLAVE                     0x0000001000000000ULL /* BT 2.1+ */
+#define HCI_LMP_FTR_3_SLOT_ACL_PACKETS                           0x0000008000000000ULL /* BT 2.1+ */
+#define HCI_LMP_FTR_5_SLOT_ACL_PACKETS                           0x0000010000000000ULL /* BT 2.1+ */
+#define HCI_LMP_FTR_SNIFF_SUBRATING                              0x0000020000000000ULL /* BT 2.1+ */
+#define HCI_LMP_FTR_PAUSE_ENCRYPTION                             0x0000040000000000ULL /* BT 2.1+ */
+#define HCI_LMP_FTR_AFH_CAPABLE_MASTER                           0x0000080000000000ULL /* BT 2.1+ */
+#define HCI_LMP_FTR_AFH_CLASSIFICATION_MASTER                    0x0000100000000000ULL /* BT 2.1+ */
+#define HCI_LMP_FTR_ESCO_2MBPS                                   0x0000200000000000ULL /* BT 2.1+ */
+#define HCI_LMP_FTR_ESCO_3MBPS                                   0x0000400000000000ULL /* BT 2.1+ */
+#define HCI_LMP_FTR_3_SLOT_ESCO                                  0x0000800000000000ULL /* BT 2.1+ */
+#define HCI_LMP_FTR_EXTENDED_INQUIRY_RESPONSE                    0x0001000000000000ULL /* BT 2.1+ */
+#define HCI_LMP_FTR_SSP                                          0x0008000000000000ULL /* BT 2.1+ */
+#define HCI_LMP_FTR_ENCAPSULATED_PDU                             0x0010000000000000ULL /* BT 2.1+ */
+#define HCI_LMP_FTR_ERRONEOUS_DATA_REPORTING                     0x0020000000000000ULL /* BT 2.1+ */
+#define HCI_LMP_FTR_NON_FLUSHABLE_PACKET_BOUNDARY_FLAG           0x0040000000000000ULL /* BT 2.1+ */
+#define HCI_LMP_FTR_LINK_SUPERVISION_TIMEOUT_CHANGED_EVENT       0x0100000000000000ULL /* BT 2.1+ */
+#define HCI_LMP_FTR_INQUIRY_RESPONSE_TX_POWER_LEVEL              0x0200000000000000ULL /* BT 2.1+ */
+#define HCI_LMP_FTR_EXTENDED_FEATURES                            0x8000000000000000ULL /* BT 2.1+ */
+#define HCI_LMP_FTR_ENHANCED_POWER_CONTROL                       0x0400000000000000ULL /* BT 3.0+ */
+#define HCI_LMP_FTR_SIMUL_LE_EDR_CAPABLE_CONTROLLER              0x0002000000000000ULL /* BT 4.0+ */
+
+#define HCI_LMP_EXT_FTR_P1_SSP_HOST_SUPPORT                      0x0000000000000001ULL /* BT 2.1+ */
+#define HCI_LMP_EXT_FTR_P1_LE_HOST_SUPPORT                       0x0000000000000002ULL /* BT 4.0+ */
+#define HCI_LMP_EXT_FTR_P1_SIMUL_LE_EDR_HOST_SUPPORT             0x0000000000000004ULL /* BT 4.0+ */
+#define HCI_LMP_EXT_FTR_P1_SECURE_CONNECTIONS_HOST_SUPPORT       0x0000000000000008ULL /* BT 4.1+ */
+
+#define HCI_LMP_EXT_FTR_P2_CONNLESS_SLAVE_BROADCAST_MASTER       0x0000000000000001ULL /* BT 4.1+ */
+#define HCI_LMP_EXT_FTR_P2_CONNLESS_SLAVE_BROADCAST_SLAVE        0x0000000000000002ULL /* BT 4.1+ */
+#define HCI_LMP_EXT_FTR_P2_SYNCHRONIZATION_TRAIN                 0x0000000000000004ULL /* BT 4.1+ */
+#define HCI_LMP_EXT_FTR_P2_SYNCHRONIZATION_SCAN                  0x0000000000000008ULL /* BT 4.1+ */
+#define HCI_LMP_EXT_FTR_P2_INQUIRY_RESPONSE_NOTIFICATION_EVT     0x0000000000000010ULL /* BT 4.1+ */
+#define HCI_LMP_EXT_FTR_P2_GENERALIZED_INTERLACED_SCAN           0x0000000000000020ULL /* BT 4.1+ */
+#define HCI_LMP_EXT_FTR_P2_COARSE_CLOCK_ADJUSTMENT               0x0000000000000040ULL /* BT 4.1+ */
+#define HCI_LMP_EXT_FTR_P2_SECURE_CONNECTIONS_CAPABLE_CONTROLLER 0x0000000000000100ULL /* BT 4.1+ */
+#define HCI_LMP_EXT_FTR_P2_PING                                  0x0000000000000200ULL /* BT 4.1+ */
+#define HCI_LMP_EXT_FTR_P2_TRAIN_NUDGING                         0x0000000000000800ULL /* BT 4.1+ */
+
 #define HCI_EVENT_INQUIRY_COMPLETE                               0x0000000000000001ULL /* BT 1.1+ */
 #define HCI_EVENT_INQUIRY_RESULT                                 0x0000000000000002ULL /* BT 1.1+ */
 #define HCI_EVENT_CONN_COMPLETE                                  0x0000000000000004ULL /* BT 1.1+ */
@@ -155,7 +250,7 @@
 #define HCI_EVENT_ALL_BT_1_1                                     0x00000000FFFFFFFFULL /* also the default for BT 1.1 */
 #define HCI_EVENT_FLOW_SPEC_COMPLETE                             0x0000000100000000ULL /* BT 1.2+ */
 #define HCI_EVENT_INQUIRY_RESULT_WITH_RSSI                       0x0000000200000000ULL /* BT 1.2+ */
-#define HCI_EVENT_READ_REMOTE_EXTENDED_FETURES_COMPLETE          0x0000000400000000ULL /* BT 1.2+ */
+#define HCI_EVENT_READ_REMOTE_EXTENDED_FEATURES_COMPLETE         0x0000000400000000ULL /* BT 1.2+ */
 #define HCI_EVENT_SYNC_CONN_COMPLETE                             0x0000080000000000ULL /* BT 1.2+ */
 #define HCI_EVENT_SYNC_CONN_CHANGED                              0x0000100000000000ULL /* BT 1.2+ */
 #define HCI_EVENT_ALL_BT_1_2                                     0x00001FFFFFFFFFFFULL /* also the default for BT 1.2+ */
@@ -184,7 +279,6 @@
 #define HCI_EVENT_P2_PHYSICAL_LINK_LOSS_EARLY_WARNING            0x0000000000000008ULL /* BT 3.0+ */
 #define HCI_EVENT_P2_PHYSICAL_LINK_RECOVERY                      0x0000000000000010ULL /* BT 3.0+ */
 #define HCI_EVENT_P2_LOGICAL_LINK_COMPLETE                       0x0000000000000020ULL /* BT 3.0+ */
-#define HCI_EVENT_P2_DISCONNECTION_LOGICAL_LINK_COMPLETE         0x0000000000000040ULL /* BT 3.0+ */
 #define HCI_EVENT_P2_FLOW_SPEC_MODIFY_COMPLETE                   0x0000000000000080ULL /* BT 3.0+ */
 #define HCI_EVENT_P2_NUMBER_OF_COMPLETED_DATA_BLOCKS             0x0000000000000100ULL /* BT 3.0+ */
 #define HCI_EVENT_P2_AMP_START_TEST                              0x0000000000000200ULL /* BT 3.0+ */
@@ -209,6 +303,12 @@
 #define HCI_LE_EVENT_READ_REMOTE_USED_FEATURES_CMPLETE           0x0000000000000008ULL /* BT 4.0+ */
 #define HCI_LE_EVENT_LTK_REQUEST                                 0x0000000000000010ULL /* BT 4.0+ */
 #define HCI_LE_EVENT_REMOTE_CONNECTION_PARAMETER_REQUEST         0x0000000000000020ULL /* BT 4.1+ */
+
+#define HCI_LE_FTR_ENCRYPTION                                    0x0000000000000001ULL /* BT 4.0+ */
+#define HCI_LE_FTR_CONNECTION_PARAMETERS_REQUEST                 0x0000000000000002ULL /* BT 4.1+ */
+#define HCI_LE_FTR_EXTENDED_REJECT_INDICATION                    0x0000000000000004ULL /* BT 4.1+ */
+#define HCI_LE_FTR_SLAVE_INITIATED_FEATURES_EXCHANGE             0x0000000000000008ULL /* BT 4.1+ */
+#define HCI_LE_FTR_LE_PING                                       0x0000000000000010ULL /* BT 4.1+ */
 
 
 
@@ -749,7 +849,7 @@ struct hciSetEventFilter {
     uint8_t filterType; /* HCI_FILTER_TYPE_* */
     /* more things are optional here */
 } __packed;
-    
+
 #define HCI_CMD_Flush                                            0x0008
 struct hciFlush {
     uint16_t conn;
@@ -1632,14 +1732,14 @@ struct hciEvtMasterLinkKeyComplete {
 struct hciEvtReadRemoteSupportedFeaturesComplete {
     uint8_t status;
     uint16_t conn;
-    uint64_t lmpFeatures;
+    uint64_t lmpFeatures; /* bitmask of HCI_LMP_FTR_* */
 } __packed;
 
 #define HCI_EVT_Read_Remote_Version_Complete                     0x0C
 struct hciEvtReadRemoteVersionComplete {
     uint8_t status;
     uint16_t conn;
-    uint8_t lmpVersion;
+    uint8_t lmpVersion; /* HCI_LMP_VERSION_* */
     uint16_t manufName;
     uint16_t lmpSubversion;
 } __packed;
@@ -1806,12 +1906,12 @@ struct hciEvtInquiryResultWithRssi {
 } __packed;
 
 #define HCI_EVT_Read_Remote_Extended_Features_Complete           0x23
-struct hciEvtReadREmoteExtFeturesComplete {
+struct hciEvtReadRemoteExtFeturesComplete {
     uint8_t status;
     uint16_t handle;
     uint8_t pageNum;
     uint8_t maxPageNum;
-    uint64_t extLmpFeatures;
+    uint64_t extLmpFeatures; /* HCI_LMP_EXT_FTR_P* & HCI_LMP_FTR_* */
 } __packed;
 
 #define HCI_EVT_Synchronous_Connection_Complete                  0x2C
@@ -1929,16 +2029,245 @@ struct hciEvtKeypressNotification {
 #define HCI_EVT_Remote_Host_Supported_Features_Notification      0x3D
 struct hciEvtRemoteHostSupportedFeatures {
     uint8_t mac[6];
-    uint64_t hostsupportedFeatures;
+    uint64_t hostSupportedFeatures; /* HCI_LMP_FTR_* */
 } __packed;
+
+
+/* ==== BT 3.0 ==== */
+
+#define HCI_EVT_Physical_Link_Complete                           0x40
+struct hciEvtPhysLinkComplete {
+    uint8_t status;
+    uint8_t physLinkHandle;
+} __packed;
+
+#define HIC_EVT_Channel_Selected                                 0x41
+struct hciEvtChannelSelected {
+    uint8_t physLinkHandle;
+} __packed;
+
+#define HCI_EVT_Disconnection_Physical_Link_Complete             0x42
+struct hciEvtDiscPhysLinkComplete {
+    uint8_t status;
+    uint8_t physLinkHandle;
+    uint8_t reason;
+} __packed;
+
+#define HCI_EVT_Physical_Link_Loss_Early_Warning                 0x43
+struct hciEvtDiscPhysLinkLossEralyWarning {
+    uint8_t physLinkHandle;
+    uint8_t lossReason;
+} __packed;
+
+#define HCI_EVT_Physical_Link_Recovery                           0x44
+struct hciEvtDiscPhysLinkRecovery {
+    uint8_t physLinkHandle;
+} __packed;
+
+#define HCI_EVT_Logical_Link_Complete                            0x45
+struct hciEvtLogicalLinkComplete {
+    uint8_t status;
+    uint16_t logicalLinkHandle;
+    uint8_t physLinkHandle;
+    uint8_t txFlowSpecID;
+} __packed;
+
+#define HCI_EVT_Disconnection_Logical_Link_Complete              0x46
+struct hciEvtDiscLogicalLinkComplete {
+    uint8_t status;
+    uint16_t logicalLinkHandle;
+    uint8_t reason;
+} __packed;
+
+#define HCI_EVT_Flow_Spec_Modify_Complete                        0x47
+struct hciEvtFlowSpecModifyComplete {
+    uint8_t status;
+    uint16_t conn;
+} __packed;
+
+#define HCI_EVT_Number_Of_Completed_Data_Blocks                  0x48
+struct hciEvtNumCompletedDataBlocksItem {
+    uint16_t conn;
+    uint16_t numPackets;
+} __packed;
+struct hciEvtNumCompletedDataBlocks {
+    uint16_t totalNumBlocks;
+    uint8_t numberOfHandles;
+    struct hciEvtNumCompletedDataBlocksItem items[];
+} __packed;
+
+#define HCI_EVT_AMP_Start_Test                                   0x49
+struct hciEvtAmpStartTest {
+    uint8_t status;
+    uint8_t scenario;
+} __packed;
+
+#define HCI_EVT_AMP_Test_End                                     0x4A
+struct hciEvtAmpTestEnd {
+    uint8_t status;
+    uint8_t scenario;
+} __packed;
+
+#define HCI_EVT_AMP_Receiver_Report                              0x4B
+struct hciEvtampReceiverReport {
+    uint8_t controllerType;
+    uint8_t reason;
+    uint32_t eventType;
+    uint16_t numberOfFrames;
+    uint16_t numberOfErrorFrames;
+    uint32_t numberOfBits;
+    uint32_t numberOfErrorBits;
+} __packed;
+
+#define HCI_EVT_Short_Range_Mode_Change_Complete                 0x4C
+struct hciEvtshortRangeModeChangeComplete {
+    uint8_t status;
+    uint8_t physLinkHandle;
+    uint8_t shortRangeModeOn;
+} __packed;
+
+#define HCI_EVT_AMP_Status_Change                                0x4D
+struct hciEvtAmpStatusChange {
+    uint8_t status;
+    uint8_t ampStatus;
+} __packed;
+
+
+/* ==== BT 4.0 ==== */
 
 #define HCI_EVT_LE_Meta                                          0x3E
 struct hciEvtLeMeta {
     uint8_t subevent;
 } __packed;
 
+#define HCI_EVTLE_Connection_Complete                            0x01
+struct hciEvtLeConnectionComplete {
+    uint8_t status;
+    uint16_t conn;
+    uint8_t amSlave;
+    uint8_t peerAddrRandom;
+    uint8_t peerMac[6];
+    uint16_t connInterval; /* in units of 1.25 ms 6..0x0C80 */
+    uint16_t connLatency; /* 0..0x01f3 */
+    uint16_t supervisionTimeout; /* inunit sof 10ms, 0xA..0x0C80 */
+    uint8_t masterClockAccuracy; /* HCI_MCA_* */
+} __packed;
+
+#define HCI_EVTLE_Advertising_Report                             0x02
+struct hciEvtLeAdvReportItem {
+    uint8_t advType; /* HCI_ADV_TYPE_* */
+    uint8_t randomAddr;
+    uint8_t mac[6];
+    uint8_t dataLen;
+    uint8_t data[];
+/*  int8_t RSSI <-- this cannot be here due to variable data len, but in reality it is there */
+} __packed;
+struct hciEvtLeAdvReport {
+    uint8_t numReports;
+    /* struct hciEvtLeAdvReportItem items[]; <- this cannot be here since data length is variable */
+} __packed;
+
+#define HCI_EVTLE_Connection_Update_Complete                     0x03
+struct hciEvtLeConnectionUpdateComplete {
+    uint8_t status;
+    uint16_t conn;
+    uint16_t connInterval; /* in units of 1.25 ms 6..0x0C80 */
+    uint16_t connLatency; /* 0..0x01f3 */
+    uint16_t supervisionTimeout; /* inunit sof 10ms, 0xA..0x0C80 */
+} __packed;
+
+#define HCI_EVTLE_Read_Remote_Used_Features_Complete             0x04
+struct hciEvtLeReadRemoteFeaturesComplete {
+    uint8_t status;
+    uint16_t conn;
+    uint64_t leFeatures; /* bitmask of HCI_LE_FTR_* */
+} __packed;
+
+#define HCI_EVTLE_LTK_Request                                    0x05
+struct hciEvtLeLtkRequest {
+    uint16_t conn;
+    uint64_t randomNum;
+    uint16_t diversifier;
+} __packed;
 
 
+/* ==== BT 4.1 ==== */
+
+#define HCI_EVTLE_Read_Remote_Connection_Parameter_Request       0x06
+struct hciEvtLeReadRemoteConnParamRequest {
+    uint16_t conn;
+    uint16_t connIntervalMin; /* in units of 1.25 ms 6..0x0C80 */
+    uint16_t connIntervalMax; /* in units of 1.25 ms 6..0x0C80 */
+    uint16_t connLatency; /* 0..0x01f3 */
+    uint16_t supervisionTimeout; /* inunit sof 10ms, 0xA..0x0C80 */
+} __packed;
+
+#define HCI_EVT_Triggered_Clock_Capture                          0x4E
+struct hciEvtTriggeredClockCapture {
+    uint16_t conn;
+    uint8_t piconetClock;
+    uint32_t clock;
+    uint16_t slotOffset;
+} __packed;
+
+#define HCI_EVT_Synchronization_Train_Complete                   0x4F
+struct hciEvtSyncTrainComplete {
+    uint8_t status;
+} __packed;
+
+#define HCI_EVT_Synchronization_Train_Received                   0x50
+struct hciEvtSyncTrainReceived {
+    uint8_t status;
+    uint8_t mac[6];
+    uint32_t offset;
+    uint8_t afhChannelMap[10];
+    uint8_t ltAddr;
+    uint32_t nextBroadcastInstant;
+    uint16_t connectionlessSlaveBroadcastInterval;
+    uint8_t serviceData;
+} __packed;
+
+#define HCI_EVT_Connectionless_Slave_Broadcast_Receive           0x51
+struct hciEvtConnectionlessSlaveBroadcastReceive {
+    uint8_t mac[6];
+    uint8_t ltAddr;
+    uint32_t clk;
+    uint32_t offset;
+    uint8_t rxFailed;
+    uint8_t fragment; /* HCI_CONNLESS_FRAG_TYPE_* */
+    uint8_t dataLen;
+    /* data */
+} __packed;
+
+#define HCI_EVT_Connectionless_Slave_Broadcast_Timeout           0x52
+struct hciEvtConnectionlessSlaveBroadcastTimeout {
+    uint8_t mac[6];
+    uint8_t ltAddr;
+} __packed;
+
+#define HCI_EVT_Truncated_Page_Complete                          0x53
+struct hciEvtTruncatedPageComplete {
+    uint8_t status;
+    uint8_t mac[6];
+} __packed;
+
+#define HCI_EVT_Slave_Page_Response_Timeout                      0x54
+
+#define HCI_EVT_Connless_Slave_Broadcast_Channel_Map_Change      0x55
+struct hciEvtConnlessSlaveBroadcastChannelMapChange {
+    uint8_t map[10];
+} __packed;
+
+#define HCI_EVT_Inquiry_Response_Notification                    0x56
+struct hciEvtInquiryResponseNotif {
+    uint8_t lap[3];
+    uint8_t RSSI; /* actually an int8_t */
+} __packed;
+
+#define HCI_EVT_AuthenticateD_Payload_Timeout_Expired            0x57
+struct hciEvtAuthedPayloadTimeoutExpired {
+    uint16_t conn;
+} __packed;
 
 
 #define HCI_ERR_Unknown_HCI_Command                                           0x01
