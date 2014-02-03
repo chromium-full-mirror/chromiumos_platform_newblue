@@ -100,6 +100,29 @@
 #define HCI_CONNLESS_FRAG_TYPE_END                               0x02 /* last fragment */
 #define HCI_CONNLESS_FRAG_TYPE_COMPLETE                          0x03 /* complete fragment - no fragmentation */
 
+#define HCI_CUR_MODE_ACTIVE                                      0x00
+#define HCI_CUR_MODE_HOLD                                        0x01
+#define HCI_CUR_MODE_SNIFF                                       0x02
+#define HCI_CUR_MODE_PARK                                        0x03
+
+#define HCI_KEY_TYPE_COMBINATION                                 0x00 /* BT 1.1+ */
+#define HCI_KEY_TYPE_LOCAL_UNIT                                  0x01 /* BT 1.1+ */
+#define HCI_KEY_TYPE_REMOTE_UNIT                                 0x02 /* BT 1.1+ */
+#define HCI_KEY_TYPE_DEBUG_COMBINATION                           0x03 /* BT 2.1+ */
+#define HCI_KEY_TYPE_UNAUTHENTICATED_COMBO_P192                  0x04 /* BT 2.1+ */
+#define HCI_KEY_TYPE_AUTHENTICATED_COMBO_P192                    0x05 /* BT 2.1+ */
+#define HCI_KEY_TYPE_CHANGED_COMBO                               0x06 /* BT 2.1+ */
+#define HCI_KEY_TYPE_UNAUTHENTICATED_COMBO_P256                  0x07 /* BT 4.1+ */
+#define HCI_KEY_TYPE_AUTHENTICATED_COMBO_P256                    0x08 /* BT 4.1+ */
+
+#define HCI_SCO_LINK_TYPE_SCO                                    0x00
+#define HCI_SCO_LINK_TYPE_ESCO                                   0x02
+
+#define HCI_SCO_AIR_MODE_MULAW                                   0x00
+#define HCI_SCO_AIR_MODE_ALAW                                    0x01
+#define HCI_SCO_AIR_MODE_CVSD                                    0x02
+#define HCI_SCO_AIR_MODE_TRANSPARENT                             0x03
+
 #define HCI_EVENT_INQUIRY_COMPLETE                               0x0000000000000001ULL /* BT 1.1+ */
 #define HCI_EVENT_INQUIRY_RESULT                                 0x0000000000000002ULL /* BT 1.1+ */
 #define HCI_EVENT_CONN_COMPLETE                                  0x0000000000000004ULL /* BT 1.1+ */
@@ -133,8 +156,8 @@
 #define HCI_EVENT_FLOW_SPEC_COMPLETE                             0x0000000100000000ULL /* BT 1.2+ */
 #define HCI_EVENT_INQUIRY_RESULT_WITH_RSSI                       0x0000000200000000ULL /* BT 1.2+ */
 #define HCI_EVENT_READ_REMOTE_EXTENDED_FETURES_COMPLETE          0x0000000400000000ULL /* BT 1.2+ */
-#define HCI_EVENT_SYNC_CONN_COMPLETE_EVENT                       0x0000080000000000ULL /* BT 1.2+ */
-#define HCI_EVENT_SYNC_CONN_CHANGED_EVENT                        0x0000100000000000ULL /* BT 1.2+ */
+#define HCI_EVENT_SYNC_CONN_COMPLETE                             0x0000080000000000ULL /* BT 1.2+ */
+#define HCI_EVENT_SYNC_CONN_CHANGED                              0x0000100000000000ULL /* BT 1.2+ */
 #define HCI_EVENT_ALL_BT_1_2                                     0x00001FFFFFFFFFFFULL /* also the default for BT 1.2+ */
 #define HCI_EVENT_SNIFF_SUBRATING                                0x0000200000000000ULL /* BT 2.1+ */
 #define HCI_EVENT_EXTENDED_INQUIRY_RESULT                        0x0000400000000000ULL /* BT 2.1+ */
@@ -169,7 +192,7 @@
 #define HCI_EVENT_P2_AMP_RECEIVER_REPORT                         0x0000000000000800ULL /* BT 3.0+ */
 #define HCI_EVENT_P2_SHORT_RANGE_MODE_CHANGE_COMPLETE            0x0000000000001000ULL /* BT 3.0+ */
 #define HCI_EVENT_P2_AMP_STATUS_CHANGE                           0x0000000000002000ULL /* BT 3.0+ */
-#define HCI_EVENT_P2_TRIGGERED_CLOCK_CAPTURE_EVENT               0x0000000000004000ULL /* BT 4.1+ */
+#define HCI_EVENT_P2_TRIGGERED_CLOCK_CAPTURE                     0x0000000000004000ULL /* BT 4.1+ */
 #define HCI_EVENT_P2_SYNCH_TRAIN_COMPLETE                        0x0000000000008000ULL /* BT 4.1+ */
 #define HCI_EVENT_P2_SYNCH_TRAIN_RECEIVED                        0x0000000000010000ULL /* BT 4.1+ */
 #define HCI_EVENT_P2_CONNLESS_SLAVE_BROADCAST_RXED               0x0000000000020000ULL /* BT 4.1+ */
@@ -221,7 +244,7 @@ struct hciCreateConnection {
     uint8_t mac[6];
     uint16_t allowedPackets; /* HCI_PKT_TYP_* */
     uint8_t PSRM;
-    uint16_t clockOffset; /* >> 2 and possibly | HCI_CLOCK_OFST_VALID */
+    uint16_t clockOffset; /* possibly | HCI_CLOCK_OFST_VALID */
     uint8_t allowRoleSwitch;
 } __packed;
 #define HCI_CLOCK_OFST_VALID  0x8000
@@ -310,7 +333,7 @@ struct hciNameRequest {
     uint8_t mac[6];
     uint8_t PSRM;
     uint8_t PSM; /* deprecated, should be zero for BT 1.2+ */
-    uint16_t clockOffset; /* >> 2 and possibly | HCI_CLOCK_OFST_VALID */
+    uint16_t clockOffset; /* possibly | HCI_CLOCK_OFST_VALID */
 } __packed;
 
 #define HCI_CMD_Remote_Name_Request_Cancel                       0x001A
@@ -545,7 +568,7 @@ struct hciEnhAcceptSyncConn {
 struct hciTruncatedPage {
     uint8_t mac[6];
     uint8_t PSRM;
-    uint16_t clockOffset; /* >> 2 and possibly | HCI_CLOCK_OFST_VALID */
+    uint16_t clockOffset; /* possibly | HCI_CLOCK_OFST_VALID */
 } __packed;
 
 #define HCI_CMD_Truncated_Page_Cancel                            0x0040
@@ -1525,60 +1548,391 @@ struct hciRemoteConnParamRequestNegativeReply {
 
 
 
+/* EVENTS */
 
-#define HCI_EVT_Inquiry_Complete_Event                           0x01
-#define HCI_EVT_Inquiry_Result_Event                             0x02
-#define HCI_EVT_Connection_Complete_Event                        0x03
-#define HCI_EVT_Connection_Request_Event                         0x04
-#define HCI_EVT_Disconnection_Complete_Event                     0x05
-#define HCI_EVT_Authentication_Complete_Event                    0x06
-#define HCI_EVT_Remote_Name_Request_Complete_Event               0x07
-#define HCI_EVT_Encryption_Change_Event                          0x08
-#define HCI_EVT_Change_Connection_Link_Key_Complete_Event        0x09
-#define HCI_EVT_Master_Link_Key_Complete_Event                   0x0A
-#define HCI_EVT_Read_Remote_Supported_Features_Complete_Event    0x0B
-#define HCI_EVT_Read_Remote_Version_Complete_Event               0x0C
-#define HCI_EVT_QOS_Setup_Complete_Event                         0x0D
-#define HCI_EVT_Command_Complete_Event                           0x0E
+
+/* ==== BT 1.1 ==== */
+
+#define HCI_EVT_Inquiry_Complete                                 0x01
+struct hciEvtInquiryComplete {
+    uint8_t status;
+} __packed;
+
+#define HCI_EVT_Inquiry_Result                                   0x02
+struct hciEvtInquiryResultItem {
+    uint8_t mac[6];
+    uint8_t PSRM;
+    uint8_t PSPM;
+    uint8_t PSM; /* obsoleted in BT 1.2+ */
+    uint8_t deviceClass[3];
+    uint16_t clockOffset;
+} __packed;
+struct hciEvtInquiryResult {
+    uint8_t numResponses;
+    struct hciEvtInquiryResultItem items[];
+} __packed;
+
+#define HCI_EVT_Connection_Complete                              0x03
+struct hciEvtConnComplete {
+    uint8_t status;
+    uint16_t conn;
+    uint8_t mac[6];
+    uint8_t isAclLink;
+    uint8_t encrypted;
+} __packed;
+
+#define HCI_EVT_Connection_Request                               0x04
+struct hciEvtConnRequest {
+    uint8_t mac[6];
+    uint8_t deviceClass[3];
+    uint8_t isAclLink;
+} __packed;
+
+#define HCI_EVT_Disconnection_Complete                           0x05
+struct hciEvtDiscComplete {
+    uint8_t status;
+    uint16_t conn;
+    uint8_t reason;
+} __packed;
+
+#define HCI_EVT_Authentication_Complete                          0x06
+struct hciEvtAuthComplete {
+    uint8_t status;
+    uint16_t handle;
+} __packed;
+
+#define HCI_EVT_Remote_Name_Request_Complete                     0x07
+struct hciEvtRemoteNameReqComplete {
+    uint8_t status;
+    uint8_t mac[6];
+    char name[248];
+} __packed;
+
+#define HCI_EVT_Encryption_Change                                0x08
+struct hciEvtEncrChange {
+    uint8_t status;
+    uint16_t handle;
+    uint8_t encrOn;
+} __packed;
+
+#define HCI_EVT_Change_Connection_Link_Key_Complete              0x09
+struct hciEvtChangeConnLinkKeyComplete {
+    uint8_t status;
+    uint16_t handle;
+} __packed;
+
+#define HCI_EVT_Master_Link_Key_Complete                         0x0A
+struct hciEvtMasterLinkKeyComplete {
+    uint8_t status;
+    uint16_t conn;
+    uint8_t usingTempKey; /* else using semi-permanent key */
+} __packed;
+
+#define HCI_EVT_Read_Remote_Supported_Features_Complete          0x0B
+struct hciEvtReadRemoteSupportedFeaturesComplete {
+    uint8_t status;
+    uint16_t conn;
+    uint64_t lmpFeatures;
+} __packed;
+
+#define HCI_EVT_Read_Remote_Version_Complete                     0x0C
+struct hciEvtReadRemoteVersionComplete {
+    uint8_t status;
+    uint16_t conn;
+    uint8_t lmpVersion;
+    uint16_t manufName;
+    uint16_t lmpSubversion;
+} __packed;
+
+#define HCI_EVT_QOS_Setup_Complete                               0x0D
+struct hciEvtQosSetupComplete {
+    uint8_t status;
+    uint16_t conn;
+    uint8_t flags;
+    uint8_t serviceType;
+    uint32_t tokenRate;
+    uint32_t peakBandwidth;
+    uint32_t latency;
+    uint32_t delayVariation;
+} __packed;
+
+#define HCI_EVT_Command_Complete                                 0x0E
 struct hciEvtCmdComplete {
     uint8_t numCmdCredits;
     uint16_t opcode;
 } __packed;
 
-#define HCI_EVT_Command_Status_Event                             0x0F
+#define HCI_EVT_Command_Status                                   0x0F
 struct hciEvtCmdStatus {
     uint8_t status;
     uint8_t numCmdCredits;
     uint16_t opcode;
 } __packed;
 
-#define HCI_EVT_Hardware_Error_Event                             0x10
-#define HCI_EVT_Flush_Occured_event                              0x11
-#define HCI_EVT_Role_Change_Event                                0x12
-#define HCI_EVT_Number_Of_Completed_Packets_Event                0x13
-#define HCI_EVT_Mode_Change_Event                                0x14
-#define HCI_EVT_Return_Link_Keys_Event                           0x15
-#define HCI_EVT_PIN_Code_Request_Event                           0x16
-#define HCI_EVT_Link_Key_Request_Event                           0x17
-#define HCI_EVT_Link_Key_Notification_Event                      0x18
-#define HCI_EVT_Loopback_Command_Event                           0x19
-#define HCI_EVT_Data_Buffer_Overflow_Event                       0x1A
-#define HCI_EVT_Max_Slots_Change_Event                           0x1B
-#define HCI_EVT_Read_Clock_Offset_Complete_Event                 0x1C
-#define HCI_EVT_Connection_Packet_Type_Changed_Event             0x1D
-#define HCI_EVT_QoS_Violation_Event                              0x1E
-#define HCI_EVT_Page_Scan_Mode_Change_Event                      0x1F
-#define HCI_EVT_Page_Scan_Repetition_Mode_Change_Event           0x20
+#define HCI_EVT_Hardware_Error                                   0x10
+struct hciEvtHwError {
+    uint8_t errCode;
+} __packed;
 
-#define HCI_EVT_IO_Capability_Request_Event                      0x31
-#define HCI_EVT_IO_Capability_Response_Event                     0x32
-#define HCI_EVT_User_Confirmation_Request_Event                  0x33
-#define HCI_EVT_User_Passkey_Request_Event                       0x34
-#define HCI_EVT_Remote_OOB Data_Request_Event                    0x35
-#define HCI_EVT_Simple_Pairing_Complete_Event                    0x36
-#define HCI_EVT_User_Passkey_Notification_Event                  0x3B
+#define HCI_EVT_Flush_Occured                                    0x11
+struct hciEvtFlushOccured {
+    uint16_t conn;
+} __packed;
 
-#define HCI_EVT_LE_Meta_Event                                    0x3E
+#define HCI_EVT_Role_Change                                      0x12
+struct hciEvtRoleChange {
+    uint8_t status;
+    uint8_t mac[6];
+    uint8_t amSlave;
+} __packed;
+
+#define HCI_EVT_Number_Of_Completed_Packets                      0x13
+struct hciEvtNumCompletedPacketsItem {
+    uint8_t conn;
+    uint16_t numPackets;
+} __packed;
+struct hciEvtNumCompletedPackets {
+    uint8_t numHandles;
+    struct hciEvtNumCompletedPacketsItem items[];
+} __packed;
+
+#define HCI_EVT_Mode_Change                                      0x14
+struct hciEvtModeChange {
+    uint8_t status;
+    uint16_t conn;
+    uint8_t mode; /* HCI_CUR_MODE_* */
+    uint16_t interval; /* in units of 0.625ms 0..0xffff */
+} __packed;
+
+#define HCI_EVT_Return_Link_Keys                                 0x15
+struct hciEvtReturnLinkKeysItem {
+    uint8_t mac[6];
+    uint8_t key[16];
+} __packed;
+struct hciEvtReturnLinkKeys {
+    uint8_t numKeys;
+    struct hciEvtReturnLinkKeysItem items[];
+} __packed;
+
+#define HCI_EVT_PIN_Code_Request                                 0x16
+struct hciEvtPinCodeReq {
+    uint8_t mac[6];
+} __packed;
+
+#define HCI_EVT_Link_Key_Request                                 0x17
+struct hciEvtLinkKeyReq {
+    uint8_t mac[6];
+} __packed;
+
+#define HCI_EVT_Link_Key_Notification                            0x18
+struct hciEvtLinkKeyNotif {
+    uint8_t mac[6];
+    uint16_t key[16];
+    uint8_t keyType; /* HCI_KEY_TYPE_ */
+} __packed;
+
+#define HCI_EVT_Loopback_Command                                 0x19
+/* data is the sent command, up to 252 bytes of it */
+
+#define HCI_EVT_Data_Buffer_Overflow                             0x1A
+struct hciEvtDataBufferOverflow {
+    uint8_t aclLink;
+} __packed;
+
+#define HCI_EVT_Max_Slots_Change                                 0x1B
+struct hciEvtMaxSlotsChange {
+    uint16_t conn;
+    uint8_t lmpMaxSlots;
+} __packed;
+
+#define HCI_EVT_Read_Clock_Offset_Complete                       0x1C
+struct hciEvtReadClockOffsetComplete {
+    uint8_t status;
+    uint16_t conn;
+    uint16_t clockOffset;
+} __packed;
+
+#define HCI_EVT_Connection_Packet_Type_Changed                   0x1D
+struct hciEvtConnPacketTypeChanged {
+    uint8_t status;
+    uint16_t conn;
+    uint16_t packetsAllowed; /* HCI_PKT_TYP_* */
+} __packed;
+
+#define HCI_EVT_QoS_Violation                                    0x1E
+struct hciEvtQosViolation {
+    uint16_t conn;
+} __packed;
+
+#define HCI_EVT_Page_Scan_Mode_Change                            0x1F /* deprecated in BT 1.2+ */
+struct hciEvtPsmChange {
+    uint8_t mac[6];
+    uint8_t PSM;
+} __packed;
+
+#define HCI_EVT_Page_Scan_Repetition_Mode_Change                 0x20
+struct hciEvtPrsmChange {
+    uint8_t mac[6];
+    uint8_t PSRM;
+} __packed;
+
+
+/* ==== BT 1.2 ==== */
+
+#define HCI_EVT_Flow_Specification_Complete                      0x21
+struct hciEvtFlowSpecComplete {
+    uint8_t status;
+    uint16_t conn;
+    uint8_t flags;
+    uint8_t flowDirection;
+    uint8_t serviceType;
+    uint32_t tokenRate;
+    uint32_t peakBandwidth;
+    uint32_t latency;
+} __packed;
+
+#define HCI_EVT_Inquiry_Result_With_RSSI                         0x22
+struct hciEvtInquiryResultWithRssiItem {
+    uint8_t mac[6];
+    uint8_t PSRM;
+    uint8_t PSPM;
+    uint8_t deviceClass[3];
+    uint16_t clockOffset;
+    uint8_t RSSI; /* actually a int8_t */
+} __packed;
+struct hciEvtInquiryResultWithRssi {
+    uint8_t numResponses;
+    struct hciEvtInquiryResultWithRssiItem items[];
+} __packed;
+
+#define HCI_EVT_Read_Remote_Extended_Features_Complete           0x23
+struct hciEvtReadREmoteExtFeturesComplete {
+    uint8_t status;
+    uint16_t handle;
+    uint8_t pageNum;
+    uint8_t maxPageNum;
+    uint64_t extLmpFeatures;
+} __packed;
+
+#define HCI_EVT_Synchronous_Connection_Complete                  0x2C
+struct hciEvtSyncConnComplete {
+    uint8_t status;
+    uint16_t conn;
+    uint8_t mac[6];
+    uint8_t linkType; /* HCI_SCO_LINK_TYPE_* */
+    uint8_t interval;
+    uint8_t retrWindow;
+    uint16_t rxPacketLen;
+    uint16_t txPacketLen;
+    uint8_t airMode; /* HCI_SCO_AIR_MODE_* */
+} __packed;
+
+#define HCI_EVT_Synchronous_Connection_Changed                   0x2D
+struct hciEvtSyncConnChanged {
+    uint8_t status;
+    uint16_t conn;
+    uint8_t interval;
+    uint8_t retrWindow;
+    uint16_t rxPacketLen;
+    uint16_t txPacketLen;
+} __packed;
+
+
+/* ==== BT 2.1 ==== */
+
+#define HCI_EVT_Sniff_Subrating                                  0x2E
+struct hciEvtSniffSubrating {
+    uint8_t status;
+    uint16_t conn;
+    uint16_t maxTxLatency;
+    uint16_t maxRxLatency;
+    uint16_t minRemoteTimeout;
+    uint16_t minLocalTimeout;
+} __packed;
+
+#define HCI_EVT_Extended_Inquiry_Result                          0x2F
+struct hciEvtExtendedInquiryResult {
+    uint8_t numResponces; /* must be 1 */
+    uint8_t mac[6];
+    uint8_t PSRM;
+    uint8_t reserved;
+    uint8_t deviceClass[3];
+    uint16_t clockOffset;
+    uint8_t RSSI; /* actually a int8_t */
+    uint8_t EIR[240];
+} __packed;
+
+#define HCI_EVT_Encryption_Key_Refresh_Complete                  0x30
+struct hciEvtEncrKeyRefreshComplete {
+    uint8_t status;
+    uint16_t conn;
+} __packed;
+
+#define HCI_EVT_IO_Capability_Request                            0x31
+struct hciEvtIoCapRequest {
+    uint8_t mac[6];
+} __packed;
+
+#define HCI_EVT_IO_Capability_Response                           0x32
+struct hciEvtIoCapResponse {
+    uint8_t mac[6];
+    uint8_t ioCapability; /* HCI_DISPLAY_CAP_* */
+    uint8_t oobDataPresent;
+    uint8_t authReqments; /* HCI_AUTH_REQMENT_ */
+} __packed;
+
+#define HCI_EVT_User_Confirmation_Request                        0x33
+struct hciEvtUserConfRequest {
+    uint8_t mac[6];
+    uint32_t numericValue;
+} __packed;
+
+#define HCI_EVT_User_Passkey_Request                             0x34
+struct hciEvtUserPasskeyRequest {
+    uint8_t mac[6];
+} __packed;
+
+#define HCI_EVT_Remote_OOB Data_Request                          0x35
+struct hciEvtRemoteOobRequest {
+    uint8_t mac[6];
+} __packed;
+
+#define HCI_EVT_Simple_Pairing_Complete                          0x36
+struct hciEvtSimplePaitingComplete {
+    uint8_t status;
+    uint8_t mac[6];
+} __packed;
+
+#define HCI_EVT_Link_Supervision_Timeout_Changed                 0x38
+struct hciEvtLinkSupervisionTimeoutChanged {
+    uint16_t conn;
+    uint16_t timeout; /* in units of 0.625 ms 1..0xffff */
+} __packed;
+
+#define HCI_EVT_Enhanced_Flush_Complete                          0x39
+struct hciEvtEnahncedFlushComplete {
+    uint16_t conn;
+} __packed;
+
+#define HCI_EVT_User_Passkey_Notification                        0x3B
+struct hciEvtUserPasskeyNotif {
+    uint8_t mac[6];
+    uint32_t passkey;
+} __packed;
+
+#define HCI_EVT_Keypress_Notification                            0x3C
+struct hciEvtKeypressNotification {
+    uint8_t mac[6];
+    uint8_t notifType; /* HCI_SSP_KEY_ENTRY_* */
+} __packed;
+
+#define HCI_EVT_Remote_Host_Supported_Features_Notification      0x3D
+struct hciEvtRemoteHostSupportedFeatures {
+    uint8_t mac[6];
+    uint64_t hostsupportedFeatures;
+} __packed;
+
+#define HCI_EVT_LE_Meta                                          0x3E
 struct hciEvtLeMeta {
     uint8_t subevent;
 } __packed;

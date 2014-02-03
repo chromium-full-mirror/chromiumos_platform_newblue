@@ -1,3 +1,6 @@
+//todo: only one LE connection attempt can exist at a time
+//our "extra" param for event filtering canhandle other events to as long as we're willing to have a giant switch-case... and check against it in all structs
+
 #include <semaphore.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -300,15 +303,15 @@ static void hciRxEvt(struct hciEvtHdr *evt)
     struct hciEvtCmdStatus *cmdStatus = (struct hciEvtCmdStatus*)(evt + 1);
 
     /* handle the cases of credits: command complete */
-    if (evtType == HCI_EVT_Command_Complete_Event && utilGetLE8(&cmdComplete->numCmdCredits))
+    if (evtType == HCI_EVT_Command_Complete && utilGetLE8(&cmdComplete->numCmdCredits))
         addCredit = true;
 
     /* handle the cases of credits: command status */
-    if (evtType == HCI_EVT_Command_Status_Event && utilGetLE8(&cmdStatus->numCmdCredits))
+    if (evtType == HCI_EVT_Command_Status && utilGetLE8(&cmdStatus->numCmdCredits))
         addCredit = true;
 
     /* handle command complete with ocf == 0 and ogf == 0 by ignoring it as per spec */
-    if (evtType == HCI_EVT_Command_Complete_Event && !utilGetLE16(&cmdComplete->opcode))
+    if (evtType == HCI_EVT_Command_Complete && !utilGetLE16(&cmdComplete->opcode))
         handled = true;
 
     if (!handled) {
@@ -323,7 +326,7 @@ static void hciRxEvt(struct hciEvtHdr *evt)
                 continue;
 
             /* if LE event, check code and skip handler if wrong */
-            if (evtType == HCI_EVT_LE_Meta_Event) {
+            if (evtType == HCI_EVT_LE_Meta) {
                 if(len < sizeof(struct hciEvtLeMeta)) {
                     logw("Got LE meta event of len %ub\n", len);
                     break;
@@ -333,7 +336,7 @@ static void hciRxEvt(struct hciEvtHdr *evt)
             }
 
             /* same for command complete */
-            if (evtType == HCI_EVT_Command_Complete_Event) {
+            if (evtType == HCI_EVT_Command_Complete) {
                 if(len < sizeof(struct hciEvtCmdComplete)) {
                     logw("Got command complete event of len %ub\n", len);
                     break;
@@ -343,7 +346,7 @@ static void hciRxEvt(struct hciEvtHdr *evt)
             }
 
             /* same for command status */
-            if (evtType == HCI_EVT_Command_Status_Event) {
+            if (evtType == HCI_EVT_Command_Status) {
                 if(len < sizeof(struct hciEvtCmdStatus)) {
                     logw("Got command status event of len %ub\n", len);
                     break;
@@ -802,7 +805,7 @@ static bool hciCmdSubmitWithCmdComplete(const struct hciCmdHdr *cmd, hciOpDoneCb
     uint16_t opcode = utilGetLE16(&cmd->opcode);
 
     return hciCmdSubmit(cmd,
-        HCI_EVT_Command_Complete_Event, opcode, hciCmdSimpleCompleteCbk, (void*)cbkDone, cbkData,
+        HCI_EVT_Command_Complete, opcode, hciCmdSimpleCompleteCbk, (void*)cbkDone, cbkData,
         0, 0, NULL, NULL, NULL);
 }
 
@@ -850,7 +853,7 @@ static bool hciCmdSubmitWithCmdStatus(const struct hciCmdHdr *cmd, hciOpDoneCbk 
     uint16_t opcode = utilGetLE16(&cmd->opcode);
 
     return hciCmdSubmit(cmd,
-        HCI_EVT_Command_Status_Event, opcode, hciCmdSimpleStatusCbk, (void*)cbkDone, cbkData,
+        HCI_EVT_Command_Status, opcode, hciCmdSimpleStatusCbk, (void*)cbkDone, cbkData,
         finalEvtType, finalEvtExtra, finalEvtCbk, finalEvtCbkData1, finalEvtCbkData2);
 }
 
@@ -1075,7 +1078,7 @@ static bool hciWriteSyncFlowCtrlEnable(bool syncFlowCtrlOn, hciOpDoneCbk cbkDone
     struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
     struct hciWriteSyncFlowCtrl *cmd = (struct hciWriteSyncFlowCtrl*)(buf + 1);
 
-    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_SCO_Flow_Control_Enable);
+    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_SCO_Flow_Control_Enable);
     hdr->paramLen = sizeof(struct hciWriteSyncFlowCtrl);
     utilSetLE8(&cmd->syncFlowCtrlOn, syncFlowCtrlOn ? 1 : 0);
 
@@ -1097,7 +1100,7 @@ static bool hciWriteInquiryMode(uint8_t inqMode, hciOpDoneCbk cbkDone, void *cbk
     struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
     struct hciWriteInquryMode *cmd = (struct hciWriteInquryMode*)(buf + 1);
 
-    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_InquiryMode);
+    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Inquiry_Mode);
     hdr->paramLen = sizeof(struct hciWriteInquryMode);
     utilSetLE8(&cmd->inqMode, inqMode);
 
@@ -1150,7 +1153,7 @@ static bool hciWriteSimplePairingMode(bool sspOn, hciOpDoneCbk cbkDone, void *cb
     struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
     struct hciWriteSimplePairingMore *cmd = (struct hciWriteSimplePairingMore*)(buf + 1);
 
-    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_InquiryMode);
+    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Simple_Pairing_Mode);
     hdr->paramLen = sizeof(struct hciWriteSimplePairingMore);
     utilSetLE8(&cmd->useSsp, sspOn ? 1 : 0);
 
