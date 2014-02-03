@@ -19,5 +19,5 @@ bt_vendor_lib.h is a copy from bluedroid and is needed. once we are in the build
 
 vendor lib does not support xmit callback
 
-bt 1.2 is minimum supported version
+bt 1.1 is minimum supported version
 
