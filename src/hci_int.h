@@ -2270,47 +2270,94 @@ struct hciEvtAuthedPayloadTimeoutExpired {
 } __packed;
 
 
-#define HCI_ERR_Unknown_HCI_Command                                           0x01
-#define HCI_ERR_No_Connection                                                 0x02
-#define HCI_ERR_Hardware_Failure                                              0x03
-#define HCI_ERR_Page_Timeout                                                  0x04
-#define HCI_ERR_Authentication_Failure                                        0x05
-#define HCI_ERR_Key_Missing                                                   0x06
-#define HCI_ERR_Memory_Full                                                   0x07
-#define HCI_ERR_Connection_Timeout                                            0x08
-#define HCI_ERR_Max_Number_Of_Connections                                     0x09
-#define HCI_ERR_Max_Number_Of_SCO_Connections_To_A_Device                     0x0A
-#define HCI_ERR_ACL_Connection_Already_Exists                                 0x0B
-#define HCI_ERR_Command_Disallowed                                            0x0C
-#define HCI_ERR_Host_Rejected_Due_To_Limited_Resources                        0x0D
-#define HCI_ERR_Host_Rejected_Due_To_Security_Reasons                         0x0E
-#define HCI_ERR_Host_Rejected_Due_To_A_Remote_Device_Only_A_Personal_Device   0x0F
-#define HCI_ERR_Host_Timeout                                                  0x10
-#define HCI_ERR_Unsupported_Feature_Or_Parameter_Value                        0x11
-#define HCI_ERR_Invalid_HCI_Command_Parameters                                0x12
-#define HCI_ERR_Other_End_Terminated_Connection_User_Ended_Connection         0x13
-#define HCI_ERR_Other_End_Terminated_Connection_Low_Resources                 0x14
-#define HCI_ERR_Other_End_Terminated_Connection_About_To_Power_Off            0x15
-#define HCI_ERR_Connection_Terminated_By_Local_Host                           0x16
-#define HCI_ERR_Repeated_Attempts                                             0x17
-#define HCI_ERR_Pairing_Not_Allowed                                           0x18
-#define HCI_ERR_Unknown_LMP_PDU                                               0x19
-#define HCI_ERR_Unsupported_Remote_Feature                                    0x1A
-#define HCI_ERR_SCO_Offset_Rejected                                           0x1B
-#define HCI_ERR_SCO_Interval_Rejected                                         0x1C
-#define HCI_ERR_SCO_Air_Mode_Rejected                                         0x1D
-#define HCI_ERR_Invalid_LMP_Parameters                                        0x1E
-#define HCI_ERR_Unspecified_Error                                             0x1F
-#define HCI_ERR_Unsupported_LMP_Parameter                                     0x20
-#define HCI_ERR_Role_Change_Not_Allowed                                       0x21
-#define HCI_ERR_LMP_Response_Timeout                                          0x22
-#define HCI_ERR_LMP_Error_Transaction_Collision                               0x23
-#define HCI_ERR_LMP_PDU_Not_Allowed                                           0x24
-#define HCI_ERR_Encryption_Mode_Not_Acceptable                                0x25
-#define HCI_ERR_Unit_Key_Used                                                 0x26
-#define HCI_ERR_QoS_Not_Supported                                             0x27
-#define HCI_ERR_Instant_Passed                                                0x28
-#define HCI_ERR_Pairing_With_Unit_Key_Not_Supported                           0x29
+
+
+
+/* ERROR CODES */
+
+/* ==== BT 1.1 ==== */
+
+#define HCI_ERR_Unknown_HCI_Command                              0x01
+#define HCI_ERR_No_Connection                                    0x02
+#define HCI_ERR_Hardware_Failure                                 0x03
+#define HCI_ERR_Page_Timeout                                     0x04
+#define HCI_ERR_Authentication_Failure                           0x05
+#define HCI_ERR_Key_Missing                                      0x06
+#define HCI_ERR_Memory_Full                                      0x07
+#define HCI_ERR_Connection_Timeout                               0x08
+#define HCI_ERR_Max_Number_Of_Connections                        0x09
+#define HCI_ERR_Max_Number_Of_SCO_Connections_To_A_Device        0x0A
+#define HCI_ERR_ACL_Connection_Already_Exists                    0x0B
+#define HCI_ERR_Command_Disallowed                               0x0C
+#define HCI_ERR_Host_Rejected_Due_To_Limited_Resources           0x0D
+#define HCI_ERR_Host_Rejected_Due_To_Security_Reasons            0x0E
+#define HCI_ERR_Host_Rejected_Remote_Device_Personal_Device      0x0F
+#define HCI_ERR_Host_Timeout                                     0x10
+#define HCI_ERR_Unsupported_Feature_Or_Parameter_Value           0x11
+#define HCI_ERR_Invalid_HCI_Command_Parameters                   0x12
+#define HCI_ERR_Other_End_Terminated_Connection_User_Requested   0x13
+#define HCI_ERR_Other_End_Terminated_Connection_Low_Resources    0x14
+#define HCI_ERR_Other_End_Terminated_Connection_Soon_Power_Off   0x15
+#define HCI_ERR_Connection_Terminated_By_Local_Host              0x16
+#define HCI_ERR_Repeated_Attempts                                0x17
+#define HCI_ERR_Pairing_Not_Allowed                              0x18
+#define HCI_ERR_Unknown_LMP_PDU                                  0x19
+#define HCI_ERR_Unsupported_Remote_Feature                       0x1A
+#define HCI_ERR_SCO_Offset_Rejected                              0x1B
+#define HCI_ERR_SCO_Interval_Rejected                            0x1C
+#define HCI_ERR_SCO_Air_Mode_Rejected                            0x1D
+#define HCI_ERR_Invalid_LMP_Parameters                           0x1E
+#define HCI_ERR_Unspecified_Error                                0x1F
+#define HCI_ERR_Unsupported_LMP_Parameter                        0x20
+#define HCI_ERR_Role_Change_Not_Allowed                          0x21
+#define HCI_ERR_LMP_Response_Timeout                             0x22
+#define HCI_ERR_LMP_Error_Transaction_Collision                  0x23
+#define HCI_ERR_LMP_PDU_Not_Allowed                              0x24
+#define HCI_ERR_Encryption_Mode_Not_Acceptable                   0x25
+#define HCI_ERR_Unit_Key_Used                                    0x26
+#define HCI_ERR_QoS_Not_Supported                                0x27
+#define HCI_ERR_Instant_Passed                                   0x28
+#define HCI_ERR_Pairing_With_Unit_Key_Not_Supported              0x29
+
+
+/* ==== BT 1.2 ==== */
+
+#define HCI_ERR_Different_Transaction_Collision                  0x2A
+#define HCI_ERR_QoS_Unacceptable_Parameter                       0x2C
+#define HCI_ERR_QoS_Rejected                                     0x2D
+#define HCI_ERR_Channel_Classification_Not_Supported             0x2E
+#define HCI_ERR_Insufficient_Security                            0x2F
+#define HCI_ERR_Parameter_Out_Of_Mandatory_Range                 0x30
+#define HCI_ERR_Role_Switch_Pending                              0x33
+#define HCI_ERR_Reserved_Slot_Violation                          0x34
+#define HIC_ERR_Role_Switch_Failed                               0x35
+
+
+/* ==== BT 2.1 ==== */
+
+#define HCI_ERR_EIR_Too_Large                                    0x36
+#define HCI_ERR_SSP_Not_Supported_By_Host                        0x37
+#define HCI_ERR_Host_Busy_Pairing                                0x38
+
+
+/* ==== BT 3.0 ==== */
+
+#define HCI_ERR_Connection_Rejected_No_Suitable_Channel_Found    0x39
+#define HCI_ERR_Controller_Busy                                  0x3A
+
+
+/* ==== BT 4.0 ==== */
+
+#define HCI_ERR_Unacceptable_Connection_Interval                 0x3B
+#define HCI_ERR_Directed_Advertising_Timeout                     0x3C
+#define HCI_ERR_Connection_Terminated_Due_To_MIC_Failure         0x3D
+#define HCI_ERR_Connection_Failed_To_To_Established              0x3E
+#define HCI_ERR_MAC_Connection_Failed                            0x3F
+
+
+/* ==== BT 4.1 ==== */
+
+#define HCI_ERR_CoarceClock_AdjFailed_Will_Try_clock_Dragging    0x40
 
 
 
