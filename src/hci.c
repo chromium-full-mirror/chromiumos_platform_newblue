@@ -101,6 +101,16 @@ struct hciCbkWorkItem {
 };
 
 
+struct hciAclConn {
+    struct hciAclConn *next;
+    struct hciAclConn *prev;
+    struct bt_addr     addr;
+
+    uint16_t           id;
+
+    uint8_t            state; //TODO: this
+};
+
 /* our state */
 
 static hciAclRxCbk mAclRxF;
@@ -118,8 +128,33 @@ static pthread_t mCmdsSendThread;
 static struct workQueue* mCallbackWork;
 static pthread_t mCallbackThread;
 
+static pthread_mutex_t mConnsLock = PTHREAD_MUTEX_INITIALIZER;
+static struct hciAclConn *mConns = NULL;
+
+/* read from chip */
+static uint16_t mAclBufSzEdr;
+static uint16_t mAclBufSzLe;
+static bool mBtJointBuffers; /* use EDR buffers for LE */
+static sem_t mAclPacketsEdr;
+static sem_t mAclPacketsLe;
 
 
+/*
+ * FUNCTION: hciConnFindById
+ * USE:      Fidn a connection struct given an ID
+ * PARAMS:   id - the id
+ * RETURN:   connection struct or NULL if not found
+ * NOTES:    call with mConnsLock held
+ */
+static struct hciAclConn* hciConnFindById(uint16_t id)
+{
+    struct hciAclConn *c = mConns;
+
+    while (c && c->id != id)
+        c = c->next;
+
+    return c;
+}
 
 /*
  * FUNCTION: hciEvtWaitDequeueInt
@@ -178,7 +213,7 @@ static bool hciEvtWaitDequeue(uniq_t evtWaitStateID)
  *           extra - more info on expected event (command
  *                   code for command complete/status, LE
  *                   subevent code for LE metaevent)
- *           cbk - the callabck to call
+ *           cbk - the callback to call
  *           cbkData1 - the 1st data to pass to the callback
  *           cbkData2 - the 2nd data to pass to the callback
  *           persistent - if set, handler will not be removed
@@ -298,6 +333,7 @@ static void hciRxEvt(struct hciEvtHdr *evt)
     bool handled = false, addCredit = false;
     uint8_t evtType = utilGetLE8(&evt->code);
     uint8_t len = utilGetLE8(&evt->len);
+    uint32_t i;
     struct hciEvtLeMeta *leMeta = (struct hciEvtLeMeta*)(evt + 1);
     struct hciEvtCmdComplete *cmdComplete = (struct hciEvtCmdComplete*)(evt + 1);
     struct hciEvtCmdStatus *cmdStatus = (struct hciEvtCmdStatus*)(evt + 1);
@@ -309,6 +345,34 @@ static void hciRxEvt(struct hciEvtHdr *evt)
     /* handle the cases of credits: command status */
     if (evtType == HCI_EVT_Command_Status && utilGetLE8(&cmdStatus->numCmdCredits))
         addCredit = true;
+
+    /* handle data credits */
+    if (evtType == HCI_EVT_Number_Of_Completed_Packets) {
+        uint16_t newCreditsEdr = 0, newCreditsLe = 0;
+        struct hciAclConn* conn;
+        struct hciEvtNumCompletedPackets *ncp = (struct hciEvtNumCompletedPackets*)(evt + 1);
+        struct hciEvtNumCompletedPacketsItem *items = ncp->items;
+
+        pthread_mutex_lock(&mConnsLock);
+        for(i = 0; i < utilGetLE8(&ncp->numHandles); i++, items++) {
+            uint16_t connID = utilGetLE16(&items->conn);
+            uint16_t numPackets = utilGetLE16(&items->numPackets);
+
+            conn = hciConnFindById(connID);
+            if (!conn)
+                loge("Unknown conn 0x%04X in packets completed. Credits leaked: %d\n", connID, numPackets);
+            else if (BT_ADDR_IS_LE(conn->addr) && !mBtJointBuffers)
+                newCreditsLe += numPackets;
+            else
+                newCreditsEdr += numPackets;
+        }
+        pthread_mutex_unlock(&mConnsLock);
+        while (newCreditsLe--)
+            sem_post(&mAclPacketsLe);
+        while (newCreditsEdr--)
+            sem_post(&mAclPacketsEdr);
+        handled = true;
+    }
 
     /* handle command complete with ocf == 0 and ogf == 0 by ignoring it as per spec */
     if (evtType == HCI_EVT_Command_Complete && !utilGetLE16(&cmdComplete->opcode))
