@@ -183,6 +183,7 @@ static sem_t mAclPacketsLe;
 static sem_t mScoPackets;
 static bool mHaveLe = false;
 static bool mSimulLe = false;
+static uint8_t mInquiryState = 0;
 
 
 /* fwd declarations */
@@ -1238,6 +1239,44 @@ bool hciSetLocalName(const char *name, hciOpDoneCbk cbkDone, void *cbkData)
 }
 
 /*
+ * FUNCTION: hciSetDiscoverableConnectable
+ * USE:      Set local discoverability/connectability
+ * PARAMS:   discoverableState - NULL to leave as is, else pointer to wanted discoverability state
+ *           connectableStateP - NULL to leave as is, else pointer to wanted connectablity state
+ *           cbkDone - callback to call when operation completes
+ *           cbkData - data to pass to the callback
+ * RETURN:   false on error, true if you should expect callback call
+ * NOTES:
+ */
+bool hciSetDiscoverableConnectable(const bool *discoverableStateP, const bool *connectableStateP, hciOpDoneCbk cbkDone, void *cbkData)
+{
+    uint8_t newState = mInquiryState;
+
+    if (discoverableStateP)
+        newState = (newState &~ HCI_SCAN_ENABLE_INQUIRY) | (*discoverableStateP ? HCI_SCAN_ENABLE_INQUIRY : 0);
+
+    if (connectableStateP)
+        newState = (newState &~ HCI_SCAN_ENABLE_PAGE) | (*connectableStateP ? HCI_SCAN_ENABLE_PAGE : 0);
+
+    if (newState == mInquiryState) { /* nothing to change - tell caller we're done */
+        if (!hciScheduleOpDoneCbk(cbkDone, cbkData, 0)) {
+            loge("Failed to shedule done callback\n");
+            return false;
+        }
+    } else { /* things to do - do them */
+        struct hciWriteScanEnable cmd;
+
+        utilSetLE8(&cmd.state, newState);
+        if (hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Scan_Enable, &cmd, sizeof(cmd), cbkDone, cbkData))
+            mInquiryState = newState;
+        else
+            return false;
+    }
+
+    return true;
+}
+
+/*
  * FUNCTION: hciSetDeviceClass
  * USE:      Set local device class
  * PARAMS:   class - the class value
@@ -1359,15 +1398,6 @@ HCI_SIMPLY_SYNC_END
  */
 HCI_SIMPLY_SYNC_WRITE(WritePageTimeout, (uint16_t timeout), HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Page_Timeout)
     HCI_COPY_IN_U16(timeout)
-HCI_SIMPLY_SYNC_END
-
-/*
- * FUNCTION: hciWriteScanEnableSync
- * USE:      Set whether we reply to page or inqury scane (are connectable & discoverable)
- * PARAMS:   state - the state to send in the command (bitfield of HCI_SCAN_ENABLE_* )
- */
-HCI_SIMPLY_SYNC_WRITE(WriteScanEnable, (uint8_t state), HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Scan_Enable)
-    HCI_COPY_IN_U8(state)
 HCI_SIMPLY_SYNC_END
 
 /*

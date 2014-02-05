@@ -32,6 +32,7 @@ void hciDown(void);
 bool hciSetLocalName(const char *name, hciOpDoneCbk cbkDone, void *cbkData);
 bool hciSetDeviceClass(uint32_t cls, hciOpDoneCbk cbkDone, void *cbkData);
 bool hciSetEirData(const uint8_t *data, uint8_t dlen, bool fecRequired, hciOpDoneCbk cbkDone, void *cbkData);
+bool hciSetDiscoverableConnectable(const bool *discoverableStateP, const bool *connectableStateP, hciOpDoneCbk cbkDone, void *cbkData);/* pass null to keep as is */
 
 #endif
 
