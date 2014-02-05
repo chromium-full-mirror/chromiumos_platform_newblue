@@ -85,9 +85,9 @@ int workQueueGet(struct workQueue* q, void** workP)
     int ret = 0;
 
     pthread_mutex_lock(&q->lock);
-    do {
+    while (q->posR == q->posW && !q->status) {
         pthread_cond_wait(&q->cond, &q->lock);
-    } while (q->posR == q->posW && !q->status);
+    }
 
     if (q->status)
         ret = q->status;
