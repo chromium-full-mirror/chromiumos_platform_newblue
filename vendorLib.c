@@ -25,6 +25,7 @@
 #define BT_VENDOR_INFACE_STRUCT  "BLUETOOTH_VENDOR_LIB_INTERFACE"
 
 
+static const char mLog = 1;
 
 
 /* our state w.r.t. vendor lib */
@@ -301,6 +302,15 @@ static void* vendorWorker(void *pipeFdP)
                 continue;
             }
 
+            if (mLog) {
+                char x[128];
+                unsigned i;
+                sprintf(x,"RX %02X (%4u):", buf[0], sz);
+                for(i = 0; i < 32 && i < sz; i++) sprintf(x + strlen(x), " %02X", ((uint8_t*)packet)[i]);
+                if (i < sz) strcat(x, " ...");
+                logd("%s\n", x);
+            }
+
             /* vendor lib code has first dibs on valid command complete packets */
             if (mCmdCompleteWaiting && buf[0] == HCI_PKT_TYP_EVT && packet[0] == 0x0E && sz >= 5) {
 
@@ -543,6 +553,15 @@ out_need_close:
 bool vendorTx(uint8_t typ, const void *data, uint32_t len)
 {
     int fd, ret;
+
+    if (mLog) {
+       char x[128];
+       unsigned i;
+       sprintf(x,"TX %02X (%4u):", typ, len);
+       for(i = 0; i < 32 && i < len; i++) sprintf(x + strlen(x), " %02X", ((uint8_t*)data)[i]);
+       if (i < len) strcat(x, " ...");
+       logd("%s\n", x);
+    }
 
     switch (typ) {
     case HCI_PKT_TYP_CMD:
