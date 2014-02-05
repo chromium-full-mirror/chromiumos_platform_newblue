@@ -225,6 +225,8 @@
 #define HCI_LMP_FTR_EV5_PACKETS                                  0x0000000200000000ULL /* BT 2.1+ */
 #define HCI_LMP_FTR_AFH_CAPABLE_SLAVE                            0x0000000800000000ULL /* BT 2.1+ */
 #define HCI_LMP_FTR_AFH_CLASSIFICATION_SLAVE                     0x0000001000000000ULL /* BT 2.1+ */
+#define HCI_LMP_FTR_BR_EDR_NOT_SUPPORTED                         0x0000002000000000ULL /* BT 4.0+ */
+#define HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER                      0x0000004000000000ULL /* BT 4.0+ */
 #define HCI_LMP_FTR_3_SLOT_ACL_PACKETS                           0x0000008000000000ULL /* BT 2.1+ */
 #define HCI_LMP_FTR_5_SLOT_ACL_PACKETS                           0x0000010000000000ULL /* BT 2.1+ */
 #define HCI_LMP_FTR_SNIFF_SUBRATING                              0x0000020000000000ULL /* BT 2.1+ */
@@ -1923,7 +1925,7 @@ struct hciCmplReadLocalVersion {
 #define HCI_CMD_Read_Local_Supported_Commands                    0x0002 /* complete */
 struct hciCmplReadLocalSupportedCommands {
     uint8_t status;
-    uint8_t bitfield[64];
+    uint64_t bitfield;
 } __packed;
 
 #define HCI_CMD_Read_Local_Supported_Features                    0x0003 /* complete */

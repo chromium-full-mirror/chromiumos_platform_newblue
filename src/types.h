@@ -13,6 +13,10 @@ typedef uint8_t bool;
 #define true  (1)
 
 
+/* for printing 64-bit values */
+#define FMT64      "%016llX"
+#define CNV64(_v)  ((long long unsigned)(_v))
+
 
 #endif
 

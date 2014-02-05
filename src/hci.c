@@ -171,11 +171,19 @@ static pthread_mutex_t mConnsLock = PTHREAD_MUTEX_INITIALIZER;
 static struct hciAclConn *mConns = NULL;
 
 /* read from chip */
-static uint16_t mAclBufSzEdr;
-static uint16_t mAclBufSzLe;
-static bool mBtJointBuffers; /* use EDR buffers for LE */
+static uint8_t mBtVer = 0; /* HCI_VERSION_* */
+static uint64_t mLocalFtrs = 0;
+static uint16_t mScoBufSz = 0;
+static uint16_t mAclBufSzEdr = 0;
+static uint16_t mAclBufSzLe = 0;
+static bool mBtJointBuffers = true; /* use EDR buffers for LE */
 static sem_t mAclPacketsEdr;
 static sem_t mAclPacketsLe;
+static sem_t mScoPackets;
+
+
+/* fwd declarations */
+static bool hciBtStackUp(void);
 
 
 /*
@@ -811,13 +819,20 @@ bool hciUp(const uint8_t *addr, hciAclRxCbk aclRxF, hciScoRxCbk scoRxF)
         goto out_cmd_worker;
     }
 
-
-    //more init here
-
     mAclRxF = aclRxF;
     mScoRxF = scoRxF;
 
+    if (!hciBtStackUp()) {
+        loge("Failed to bring up BT stack\n");
+        goto out_stack_up;
+    }
+
     return true;
+
+out_stack_up:
+    workQueueWakeAll(mCmdsSendWork, 1);
+    sem_post(&mCmdSendSem); /* wakes up cmdSend worker if it is waiting on a cmd credit */
+    pthread_join(mCmdsSendThread, NULL);
 
 out_cmd_worker:
     workQueueWakeAll(mCallbackWork, 1);
@@ -1247,47 +1262,69 @@ bool hciSetDeviceClass(uint32_t cls, hciOpDoneCbk cbkDone, void *cbkData)
  *
  * for all generated funcs this applied:
  *
- * RETURN:   status byte or -1 on error
+ * RETURN:   status byte or negatives on error
  * NOTES:    sync
  *
  * WRITE funcs just return status value, the reset of the event is discarded
  * READ funcs take "evt" param to save event to
  */
-#define HCI_SIMPLY_SYNC_WRITE(name, params, ogf, ocf)                                    \
-                                           static int hci##name##Sync params             \
-                                           {                                             \
-                                               struct hci##name cmd = {0, };             \
-                                               struct hciCmpl##name evtD;                \
-                                               struct hciCmpl##name *evt = &evtD;        \
-                                               const uint8_t _ogf = ogf;                 \
-                                               const uint16_t _ocf = ocf;                \
+#define HCI_SIMPLY_SYNC_WRITE(name, params, ogf, ocf)                                                                \
+                                           static int hci##name##Sync params                                         \
+                                           {                                                                         \
+                                               struct hci##name cmdD = {0, };                                        \
+                                               struct hci##name *cmd = &cmdD;                                        \
+                                               const uint32_t cmdSz = sizeof(*cmd);                                  \
+                                               struct hciCmpl##name evtD;                                            \
+                                               struct hciCmpl##name *evt = &evtD;                                    \
+                                               const uint8_t _ogf = ogf;                                             \
+                                               const uint16_t _ocf = ocf;                                            \
                                                uint32_t _len = 0;
 
-#define HCI_SIMPLY_SYNC_READ(name, params, ogf, ocf)                                     \
-                                           static int hci##name##Sync params             \
-                                           {                                             \
-                                               struct hci##name cmd = {0, };             \
-                                               const uint8_t _ogf = ogf;                 \
-                                               const uint16_t _ocf = ocf;                \
+#define HCI_SIMPLY_SYNC_READ(name, params, ogf, ocf)                                                                 \
+                                           static int hci##name##Sync params                                         \
+                                           {                                                                         \
+                                               struct hci##name cmdD = {0, };                                        \
+                                               struct hci##name *cmd = &cmdD;                                        \
+                                               const uint32_t cmdSz = sizeof(*cmd);                                  \
+                                               const uint8_t _ogf = ogf;                                             \
+                                               const uint16_t _ocf = ocf;                                            \
                                                uint32_t _len = 0;
 
+#define HCI_SIMPLY_SYNC_READ_NOCMDPARAMS(name, params, ogf, ocf)                                                     \
+                                           static int hci##name##Sync params                                         \
+                                           {                                                                         \
+                                               struct hci##name *cmd = NULL;                                         \
+                                               const uint32_t cmdSz = 0;                                             \
+                                               const uint8_t _ogf = ogf;                                             \
+                                               const uint16_t _ocf = ocf;                                            \
+                                               uint32_t _len = 0;
 
-#define HCI_COPY_IN_U64(name)                  utilSetLE64(&cmd.name, name);
-#define HCI_COPY_IN_U32(name)                  utilSetLE32(&cmd.name, name);
-#define HCI_COPY_IN_U24(name)                  utilSetLE24(&cmd.name, name);
-#define HCI_COPY_IN_U16(name)                  utilSetLE16(&cmd.name, name);
-#define HCI_COPY_IN_U8(name)                   utilSetLE8(&cmd.name, name);
-#define HCI_COPY_IN_BOOL(name)                 utilSetLE8(&cmd.name, name ? 1 : 0);
-#define HCI_COPY_IN_DATA(name,len)             if (len > sizeof(cmd.name)) {                                  \
-                                                   logw("Truncating "#name" to %ub\n",(int)sizeof(cmd.name)); \
-                                                   len = sizeof(cmd.name);                                    \
-                                               }                                                              \
-                                               memcpy(cmd.name, name, len);
-#define HCI_SIMPLY_SYNC_END                    if (!hciCmdSubmitSimpleWithCompleteSync(   \
-                                                      _ogf, _ocf, &cmd,                   \
-                                                      sizeof(cmd), evt, sizeof(*evt)))    \
-                                                   return -1;                             \
-                                               return (unsigned)utilGetLE8(&evt->status); \
+#define REQUIRE_VERSION(_v)                    if (mBtVer < _v) {                                                    \
+                                                   loge("attempt to call 0x%02X.%04X on v%u\n", _ogf, _ocf, mBtVer); \
+                                                   return -2;                                                        \
+                                               }
+
+#define REQUIRE_FEATURE(_v)                    if (!(mLocalFtrs & _v)) {                                             \
+                                                   loge("attempt to call 0x%02X.%04X w/o feature\n", _ogf, _ocf);    \
+                                                   return -2;                                                        \
+                                               }
+
+#define HCI_COPY_IN_U64(name)                  utilSetLE64(&cmd->name, name);
+#define HCI_COPY_IN_U32(name)                  utilSetLE32(&cmd->name, name);
+#define HCI_COPY_IN_U24(name)                  utilSetLE24(&cmd->name, name);
+#define HCI_COPY_IN_U16(name)                  utilSetLE16(&cmd->name, name);
+#define HCI_COPY_IN_U8(name)                   utilSetLE8(&cmd->name, name);
+#define HCI_COPY_IN_BOOL(name)                 utilSetLE8(&cmd->name, name ? 1 : 0);
+#define HCI_COPY_IN_DATA(name,len)             if (len > sizeof(cmd->name)) {                                        \
+                                                   logw("Truncating "#name" to %ub\n",(int)sizeof(cmd->name));       \
+                                                   len = sizeof(cmd->name);                                          \
+                                               }                                                                     \
+                                               memcpy(cmd->name, name, len);
+#define HCI_SIMPLY_SYNC_END                    if (!hciCmdSubmitSimpleWithCompleteSync(                              \
+                                                      _ogf, _ocf, cmd, cmdSz,                                        \
+                                                      evt, sizeof(*evt)))                                            \
+                                                   return -1;                                                        \
+                                               return (unsigned)utilGetLE8(&evt->status);                            \
                                            }
 
 /*
@@ -1318,7 +1355,7 @@ HCI_SIMPLY_SYNC_WRITE(WritePageTimeout, (uint16_t timeout), HCI_OGF_Controller_a
 HCI_SIMPLY_SYNC_END
 
 /*
- * FUNCTION: hciWriteScanEnable
+ * FUNCTION: hciWriteScanEnableSync
  * USE:      Set whether we reply to page or inqury scane (are connectable & discoverable)
  * PARAMS:   state - the state to send in the command (bitfield of HCI_SCAN_ENABLE_* )
  */
@@ -1327,7 +1364,7 @@ HCI_SIMPLY_SYNC_WRITE(WriteScanEnable, (uint8_t state), HCI_OGF_Controller_and_B
 HCI_SIMPLY_SYNC_END
 
 /*
- * FUNCTION: hciWriteAuthEnable
+ * FUNCTION: hciWriteAuthEnableSync
  * USE:      Set whether we require authentication for all connections
  * PARAMS:   authRequired - set if we requite auth on all connection
  */
@@ -1336,7 +1373,7 @@ HCI_SIMPLY_SYNC_WRITE(WriteAuthEnable, (bool authRequired), HCI_OGF_Controller_a
 HCI_SIMPLY_SYNC_END
 
 /*
- * FUNCTION: hciWriteAutoFlushTimeout
+ * FUNCTION: hciWriteAutoFlushTimeoutSync
  * USE:      Set how long a packet is retired before it is abandonned
  * PARAMS:   conn - the ACL connection this pertains to
  */
@@ -1346,46 +1383,201 @@ HCI_SIMPLY_SYNC_WRITE(WriteAutoFlushTimeout, (uint16_t conn, uint16_t timeout), 
 HCI_SIMPLY_SYNC_END
 
 /*
- * FUNCTION: hciWriteSyncFlowCtrlEnable
+ * FUNCTION: hciWriteSyncFlowCtrlEnableSync
  * USE:      Set whether we get command complete packets for SCO data
- * PARAMS:   syncFlowCtrlOn - set if we will get thos epckaets, false else
+ * PARAMS:   syncFlowCtrlOn - set if we will get those packets, false else
  */
 HCI_SIMPLY_SYNC_WRITE(WriteSyncFlowCtrlEnable, (bool syncFlowCtrlOn), HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_SCO_Flow_Control_Enable)
     HCI_COPY_IN_BOOL(syncFlowCtrlOn)
 HCI_SIMPLY_SYNC_END
 
 /*
- * FUNCTION: hciWriteInquiryMode
+ * FUNCTION: hciWriteInquiryModeSync
  * USE:      Set what kind of inquiry result we want
  * PARAMS:   inqMode - the result format (INQ_MODE_*)
  */
 HCI_SIMPLY_SYNC_WRITE(WriteInquiryMode, (uint8_t inqMode), HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Inquiry_Mode)
+    REQUIRE_VERSION(HCI_VERSION_1_2)
     HCI_COPY_IN_U8(inqMode)
 HCI_SIMPLY_SYNC_END
 
 /*
- * FUNCTION: hciSetEirData
+ * FUNCTION: hciWriteEIRSync
  * USE:      Set our EIR data and EIR FEC settings
  * PARAMS:   data - the EIR data
  *           dlen - length of said data
  *           fecRequired - send data with error correction?
  */
 HCI_SIMPLY_SYNC_WRITE(WriteEIR, (const uint8_t *data, uint8_t dlen, bool useFec), HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Extended_Inquiry_Response)
+    REQUIRE_VERSION(HCI_VERSION_2_1)
+    REQUIRE_FEATURE(HCI_LMP_FTR_EXTENDED_INQUIRY_RESPONSE)
     HCI_COPY_IN_BOOL(useFec)
     HCI_COPY_IN_DATA(data, dlen)
 HCI_SIMPLY_SYNC_END
 
 /*
- * FUNCTION: hciWriteSimplePairingMode
+ * FUNCTION: hciWriteSimplePairingModeSync
  * USE:      Enable/disable SSP
  * PARAMS:   sspOn - use ssp?
- *           cbkDone - callback to call when operation completes
- *           cbkData - data to pass to the callback
- * RETURN:   false on error, true if you should expect callback call
- * NOTES:
  */
 HCI_SIMPLY_SYNC_WRITE(WriteSimplePairingMode, (bool useSsp), HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Simple_Pairing_Mode)
+    REQUIRE_VERSION(HCI_VERSION_2_1)
+    REQUIRE_FEATURE(HCI_LMP_FTR_SSP)
     HCI_COPY_IN_BOOL(useSsp)
 HCI_SIMPLY_SYNC_END
+
+/*
+ * FUNCTION: hciReadLocalVersionSync
+ * USE:      read local version
+ * PARAMS:   evt - event to return
+ */
+HCI_SIMPLY_SYNC_READ_NOCMDPARAMS(ReadLocalVersion, (struct hciCmplReadLocalVersion *evt), HCI_OGF_Informational, HCI_CMD_Read_Local_Version_Information)
+HCI_SIMPLY_SYNC_END
+
+/*
+ * FUNCTION: hciReadLocalSupportedFeaturesSync
+ * USE:      read local supported features
+ * PARAMS:   evt - event to return
+ */
+HCI_SIMPLY_SYNC_READ_NOCMDPARAMS(ReadLocalSupportedFeatures, (struct hciCmplReadLocalSupportedFeatures *evt), HCI_OGF_Informational, HCI_CMD_Read_Local_Supported_Features)
+HCI_SIMPLY_SYNC_END
+
+/*
+ * FUNCTION: hciReadBufferSizeSync
+ * USE:      read local EDR buffer sizes
+ * PARAMS:   evt - event to return
+ */
+HCI_SIMPLY_SYNC_READ_NOCMDPARAMS(ReadBufferSize, (struct hciCmplReadBufferSize *evt), HCI_OGF_Informational, HCI_CMD_Read_Buffer_Size)
+HCI_SIMPLY_SYNC_END
+
+/*
+ * FUNCTION: hciLeReadBufferSizeSync
+ * USE:      read local LE buffer sizes
+ * PARAMS:   evt - event to return
+ */
+HCI_SIMPLY_SYNC_READ_NOCMDPARAMS(LeReadBufferSize, (struct hciCmplLeReadBufferSize *evt), HCI_OGF_LE, HCI_CMD_LE_Read_Buffer_Size)
+    REQUIRE_VERSION(HCI_VERSION_4_0)
+    REQUIRE_FEATURE(HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER);
+HCI_SIMPLY_SYNC_END
+
+
+
+static bool hciBtStackUp(void)
+{
+    int ret = 0;
+
+    /* read local BT version */
+    {
+        struct hciCmplReadLocalVersion evt;
+        static const char *btVers[] = {"1.0b", "1.1", "1.2", "2.0", "2.1", "3.0", "4.0", "4.1"};
+        uint8_t hciVersion, lmpVersion;
+
+        logi("BT UP: reading version\n");
+        ret = hciReadLocalVersionSync(&evt);
+        if (!ret)
+            goto out;
+
+        hciVersion = utilGetLE8(&evt.hciVersion);
+        lmpVersion = utilGetLE8(&evt.lmpVersion);
+        logi("BT UP: bt versions reported: %u, %d\n", hciVersion, lmpVersion);
+
+        if (hciVersion > HCI_VERSION_4_1)
+            hciVersion = HCI_VERSION_4_1;
+
+        if (lmpVersion > HCI_VERSION_4_1)
+            lmpVersion = HCI_VERSION_4_1;
+
+        mBtVer = hciVersion < lmpVersion ? hciVersion : lmpVersion;
+
+        if (mBtVer == HCI_VERSION_2_0) /* do 2.0 chips really exist? */
+            mBtVer = HCI_VERSION_1_2;
+
+        logi("BT UP: effective BT version: %u (BT spec %s)\n", mBtVer, btVers[mBtVer]);
+
+        if (mBtVer < HCI_VERSION_1_1) {
+            loge("BT 1.1 minimum!\n");
+            ret = -3;
+            goto out;
+        }
+    }
+
+    /* read supported features */
+    {
+        struct hciCmplReadLocalSupportedFeatures evt;
+
+        logi("BT UP: reading features\n");
+        ret = hciReadLocalSupportedFeaturesSync(&evt);
+        if (!ret)
+            goto out;
+
+        mLocalFtrs = utilGetLE64(&evt.features);
+        logi("BT UP: bt features reported: "FMT64"\n", CNV64(mLocalFtrs));
+
+        if (mLocalFtrs & HCI_LMP_FTR_BR_EDR_NOT_SUPPORTED) {
+            loge("Currently we do not support controllers with no EDR support\n");
+            ret = -3;
+            goto out;
+        }
+    }
+
+    /* read EDR buffer sizes */
+    {
+        struct hciCmplReadBufferSize evt;
+        uint16_t numBufAcl, numBufSco;
+
+        logi("BT UP: reading EDR buffer size\n");
+        ret = hciReadBufferSizeSync(&evt);
+        if (!ret)
+            goto out;
+
+        mScoBufSz = utilGetLE8(&evt.scoBufferLen);
+        mAclBufSzEdr = utilGetLE16(&evt.aclBufferLen);
+        numBufAcl = utilGetLE16(&evt.numAclBuffers);
+        numBufSco = utilGetLE16(&evt.numScoBuffers);
+
+        logi("BT UP: EDR buffers: %ux%ub ACL + %ux%ub SCO\n", numBufAcl, mAclBufSzEdr, numBufSco, mScoBufSz);
+
+        while (numBufAcl--)
+            sem_post(&mAclPacketsEdr);
+
+        while (numBufSco--)
+            sem_post(&mScoPackets);
+    }
+
+    /* read LE buffer sizes, if LE exists */
+    if (mBtVer >= HCI_VERSION_4_0) {
+        struct hciCmplLeReadBufferSize evt;
+        uint8_t numLeBuffers;
+
+        logi("BT UP: reading LE buffer size\n");
+        ret = hciLeReadBufferSizeSync(&evt);
+        if (!ret)
+            goto out;
+
+        mAclBufSzLe = utilGetLE16(&evt.leBufferSize);
+        numLeBuffers = utilGetLE8(&evt.leNumBuffers);
+
+        logi("BT UP: LE buffers: %ux%ub\n", numLeBuffers, mAclBufSzLe);
+
+        if (!numLeBuffers)
+            logi("BT UP: joint EDR/LE ACL buffers detected\n");
+        else
+            mBtJointBuffers = false;
+
+        while (numLeBuffers--)
+            sem_post(&mAclPacketsLe);
+    }
+
+out:
+    if (ret) {
+        loge("Status was 0x%02X\n", ret);
+        return false;
+    }
+    return true;
+}
+
+
+
+
 
 

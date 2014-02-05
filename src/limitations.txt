@@ -21,3 +21,5 @@ vendor lib does not support xmit callback
 
 bt 1.1 is minimum supported version
 
+
+we shoudl support LE-only controllers at some point
