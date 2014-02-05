@@ -1448,7 +1448,7 @@ HCI_SIMPLY_SYNC_END
  *           simultaneousLeHost - does host support simultaneous LE/EDR to same device
  */
 HCI_SIMPLY_SYNC_WRITE(WriteLeHostSupported, (uint8_t leSupportedHost, uint8_t simultaneousLeHost), HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_LE_Host_Supported)
-    REQUIRE_VERSION(HCI_VERSION_4_1)
+    REQUIRE_VERSION(HCI_VERSION_4_0)
     REQUIRE_FEATURE(HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER)
 
     if (simultaneousLeHost) {
@@ -1641,11 +1641,6 @@ static bool hciBtStackUp(void)
    
         logi("Requiting authentication\n");
         ret = hciWriteAuthEnableSync(true);
-        if (ret)
-            goto out;
-
-        logi("Enabling SCO flow control\n");
-        ret = hciWriteSyncFlowCtrlEnableSync(true);
         if (ret)
             goto out;
     }
