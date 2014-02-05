@@ -3,9 +3,14 @@
 
 
 /*
- * How long our chip should keep trying to connect ot a peer in units of 0.625 ms
+ * How long we let other side wait for our decision till we auto-reject (in units of 0.625 ms)
  */
-#define HCI_CONN_TIMEOUT                   7800
+#define HCI_CONN_RX_TIMEOUT                16000
+
+/*
+ * How long our chip should keep trying to connect to a peer (in units of 0.625 ms)
+ */
+#define HCI_CONN_TX_TIMEOUT                7800
 
 /*
  * HCI layer will queue up only this many cmds at a time

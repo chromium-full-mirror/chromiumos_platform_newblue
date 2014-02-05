@@ -180,6 +180,8 @@ static bool mBtJointBuffers = true; /* use EDR buffers for LE */
 static sem_t mAclPacketsEdr;
 static sem_t mAclPacketsLe;
 static sem_t mScoPackets;
+static bool mHaveLe = false;
+static bool mSimulLe = false;
 
 
 /* fwd declarations */
@@ -1392,6 +1394,15 @@ HCI_SIMPLY_SYNC_WRITE(WriteSyncFlowCtrlEnable, (bool syncFlowCtrlOn), HCI_OGF_Co
 HCI_SIMPLY_SYNC_END
 
 /*
+ * FUNCTION: hciWriteConnAcceptTimeoutSync
+ * USE:      Set how long after a connection request comes in taht we auto-reject it
+ * PARAMS:   timeout - timeout in units of 0.625ms
+ */
+HCI_SIMPLY_SYNC_WRITE(WriteConnAcceptTimeout, (uint16_t timeout), HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Connection_Accept_Timeout)
+    HCI_COPY_IN_U16(timeout)
+HCI_SIMPLY_SYNC_END
+
+/*
  * FUNCTION: hciWriteInquiryModeSync
  * USE:      Set what kind of inquiry result we want
  * PARAMS:   inqMode - the result format (INQ_MODE_*)
@@ -1424,6 +1435,24 @@ HCI_SIMPLY_SYNC_WRITE(WriteSimplePairingMode, (bool useSsp), HCI_OGF_Controller_
     REQUIRE_VERSION(HCI_VERSION_2_1)
     REQUIRE_FEATURE(HCI_LMP_FTR_SSP)
     HCI_COPY_IN_BOOL(useSsp)
+HCI_SIMPLY_SYNC_END
+
+/*
+ * FUNCTION: hciWriteLeHostSupportedSync
+ * USE:      Enable/disable LE
+ * PARAMS:   leSupportedHost - does host support LE?
+ *           simultaneousLeHost - does host support simultaneous LE/EDR to same device
+ */
+HCI_SIMPLY_SYNC_WRITE(WriteLeHostSupported, (uint8_t leSupportedHost, uint8_t simultaneousLeHost), HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_LE_Host_Supported)
+    REQUIRE_VERSION(HCI_VERSION_4_1)
+    REQUIRE_FEATURE(HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER)
+
+    if (simultaneousLeHost) {
+        REQUIRE_FEATURE(HCI_LMP_FTR_SIMUL_LE_EDR_CAPABLE_CONTROLLER)
+    }
+
+    HCI_COPY_IN_BOOL(leSupportedHost)
+    HCI_COPY_IN_BOOL(simultaneousLeHost)
 HCI_SIMPLY_SYNC_END
 
 /*
@@ -1460,6 +1489,16 @@ HCI_SIMPLY_SYNC_READ_NOCMDPARAMS(LeReadBufferSize, (struct hciCmplLeReadBufferSi
     REQUIRE_FEATURE(HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER);
 HCI_SIMPLY_SYNC_END
 
+/*
+ * FUNCTION: hciReadBdAddrSync
+ * USE:      read local MAC Address
+ * PARAMS:   evt - event to return
+ */
+HCI_SIMPLY_SYNC_READ_NOCMDPARAMS(ReadBdAddr, (struct hciCmplReadBdAddr *evt), HCI_OGF_Informational, HCI_CMD_Read_BD_ADDR)
+HCI_SIMPLY_SYNC_END
+
+
+///aaa
 
 
 static bool hciBtStackUp(void)
@@ -1489,8 +1528,10 @@ static bool hciBtStackUp(void)
 
         mBtVer = hciVersion < lmpVersion ? hciVersion : lmpVersion;
 
-        if (mBtVer == HCI_VERSION_2_0) /* do 2.0 chips really exist? */
+        if (mBtVer == HCI_VERSION_2_0) { /* do 2.0 chips really exist? */
+            logi("BT 2.0 chip???\n");
             mBtVer = HCI_VERSION_1_2;
+        }
 
         logi("BT UP: effective BT version: %u (BT spec %s)\n", mBtVer, btVers[mBtVer]);
 
@@ -1520,6 +1561,18 @@ static bool hciBtStackUp(void)
         }
     }
 
+    /* read MAC address and show it */
+    {
+        struct hciCmplReadBdAddr evt;
+
+        logi("Reading local MAC\n");
+        ret = hciReadBdAddrSync(&evt);
+        if (!ret)
+            goto out;
+
+        logi("Local MAC: %02X:%02X:%02X:%02X:%02X:%02X\n", evt.mac[5], evt.mac[4], evt.mac[3], evt.mac[2], evt.mac[1], evt.mac[0]);
+    }
+
     /* read EDR buffer sizes */
     {
         struct hciCmplReadBufferSize evt;
@@ -1545,7 +1598,7 @@ static bool hciBtStackUp(void)
     }
 
     /* read LE buffer sizes, if LE exists */
-    if (mBtVer >= HCI_VERSION_4_0) {
+    if (mBtVer >= HCI_VERSION_4_0 && (mLocalFtrs & HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER)) {
         struct hciCmplLeReadBufferSize evt;
         uint8_t numLeBuffers;
 
@@ -1556,6 +1609,7 @@ static bool hciBtStackUp(void)
 
         mAclBufSzLe = utilGetLE16(&evt.leBufferSize);
         numLeBuffers = utilGetLE8(&evt.leNumBuffers);
+        mHaveLe = true;
 
         logi("BT UP: LE buffers: %ux%ub\n", numLeBuffers, mAclBufSzLe);
 
@@ -1567,6 +1621,50 @@ static bool hciBtStackUp(void)
         while (numLeBuffers--)
             sem_post(&mAclPacketsLe);
     }
+
+    /* setup a few simple settings */
+    {
+
+        logi("Setting PIN type to variable\n");
+        ret = hciWritePinTypeSync(false);
+        if (!ret)
+            goto out;
+
+        logi("Setting auto-accept timeout\n");
+        ret = hciWriteConnAcceptTimeoutSync(HCI_CONN_RX_TIMEOUT);
+        if (ret)
+            goto out;
+   
+        logi("Requiting authentication\n");
+        ret = hciWriteAuthEnableSync(true);
+        if (ret)
+            goto out;
+
+        logi("Enabling SCO flow control\n");
+        ret = hciWriteSyncFlowCtrlEnableSync(true);
+        if (ret)
+            goto out;
+    }
+
+    /* enable SSP, if possible */
+    if (mBtVer >= HCI_VERSION_2_1 && (mLocalFtrs & HCI_LMP_FTR_SSP)) {
+        logi("Enabling SSP\n");
+        ret = hciWriteSimplePairingModeSync(true);
+        if (!ret)
+            goto out;
+        logi("SSP should be on\n");
+    }
+
+    /* enable LE, if possible */
+    if (mHaveLe) {
+        mSimulLe = (mLocalFtrs & HCI_LMP_FTR_SIMUL_LE_EDR_CAPABLE_CONTROLLER) != 0;
+        logi("Enabling LE. Simul=%s\n", mSimulLe ? "YES" : "NO");
+        ret = hciWriteLeHostSupportedSync(true, mSimulLe);
+        if (!ret)
+            goto out;
+        logi("LE should be on\n");
+    }
+
 
 out:
     if (ret) {
