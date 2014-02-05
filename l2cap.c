@@ -2076,7 +2076,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
  */
 static bool l2cSendRxToChannel(struct l2cAclConn *aclConn, uint16_t chan, const void *data, uint32_t len)
 {
-    struct l2cConn *iter, *cur;
+    struct l2cConn *iter, *cur = NULL;
     bool ret;
 
     iter = mConns;
@@ -3283,14 +3283,16 @@ psm_t l2cApiServicePsmRegister(psm_t psm, const struct l2cServicePsmDescriptor *
         psm_t orig_next_psm = nextPsm;
 
         do {
+            uint64_t nextPsm_t = nextPsm + 2; /* only odds allowed */
             psm = nextPsm;
 
             /* calculate the next potential valid PSM */
-            nextPsm += 2; /* only odds allowed */
-            if (nextPsm & 0x0100) /* no low bit on high byte alowed */
-                nextPsm += 0x100;
-            if (nextPsm < 0x1000 || nextPsm > 0xFFFF) /* enforce max and min */
-                nextPsm = 0x1001;
+            nextPsm += 2;
+            if (nextPsm_t & 0x0100) /* no low bit on high byte alowed */
+                nextPsm_t += 0x100;
+            if (nextPsm_t < 0x1000 || nextPsm_t > 0xFFFF) /* enforce max and min */
+                nextPsm_t = 0x1001;
+            nextPsm = nextPsm_t;
 
             /* check if existing PSM is taken */
             if (l2cPsmSvcFindByPsm(psm))
@@ -4176,10 +4178,10 @@ void l2cAclLinkDown(uint16_t aclConnID)
     pthread_mutex_lock(&mConnsLock);
     aclConn = l2cAclConnFindById(aclConnID);
     if (aclConn) {
-        logd("ACL link actually down. Handling\n", aclConn->conn);
+        logd("ACL link %d actually down. Handling\n", aclConn->conn);
         l2cAclLinkDownInt(aclConn, false);
     } else
-        logd("ACL link down %d\n", aclConnID);
+        logd("ACL link %d down\n", aclConnID);
     pthread_mutex_unlock(&mConnsLock);
 }
 

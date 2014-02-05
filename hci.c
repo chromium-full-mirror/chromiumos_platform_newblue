@@ -532,7 +532,7 @@ static void hciRx(void *cbkData, uint8_t typ, void *data, uint32_t datalen)
     switch (typ){
     case HCI_PKT_TYP_ACL:
         if (datalen < sizeof(struct hciAclHdr)) {
-            loge("Got ACL packet of %ub\n", len);
+            loge("Got ACL packet of %ub\n", datalen);
             break;
         }
         datalen -= sizeof(struct hciAclHdr);
@@ -546,7 +546,7 @@ static void hciRx(void *cbkData, uint8_t typ, void *data, uint32_t datalen)
         break;
     case HCI_PKT_TYP_SCO:
         if (datalen < sizeof(struct hciScoHdr)) {
-            loge("Got SCO packet of %ub\n", len);
+            loge("Got SCO packet of %ub\n", datalen);
             break;
         }
         datalen -= sizeof(struct hciScoHdr);
@@ -560,7 +560,7 @@ static void hciRx(void *cbkData, uint8_t typ, void *data, uint32_t datalen)
         break;
     case HCI_PKT_TYP_EVT:
         if (datalen < sizeof(struct hciEvtHdr)) {
-            loge("Got EVT packet of %ub\n", len);
+            loge("Got EVT packet of %ub\n", datalen);
             break;
         }
         datalen -= sizeof(struct hciEvtHdr);
@@ -781,11 +781,13 @@ bool hciUp(const uint8_t *addr, hciAclRxCbk aclRxF, hciScoRxCbk scoRxF)
     int ret;
 
 
+    logd("Vendor open\n");
     if (!vendorOpen()) {
         loge("Failed to open vendor lib\n");
         goto out_lib_open;
     }
 
+    logd("Vendor up\n");
     if (!vendorUp(addr, hciCbkChipHwUp, hciRx, NULL)) {
         loge("Failed to bring up the chip\n");
         goto out_chip_up;
@@ -824,6 +826,7 @@ bool hciUp(const uint8_t *addr, hciAclRxCbk aclRxF, hciScoRxCbk scoRxF)
     mAclRxF = aclRxF;
     mScoRxF = scoRxF;
 
+    logd("Stack up\n");
     if (!hciBtStackUp()) {
         loge("Failed to bring up BT stack\n");
         goto out_stack_up;
@@ -930,7 +933,7 @@ static bool hciCmdSubmit(uint8_t ogf, uint16_t ocf, const void* paramData, uint8
     /* copy wait state objects into it */
     numHandlers = 0;
     va_start(vl, paramLen);
-    while (ewd = va_arg(vl, const struct hciEvtWaitDescr*))
+    while ((ewd = va_arg(vl, const struct hciEvtWaitDescr*)) != NULL)
         memcpy(&w->ewds[numHandlers++].descr, ewd, sizeof(struct hciEvtWaitDescr));
     va_end(vl);
 
@@ -1220,7 +1223,7 @@ static bool hciCmdSubmitSimpleWithCompleteSync(uint8_t ogf, uint16_t ocf, const 
 bool hciSetLocalName(const char *name, hciOpDoneCbk cbkDone, void *cbkData)
 {
     struct hciWriteLocalName cmd = {0, };
-    int len = strlen(name);
+    unsigned len = strlen(name);
     
     if (len >= sizeof(cmd.name)) {
         memcpy(cmd.name, name, sizeof(cmd.name));

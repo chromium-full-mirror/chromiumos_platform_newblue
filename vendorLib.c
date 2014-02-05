@@ -337,7 +337,7 @@ bool vendorOpen(void)
         goto out_close_lib;
     }
 
-    if (!sem_init(&mInitSem, 0, 0)) {
+    if (sem_init(&mInitSem, 0, 0)) {
         loge("sem_init failed\n");
         goto out_close_lib;
     }
@@ -370,7 +370,7 @@ out:
  */
 bool vendorUp(const uint8_t *addr, vendorCbkChipUp chipUpCbk, vendorCbkRx dataRxCbk, void *chipCbkData)
 {
-    int ret, fds[CH_MAX], pipeFds[2];
+    int ret, tmp, fds[CH_MAX], pipeFds[2];
     static unsigned char local_addr[BT_MAC_LEN];
     static const bt_vendor_callbacks_t vendorCbks = {
         .size      = sizeof(bt_vendor_callbacks_t),
@@ -398,13 +398,16 @@ bool vendorUp(const uint8_t *addr, vendorCbkChipUp chipUpCbk, vendorCbkRx dataRx
 
     memcpy(local_addr, addr, BT_MAC_LEN);
 
+    logd("vendor->init\n");
     ret = mVendorIface->init(&vendorCbks, local_addr);
     if (ret) {
         loge("iface init failed with code %d\n", ret);
         return false;
     }
 
-    ret = mVendorIface->op(BT_VND_OP_POWER_CTRL, (void*)BT_VND_PWR_ON);
+    logd("vendor->op(BT_VND_OP_POWER_CTRL, on)\n");
+    tmp = BT_VND_PWR_ON;
+    ret = mVendorIface->op(BT_VND_OP_POWER_CTRL, (void*)&tmp);
     if (ret) {
         loge("iface power on failed with code %d\n", ret);
         goto out_need_close;
@@ -412,16 +415,16 @@ bool vendorUp(const uint8_t *addr, vendorCbkChipUp chipUpCbk, vendorCbkRx dataRx
 
     chipUpCbk(chipCbkData, false, true);
 
-    logi("Starting FW init\n");
+    logd("Starting FW init\n");
     ret = mVendorIface->op(BT_VND_OP_FW_CFG, NULL);
     if (ret) {
         loge("iface fw config failed with code %d\n", ret);
         goto out_need_powerdown;
     }
 
-    logi("Waiting for FW init\n");
+    logd("Waiting for FW init\n");
     while(EAGAIN == sem_wait(&mInitSem));
-    logi("FW init done: %s\n", mCbkResult ? "OK" : "FAILED");
+    logd("FW init done: %s\n", mCbkResult ? "OK" : "FAILED");
     chipUpCbk(chipCbkData, true, mCbkResult);
 
     if (!mCbkResult)
@@ -461,7 +464,6 @@ bool vendorUp(const uint8_t *addr, vendorCbkChipUp chipUpCbk, vendorCbkRx dataRx
         goto out_need_pipe_close;
     }
 
-
     return true;
 
 out_need_pipe_close:
@@ -480,6 +482,8 @@ out_need_powerdown:
 
 out_need_close:
     mVendorIface->cleanup();
+
+    return false;
 }
 
 /*

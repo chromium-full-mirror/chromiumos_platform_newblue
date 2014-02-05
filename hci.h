@@ -1,6 +1,8 @@
 #ifndef _HCI_H_
 #define _HCI_H_
 
+#include "types.h"
+
 #define HCI_CONN_ID_MASK	0x0FFF
 
 #define HCI_PKT_TYP_CMD         0x01

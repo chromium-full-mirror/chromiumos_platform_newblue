@@ -182,7 +182,8 @@ uniq_t timerSet(uint64_t msec, timerCbk cbk, uint64_t cbkData)
     t = (struct timer*)malloc(sizeof(struct timer));
     if (!t)
         return 0;
-    t->handle = uniqGetNext();
+
+    t->handle = ret = uniqGetNext();
     t->cbk = cbk;
     t->cbkData = cbkData;
     t->fireTime = timerCurTime() + msec;
@@ -208,6 +209,8 @@ uniq_t timerSet(uint64_t msec, timerCbk cbk, uint64_t cbkData)
     /* wake the timer thread if we added a new first */
     pthread_cond_signal(&mTimersCond);
     pthread_mutex_unlock(&mTimersLock);
+
+    return ret;
 }
 
 /*
@@ -252,13 +255,14 @@ bool timerCancel(uniq_t timer)
 /*
  * FUNCTION: timerSyncCbk
  * USE:      Used by timerSync to flush the "toFire" queue
- * PARAMS:   NONE
+ * PARAMS:   which - which timer fired
+ *           cbkData - cbk data (currently pointer to a semaphore)
  * RETURN:   NONE
  * NOTES:
  */
 static void timerSyncCbk(uniq_t which, uint64_t cbkData)
 {
-    sem_post((sem_t*)cbkData);
+    sem_post((sem_t*)(uintptr_t)cbkData);
 }
 
 /*
@@ -277,7 +281,7 @@ void timerSync(void)
         return;
     }
 
-    timerSet(0, timerSyncCbk, (uint64_t)&sem);
+    timerSet(0, timerSyncCbk, (uint64_t)(uintptr_t)&sem);
     while(EAGAIN == sem_wait(&sem));
 
     sem_destroy(&sem);
