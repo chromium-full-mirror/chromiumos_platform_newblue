@@ -405,7 +405,7 @@ static void hciRxAcl(uint16_t hdr, void *data, uint16_t len)
  */
 static void hciRxEvt(struct hciEvtHdr *evt)
 {
-    struct hciEvtWaitState *ws = NULL, *cur;
+    struct hciEvtWaitState *ws = NULL, *cur = NULL;
     bool handled = false, addCredit = false;
     uint8_t evtType = utilGetLE8(&evt->code);
     uint8_t len = utilGetLE8(&evt->len);
@@ -462,7 +462,7 @@ static void hciRxEvt(struct hciEvtHdr *evt)
             ws = ws->next;
 
             /* type match? If no, do not go on */
-            if (evtType != ws->evtType)
+            if (evtType != cur->evtType)
                 continue;
 
             /* if LE event, check code and skip handler if wrong */
@@ -471,7 +471,7 @@ static void hciRxEvt(struct hciEvtHdr *evt)
                     logw("Got LE meta event of len %ub\n", len);
                     break;
                 }
-                if (utilGetLE8(&leMeta->subevent) != ws->extra)
+                if (utilGetLE8(&leMeta->subevent) != cur->extra)
                     continue;
             }
 
@@ -481,7 +481,7 @@ static void hciRxEvt(struct hciEvtHdr *evt)
                     logw("Got command complete event of len %ub\n", len);
                     break;
                 }
-                if (utilGetLE8(&cmdComplete->opcode) != ws->extra)
+                if (utilGetLE16(&cmdComplete->opcode) != cur->extra)
                     continue;
             }
 
@@ -491,15 +491,15 @@ static void hciRxEvt(struct hciEvtHdr *evt)
                     logw("Got command status event of len %ub\n", len);
                     break;
                 }
-                if (utilGetLE8(&cmdStatus->opcode) != ws->extra)
+                if (utilGetLE16(&cmdStatus->opcode) != cur->extra)
                     continue;
             }
 
             /* if we're here, this handler matches - let's see what it says */
-            handled = ws->cbk(evt, ws->cbkData, ws->evtWaitStateID, ws->forCmdID);
+            handled = cur->cbk(evt, cur->cbkData, cur->evtWaitStateID, cur->forCmdID);
         }
-        if (handled && ws && !ws->persistent)
-            hciEvtWaitDequeueInt(ws);
+        if (handled && cur && !cur->persistent)
+            hciEvtWaitDequeueInt(cur);
 
         pthread_mutex_unlock(&mCmdWaitLock);
     }
@@ -936,6 +936,7 @@ static bool hciCmdSubmit(uint8_t ogf, uint16_t ocf, const void* paramData, uint8
     while ((ewd = va_arg(vl, const struct hciEvtWaitDescr*)) != NULL)
         memcpy(&w->ewds[numHandlers++].descr, ewd, sizeof(struct hciEvtWaitDescr));
     va_end(vl);
+    w->numEventWaiters = numHandlers;
 
     /* copy the command in */
     utilSetLE16(&w->cmd->opcode, CMD_MAKE_OPCODE(ogf, ocf));
@@ -1150,7 +1151,7 @@ static void hciCmdSubmitWithDoneSimpleCbk(void* cbkData1, void* cbkData2, struct
  */
 static bool hciCmdSubmitSimpleWithCompleteWithDoneCbk(uint8_t ogf, uint16_t ocf, const void* paramData, uint8_t paramLen, hciOpDoneCbk cbk, void *cbkData)
 {
-    return hciCmdSubmitSimple(ogf, ocf, paramData, paramLen, hciCmdSubmitWithDoneSimpleCbk, (void*)cbk, cbkData, sizeof(struct hciEvtCmdComplete) + 1/* status byte required */, 255, true, true);
+    return hciCmdSubmitSimple(ogf, ocf, paramData, paramLen, hciCmdSubmitWithDoneSimpleCbk, (void*)cbk, cbkData, 1/* status byte required */, 255, true, true);
 }
 
 /*
@@ -1201,7 +1202,7 @@ static bool hciCmdSubmitSimpleWithCompleteSync(uint8_t ogf, uint16_t ocf, const 
 
     sem_init(&sem, 0, 0);
 
-    if (hciCmdSubmitSimple(ogf, ocf, paramData, paramLen, hciCmdSubmitSyncSyncSimpleCbk, &data, NULL, sizeof(struct hciEvtCmdComplete), 255, true, true))
+    if (hciCmdSubmitSimple(ogf, ocf, paramData, paramLen, hciCmdSubmitSyncSyncSimpleCbk, &data, NULL, 0, 255, true, true))
         sem_wait(&sem);
     else
         ret = false;
@@ -1516,7 +1517,7 @@ static bool hciBtStackUp(void)
 
         logi("BT UP: reading version\n");
         ret = hciReadLocalVersionSync(&evt);
-        if (!ret)
+        if (ret)
             goto out;
 
         hciVersion = utilGetLE8(&evt.hciVersion);
@@ -1551,7 +1552,7 @@ static bool hciBtStackUp(void)
 
         logi("BT UP: reading features\n");
         ret = hciReadLocalSupportedFeaturesSync(&evt);
-        if (!ret)
+        if (ret)
             goto out;
 
         mLocalFtrs = utilGetLE64(&evt.features);
@@ -1570,7 +1571,7 @@ static bool hciBtStackUp(void)
 
         logi("Reading local MAC\n");
         ret = hciReadBdAddrSync(&evt);
-        if (!ret)
+        if (ret)
             goto out;
 
         logi("Local MAC: %02X:%02X:%02X:%02X:%02X:%02X\n", evt.mac[5], evt.mac[4], evt.mac[3], evt.mac[2], evt.mac[1], evt.mac[0]);
@@ -1583,7 +1584,7 @@ static bool hciBtStackUp(void)
 
         logi("BT UP: reading EDR buffer size\n");
         ret = hciReadBufferSizeSync(&evt);
-        if (!ret)
+        if (ret)
             goto out;
 
         mScoBufSz = utilGetLE8(&evt.scoBufferLen);
@@ -1607,7 +1608,7 @@ static bool hciBtStackUp(void)
 
         logi("BT UP: reading LE buffer size\n");
         ret = hciLeReadBufferSizeSync(&evt);
-        if (!ret)
+        if (ret)
             goto out;
 
         mAclBufSzLe = utilGetLE16(&evt.leBufferSize);
@@ -1630,7 +1631,7 @@ static bool hciBtStackUp(void)
 
         logi("Setting PIN type to variable\n");
         ret = hciWritePinTypeSync(false);
-        if (!ret)
+        if (ret)
             goto out;
 
         logi("Setting auto-accept timeout\n");
@@ -1653,7 +1654,7 @@ static bool hciBtStackUp(void)
     if (mBtVer >= HCI_VERSION_2_1 && (mLocalFtrs & HCI_LMP_FTR_SSP)) {
         logi("Enabling SSP\n");
         ret = hciWriteSimplePairingModeSync(true);
-        if (!ret)
+        if (ret)
             goto out;
         logi("SSP should be on\n");
     }
@@ -1663,7 +1664,7 @@ static bool hciBtStackUp(void)
         mSimulLe = (mLocalFtrs & HCI_LMP_FTR_SIMUL_LE_EDR_CAPABLE_CONTROLLER) != 0;
         logi("Enabling LE. Simul=%s\n", mSimulLe ? "YES" : "NO");
         ret = hciWriteLeHostSupportedSync(true, mSimulLe);
-        if (!ret)
+        if (ret)
             goto out;
         logi("LE should be on\n");
     }
