@@ -503,6 +503,11 @@ bool vendorUp(const uint8_t *addr, vendorCbkChipUp chipUpCbk, vendorCbkRx dataRx
     return true;
 
 out_need_thread_shutdown:
+    mVendorIface->op(BT_VND_OP_EPILOG, NULL);
+    logi("Waiting for epilog\n");
+    while(EAGAIN == sem_wait(&mInitSem));
+    logi("epilog done\n");
+
     tmp = 0;
     ret = write(mWorkerClosePipe, &tmp, 1);
     if (ret != 1)
@@ -517,11 +522,8 @@ out_need_userial_close:
     mVendorIface->op(BT_VND_OP_USERIAL_CLOSE, NULL);
 
 out_need_powerdown:
-    mVendorIface->op(BT_VND_OP_EPILOG, NULL);
-    logi("Waiting for epilog\n");
-    while(EAGAIN == sem_wait(&mInitSem));
-    logi("epilog done\n");
-    mVendorIface->op(BT_VND_OP_POWER_CTRL, (void*)BT_VND_PWR_OFF);
+    tmp = BT_VND_PWR_ON;
+    mVendorIface->op(BT_VND_OP_POWER_CTRL, (void*)&tmp);
 
 out_need_close:
     mVendorIface->cleanup();
@@ -578,25 +580,32 @@ bool vendorTx(uint8_t typ, const void *data, uint32_t len)
  */
 void vendorDown(void)
 {
-    int ret = 0;
+    int ret = 0, tmp;
 
     if (!mVendorLibHandle) {
         loge("Vendor lib handle null at down time\n");
         return;
     }
 
-    ret = write(mWorkerClosePipe, &ret, 1);
-    if (ret != 1)
-        logw("Write to close vendor worker thread returned %d\n", ret);
-    pthread_join(mWorkerThread, NULL);
-    close(mWorkerClosePipe);
-
-    mVendorIface->op(BT_VND_OP_USERIAL_CLOSE, NULL);
+    logd("vendor->op(BT_VND_OP_EPILOG)\n");
     mVendorIface->op(BT_VND_OP_EPILOG, NULL);
     logi("Waiting for epilog\n");
     while(EAGAIN == sem_wait(&mInitSem));
     logi("epilog done\n");
-    mVendorIface->op(BT_VND_OP_POWER_CTRL, (void*)BT_VND_PWR_OFF);
+    mVendorIface->op(BT_VND_OP_USERIAL_CLOSE, NULL);
+
+    ret = write(mWorkerClosePipe, &ret, 1);
+    if (ret != 1)
+        logw("Write to close vendor worker thread returned %d\n", ret);
+    logd("Waiting for vendor worker to finish\n");
+    pthread_join(mWorkerThread, NULL);
+    logd("Vendor worker done\n");
+    close(mWorkerClosePipe);
+
+    logd("vendor->op(BT_VND_OP_POWER_CTRL, off)\n");
+    tmp = BT_VND_PWR_OFF;
+    mVendorIface->op(BT_VND_OP_POWER_CTRL, (void*)&tmp);
+    logd("vendor->cleanup()\n");
     mVendorIface->cleanup();
 }
 
