@@ -33,12 +33,13 @@ int l2cInit(void);
 #define L2C_STATE_CLOSED     4 /* or error on openining */ 
 typedef void (*l2cStateCbk)(void *userData, void *instance, uint8_t state, const void *data, uint32_t len);
 
-#define SVC_ALLOC_SUCCESS             0 /* success */
+#define SVC_ALLOC_SUCCESS             0 /* must alloc state, success */
 #define SVC_ALLOC_DEMAND_ENCR         1 /* return this instead of calling l2cApiDemandEncryption(). do not allocate - you will be called again */
 #define SVC_ALLOC_FAIL_SECURITY       2 /* not secure enough connection */
 #define SVC_ALLOC_FAIL_BEING_REMOVED  3 /* being deallocated */
 #define SVC_ALLOC_FAIL_NO_CONNS       4 /* do not support conns */
-#define SVC_ALLOC_FAIL_OTHER          5 /* some other failure */
+#define SVC_ALLOC_WAIT_FOR_AUTHORIZ   5 /* must alloc state but need user's OK. Standby */
+#define SVC_ALLOC_FAIL_OTHER          6 /* some other failure */
 
 /* a PSM-based service is described thusly */
 struct l2cServicePsmDescriptor {
@@ -100,6 +101,9 @@ bool l2cApiIsConnEncrypted(l2c_handle_t handle);
 
 /* external code can use this to demand encrypted be used */
 bool l2cApiDemandEncryption(l2c_handle_t handle);
+
+/* external code can use this to notify other size of athorization (only if svc alloc returned SVC_ALLOC_WAIT_FOR_AUTHORIZ). */
+bool l2cApiUserAthorizNotify(l2c_handle_t handle, bool authorized);
 
 /* external code can use this to disconnect a channel */
 void l2cApiDisconnect(l2c_handle_t handle);
