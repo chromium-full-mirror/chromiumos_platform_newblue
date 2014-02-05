@@ -1,8 +1,10 @@
 //todo: only one LE connection attempt can exist at a time
 //our "extra" param for event filtering canhandle other events to as long as we're willing to have a giant switch-case... and check against it in all structs
+//todo: alwasy request remote features before using them (eg: le encrypt support)
 
 #include <semaphore.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -55,18 +57,19 @@ struct hciEvtHdr {
 } __packed;
 
 
-/* returns true if this is the event we wanted, false else. Do not block! If evt is passed as NULL, stack is shutting down */
-typedef bool (*hciEvtCbk)(struct hciEvtHdr *evt, void *cbkData1, void *cbkData2, uniq_t evtWaitStateID);
+/* returns true if this is the event we wanted, false else. Do not block! If evt is passed as NULL, stack is shutting down. Do not try to enqueue/dequeue handlers here either */
+typedef bool (*hciEvtCbk)(struct hciEvtHdr *evt, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID);
+typedef void (*hciSimpleCbk)(void* cbkData1, void* cbkData2, struct hciEvtHdr *evt);
 
 struct hciEvtWaitState {
-    uniq_t                  evtWaitStateID;
+    uniq_t                  evtWaitStateID; /* used to cancel THIS waiter */
+    uniq_t                  forCmdID; /* used to cancel ALL waiters for this CMD */
 
     struct hciEvtWaitState *next;
     struct hciEvtWaitState *prev;
 
     hciEvtCbk               cbk;
-    void                   *cbkData1;
-    void                   *cbkData2;
+    void                   *cbkData;
 
     uint16_t                extra; /* cmd for cmd complete/statue, subever for LE */
     uint8_t                 evtType;
@@ -74,32 +77,68 @@ struct hciEvtWaitState {
     bool                    persistent; /* do not delete when it fires */
 };
 
+struct hciEvtWaitDescr {
+    uint8_t    evtType; /* == 0 -> not valid/not enabled */
+    uint16_t   extra;
+    hciEvtCbk  cbk;
+    void      *cbkData;
+    bool       persistent;
+};
+
+struct hciEvtWaitDescrWithID {
+    struct hciEvtWaitDescr descr;
+    uniq_t id;
+};
+
+struct hciCmdSubmitWithSyncData {
+    sem_t   *sem;
+    void    *evtBuf;
+    uint8_t  evtBufSz;
+};
 
 struct hciCmdSendWorkItem {
+    uniq_t cmdID;
+    uint8_t numEventWaiters;
+    struct hciCmdHdr *cmd;
 
-    /* first even handler, if any */
-    uint8_t firstEvtType;
-    uint16_t firstEvtExtra;
-    hciEvtCbk firstEvtCbk;
-    void *firstEvtCbkData1;
-    void *firstEvtCbkData2;
-
-    /* second even handler, if any */
-    uint8_t secondEvtType;
-    uint16_t secondEvtExtra;
-    hciEvtCbk secondEvtCbk;
-    void *secondEvtCbkData1;
-    void *secondEvtCbkData2;
+    /* even handlers */
+    struct hciEvtWaitDescrWithID ewds[];
 
     /* command itself goes here */
 };
 
+#define CBK_WORK_ITEM_DONE_CBK      0
+#define CBK_WORK_ITEM_SIMPLE_CBK    1
+
+
 struct hciCbkWorkItem {
-    hciOpDoneCbk  cbk;
-    void         *cbkData;
-    bool          success;
+    uint8_t       cbkWorkItemType;
+
+    union {
+        struct {
+            hciOpDoneCbk  cbk;
+            void         *cbkData;
+            uint8_t       status;
+        } done;
+
+        struct {
+            hciSimpleCbk  cbk;
+            void         *cbkData1;
+            void         *cbkData2;
+            bool          haveEvt;
+        } simple;
+    };
 };
 
+struct hciSimpleCbkData {
+    hciSimpleCbk  cbk; /* may be null */
+    void         *cbkData1;
+    void         *cbkData2;
+    uint8_t       expectedParamLenMin;
+    uint8_t       expectedParamLenMax;
+    uint8_t       wantEventItself  :1;
+    uint8_t       complete         :1;
+};
 
 struct hciAclConn {
     struct hciAclConn *next;
@@ -205,40 +244,67 @@ static bool hciEvtWaitDequeue(uniq_t evtWaitStateID)
 
     return found;
 }
+/*
+ * FUNCTION: hciEvtWaitDequeueAllForCmd
+ * USE:      Dequeue all handler for a given command ID
+ * PARAMS:   forCmdID - coammnd ID as pessed to hciEvtWaitEnqueue();
+ * RETURN:   how many handlers were dequeued
+ * NOTES:
+ */
+static uint8_t hciEvtWaitDequeueAllForCmd(uniq_t forCmdID)
+{
+    struct hciEvtWaitState *ws, *t;
+    uint8_t found = 0;
+
+    pthread_mutex_lock(&mCmdWaitLock);
+
+    ws = mEvtWaitHead;
+    while (ws) {
+        t = ws;
+        ws = ws->next;
+
+        if (t->forCmdID == forCmdID) {
+            hciEvtWaitDequeueInt(ws);
+            found++;
+        }
+    }
+
+    pthread_mutex_unlock(&mCmdWaitLock);
+
+    return found;
+}
 
 /*
  * FUNCTION: hciEvtWaitEnqueue
  * USE:      Enqueue a handler for an event we expect
- * PARAMS:   evtType - the expected event
- *           extra - more info on expected event (command
- *                   code for command complete/status, LE
- *                   subevent code for LE metaevent)
- *           cbk - the callback to call
- *           cbkData1 - the 1st data to pass to the callback
- *           cbkData2 - the 2nd data to pass to the callback
+ * PARAMS:   ewd - the event wait descriptor
  *           persistent - if set, handler will not be removed
- *                       when it fires and must be removed manually
+ *                        when it fires and must be removed manually
+ *           eventWaitID - the eventWaitID for this waiter. If 0, one will be allocated
+ *           forCmdID - the commandID this is for
  * RETURN:   uniq_t identifying this event wait object or 0 on failure
  * NOTES:
  */
-static uniq_t hciEvtWaitEnqueue(uint8_t evtType, uint16_t extra, hciEvtCbk cbk, void *cbkData1, void *cbkData2, bool persistent)
+static uniq_t hciEvtWaitEnqueue(const struct hciEvtWaitDescr *ewd, uniq_t forCmdID)
 {
     struct hciEvtWaitState *ws = (struct hciEvtWaitState*)malloc(sizeof(struct hciEvtWaitState));
     uniq_t ret;
 
     if (!ws) {
-        loge("Failed to enqueue handler for event 0x%02X.%04X\n", evtType, extra);
+        loge("Failed to enqueue handler for event 0x%02X.%04X\n", ewd->evtType, ewd->extra);
         return 0;
     }
 
-    ws->cbk = cbk;
-    ws->cbkData1 = cbkData1;
-    ws->cbkData2 = cbkData2;
-    ws->evtType = evtType;
-    ws->extra = extra;
-    ws->persistent = persistent;
+    ret = uniqGetNext();
+
+    ws->cbk = ewd->cbk;
+    ws->cbkData = ewd->cbkData;
+    ws->evtType = ewd->evtType;
+    ws->extra = ewd->extra;
+    ws->persistent = ewd->persistent;
     ws->next = NULL;
-    ws->evtWaitStateID = ret = uniqGetNext();
+    ws->evtWaitStateID = ret;
+    ws->forCmdID = forCmdID;
 
     pthread_mutex_lock(&mCmdWaitLock);
     ws->prev = mEvtWaitTail;
@@ -420,7 +486,7 @@ static void hciRxEvt(struct hciEvtHdr *evt)
             }
 
             /* if we're here, this handler matches - let's see what it says */
-            handled = ws->cbk(evt, ws->cbkData1, ws->cbkData2, ws->evtWaitStateID);
+            handled = ws->cbk(evt, ws->cbkData, ws->evtWaitStateID, ws->forCmdID);
         }
         if (handled && ws && !ws->persistent)
             hciEvtWaitDequeueInt(ws);
@@ -544,7 +610,17 @@ static void* hciCbkWorker(void *unused)
         if (ret)
             break;
 
-        w->cbk(w->cbkData, w->success);
+        switch (w->cbkWorkItemType){
+        case CBK_WORK_ITEM_DONE_CBK:
+            w->done.cbk(w->done.cbkData, w->done.status);
+            break;
+        case CBK_WORK_ITEM_SIMPLE_CBK:
+            w->simple.cbk(w->simple.cbkData1, w->simple.cbkData2, w->simple.haveEvt ? (struct hciEvtHdr*)(w + 1) : NULL);
+            break;
+        default:
+            loge("Unknown callback work type %u\n", w->cbkWorkItemType);
+            break;
+        }
         free(w);
     }
     logd("HCI callback worker exiting\n");
@@ -554,14 +630,14 @@ static void* hciCbkWorker(void *unused)
 
 /*
  * FUNCTION: hciScheduleOpDoneCbk
- * USE:      Enqueue a done callback to be called
+ * USE:      Enqueue an op_done callback to be called
  * PARAMS:   cbk - the callback to call
  *           cbkData - the data for said callback
- *           success - the result to pass to said callback
+ *           status - the status byte
  * RETURN:   true if enqueue, false else
  * NOTES:
  */
-static bool hciScheduleOpDoneCbk(hciOpDoneCbk cbk, void *cbkData, bool success)
+static bool hciScheduleOpDoneCbk(hciOpDoneCbk cbk, void *cbkData, uint8_t status)
 {
     struct hciCbkWorkItem *w;
 
@@ -574,9 +650,51 @@ static bool hciScheduleOpDoneCbk(hciOpDoneCbk cbk, void *cbkData, bool success)
     if (!w)
         return false;
 
-    w->cbk = cbk;
-    w->cbkData = cbkData;
-    w->success = success;
+    w->cbkWorkItemType = CBK_WORK_ITEM_DONE_CBK;
+    w->done.cbk = cbk;
+    w->done.cbkData = cbkData;
+    w->done.status = status;
+
+    if (workQueuePut(mCallbackWork, w))
+        return true;
+
+    free(w);
+    return false;
+}
+
+/*
+ * FUNCTION: hciScheduleSimpleCbk
+ * USE:      Enqueue simple callback to be called
+ * PARAMS:   cbk - the callback to call
+ *           cbkData1 - the data for said callback
+ *           cbkData2 - the data for said callback
+ *           evt - event to provide, or NULL if none
+ * RETURN:   true if enqueue, false else
+ * NOTES:
+ */
+static bool hciScheduleSimpleCbk(hciSimpleCbk cbk, void *cbkData1, void *cbkData2, struct hciEvtHdr *evt)
+{
+    uint16_t evtLen = evt ? (sizeof(struct hciEvtHdr) + utilGetLE8(&evt->len)) : 0;
+    uint32_t neededLen = sizeof(struct hciCbkWorkItem) + evtLen;
+    struct hciCbkWorkItem *w;
+
+    if (!cbk) {
+        logw("Not scheduling simple callback with a NULL function pointer\n");
+        return true;
+    }
+
+    w = (struct hciCbkWorkItem*)malloc(neededLen);
+    if (!w)
+        return false;
+
+    w->cbkWorkItemType = CBK_WORK_ITEM_SIMPLE_CBK;
+    w->simple.cbk = cbk;
+    w->simple.cbkData1 = cbkData1;
+    w->simple.cbkData2 = cbkData2;
+    w->simple.haveEvt = evt != NULL;
+
+    if (evt)
+        memcpy(w + 1, evt, evtLen);
 
     if (workQueuePut(mCallbackWork, w))
         return true;
@@ -595,10 +713,8 @@ static bool hciScheduleOpDoneCbk(hciOpDoneCbk cbk, void *cbkData, bool success)
 static void* hciCmdSendWorker(void *unused)
 {
     struct hciCmdSendWorkItem *w;
-    struct hciCmdHdr *cmd;
-    uniq_t h1 = 0, h2 = 0;
     uint16_t len;
-    int ret;
+    int ret, i;
 
     while (1) {
 
@@ -607,8 +723,7 @@ static void* hciCmdSendWorker(void *unused)
         if (ret)
             break;
 
-        cmd = (struct hciCmdHdr*)(w + 1);
-        len = sizeof(struct hciCmdHdr) + utilGetLE8(&cmd->paramLen);
+        len = sizeof(struct hciCmdHdr) + utilGetLE8(&w->cmd->paramLen);
 
         /*
          * This lock makes sure adding a handler for an event and sending the
@@ -616,33 +731,24 @@ static void* hciCmdSendWorker(void *unused)
          */
         pthread_mutex_lock(&mCmdLock);
 
-        if (w->firstEvtType) {
-            h1 = hciEvtWaitEnqueue(w->firstEvtType, w->firstEvtExtra, w->firstEvtCbk, w->firstEvtCbkData1, w->firstEvtCbkData2, false);
-            if (!h1) {
-                loge("Failed to enqueue first handler\n");
-                goto failed_1st;
+        for (i = 0; i < w->numEventWaiters; i++) {
+            w->ewds[i].id = hciEvtWaitEnqueue(&w->ewds[i].descr, w->cmdID);
+            if (!w->ewds[i].id) {
+                loge("Failed to enqueue handler [%d] \n", i);
+                goto failed;
             }
         }
 
-        if (w->secondEvtType) {
-            h2 = hciEvtWaitEnqueue(w->secondEvtType, w->secondEvtExtra, w->secondEvtCbk, w->secondEvtCbkData1, w->secondEvtCbkData2, false);
-            if (!h2) {
-                loge("Failed to enqueue second handler\n");
-                goto failed_2nd;
-            }
-        }
 
-        if (vendorTx(HCI_PKT_TYP_CMD, cmd, len))
+        if (vendorTx(HCI_PKT_TYP_CMD, w->cmd, len))
             goto success;
 
         loge("Failed to TX\n");
-        hciEvtWaitDequeue(h2);
 
-failed_2nd:
-        hciEvtWaitDequeue(h1);
-
-failed_1st:
-        loge("Command 0x%04X not sent\n", utilGetLE16(&cmd->opcode));
+failed:
+        loge("Command 0x%04X not sent\n", utilGetLE16(&w->cmd->opcode));
+        while (i)
+            hciEvtWaitDequeue(w->ewds[--i].id);
 
 success:
         pthread_mutex_unlock(&mCmdLock);
@@ -749,7 +855,7 @@ void hciDown(void)
     logd("Cancelling all event waiters\n");
     pthread_mutex_lock(&mCmdWaitLock);
     while (mEvtWaitHead) {
-        mEvtWaitHead->cbk(NULL, mEvtWaitHead->cbkData1, mEvtWaitHead->cbkData2, mEvtWaitHead->evtWaitStateID);
+        mEvtWaitHead->cbk(NULL, mEvtWaitHead->cbkData, mEvtWaitHead->evtWaitStateID, mEvtWaitHead->forCmdID);
         hciEvtWaitDequeueInt(mEvtWaitHead);
     }
     pthread_mutex_unlock(&mCmdWaitLock);
@@ -775,150 +881,314 @@ void hciDown(void)
  *           simple command complete/command status event. IF status, status
  *           will be used as the basis of callback "success" value. If
  *           complete, first byte of params.
- * PARAMS:   cmd - the command to send
- *           firstEvtType - first event to look for
- *           firstEvtExtra - extra data for first event search
- *           firstEvtCbk - event callback for first event
- *           firstEvtCbkData1 - 1st data for first event callback
- *           firstEvtCbkData2 - 2nd data for first event callback
- *           secondEvtType - second event to look for
- *           secondEvtExtra - extra data for second event search
- *           secondEvtCbk - event callback for second event
- *           secondEvtCbkData1 - 1st data for second event callback
- *           secondEvtCbkData2 - 2nd data for second event callback
- * RETURN:   false on error, true if you should expect callback call(s)
+ * PARAMS:   ogf - the command group
+ *           ocf - the command code
+ *           paramData - command params
+ *           paramLen - parameter length
+ *           ... - NULL-terminated list of const struct hciEvtWaitDescr* for wanted events
+ * RETURN:   success
  * NOTES:
  */
-static bool hciCmdSubmit(const struct hciCmdHdr *cmd,
-                         uint8_t firstEvtType, uint16_t firstEvtExtra, hciEvtCbk firstEvtCbk,
-                         void *firstEvtCbkData1, void *firstEvtCbkData2,
-                         uint8_t secondEvtType, uint16_t secondEvtExtra, hciEvtCbk secondEvtCbk,
-                         void *secondEvtCbkData1, void *secondEvtCbkData2)
+static bool hciCmdSubmit(uint8_t ogf, uint16_t ocf, const void* paramData, uint8_t paramLen, ...)
 {
-    uint16_t cmdSz = utilGetLE8(&cmd->paramLen) + sizeof(struct hciCmdHdr);
+    const struct hciEvtWaitDescr *ewd; 
     struct hciCmdSendWorkItem *w;
+    uint8_t numHandlers = 0;
+    va_list vl;
 
-    w = (struct hciCmdSendWorkItem*)malloc(sizeof(struct hciCmdSendWorkItem) + cmdSz);
+    /* count up the events we want to wait for */
+    va_start(vl, paramLen);
+    while (va_arg(vl, const struct hciEvtWaitDescr*))
+        numHandlers++;
+    va_end(vl);
+
+    /* allocate the work item */
+    w = (struct hciCmdSendWorkItem*)malloc(sizeof(struct hciCmdSendWorkItem) + sizeof(struct hciEvtWaitDescrWithID[numHandlers]) + paramLen + sizeof(struct hciCmdHdr));
+    w->cmd = (struct hciCmdHdr*)(w->ewds + numHandlers);
     if (!w) {
-        loge("Failed to alloc command work for cmd size %ub\n", cmdSz);
+        loge("Failed to alloc command work for cmd 0x%02X.%04X\n", ogf, ocf);
         return false;
     }
-    w->firstEvtType = firstEvtType;
-    w->firstEvtExtra = firstEvtExtra;
-    w->firstEvtCbk = firstEvtCbk;
-    w->firstEvtCbkData1 = firstEvtCbkData2;
-    w->firstEvtCbkData2 = firstEvtCbkData2;
-    w->secondEvtType = secondEvtType;
-    w->secondEvtExtra = secondEvtExtra;
-    w->secondEvtCbk = secondEvtCbk;
-    w->secondEvtCbkData1 = secondEvtCbkData2;
-    w->secondEvtCbkData2 = secondEvtCbkData2;
-    memcpy(w + 1, cmd, cmdSz);
 
+    /* copy wait state objects into it */
+    numHandlers = 0;
+    va_start(vl, paramLen);
+    while (ewd = va_arg(vl, const struct hciEvtWaitDescr*))
+        memcpy(&w->ewds[numHandlers++].descr, ewd, sizeof(struct hciEvtWaitDescr));
+    va_end(vl);
+
+    /* copy the command in */
+    utilSetLE16(&w->cmd->opcode, CMD_MAKE_OPCODE(ogf, ocf));
+    utilSetLE16(&w->cmd->paramLen, paramLen);
+    memcpy(w->cmd + 1, paramData, paramLen);
+
+    /* try to enqueue it */
     if (workQueuePut(mCmdsSendWork, w))
         return true;
 
+    /* in case of failure, free all that we allocated */
     free(w);
     loge("Failed to enqueue command\n");
     return false;
 }
 
 /*
- * FUNCTION: hciCmdSimpleCompleteCbk
- * USE:      Event callback for command complete event used by hciCmdSubmitWithCmdComplete()
- * PARAMS:   evt - the arrived event
- *           cbkData1 - 1st callback data (actually the original hciOpDoneCbk)
+ * FUNCTION: hciCmdSubmitSimpleCbk
+ * USE:      Command callback for hciCmdSubmitSimple
+ * PARAMS:   evt - the event
+ *           cbkData - struct hciSimpleCbkData - our data
+ *           evtWaitStateID - event waiterID
+ *           forCmdID - commandID
+ * RETURN:   true if we handled it, false else
+ * NOTES:
+ */
+static bool hciCmdSubmitSimpleCbk(struct hciEvtHdr *evt, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
+{
+    struct hciSimpleCbkData *cbkd = (struct hciSimpleCbkData*)cbkData;
+    struct hciEvtCmdComplete *cmpl = (struct hciEvtCmdComplete*)(evt + 1);
+    struct hciEvtCmdStatus *stat = (struct hciEvtCmdStatus*)(evt + 1);
+    uint8_t evtType = utilGetLE8(&evt->code);
+    uint8_t paramLen = utilGetLE8(&evt->len);
+    uint8_t evtHdrLen = cbkd->complete ? sizeof(struct hciEvtCmdComplete) : sizeof(struct hciEvtCmdStatus);
+    const char* name = cbkd->complete ? "complete" : "status";
+    
+
+    if (paramLen < evtHdrLen) {
+        logw("Comand %s event too short @ %ub (wanted %ub+)\n", name, paramLen, evtHdrLen);
+        return false;
+    }
+    paramLen -= evtHdrLen;
+
+    /* is param length within bounds? */
+    if (paramLen < cbkd->expectedParamLenMin || paramLen > cbkd->expectedParamLenMax) {
+        logw("Got expected %s event, but wrong size: %u !< %u !< %u\n", name, 
+            cbkd->expectedParamLenMin, paramLen, cbkd->expectedParamLenMax);
+        return false;
+    }
+
+    /* enqueue the callback */
+    return hciScheduleSimpleCbk(cbkd->cbk, cbkd->cbkData1, cbkd->cbkData2, cbkd->wantEventItself ? evt : NULL);
+}
+
+/*
+ * FUNCTION: hciCmdSubmitSimple
+ * USE:      Send a command and setup a handler for a command complete/command status for it
+ * PARAMS:   ogf - command group
+ *           ocf - command code
+ *           paramData - command params
+ *           paramLen - length of command params
+ *           cbk - callback to call when command complete event arrives
+ *           cbkData1 - data1 to pass to that callback
+ *           cbkData2 - data2 to pass to that callback
+ *           minEvtDataLen - minimum event data length to accept (excluding command complete/status event itself)
+ *           maxEvtDataLen - maximum event data length to accept (excluding command complete/status event itself)
+ *           wantEvt - pass a copy of the event to callback?
+ *           expectComplete - expect command complete event? (else command status)
+ * RETURN:   true if we enqueued it, false else
+ * NOTES:
+ */
+static bool hciCmdSubmitSimple(uint8_t ogf, uint16_t ocf, const void* paramData, uint8_t paramLen, hciSimpleCbk cbk, void *cbkData1,
+                               void *cbkData2, uint8_t minEvtDataLen, uint8_t maxEvtDataLen, bool wantEvt, bool expectComplete)
+{
+    struct hciEvtWaitDescr ewd;
+    struct hciSimpleCbkData *cbkd = (struct hciSimpleCbkData*)malloc(sizeof(struct hciSimpleCbkData));
+
+    if (!cbkd)
+        return false;
+
+    cbkd->cbk = cbk;
+    cbkd->cbkData1 = cbkData1;
+    cbkd->cbkData2 = cbkData2;
+    cbkd->complete = expectComplete ? 1 : 0;
+    cbkd->wantEventItself = wantEvt ? 1 : 0;
+    cbkd->expectedParamLenMin = minEvtDataLen;
+    cbkd->expectedParamLenMax = maxEvtDataLen;
+
+    ewd.evtType = expectComplete ? HCI_EVT_Command_Complete : HCI_EVT_Command_Status;
+    ewd.extra = CMD_MAKE_OPCODE(ogf, ocf);
+    ewd.cbk = hciCmdSubmitSimpleCbk;
+    ewd.cbkData = cbkd;
+    ewd.persistent = false;
+
+    if (hciCmdSubmit(ogf, ocf, paramData, paramLen, &ewd, NULL))
+        return true;
+
+    free(cbkd);
+    return false;
+}
+
+/*
+ * FUNCTION: hciCmdSubmitSimpleWithComplete
+ * USE:      Send a command and setup a handler for a command complete for it
+ * PARAMS:   ogf - command group
+ *           ocf - command code
+ *           paramData - command params
+ *           paramLen - length of command params
+ *           cbk - callback to call when command complete event arrives
+ *           cbkData1 - data1 to pass to that callback
+ *           cbkData2 - data2 to pass to that callback
+ *           minEvtDataLen - minimum event data length to accept (excluding command complete event itself)
+ *           maxEvtDataLen - maximum event data length to accept (excluding command complete event itself)
+ *           wantEvt - pass a copy of the event to callback?
+ * RETURN:   true if we enqueued it, false else
+ * NOTES:
+ */
+static bool hciCmdSubmitSimpleWithComplete(uint8_t ogf, uint16_t ocf, const void* paramData, uint8_t paramLen, hciSimpleCbk cbk,
+                                           void *cbkData1, void *cbkData2, uint8_t minEvtDataLen, uint8_t maxEvtDataLen, bool wantEvt)
+{
+    return hciCmdSubmitSimple(ogf, ocf, paramData, paramLen, cbk, cbkData1, cbkData2, minEvtDataLen, maxEvtDataLen, wantEvt, true);
+}
+
+/*
+ * FUNCTION: hciCmdSubmitSimpleWithStatus
+ * USE:      Send a command and setup a handler for a command status for it
+ * PARAMS:   ogf - command group
+ *           ocf - command code
+ *           paramData - command params
+ *           paramLen - length of command params
+ *           cbk - callback to call when command status event arrives
+ *           cbkData1 - data1 to pass to that callback
+ *           cbkData2 - data2 to pass to that callback
+ *           minEvtDataLen - minimum event data length to accept (excluding command status event itself)
+ *           maxEvtDataLen - maximum event data length to accept (excluding command status event itself)
+ *           wantEvt - pass a copy of the event to callback?
+ * RETURN:   true if we enqueued it, false else
+ * NOTES:
+ */
+static bool hciCmdSubmitSimpleWithStatus(uint8_t ogf, uint16_t ocf, const void* paramData, uint8_t paramLen, hciSimpleCbk cbk,
+                                         void *cbkData1, void *cbkData2, uint8_t minEvtDataLen, uint8_t maxEvtDataLen, bool wantEvt)
+{
+    return hciCmdSubmitSimple(ogf, ocf, paramData, paramLen, cbk, cbkData1, cbkData2, minEvtDataLen, maxEvtDataLen, wantEvt, false);
+}
+
+/*
+ * FUNCTION: hciCmdSubmitSimpleWithCompleteNoReplyData
+ * USE:      Send a command and setup a handler for a command complete for it. we do not want reply data
+ * PARAMS:   ogf - command group
+ *           ocf - command code
+ *           paramData - command params
+ *           paramLen - length of command params
+ *           cbk - callback to call when command complete event arrives
+ *           cbkData1 - data1 to pass to that callback
+ *           cbkData2 - data2 to pass to that callback
+ * RETURN:   true if we enqueued it, false else
+ * NOTES:
+ */
+static bool hciCmdSubmitSimpleWithCompleteNoReplyData(uint8_t ogf, uint16_t ocf, const void* paramData, uint8_t paramLen, hciSimpleCbk cbk, void *cbkData1, void *cbkData2)
+{
+    return hciCmdSubmitSimple(ogf, ocf, paramData, paramLen, cbk, cbkData1, cbkData2, 0, 0, false, true);
+}
+
+/*
+ * FUNCTION: hciCmdSubmitSimpleWithStatusNoReplyData
+ * USE:      Send a command and setup a handler for a command status for it. we do not want reply data
+ * PARAMS:   ogf - command group
+ *           ocf - command code
+ *           paramData - command params
+ *           paramLen - length of command params
+ *           cbk - callback to call when command status event arrives
+ *           cbkData1 - data1 to pass to that callback
+ *           cbkData2 - data2 to pass to that callback
+ * RETURN:   true if we enqueued it, false else
+ * NOTES:
+ */
+static bool hciCmdSubmitSimpleWithStatusNoReplyData(uint8_t ogf, uint16_t ocf, const void* paramData, uint8_t paramLen, hciSimpleCbk cbk, void *cbkData1, void *cbkData2)
+{
+    return hciCmdSubmitSimple(ogf, ocf, paramData, paramLen, cbk, cbkData1, cbkData2, 0, 0, false, false);
+}
+
+/*
+ * FUNCTION: hciCmdSubmitWithDoneSimpleCbk
+ * USE:      Event callback for command complete event used by hciCmdSubmitSimpleWithCompleteWithDoneCbk()
+ * PARAMS:   cbkData1 - 1st callback data (actually the original hciOpDoneCbk)
  *           cbkData2 - 2nd callback data (actually original data for hciOpDoneCbk)
- *           evtWaitStateID - the wait state ID for original evt wait request (unused here)
+ *           evt - the arrived event
  * RETURN:   true if we handled the event (always yes)
  * NOTES:
  */
-static bool hciCmdSimpleCompleteCbk(struct hciEvtHdr *evt, void *cbkData1, void *cbkData2, uniq_t evtWaitStateID)
+static void hciCmdSubmitWithDoneSimpleCbk(void* cbkData1, void* cbkData2, struct hciEvtHdr *evt)
 {
     struct hciEvtCmdComplete *cmpl = (struct hciEvtCmdComplete*)(evt + 1);
     uint8_t *paramP = (uint8_t*)(cmpl + 1);
     hciOpDoneCbk cbkF = (hciOpDoneCbk)cbkData1;
-    uint8_t status, len = utilGetLE8(&evt->len);
 
-    if (len < sizeof(struct hciEvtCmdComplete) + 1) {
-        logw("hciCmdSimpleCompleteCbk called with command with params only %ub in size!\n", len);
-        return false;
-    }
-
-    status = utilGetLE8(paramP);
-    if (!hciScheduleOpDoneCbk((hciOpDoneCbk)cbkData1, cbkData2, !status))
-        loge("Failed to scheduel done callback for simple command complete handler\n");
-
-    return true;
+    if (!hciScheduleOpDoneCbk(cbkF, cbkData2, utilGetLE8(paramP)))
+        loge("Failed to shedule done callback for simple command complete handler\n");
 }
 
 /*
- * FUNCTION: hciCmdSubmitWithCmdComplete
- * USE:      Enqueue a command to be sent to the chip that will reply with a
- *           simple command complete event whose first byte of params is a
- *           status can be used as the basis of the "success/fail" reply to 
- *           the caller.
- * PARAMS:   cmd - the command to send
- *           cbkDone - callback to call when operation completes
- *           cbkData - data to pass to the callback
- * RETURN:   false on error, true if you should expect callback call
- * NOTES:
+ * FUNCTION: hciCmdSubmitSimpleWithCompleteWithDoneCbk
+ * USE:      Send a command and setup a handler for a command complete for it. call DoneCbk
+ * PARAMS:   ogf - command group
+ *           ocf - command code
+ *           paramData - command params
+ *           paramLen - length of command params
+ *           cbk - doneCbk
+ *           cbkData - data1 to pass to doneCbk
+ * RETURN:   true if we enqueued it, false else
+ * NOTES:    This only works if the first byte of the event is a "status" byte. WATCH OUT FOR THIS!!!
  */
-static bool hciCmdSubmitWithCmdComplete(const struct hciCmdHdr *cmd, hciOpDoneCbk cbkDone, void *cbkData)
+static bool hciCmdSubmitSimpleWithCompleteWithDoneCbk(uint8_t ogf, uint16_t ocf, const void* paramData, uint8_t paramLen, hciOpDoneCbk cbk, void *cbkData)
 {
-    uint16_t opcode = utilGetLE16(&cmd->opcode);
-
-    return hciCmdSubmit(cmd,
-        HCI_EVT_Command_Complete, opcode, hciCmdSimpleCompleteCbk, (void*)cbkDone, cbkData,
-        0, 0, NULL, NULL, NULL);
+    return hciCmdSubmitSimple(ogf, ocf, paramData, paramLen, hciCmdSubmitWithDoneSimpleCbk, (void*)cbk, cbkData, sizeof(struct hciEvtCmdComplete) + 1/* status byte required */, 255, true, true);
 }
 
 /*
- * FUNCTION: hciCmdSimpleStatusCbk
- * USE:      Event callback for command status event used by hciCmdSubmitWithCmdStatus()
- * PARAMS:   evt - the arrived event
- *           cbkData1 - 1st callback data (actually the original hciOpDoneCbk)
- *           cbkData2 - 2nd callback data (actually original data for hciOpDoneCbk)
- *           evtWaitStateID - the wait state ID for original evt wait request (unused here)
+ * FUNCTION: hciCmdSubmitSyncSyncSimpleCbk
+ * USE:      Event callback for command complete event used by hciCmdSubmitSimpleWithCompleteSync()
+ * PARAMS:   cbkData1 - 1st callback data (struct hciCmdSubmitWithSyncData*)
+ *           cbkData2 - 2nd callback data (unused)
+ *           evt - the arrived event
  * RETURN:   true if we handled the event (always yes)
  * NOTES:
  */
-static bool hciCmdSimpleStatusCbk(struct hciEvtHdr *evt, void *cbkData1, void *cbkData2, uniq_t evtWaitStateID)
+static void hciCmdSubmitSyncSyncSimpleCbk(void* cbkData1, void* cbkData2, struct hciEvtHdr *evt)
 {
-    struct hciEvtCmdStatus *sta = (struct hciEvtCmdStatus*)(evt + 1);
-    hciOpDoneCbk cbkF = (hciOpDoneCbk)cbkData1;
-    uint8_t status = utilGetLE8(&sta->status);
+    struct hciEvtCmdComplete *cmpl = (struct hciEvtCmdComplete*)(evt + 1);
+    struct hciCmdSubmitWithSyncData *data = (struct hciCmdSubmitWithSyncData*)cbkData1;
+    uint8_t paramLen = utilGetLE8(&evt->len) - sizeof(struct hciEvtCmdComplete);
+    void* evtData = (void*)(cmpl + 1);
 
-    if (!hciScheduleOpDoneCbk((hciOpDoneCbk)cbkData1, cbkData2, !status))
-        loge("Failed to scheduel done callback for simple command status handler\n");
-
-    return true;
+    if (paramLen > data->evtBufSz) {
+        logw("Sync complete event shortened %ud->%ud\n", paramLen, data->evtBufSz);
+        paramLen = data->evtBufSz;
+    }
+    memcpy(data->evtBuf, evtData, paramLen);
+    sem_post(data->sem);
 }
 
 /*
- * FUNCTION: hciCmdSubmitWithCmdStatus
- * USE:      Enqueue a command to be sent to the chip that will reply with a
- *           simple command status event and then another event
- * PARAMS:   cmd - the command to send
- *           cbkDone - callback to call when operation completes
- *           cbkData - data to pass to the callback
- *           finalEvtType - final event to look for
- *           finalEvtExtra - extra data for final event search
- *           finalEvtCbk - event callback for final event
- *           finalEvtCbkData1 - 1st data for final event callback
- *           finalEvtCbkData2 - 2nd data for final event callback
- * RETURN:   false on error, true if you should expect callback call
- * NOTES:
+ * FUNCTION: hciCmdSubmitSimpleWithCompleteSync
+ * USE:      Send a command and setup a handler for a command complete for it. Wait for it to complete. Optionally provide resulting event back.
+ * PARAMS:   ogf - command group
+ *           ocf - command code
+ *           paramData - command params
+ *           paramLen - length of command params
+ *           evtBuf - buffer where to put event (command complete event will be stripped, only params will remain)
+ *           evtBufSz - size of said buffer. Event will be truncated if it does not fit
+ * RETURN:   true if it happened. false else
+ * NOTES:    Will block!
  */
-static bool hciCmdSubmitWithCmdStatus(const struct hciCmdHdr *cmd, hciOpDoneCbk cbkDone, void *cbkData,
-                                      uint8_t finalEvtType, uint16_t finalEvtExtra, hciEvtCbk finalEvtCbk,
-                                      void *finalEvtCbkData1, void *finalEvtCbkData2)
+static bool hciCmdSubmitSimpleWithCompleteSync(uint8_t ogf, uint16_t ocf, const void* paramData, uint8_t paramLen, void* evtBuf, uint8_t evtBufSz)
 {
-    uint16_t opcode = utilGetLE16(&cmd->opcode);
+    bool ret = true;
+    sem_t sem;
+    struct hciCmdSubmitWithSyncData data;
 
-    return hciCmdSubmit(cmd,
-        HCI_EVT_Command_Status, opcode, hciCmdSimpleStatusCbk, (void*)cbkDone, cbkData,
-        finalEvtType, finalEvtExtra, finalEvtCbk, finalEvtCbkData1, finalEvtCbkData2);
+    data.sem = &sem;
+    data.evtBuf = evtBuf;
+    data.evtBufSz = evtBufSz;
+
+    sem_init(&sem, 0, 0);
+
+    if (hciCmdSubmitSimple(ogf, ocf, paramData, paramLen, hciCmdSubmitSyncSyncSimpleCbk, &data, NULL, sizeof(struct hciEvtCmdComplete), 255, true, true))
+        sem_wait(&sem);
+    else
+        ret = false;
+
+    sem_destroy(&sem);
+
+    return ret;
 }
 
 /*
@@ -932,15 +1202,17 @@ static bool hciCmdSubmitWithCmdStatus(const struct hciCmdHdr *cmd, hciOpDoneCbk 
  */
 bool hciSetLocalName(const char *name, hciOpDoneCbk cbkDone, void *cbkData)
 {
-    uint8_t buf[sizeof(struct hciCmdHdr) + sizeof(struct hciWriteLocalName)];
-    struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
-    struct hciWriteLocalName *cmd = (struct hciWriteLocalName*)(buf + 1);
+    struct hciWriteLocalName cmd = {0, };
+    int len = strlen(name);
+    
+    if (len >= sizeof(cmd.name)) {
+        memcpy(cmd.name, name, sizeof(cmd.name));
+        if (len > sizeof(cmd.name))
+            logw("Truncating BT name to %u chars\n", (int)sizeof(cmd.name));
+    } else
+        strcpy(cmd.name, name);
 
-    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Local_Name);
-    hdr->paramLen = sizeof(struct hciWriteLocalName);
-    memcpy(cmd->name, name, sizeof(cmd->name));
-
-    return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
+    return hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Local_Name, &cmd, sizeof(cmd), cbkDone, cbkData);
 }
 
 /*
@@ -954,222 +1226,142 @@ bool hciSetLocalName(const char *name, hciOpDoneCbk cbkDone, void *cbkData)
  */
 bool hciSetDeviceClass(uint32_t cls, hciOpDoneCbk cbkDone, void *cbkData)
 {
-    uint8_t buf[sizeof(struct hciCmdHdr) + sizeof(struct hciWriteClassOfDevice)];
-    struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
-    struct hciWriteClassOfDevice *cmd = (struct hciWriteClassOfDevice*)(buf + 1);
+    struct hciWriteClassOfDevice cmd;
 
     if (cls >> 24) 
         logw("Truncating device class to 24 bits\n");
 
-    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Class_Of_Device);
-    hdr->paramLen = sizeof(struct hciWriteClassOfDevice);
-    utilSetLE24(cmd->cls, cls);
-
-    return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
+    utilSetLE24(&cmd.cls, cls);
+    return hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Class_Of_Device, &cmd, sizeof(cmd), cbkDone, cbkData);
 }
 
+
+
 /*
- * FUNCTION: hciReset
- * USE:      Reset the chip
- * PARAMS:   cbkDone - callback to call when operation completes
- *           cbkData - data to pass to the callback
- * RETURN:   false on error, true if you should expect callback call
- * NOTES:
+ * This generates simple SYNC functions for BT commands.
+ * We need a lot of them, so we play with macros here.
+ * It's either this, magic number mess, or hundreds of
+ * functions. Deal with it.
+ *
+ *
+ *
+ * for all generated funcs this applied:
+ *
+ * RETURN:   status byte or -1 on error
+ * NOTES:    sync
+ *
+ * WRITE funcs just return status value, the reset of the event is discarded
+ * READ funcs take "evt" param to save event to
  */
-static bool hciReset(hciOpDoneCbk cbkDone, void *cbkData)
-{
-    uint8_t buf[sizeof(struct hciCmdHdr)];
-    struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
+#define HCI_SIMPLY_SYNC_WRITE(name, params, ogf, ocf)                                    \
+                                           static int hci##name##Sync params             \
+                                           {                                             \
+                                               struct hci##name cmd = {0, };             \
+                                               struct hciCmpl##name evtD;                \
+                                               struct hciCmpl##name *evt = &evtD;        \
+                                               const uint8_t _ogf = ogf;                 \
+                                               const uint16_t _ocf = ocf;                \
+                                               uint32_t _len = 0;
 
-    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Reset);
-    hdr->paramLen = 0;
+#define HCI_SIMPLY_SYNC_READ(name, params, ogf, ocf)                                     \
+                                           static int hci##name##Sync params             \
+                                           {                                             \
+                                               struct hci##name cmd = {0, };             \
+                                               const uint8_t _ogf = ogf;                 \
+                                               const uint16_t _ocf = ocf;                \
+                                               uint32_t _len = 0;
 
-    return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
-}
+
+#define HCI_COPY_IN_U64(name)                  utilSetLE64(&cmd.name, name);
+#define HCI_COPY_IN_U32(name)                  utilSetLE32(&cmd.name, name);
+#define HCI_COPY_IN_U24(name)                  utilSetLE24(&cmd.name, name);
+#define HCI_COPY_IN_U16(name)                  utilSetLE16(&cmd.name, name);
+#define HCI_COPY_IN_U8(name)                   utilSetLE8(&cmd.name, name);
+#define HCI_COPY_IN_BOOL(name)                 utilSetLE8(&cmd.name, name ? 1 : 0);
+#define HCI_COPY_IN_DATA(name,len)             if (len > sizeof(cmd.name)) {                                  \
+                                                   logw("Truncating "#name" to %ub\n",(int)sizeof(cmd.name)); \
+                                                   len = sizeof(cmd.name);                                    \
+                                               }                                                              \
+                                               memcpy(cmd.name, name, len);
+#define HCI_SIMPLY_SYNC_END                    if (!hciCmdSubmitSimpleWithCompleteSync(   \
+                                                      _ogf, _ocf, &cmd,                   \
+                                                      sizeof(cmd), evt, sizeof(*evt)))    \
+                                                   return -1;                             \
+                                               return (unsigned)utilGetLE8(&evt->status); \
+                                           }
 
 /*
- * FUNCTION: hciSetEventMask
+ * FUNCTION: hciSetEventMaskSync
  * USE:      Set event mask
  * PARAMS:   mask - the wanted mask
- *           cbkDone - callback to call when operation completes
- *           cbkData - data to pass to the callback
- * RETURN:   false on error, true if you should expect callback call
- * NOTES:
  */
-static bool hciSetEventMask(uint64_t mask, hciOpDoneCbk cbkDone, void *cbkData)
-{
-    uint8_t buf[sizeof(struct hciCmdHdr) + sizeof(struct hciCmdSetEventMask)];
-    struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
-    struct hciCmdSetEventMask *cmd = (struct hciCmdSetEventMask*)(buf + 1);
-
-    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Set_Event_Mask);
-    hdr->paramLen = sizeof(struct hciCmdSetEventMask);
-    utilSetLE64(&cmd->mask, mask);
-
-    return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
-}
+HCI_SIMPLY_SYNC_WRITE(SetEventMask, (uint64_t mask), HCI_OGF_Controller_and_Baseband, HCI_CMD_Set_Event_Mask)
+    HCI_COPY_IN_U64(mask)
+HCI_SIMPLY_SYNC_END
 
 /*
- * FUNCTION: hciWritePinType
+ * FUNCTION: hciWritePinTypeSync
  * USE:      Set whether we have a fixed or variable PIN
  * PARAMS:   isFixed - is the pin fixed?
- *           cbkDone - callback to call when operation completes
- *           cbkData - data to pass to the callback
- * RETURN:   false on error, true if you should expect callback call
- * NOTES:
  */
-static bool hciWritePinType(bool isFixed, hciOpDoneCbk cbkDone, void *cbkData)
-{
-    uint8_t buf[sizeof(struct hciCmdHdr) + sizeof(struct hciWritePinType)];
-    struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
-    struct hciWritePinType *cmd = (struct hciWritePinType*)(buf + 1);
-
-    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_PIN_Type);
-    hdr->paramLen = sizeof(struct hciWritePinType);
-    utilSetLE8(&cmd->isFixed, isFixed ? 1 : 0);
-
-    return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
-}
+HCI_SIMPLY_SYNC_WRITE(WritePinType, (bool isFixed), HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_PIN_Type)
+    HCI_COPY_IN_BOOL(isFixed)
+HCI_SIMPLY_SYNC_END
 
 /*
- * FUNCTION: hciWritePageTimeout
+ * FUNCTION: hciWritePageTimeoutSync
  * USE:      Set how long we try to connect at link layer
  * PARAMS:   timeout - the timeout in unit of 0.625ms
- *           cbkDone - callback to call when operation completes
- *           cbkData - data to pass to the callback
- * RETURN:   false on error, true if you should expect callback call
- * NOTES:
  */
-static bool hciWritePageTimeout(uint16_t timeout, hciOpDoneCbk cbkDone, void *cbkData)
-{
-    uint8_t buf[sizeof(struct hciCmdHdr) + sizeof(struct hciWritePageTimeout)];
-    struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
-    struct hciWritePageTimeout *cmd = (struct hciWritePageTimeout*)(buf + 1);
-
-    if (!timeout) {
-        loge("Invalid page timeout %d. Corrected to 1\n", timeout);
-        timeout = 1;
-    }
-
-    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Page_Timeout);
-    hdr->paramLen = sizeof(struct hciWritePageTimeout);
-    utilSetLE16(&cmd->timeout, timeout);
-
-    return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
-}
+HCI_SIMPLY_SYNC_WRITE(WritePageTimeout, (uint16_t timeout), HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Page_Timeout)
+    HCI_COPY_IN_U16(timeout)
+HCI_SIMPLY_SYNC_END
 
 /*
  * FUNCTION: hciWriteScanEnable
  * USE:      Set whether we reply to page or inqury scane (are connectable & discoverable)
  * PARAMS:   state - the state to send in the command (bitfield of HCI_SCAN_ENABLE_* )
- *           cbkDone - callback to call when operation completes
- *           cbkData - data to pass to the callback
- * RETURN:   false on error, true if you should expect callback call
- * NOTES:
  */
-static bool hciWriteScanEnable(uint8_t state, hciOpDoneCbk cbkDone, void *cbkData)
-{
-    uint8_t buf[sizeof(struct hciCmdHdr) + sizeof(struct hciWriteScanEnable)];
-    struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
-    struct hciWriteScanEnable *cmd = (struct hciWriteScanEnable*)(buf + 1);
-
-    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Scan_Enable);
-    hdr->paramLen = sizeof(struct hciWriteScanEnable);
-    utilSetLE8(&cmd->state, state);
-
-    return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
-}
+HCI_SIMPLY_SYNC_WRITE(WriteScanEnable, (uint8_t state), HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Scan_Enable)
+    HCI_COPY_IN_U8(state)
+HCI_SIMPLY_SYNC_END
 
 /*
  * FUNCTION: hciWriteAuthEnable
  * USE:      Set whether we require authentication for all connections
  * PARAMS:   authRequired - set if we requite auth on all connection
- *           cbkDone - callback to call when operation completes
- *           cbkData - data to pass to the callback
- * RETURN:   false on error, true if you should expect callback call
- * NOTES:
  */
-static bool hciWriteAuthEnable(bool authRequired, hciOpDoneCbk cbkDone, void *cbkData)
-{
-    uint8_t buf[sizeof(struct hciCmdHdr) + sizeof(struct hciWriteAuthEnable)];
-    struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
-    struct hciWriteAuthEnable *cmd = (struct hciWriteAuthEnable*)(buf + 1);
-
-    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Authentication_Enable);
-    hdr->paramLen = sizeof(struct hciWriteAuthEnable);
-    utilSetLE8(&cmd->authRequired, authRequired ? 1 : 0);
-
-    return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
-}
+HCI_SIMPLY_SYNC_WRITE(WriteAuthEnable, (bool authRequired), HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Authentication_Enable)
+    HCI_COPY_IN_BOOL(authRequired)
+HCI_SIMPLY_SYNC_END
 
 /*
  * FUNCTION: hciWriteAutoFlushTimeout
  * USE:      Set how long a packet is retired before it is abandonned
  * PARAMS:   conn - the ACL connection this pertains to
- *           timeout - the timeout (in units of 0.625 ms, 0 => inifinite)
- *           cbkDone - callback to call when operation completes
- *           cbkData - data to pass to the callback
- * RETURN:   false on error, true if you should expect callback call
- * NOTES:
  */
-static bool hciWriteAutoFlushTimeout(uint16_t conn, uint16_t timeout, hciOpDoneCbk cbkDone, void *cbkData)
-{
-    uint8_t buf[sizeof(struct hciCmdHdr) + sizeof(struct hciWriteAutoFlushTimeout)];
-    struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
-    struct hciWriteAutoFlushTimeout *cmd = (struct hciWriteAutoFlushTimeout*)(buf + 1);
-
-    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Automatic_Flush_Timeout);
-    hdr->paramLen = sizeof(struct hciWriteAutoFlushTimeout);
-    utilSetLE16(&cmd->conn, conn);
-    utilSetLE16(&cmd->timeout, timeout);
-
-    return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
-}
-
+HCI_SIMPLY_SYNC_WRITE(WriteAutoFlushTimeout, (uint16_t conn, uint16_t timeout), HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Automatic_Flush_Timeout)
+    HCI_COPY_IN_U16(conn)
+    HCI_COPY_IN_U16(timeout)
+HCI_SIMPLY_SYNC_END
 
 /*
  * FUNCTION: hciWriteSyncFlowCtrlEnable
  * USE:      Set whether we get command complete packets for SCO data
  * PARAMS:   syncFlowCtrlOn - set if we will get thos epckaets, false else
- *           cbkDone - callback to call when operation completes
- *           cbkData - data to pass to the callback
- * RETURN:   false on error, true if you should expect callback call
- * NOTES:
  */
-static bool hciWriteSyncFlowCtrlEnable(bool syncFlowCtrlOn, hciOpDoneCbk cbkDone, void *cbkData)
-{
-    uint8_t buf[sizeof(struct hciCmdHdr) + sizeof(struct hciWriteSyncFlowCtrl)];
-    struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
-    struct hciWriteSyncFlowCtrl *cmd = (struct hciWriteSyncFlowCtrl*)(buf + 1);
-
-    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_SCO_Flow_Control_Enable);
-    hdr->paramLen = sizeof(struct hciWriteSyncFlowCtrl);
-    utilSetLE8(&cmd->syncFlowCtrlOn, syncFlowCtrlOn ? 1 : 0);
-
-    return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
-}
+HCI_SIMPLY_SYNC_WRITE(WriteSyncFlowCtrlEnable, (bool syncFlowCtrlOn), HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_SCO_Flow_Control_Enable)
+    HCI_COPY_IN_BOOL(syncFlowCtrlOn)
+HCI_SIMPLY_SYNC_END
 
 /*
  * FUNCTION: hciWriteInquiryMode
  * USE:      Set what kind of inquiry result we want
  * PARAMS:   inqMode - the result format (INQ_MODE_*)
- *           cbkDone - callback to call when operation completes
- *           cbkData - data to pass to the callback
- * RETURN:   false on error, true if you should expect callback call
- * NOTES:
  */
-static bool hciWriteInquiryMode(uint8_t inqMode, hciOpDoneCbk cbkDone, void *cbkData)
-{
-    uint8_t buf[sizeof(struct hciCmdHdr) + sizeof(struct hciWriteInquryMode)];
-    struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
-    struct hciWriteInquryMode *cmd = (struct hciWriteInquryMode*)(buf + 1);
-
-    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Inquiry_Mode);
-    hdr->paramLen = sizeof(struct hciWriteInquryMode);
-    utilSetLE8(&cmd->inqMode, inqMode);
-
-    return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
-}
+HCI_SIMPLY_SYNC_WRITE(WriteInquiryMode, (uint8_t inqMode), HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Inquiry_Mode)
+    HCI_COPY_IN_U8(inqMode)
+HCI_SIMPLY_SYNC_END
 
 /*
  * FUNCTION: hciSetEirData
@@ -1177,30 +1369,11 @@ static bool hciWriteInquiryMode(uint8_t inqMode, hciOpDoneCbk cbkDone, void *cbk
  * PARAMS:   data - the EIR data
  *           dlen - length of said data
  *           fecRequired - send data with error correction?
- *           cbkDone - callback to call when operation completes
- *           cbkData - data to pass to the callback
- * RETURN:   false on error, true if you should expect callback call
- * NOTES:
  */
-bool hciSetEirData(const uint8_t *data, uint8_t dlen, bool fecRequired, hciOpDoneCbk cbkDone, void *cbkData)
-{
-    uint8_t buf[sizeof(struct hciCmdHdr) + sizeof(struct hciWriteEIR)];
-    struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
-    struct hciWriteEIR *cmd = (struct hciWriteEIR*)(buf + 1);
-
-    if (dlen > sizeof(cmd->data)) {
-        logw("EIR data cut off after %ub\n", (int)sizeof(cmd->data));
-        dlen = sizeof(cmd->data);
-    }
-
-    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Extended_Inquiry_Response);
-    hdr->paramLen = sizeof(struct hciWriteEIR);
-    cmd->useFec = fecRequired ? 1 : 0;
-    memset(cmd->data, 0, sizeof(cmd->data));
-    memcpy(cmd->data, data, dlen);
-
-    return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
-}
+HCI_SIMPLY_SYNC_WRITE(WriteEIR, (const uint8_t *data, uint8_t dlen, bool useFec), HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Extended_Inquiry_Response)
+    HCI_COPY_IN_BOOL(useFec)
+    HCI_COPY_IN_DATA(data, dlen)
+HCI_SIMPLY_SYNC_END
 
 /*
  * FUNCTION: hciWriteSimplePairingMode
@@ -1211,15 +1384,8 @@ bool hciSetEirData(const uint8_t *data, uint8_t dlen, bool fecRequired, hciOpDon
  * RETURN:   false on error, true if you should expect callback call
  * NOTES:
  */
-static bool hciWriteSimplePairingMode(bool sspOn, hciOpDoneCbk cbkDone, void *cbkData)
-{
-    uint8_t buf[sizeof(struct hciCmdHdr) + sizeof(struct hciWriteSimplePairingMore)];
-    struct hciCmdHdr *hdr = (struct hciCmdHdr*)buf;
-    struct hciWriteSimplePairingMore *cmd = (struct hciWriteSimplePairingMore*)(buf + 1);
+HCI_SIMPLY_SYNC_WRITE(WriteSimplePairingMode, (bool useSsp), HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Simple_Pairing_Mode)
+    HCI_COPY_IN_BOOL(useSsp)
+HCI_SIMPLY_SYNC_END
 
-    hdr->opcode = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Simple_Pairing_Mode);
-    hdr->paramLen = sizeof(struct hciWriteSimplePairingMore);
-    utilSetLE8(&cmd->useSsp, sspOn ? 1 : 0);
 
-    return hciCmdSubmitWithCmdComplete(hdr, cbkDone, cbkData);
-}

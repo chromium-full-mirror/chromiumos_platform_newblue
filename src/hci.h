@@ -12,7 +12,7 @@
 #define HCI_EIR_DATA_LEN        240
 
 /* various callbacks */
-typedef void (*hciOpDoneCbk)(void *cbkData, bool success);
+typedef void (*hciOpDoneCbk)(void *cbkData, uint8_t status /* 0 = good */);
 
 typedef void (*hciAclRxCbk)(uint16_t aclConn, const void *data, uint32_t len, bool first);
 typedef void (*hciScoRxCbk)(uint16_t aclConn, const void *data, uint8_t len, uint8_t lossAmount);
