@@ -42,6 +42,10 @@ static pthread_t mWorkerThread;
 static int mWorkerClosePipe;
 
 
+/* for vendor lib callback */
+static uint16_t mCmdCompleteWaiting = 0;
+static tINT_CMD_CBACK mCmdCompleteCbk = NULL;
+
 /* as per vendor lib docs */
 typedef struct
 {
@@ -85,7 +89,7 @@ static void* vcbkAlloc(int size)
     h->offset = 0;
     h->layer_specific = 0;
 
-    return h + 1;
+    return h;
 }
 
 /*
@@ -97,8 +101,7 @@ static void* vcbkAlloc(int size)
  */ 
 static void vcbkDealloc(void *p_buf)
 {
-    HC_BT_HDR* h = (HC_BT_HDR*)p_buf;
-    free(h - 1);
+    free(p_buf);
 }
 
 /*
@@ -112,8 +115,17 @@ static void vcbkDealloc(void *p_buf)
  */ 
 static uint8_t vcbkXmit(uint16_t opcode, void *p_buf, tINT_CMD_CBACK p_cback)
 {
-    loge("Unsupported vcbkXmit call with opcode %04X\n", opcode);
-    return 0; /* fail */
+    HC_BT_HDR *h = (HC_BT_HDR*)p_buf;
+    uint8_t *cmd = (uint8_t*)(h + 1);
+    uint8_t paramLen = cmd[2]; /* as per vendor code */
+    uint16_t totalLen = 3 + paramLen;
+
+    mCmdCompleteWaiting = opcode;
+    mCmdCompleteCbk = p_cback;
+    vendorTx(HCI_PKT_TYP_CMD, cmd, totalLen);
+    vcbkDealloc(p_buf);
+
+    return 1;
 }
 
 /*
@@ -145,7 +157,6 @@ static int rread(int fd, void *buf, uint32_t sz)
 
     return 0;
 }
-
 
 /*
  * FUNCTION: rwrite
@@ -228,7 +239,7 @@ static void* vendorWorker(void *pipeFdP)
         }
 
         for(i = 0; i < numfds; i++) {
-            uint8_t buf[5], extraSz = 0;
+            uint8_t buf[5], extraSz = 0, hdrSz = 0;
             uint32_t sz;
             uint8_t *packet;
 
@@ -240,13 +251,13 @@ static void* vendorWorker(void *pipeFdP)
 
             /* read the packet */
             ret = rread(pollfds[i].fd, buf, 1);
-            if (ret != 1) {
+            if (ret) {
                 loge("Failed to read packet type: %d\n", ret);
                 continue;
             }
             switch (buf[0]) {
             case HCI_PKT_TYP_ACL:
-                ret = rread(pollfds[i].fd, buf + 1, 4);
+                ret = rread(pollfds[i].fd, buf + 1, hdrSz = 4);
                 if (ret) {
                     loge("Failed to read ACL hdr: %d\n", ret);
                     continue;
@@ -254,7 +265,7 @@ static void* vendorWorker(void *pipeFdP)
                 sz = utilGetLE16(buf + 3);
                 break;
             case HCI_PKT_TYP_SCO:
-                ret = rread(pollfds[i].fd, buf + 1, 3);
+                ret = rread(pollfds[i].fd, buf + 1, hdrSz = 3);
                 if (ret) {
                     loge("Failed to read SCO hdr: %d\n", ret);
                     continue;
@@ -262,7 +273,7 @@ static void* vendorWorker(void *pipeFdP)
                 sz = utilGetLE8(buf + 3);
                 break;
             case HCI_PKT_TYP_EVT:
-                ret = rread(pollfds[i].fd, buf + 1, 2);
+                ret = rread(pollfds[i].fd, buf + 1, hdrSz = 2);
                 if (ret) {
                     loge("Failed to read EVT hdr: %d\n", ret);
                     continue;
@@ -273,23 +284,46 @@ static void* vendorWorker(void *pipeFdP)
                 loge("Unknown HCI packet type %d\n", buf[0]);
                 continue;
             }
-            packet = (uint8_t*)malloc(sz + ret);
+            packet = (uint8_t*)malloc(sz + hdrSz);
             if (!packet) {
-                loge("Failed to alloc %u bytes for packet\n", sz + ret);
+                loge("Failed to alloc %u bytes for packet\n", sz + hdrSz);
                 /* read it anyways to avoid desync */
                 while(sz--)
                     rread(pollfds[i].fd, buf, 1);
                 continue;
             }
-            memcpy(packet, buf + 1, ret);
-            sz += ret;
-            ret = rread(pollfds[i].fd, packet + ret, sz - ret);
+            memcpy(packet, buf + 1, hdrSz);
+            sz += hdrSz;
+            ret = rread(pollfds[i].fd, packet + hdrSz, sz - hdrSz);
             if (ret) {
                 loge("Failed to read packet remainder of a %ub packet\n", sz);
                 free(packet);
                 continue;
             }
-            mCbkRx(mCbkData, buf[0], packet, sz);
+
+            /* vendor lib code has first dibs on valid command complete packets */
+            if (mCmdCompleteWaiting && buf[0] == HCI_PKT_TYP_EVT && packet[0] == 0x0E && sz >= 5) {
+
+                uint16_t code = (((uint16_t)packet[4]) << 8) | packet[3];
+
+                /* but it only needs them of a certain type - so we filter here */
+                if (code == mCmdCompleteWaiting) {
+                    mCmdCompleteWaiting = 0;
+
+
+                    HC_BT_HDR *h = (HC_BT_HDR*)vcbkAlloc(sz);
+                    if (!h)
+                        loge("Failed to alloc reply for vendor complete event\n");
+                    else {
+                        memcpy(h + 1, packet, sz);
+                        mCmdCompleteCbk(h);
+                    }
+                    free(packet);
+                    packet = NULL;
+                }
+            }
+            if (packet)
+                mCbkRx(mCbkData, buf[0], packet, sz);
         }
     }
 
@@ -317,6 +351,7 @@ bool vendorOpen(void)
     mFdEvtIn = -1;
     mFdAclIn = -1;
     mFdAclOut = -1;
+    mCmdCompleteWaiting = 0;
 
     mVendorLibHandle = dlopen(BT_VENDOR_LIB_NAME, 0);
     if (!mVendorLibHandle) {
@@ -415,22 +450,9 @@ bool vendorUp(const uint8_t *addr, vendorCbkChipUp chipUpCbk, vendorCbkRx dataRx
 
     chipUpCbk(chipCbkData, false, true);
 
-    logd("Starting FW init\n");
-    ret = mVendorIface->op(BT_VND_OP_FW_CFG, NULL);
-    if (ret) {
-        loge("iface fw config failed with code %d\n", ret);
-        goto out_need_powerdown;
-    }
-
-    logd("Waiting for FW init\n");
-    while(EAGAIN == sem_wait(&mInitSem));
-    logd("FW init done: %s\n", mCbkResult ? "OK" : "FAILED");
-    chipUpCbk(chipCbkData, true, mCbkResult);
-
-    if (!mCbkResult)
-        goto out_need_powerdown;
-
+    logd("vendor->op(BT_VND_OP_USERIAL_OPEN)\n");
     ret = mVendorIface->op(BT_VND_OP_USERIAL_OPEN, &fds);
+    logd("nfds %d\n", ret);
     if (ret == 1) {
         mFdCmdOut = fds[CH_CMD];
         mFdEvtIn = fds[CH_CMD];
@@ -464,7 +486,28 @@ bool vendorUp(const uint8_t *addr, vendorCbkChipUp chipUpCbk, vendorCbkRx dataRx
         goto out_need_pipe_close;
     }
 
+    logd("Starting FW init\n");
+    ret = mVendorIface->op(BT_VND_OP_FW_CFG, NULL);
+    if (ret) {
+        loge("iface fw config failed with code %d\n", ret);
+        goto out_need_thread_shutdown;
+    }
+
+    logd("Waiting for FW init\n");
+    while(EAGAIN == sem_wait(&mInitSem));
+    logd("FW init done: %s\n", mCbkResult ? "OK" : "FAILED");
+    chipUpCbk(chipCbkData, true, mCbkResult);
+    if (!mCbkResult)
+        goto out_need_thread_shutdown;
+
     return true;
+
+out_need_thread_shutdown:
+    tmp = 0;
+    ret = write(mWorkerClosePipe, &tmp, 1);
+    if (ret != 1)
+        logw("Write to close vendor worker thread returned %d\n", ret);
+    pthread_join(mWorkerThread, NULL);
 
 out_need_pipe_close:
     close(pipeFds[0]);
@@ -514,9 +557,13 @@ bool vendorTx(uint8_t typ, const void *data, uint32_t len)
         return false;
     }
 
+    ret = rwrite(fd, &typ, 1);
+    if (ret)
+        loge("Write failed for type %d: %d\n", fd, ret);
+
     ret = rwrite(fd, data, len);
     if (ret)
-        loge("Write failed for %d: %d\n", fd, ret);
+        loge("Write failed for data %d: %d\n", fd, ret);
 
     return !ret;   
 }
