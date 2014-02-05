@@ -28,9 +28,17 @@ int l2cInit(void);
 /* callbacks for connections */
 #define L2C_STATE_OPEN       0 /* dataPtr points to l2c_handle_t */
 #define L2C_STATE_MTU        1 /* dataPtr points to a uint32_t mtu */
-#define L2C_STATE_RX         2 /* dataPtr points to data, len to length */
-#define L2C_STATE_CLOSED     3 /* or error on openining */ 
+#define L2C_STATE_ENCR       2 /* connection became encrypted */
+#define L2C_STATE_RX         3 /* dataPtr points to data, len to length */
+#define L2C_STATE_CLOSED     4 /* or error on openining */ 
 typedef void (*l2cStateCbk)(void *userData, void *instance, uint8_t state, const void *data, uint32_t len);
+
+#define SVC_ALLOC_SUCCESS             0 /* success */
+#define SVC_ALLOC_DEMAND_ENCR         1 /* return this instead of calling l2cApiDemandEncryption(). do not allocate - you will be called again */
+#define SVC_ALLOC_FAIL_SECURITY       2 /* not secure enough connection */
+#define SVC_ALLOC_FAIL_BEING_REMOVED  3 /* being deallocated */
+#define SVC_ALLOC_FAIL_NO_CONNS       4 /* do not support conns */
+#define SVC_ALLOC_FAIL_OTHER          5 /* some other failure */
 
 /* a PSM-based service is described thusly */
 struct l2cServicePsmDescriptor {
@@ -38,7 +46,7 @@ struct l2cServicePsmDescriptor {
     void *userData; /* passed to all callbacks */
 
     /* these are null if connectionless only */
-    void* (*serviceInstanceAlloc)(void *userData, l2c_handle_t handle);
+    uint8_t (*serviceInstanceAlloc)(void *userData, l2c_handle_t handle, void **instanceP); /* return SVC_ALLOC_* */
     l2cStateCbk serviceInstanceStateCbk; /* free when called with the close state */
 
     /* is null if connection-oriented only */
@@ -52,7 +60,7 @@ struct l2cServiceFixedChDescriptor {
     void *userData; /* passed to all callbacks */
 
     /* called when ACL connection with a party supporting this channel is opened */
-    void* (*serviceFixedChAlloc)(void *userData, l2c_handle_t handle);
+    uint8_t (*serviceFixedChAlloc)(void *userData, l2c_handle_t handle, void **instanceP); /* return SVC_ALLOC_* */
 
     /* called when data is received */
     l2cStateCbk serviceFixedChStateCbk; /* free when called with the close state */
@@ -87,6 +95,12 @@ bool l2cApiUpdateConnectionParams(l2c_handle_t handle, uint16_t intMin, uint16_t
 /* external code can use this to get remote's bt addr */
 bool l2cApiGetBtAddr(l2c_handle_t handle, struct bt_addr *addrP);
 
+/* external code can use this to see if a connection is encrypted */
+bool l2cApiIsConnEncrypted(l2c_handle_t handle);
+
+/* external code can use this to demand encrypted be used */
+bool l2cApiDemandEncryption(l2c_handle_t handle);
+
 /* external code can use this to disconnect a channel */
 void l2cApiDisconnect(l2c_handle_t handle);
 
@@ -100,7 +114,7 @@ bool l2cApiConnectionlessDataTx(const struct bt_addr *addr, psm_t psm, const voi
 /* LOWER LAYER INTERFACE API */
 
 /* lower layer calls this when new ACL link is up */
-void l2cAclLinkUp(uint16_t aclConn, const struct bt_addr *addr, bool isMaster);
+void l2cAclLinkUp(uint16_t aclConn, const struct bt_addr *addr, bool isMaster, bool isEncrypted);
 /* lower layer calls this when an ACL link is down */
 void l2cAclLinkDown(uint16_t aclConn);
 /* lower layer calls this when new ACL data arrives */
@@ -115,6 +129,11 @@ void l2cAclLinkClose(const struct bt_addr *addr);
 void l2cAclUpdateParams(uint16_t aclConn, uint16_t minInt, uint16_t maxInt, uint16_t lat, uint16_t to);
 /* lower layer calls this when connection parameters change */
 void l2cAclLinkParamsChange(uint16_t aclConn, bool success, uint16_t interval, uint16_t latency, uint16_t timeout);
+/* this layer calls this to demand encryption */
+void l2cAclDemandEncr(uint16_t aclConn);
+/* lower layer calls this when connection encryption changes */
+void l2cAclLinkEncrChange(uint16_t aclConn, bool isEncrypted);
+
 
 #endif
 

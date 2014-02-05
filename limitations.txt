@@ -7,9 +7,6 @@ spec does not allow "fixed channels supported" to report real supported channels
 so we do not report fixed channels over EDR nor do we query them.  since spec says unknown packets RXed shall be dropped,
 we do that, and assume any open()s to the other side are a success, since at worst other side will drop the data...
 
-we do not handle security in l2cap layer - hci layer shall encrypt all links by default so we can continue not caring (for now)
-
-
 timer support prefers system with at least Linux 2.6.39 kernel for CLOCK_BOOTTIME support
 all others will have issues...
 

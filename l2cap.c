@@ -1,4 +1,3 @@
-//todo: set flush timout at hci layer to 0xffff for a reliable link
 //todo: check all lengths followed, all log levels correct
 //todo: hci QoS is same as L2CAP QoS, so we can probably support L2CAP QoS via HCI QoS easily
 
@@ -69,6 +68,10 @@ struct l2cSigConnRsp {
 #define L2C_SIG_CONN_RSP_BAD_PSM  0x0002
 #define L2C_SIG_CONN_RSP_BAD_SEC  0x0003
 #define L2C_SIG_CONN_RSP_NO_RSRC  0x0004
+
+#define L2C_SIG_CONN_PEND_UNKNOWN 0x0000
+#define L2C_SIG_CONN_PEND_AUTH    0x0001
+#define L2C_SIG_CONN_PEND_ATHORIZ 0x0002
 
 #define L2C_SIG_CONF_REQ          0x04
 struct l2cSigConfReq {
@@ -248,6 +251,7 @@ struct l2cAclConn {
     struct bt_addr     addr;
     uint8_t            isMaster  : 1;
     uint8_t            goingDown : 1;
+    uint8_t            encrypted : 1; //todo: set this and update it
 
     uint8_t            reqIdent; /* ident for an outstanding request */
 
@@ -311,6 +315,9 @@ struct l2cSvcWork {
             uint16_t lat;
             uint16_t to;
         } connUpdt;
+        struct {
+            uint16_t aclConn;
+        } demandEncr;
     };
 };
 #define L2C_WORK_PSM_INST_ALLOC          0
@@ -323,6 +330,7 @@ struct l2cSvcWork {
 #define L2C_WORK_ACL_LINK_OPEN           7
 #define L2C_WORK_ACL_LINK_CLOSE          8
 #define L2C_WORK_ACL_CONN_UPDT           9
+#define L2C_WORK_ACL_DEMAND_ENCR         10
 
 /* our per-service struct for PSM-based services */
 struct l2cPsmSvc {
@@ -378,11 +386,12 @@ struct l2cConn {
 #define L2C_CONN_STATE_CONN_WAIT       0 /* waiting for ACL link up */
 #define L2C_CONN_STATE_RX_OPEN_SVC     1 /* call to service in pipeline */
 #define L2C_CONN_STATE_TX_OPEN_TXED    2 /* request sent to other side */
-#define L2C_CONN_STATE_CFG             3 /* configuration ongoing */
-#define L2C_CONN_STATE_ESTABLISHED     4 /* connected */
-#define L2C_CONN_STATE_DIE_REQD        5 /* we closed, call to svc in pipeline */
-#define L2C_CONN_STATE_DIE_RXED        6 /* other side closed, call to svc in pipeline */
-#define L2C_CONN_STATE_TEARDOWN        7 /* tearing down */
+#define L2C_CONN_STATE_AUTH_WAIT       3 /* waiting for auth */
+#define L2C_CONN_STATE_CFG             4 /* configuration ongoing */
+#define L2C_CONN_STATE_ESTABLISHED     5 /* connected */
+#define L2C_CONN_STATE_DIE_REQD        6 /* we closed, call to svc in pipeline */
+#define L2C_CONN_STATE_DIE_RXED        7 /* other side closed, call to svc in pipeline */
+#define L2C_CONN_STATE_TEARDOWN        8 /* tearing down */
 
 #define L2C_CFG_STATE_INITIAL          0
 #define L2C_CFG_STATE_REQ_SENT         1
@@ -858,6 +867,29 @@ static bool l2cSvcWorkScheduleAclConnUpdt(void* reqID, uint16_t aclConn, uint16_
     return false;
 }
 
+/*
+ * FUNCTION: l2cSvcWorkScheduleAclDemandEncr
+ * USE:      Schedule a connection encryption request
+ * PARAMS:   reqID - request ID to signal completion
+ *           aclConn - the connection ID
+ * RETURN:   NONE
+ * NOTES:    actual call will happen in the worker thread.
+ */
+static bool l2cSvcWorkScheduleAclDemandEncr(void* reqID, uint16_t aclConn)
+{
+    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_ACL_DEMAND_ENCR, reqID);
+    if (!w)
+        return false;
+
+    w->demandEncr.aclConn = aclConn;
+
+    if (workQueuePut(mServiceWork, w))
+        return true;
+
+    loge("Failed to enqueue service work for ACL connection update!\n");
+    free(w);
+    return false;
+}
 
 /*
  * FUNCTION: l2cConnTimeout
@@ -896,6 +928,9 @@ static void l2cConnTimeout(uniq_t timerH,  uint64_t connH)
             break;
         case L2C_CONN_STATE_CFG:
             logi("Connection configuration timeout for "HANDLEFMT" - closing connection\n", HANDLECNV(connH));
+            break;
+        case L2C_CONN_STATE_AUTH_WAIT:
+            logi("Connection open after auth timeout for "HANDLEFMT" - closing connection\n", HANDLECNV(connH));
             break;
         default:
             loge("Unknown state %d for "HANDLEFMT" at timeout time - closing connection\n", conn->state, HANDLECNV(connH));
@@ -1098,12 +1133,9 @@ static void l2cHandleConnRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
 
     if (result == L2C_SIG_CONN_RSP_PEND) {
 
-        /* TODO: when we support unencrypted links, this code block will need to evolve */
-
-        loge("Unexpected 'pending' reply to open request - we are not expecting this on a secure link\n");
-        if (!l2cSvcWorkScheduleStateCall(NULL, conn, L2C_STATE_CLOSED, NULL, 0))
-            loge("Failed to schedule 'closed' state call\n");
-        l2cConnStructDelete(conn);
+        logd("Gonnection pending for auth\n");
+        l2cConnTimer(conn, L2C_L2CAP_OPEN_PEND_TIMEOUT);
+        /* stay in current state until next reply received */
         return;
     }
 
@@ -1664,6 +1696,79 @@ bool l2cApiUpdateConnectionParams(l2c_handle_t handle, uint16_t intMin, uint16_t
         else
             aclConn->connUpdtRequestIdent = ident;
     }
+
+out:
+    pthread_mutex_unlock(&mConnsLock);
+    return ret;
+}
+
+/*
+ * FUNCTION: l2cApiIsConnEncrypted
+ * USE:      Check if connection is encrypted
+ * PARAMS:   handle - the handle
+ * RETURN:   true if exists and encrypted, false else
+ * NOTES:    NONE
+ */
+bool l2cApiIsConnEncrypted(l2c_handle_t handle)
+{
+    struct l2cConn *conn;
+    struct l2cAclConn *aclConn;
+    bool ret = false;
+
+    pthread_mutex_lock(&mConnsLock);
+
+    conn = l2cConnFindByHandle(handle);
+    if (!conn) {
+        loge("Connection not found\n");
+        goto out;
+    }
+
+    aclConn = l2cAclConnFindByHandle(conn->acl);
+    if (!aclConn) {
+        loge("ACL link not found\n");
+        goto out;
+    }
+
+    ret = aclConn->encrypted;
+
+out:
+    pthread_mutex_unlock(&mConnsLock);
+    return ret;
+}
+
+/*
+ * FUNCTION: l2cApiDemandEncryption
+ * USE:      Demand a connection be encrypted
+ * PARAMS:   handle - the handle
+ * RETURN:   true if request taken or already encrypted, false else
+ * NOTES:    NONE
+ */
+bool l2cApiDemandEncryption(l2c_handle_t handle)
+{
+    struct l2cConn *conn;
+    struct l2cAclConn *aclConn;
+    bool ret = false;
+
+    pthread_mutex_lock(&mConnsLock);
+
+    conn = l2cConnFindByHandle(handle);
+    if (!conn) {
+        loge("Connection not found\n");
+        goto out;
+    }
+
+    aclConn = l2cAclConnFindByHandle(conn->acl);
+    if (!aclConn) {
+        loge("ACL link not found\n");
+        goto out;
+    }
+
+    if (!aclConn->encrypted && !l2cSvcWorkScheduleAclDemandEncr(NULL, aclConn->conn)) {
+        loge("Failed to demand encryption by api call\n");
+        goto out;
+    }
+
+    ret = true;
 
 out:
     pthread_mutex_unlock(&mConnsLock);
@@ -2322,12 +2427,13 @@ static bool l2cCommonSvcInstAllocDone(l2c_handle_t handle, struct l2cConn **conn
  * PARAMS:   reqID - request ID originally passed to l2cSvcWorkSchedulePsmAlloc
  *           l2cStateCbk - the state cbk for this conn
  *           userData - param for state callbacks
+ *           result - SVC_ALLOC_* from service instance allocate callback
  *           instance - the allocated instance or NULL
  *           handle - the handle param for the connection
  * RETURN:   NONE
  * NOTES:    May destroy your conn
  */
-static void l2cPsmSvcInstAllocDone(void *reqID, l2cStateCbk stateCbk, void *userData, void *instance, l2c_handle_t handle)
+static void l2cPsmSvcInstAllocDone(void *reqID, psm_t psm, l2cStateCbk stateCbk, void *userData, uint8_t result, void *instance, l2c_handle_t handle)
 {
     struct l2cConn* conn;
     struct l2cAclConn* aclConn;
@@ -2337,7 +2443,7 @@ static void l2cPsmSvcInstAllocDone(void *reqID, l2cStateCbk stateCbk, void *user
     if (!l2cCommonSvcInstAllocDone(handle, &conn, &aclConn))
         goto out;
 
-    if (conn->state == L2C_CONN_STATE_TEARDOWN) {
+    if (result == SVC_ALLOC_SUCCESS && conn->state == L2C_CONN_STATE_TEARDOWN) {
         if (!l2cSvcWorkScheduleStateCallDirect(NULL, stateCbk, userData, instance, L2C_STATE_CLOSED, NULL, 0))
             loge("Failed to close PSM after teardown request in alloc done handler\n");
         /* this is the closes error code to what we want here */
@@ -2347,9 +2453,32 @@ static void l2cPsmSvcInstAllocDone(void *reqID, l2cStateCbk stateCbk, void *user
         goto out;
     }
 
-    if (!instance) {
-        logi("Service allocations failed for psm %d\n", conn->psm);
-        if (!l2cSigSendConnectionRsp(aclConn, conn->ident, 0, conn->remCh, L2C_SIG_CONN_RSP_NO_RSRC, 0))
+    if (result == SVC_ALLOC_DEMAND_ENCR) {
+        if (!l2cSigSendConnectionRsp(aclConn, conn->ident, 0, conn->remCh, L2C_SIG_CONN_RSP_PEND, L2C_SIG_CONN_PEND_AUTH))
+            loge("Failed to sent negative connection request response frame\n");
+        conn->state = L2C_CONN_STATE_AUTH_WAIT;
+        if (aclConn->encrypted) {
+            logi("conn %u already encrypted\n", aclConn->conn);
+            if (!l2cSvcWorkSchedulePsmAlloc(psm, reqID, handle))
+                loge("Failed to re-enquque PSM alloc\n");
+        } else {
+            if (!l2cSvcWorkScheduleAclDemandEncr(NULL, aclConn->conn))
+                loge("Failed to demand encryption\n");
+            logd("demanded encryptio on %d\n", aclConn->conn);
+        }
+        goto out;
+    }
+
+    if (result != SVC_ALLOC_SUCCESS) {
+        uint16_t retCode = L2C_SIG_CONN_RSP_NO_RSRC;
+
+        if (result == SVC_ALLOC_FAIL_SECURITY)
+            retCode = L2C_SIG_CONN_RSP_BAD_SEC;
+        else if (result == SVC_ALLOC_FAIL_BEING_REMOVED || result == SVC_ALLOC_FAIL_NO_CONNS)
+            retCode = L2C_SIG_CONN_RSP_BAD_PSM;
+
+        logi("Service allocations failed for psm %d with result %d code %d\n", conn->psm, result, retCode);
+        if (!l2cSigSendConnectionRsp(aclConn, conn->ident, 0, conn->remCh, retCode, 0))
             loge("Failed to sent negative connection request response frame\n");
         logd("Dropping connection struct\n");
         l2cConnStructDelete(conn);
@@ -2379,14 +2508,16 @@ out:
  * FUNCTION: l2cFixedChSvcInstAllocDone
  * USE:      Called when a service call to allocate a FixedCh service instance finishes
  * PARAMS:   reqID - request ID originally passed to l2cSvcWorkScheduleFixedChAlloc
+ *           chan - the channel originally requested
  *           l2cStateCbk - the state cbk for this conn
  *           userData - param for state callbacks
+ *           result - SVC_ALLOC_* from service instance allocate callback
  *           instance - the allocated instance or NULL
  *           handle - the handle param for the connection
  * RETURN:   NONE
  * NOTES:
  */
-static void l2cFixedChSvcInstAllocDone(void *reqID, l2cStateCbk stateCbk, void *userData, void *instance, l2c_handle_t handle)
+static void l2cFixedChSvcInstAllocDone(void *reqID, uint16_t chan, l2cStateCbk stateCbk, void *userData, uint8_t result, void *instance, l2c_handle_t handle)
 {
     struct l2cConn* conn;
     struct l2cAclConn* aclConn;
@@ -2396,7 +2527,7 @@ static void l2cFixedChSvcInstAllocDone(void *reqID, l2cStateCbk stateCbk, void *
     if (!l2cCommonSvcInstAllocDone(handle, &conn, &aclConn))
         goto out;
 
-    if (conn->state == L2C_CONN_STATE_TEARDOWN) {
+    if (result == SVC_ALLOC_SUCCESS && conn->state == L2C_CONN_STATE_TEARDOWN) {
         if (!l2cSvcWorkScheduleStateCallDirect(NULL, stateCbk, userData, instance, L2C_STATE_CLOSED, NULL, 0))
             loge("Failed to close FixedCh after teardown request in alloc done handler\n");
         l2cConnStructDelete(conn);
@@ -2406,7 +2537,21 @@ static void l2cFixedChSvcInstAllocDone(void *reqID, l2cStateCbk stateCbk, void *
     if (conn->state != L2C_CONN_STATE_RX_OPEN_SVC)
         logw("Unexpected FixedCh conn state %d after alloc\n", conn->state);
 
-    if (!instance) {
+    if (result == SVC_ALLOC_DEMAND_ENCR) {
+        if (aclConn->encrypted) {
+            logi("conn %u already encrypted\n", aclConn->conn);
+            if (!l2cSvcWorkScheduleFixedChAlloc(chan, reqID, handle))
+                loge("Failed to re-enquque fixed alloc\n");
+        } else {
+            if (!l2cSvcWorkScheduleAclDemandEncr(NULL, aclConn->conn))
+                loge("Failed to demand encryption\n");
+            logd("demanded encryptio on %d\n", aclConn->conn);
+            conn->state = L2C_CONN_STATE_AUTH_WAIT;
+        }
+        goto out;
+    }
+
+    if (result != SVC_ALLOC_SUCCESS) {
         logi("Service allocations failed for FixedCh %d\n", conn->localCh);
         logd("Dropping connection struct\n");
         l2cConnStructDelete(conn);
@@ -2461,14 +2606,16 @@ static void* l2cSvcWorker(void* unused)
             }
             if (psmSvc->beingRemoved) {
                 logi("Ignoring instance alloc for service (psm=%d) being removed\n", psm);
-                l2cPsmSvcInstAllocDone(work->reqID, NULL, NULL, NULL, work->i_alloc.handle);
+                l2cPsmSvcInstAllocDone(work->reqID, psm, NULL, NULL, SVC_ALLOC_FAIL_BEING_REMOVED, NULL, work->i_alloc.handle);
             } else if (!psmSvc->desc.serviceInstanceAlloc) {
                 logi("Ignoring instance alloc for service (psm=%d) not supporting connections\n", psm);
-                l2cPsmSvcInstAllocDone(work->reqID, NULL, NULL, NULL, work->i_alloc.handle);
+                l2cPsmSvcInstAllocDone(work->reqID, psm, NULL, NULL, SVC_ALLOC_FAIL_NO_CONNS, NULL, work->i_alloc.handle);
             } else {
-                l2cPsmSvcInstAllocDone(work->reqID, psmSvc->desc.serviceInstanceStateCbk, psmSvc->desc.userData,
-                    psmSvc->desc.serviceInstanceAlloc(psmSvc->desc.userData, 
-                    work->i_alloc.handle), work->i_alloc.handle);
+                uint8_t result;
+                void *instance;
+
+                result = psmSvc->desc.serviceInstanceAlloc(psmSvc->desc.userData, work->i_alloc.handle, &instance);
+                l2cPsmSvcInstAllocDone(work->reqID, psm, psmSvc->desc.serviceInstanceStateCbk, psmSvc->desc.userData, result, instance, work->i_alloc.handle);
             }
             break;
         case L2C_WORK_PSM_CONNECTIONLESS_RX:
@@ -2512,11 +2659,13 @@ static void* l2cSvcWorker(void* unused)
             }
             if (fixedSvc->beingRemoved) {
                 logi("Ignoring instance alloc for service (chan=%d) being removed\n", chan);
-                l2cFixedChSvcInstAllocDone(work->reqID, NULL, NULL, NULL, work->i_alloc.handle);
+                l2cFixedChSvcInstAllocDone(work->reqID, chan, NULL, NULL, SVC_ALLOC_FAIL_BEING_REMOVED, NULL, work->i_alloc.handle);
             } else {
-                l2cFixedChSvcInstAllocDone(work->reqID, fixedSvc->desc.serviceFixedChStateCbk, fixedSvc->desc.userData,
-                    fixedSvc->desc.serviceFixedChAlloc(fixedSvc->desc.userData,
-                    work->i_alloc.handle), work->i_alloc.handle);
+                uint8_t result;
+                void *instance;
+
+                result = fixedSvc->desc.serviceFixedChAlloc(fixedSvc->desc.userData, work->i_alloc.handle, &instance);
+                l2cFixedChSvcInstAllocDone(work->reqID, chan, fixedSvc->desc.serviceFixedChStateCbk, fixedSvc->desc.userData, result, instance, work->i_alloc.handle);
             }
             break;
         case L2C_WORK_FIXEDCH_UNREGISTER:
@@ -2553,6 +2702,9 @@ static void* l2cSvcWorker(void* unused)
             break;
         case L2C_WORK_ACL_CONN_UPDT:
             l2cAclUpdateParams(work->connUpdt.aclConn, work->connUpdt.minInt, work->connUpdt.maxInt, work->connUpdt.lat, work->connUpdt.to);
+            break;
+        case L2C_WORK_ACL_DEMAND_ENCR:
+            l2cAclDemandEncr(work->demandEncr.aclConn);
             break;
         default: {
             loge("Unknown work type %d\n", work->type);
@@ -3193,7 +3345,7 @@ static void l2cConnRequestClose(struct l2cAclConn* acl, struct l2cConn *conn, bo
         numConnsOnThisAcl = 1;
     }
 
-    switch (conn->state) { //todo: mark the acl as being torn down so nobody else uses it..., timeout before doing this...
+    switch (conn->state) {
     case L2C_CONN_STATE_CONN_WAIT:
         if (numConnsOnThisAcl == 1)
             destroyStruct = true;
@@ -3214,6 +3366,8 @@ static void l2cConnRequestClose(struct l2cAclConn* acl, struct l2cConn *conn, bo
         destroyStruct = true;
         break;
 
+    case L2C_CONN_STATE_AUTH_WAIT:
+        tellOurSide = false; /* nodody to tell to */
     case L2C_CONN_STATE_CFG:
     case L2C_CONN_STATE_ESTABLISHED:
         destroyStruct = true;
@@ -3912,6 +4066,56 @@ out:
  * PARAMS:   which - timer handle
  *           cbkData - the callback data
  * RETURN:   NONE
+ * NOTES:    Call with mConnsLock held
+ */
+static void l2cAclLinkEncrChangeInt(struct l2cAclConn *aclConn, bool isEncrypted)
+{
+    struct l2cConn *iter = mConns, *conn;
+
+    if ((aclConn->encrypted && isEncrypted) || (!aclConn->encrypted && !isEncrypted)) {
+        logi("l2cAclLinkEncrChangeInt with no change (still %d)\n", isEncrypted);
+        return;
+    }
+    if (!isEncrypted) {
+        /* spec says this is not doable, but check anyways */
+        loge("canot handle connection encryption stopping!\n");
+        return;
+    }
+    aclConn->encrypted = true;
+
+    /* at this point we're sure connection just became encrypted. inform everyone */
+    while (iter) {
+        conn = iter;
+        iter = iter->next;
+
+        /* wrong link? */
+        if (conn->acl != aclConn->handle)
+            continue;
+
+        /* handle connections waiting for encryption */
+        if (conn->state == L2C_CONN_STATE_AUTH_WAIT) {
+
+            /* handle PSM connections */
+            if (conn->psm && !l2cSvcWorkSchedulePsmAlloc(conn->psm, NULL, conn->handle))
+                loge("Failed to re-enquque PSM alloc on encr\n");
+
+            /* handle FixedCh */
+            if (!l2cSvcWorkScheduleFixedChAlloc(conn->localCh, NULL, conn->handle))
+                loge("Failed to re-enquque fixed alloc on encr\n");
+        }
+
+        /* notify existing connections */
+        if (conn->state == L2C_CONN_STATE_ESTABLISHED)
+           l2cSvcWorkScheduleStateCall(NULL, conn, L2C_STATE_ENCR, NULL, 0);
+    }
+}
+
+/*
+ * FUNCTION: l2cAclConnTeardownTimerCbk
+ * USE:      Timer callback for ACL link down
+ * PARAMS:   which - timer handle
+ *           cbkData - the callback data
+ * RETURN:   NONE
  * NOTES:
  */
 static void l2cAclConnTeardownTimerCbk(uniq_t which, uint64_t cbkData)
@@ -3973,7 +4177,7 @@ static void l2cAclDownTimerStop(struct l2cAclConn *aclConn)
  * RETURN:   NONE
  * NOTES:
  */
-void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr, bool isMaster)
+void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr, bool isMaster, bool isEncrypted)
 {
     struct l2cAclConn *aclConn;
     struct l2cConn *connIter;
@@ -4019,6 +4223,7 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr, bool isMaster)
         aclConn->connUpdtRequestIdent = 0;
         aclConn->nextChan = L2C_NUM_FIXED_CHANNELS;
         aclConn->conn = aclConnID;
+        aclConn->encrypted = isEncrypted;
 
         /* send an info req */
         aclConn->reqIdent = l2cSigSendInfoReq(aclConn, L2C_SIG_INFO_TYPE_UNCONN_MTU);
@@ -4181,7 +4386,28 @@ void l2cAclLinkDown(uint16_t aclConnID)
         logd("ACL link %d actually down. Handling\n", aclConn->conn);
         l2cAclLinkDownInt(aclConn, false);
     } else
-        logd("ACL link %d down\n", aclConnID);
+        logd("ACL link %d down. down ignored.\n", aclConnID);
+    pthread_mutex_unlock(&mConnsLock);
+}
+
+/*
+ * FUNCTION: l2cAclLinkEncrChange
+ * USE:      Called when a new ACL encryption changed
+ * PARAMS:   aclConn - the conection ID
+ * RETURN:   NONE
+ * NOTES:
+ */
+void l2cAclLinkEncrChange(uint16_t aclConnID, bool isEncrypted)
+{
+    struct l2cAclConn *aclConn;
+
+    pthread_mutex_lock(&mConnsLock);
+    aclConn = l2cAclConnFindById(aclConnID);
+    if (aclConn) {
+        logd("ACL link %d encr change to %d. Handling\n", aclConn->conn, isEncrypted);
+        l2cAclLinkEncrChangeInt(aclConn, isEncrypted);
+    } else
+        logd("ACL link %d down. Encr change ignored.\n", aclConnID);
     pthread_mutex_unlock(&mConnsLock);
 }
 

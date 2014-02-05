@@ -1,6 +1,7 @@
 //todo: only one LE connection attempt can exist at a time
 //our "extra" param for event filtering canhandle other events to as long as we're willing to have a giant switch-case... and check against it in all structs
-//todo: alwasy request remote features before using them (eg: le encrypt support)
+//todo: always request remote versions & features before using them (eg: le encrypt support) and before telling anyone a link is up!
+//todo: always set flush timout to infinite
 
 #include <semaphore.h>
 #include <pthread.h>

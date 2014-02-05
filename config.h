@@ -54,6 +54,12 @@
 #define L2C_L2CAP_OPEN_TIMEOUT             2000
 
 /*
+ * How long to wait for the other side to finish authenticating us on open
+ * value is in msec
+ */
+#define L2C_L2CAP_OPEN_PEND_TIMEOUT        70000
+
+/*
  * How long L2CAP configuration state has to finish configuration
  * value is in msec
  */
