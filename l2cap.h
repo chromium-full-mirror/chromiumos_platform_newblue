@@ -135,7 +135,7 @@ void l2cAclUpdateParams(uint16_t aclConn, uint16_t minInt, uint16_t maxInt, uint
 void l2cAclLinkParamsChange(uint16_t aclConn, bool success, uint16_t interval, uint16_t latency, uint16_t timeout);
 /* this layer calls this to demand encryption */
 void l2cAclDemandEncr(uint16_t aclConn);
-/* lower layer calls this when connection encryption changes */
+/* lower layer calls this when connection encryption changes. called with FALSE if encr failed since BT cannot realyl go from encrypted to not */
 void l2cAclLinkEncrChange(uint16_t aclConn, bool isEncrypted);
 
 
