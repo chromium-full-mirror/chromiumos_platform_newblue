@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <time.h>
 #include "timer.h"
+#include "util.h"
 #include "uniq.h"
 #include "log.h"
 
@@ -267,7 +268,7 @@ static void timerSyncCbk(uniq_t which, uint64_t cbkData)
 
 /*
  * FUNCTION: timerSync
- * USE:      Make sure al cancelled timers have either fired or will not fire for sure
+ * USE:      Make sure all cancelled timers have either fired or will not fire for sure
  * PARAMS:   NONE
  * RETURN:   NONE
  * NOTES:    May block for a while
@@ -276,13 +277,13 @@ void timerSync(void)
 {
     sem_t sem;
 
-    if (!sem_init(&sem, 0, 0)) {
+    if (sem_init(&sem, 0, 0)) {
         loge("Timersync fails: sem_init\n");
         return;
     }
 
     timerSet(0, timerSyncCbk, (uint64_t)(uintptr_t)&sem);
-    while(EAGAIN == sem_wait(&sem));
+    r_sem_wait(&sem);
 
     sem_destroy(&sem);
 }

@@ -504,7 +504,7 @@ bool vendorUp(const uint8_t *addr, vendorCbkChipUp chipUpCbk, vendorCbkRx dataRx
     }
 
     logd("Waiting for FW init\n");
-    while(EAGAIN == sem_wait(&mInitSem));
+    r_sem_wait(&mInitSem);
     logd("FW init done: %s\n", mCbkResult ? "OK" : "FAILED");
     chipUpCbk(chipCbkData, true, mCbkResult);
     if (!mCbkResult)
@@ -515,7 +515,7 @@ bool vendorUp(const uint8_t *addr, vendorCbkChipUp chipUpCbk, vendorCbkRx dataRx
 out_need_thread_shutdown:
     mVendorIface->op(BT_VND_OP_EPILOG, NULL);
     logi("Waiting for epilog\n");
-    while(EAGAIN == sem_wait(&mInitSem));
+    r_sem_wait(&mInitSem);
     logi("epilog done\n");
 
     tmp = 0;
@@ -609,7 +609,7 @@ void vendorDown(void)
     logd("vendor->op(BT_VND_OP_EPILOG)\n");
     mVendorIface->op(BT_VND_OP_EPILOG, NULL);
     logi("Waiting for epilog\n");
-    while(EAGAIN == sem_wait(&mInitSem));
+    r_sem_wait(&mInitSem);
     logi("epilog done\n");
     mVendorIface->op(BT_VND_OP_USERIAL_CLOSE, NULL);
 

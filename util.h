@@ -1,8 +1,12 @@
 #ifndef _UTIL_H_
 #define _UTIL_H_
 
+#include <semaphore.h>
 #include "types.h"
 
+
+/* handles EINTR */
+int r_sem_wait(sem_t* sem);
 
 
 /* big endian getters return value */

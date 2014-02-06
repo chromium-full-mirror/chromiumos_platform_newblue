@@ -5,6 +5,7 @@
 #include "hci.h"
 #include "vendorLib.h"
 #include "l2cap.h"
+#include "util.h"
 #include "log.h"
 #include "bt.h"
 
@@ -50,8 +51,6 @@ static void leDiscoveryCbk(void *cbkData, const struct bt_addr *addr, int8_t rss
     struct LeDiscDev **leDevicesP = (struct LeDiscDev**)cbkData;
     struct LeDiscDev *t;
     char randomAddr = addr->type == BT_ADDR_TYPE_LE_RANDOM;
-
-logi("rssi=%d replyType=%d eirLen=%d\n", rssi, replyType, eirLen);
 
     /* see if this mac exists */
     t = *leDevicesP;
@@ -117,7 +116,10 @@ int main(int argc, char** argv)
     fprintf(stderr, "NewBlue test\n");
     logi("LOG UP\n");
 
-    sem_init(&sem, 0, 0);
+    if (sem_init(&sem, 0, 0)) {
+        loge("sem init failed\n");
+        return -1;
+    }
 
     if (!hciUp(mac, testHciAclRxCbk, testHciScoRxCbk)) {
         loge("HCI up fail\n");
@@ -128,7 +130,7 @@ int main(int argc, char** argv)
     logi("setting name\n");
     if (!hciSetLocalName("NewBlue test", opDoneCbk, &sem))
         loge("Failed to try to set name\n");
-    sem_wait(&sem);
+    r_sem_wait(&sem);
     if(gStatus)
         loge("Failed to set name. Sta = %d\n", gStatus);
 
@@ -138,7 +140,7 @@ int main(int argc, char** argv)
 		DEVICE_CLASS_SERVICE_INFORMATION | (DEVICE_CLASS_MAJOR_AV << DEVICE_CLASS_MAJOR_SHIFT) |
 		(DEVICE_CLASS_MINOR_AV_PORTBL_AUDIO << DEVICE_CLASS_MINOR_AV_SHIFT), opDoneCbk, &sem))
         loge("Failed to try to set device class\n");
-    sem_wait(&sem);
+    r_sem_wait(&sem);
     if(gStatus)
         loge("Failed to set device class. Sta = %d\n", gStatus);
 
@@ -146,7 +148,7 @@ int main(int argc, char** argv)
     logi("setting inquiry state\n");
     if (!hciSetDiscoverableConnectable(&vTrue, &vTrue, opDoneCbk, &sem))
         loge("Failed to try to set discoverable\n");
-    sem_wait(&sem);
+    r_sem_wait(&sem);
     if(gStatus)
         loge("Failed to set discoverable. Sta = %d\n", gStatus);
 
@@ -185,9 +187,6 @@ int main(int argc, char** argv)
         } else
             loge("Failed to do LE discovery\n");
     }
-
-
-
 
     logi("waiting...press a key\n");
     getchar();

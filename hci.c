@@ -826,7 +826,7 @@ static bool hciWorkFlush(void)
     w->flush.sem = &sem;
 
     if (workQueuePut(mCallbackWork, w)) {
-        sem_wait(&sem);
+        r_sem_wait(&sem);
         ret = true;
     } else
         free(w);
@@ -851,7 +851,7 @@ static void* hciCmdSendWorker(void *unused)
 
     while (1) {
 
-        sem_wait(&mCmdSendSem);
+        r_sem_wait(&mCmdSendSem);
         ret = workQueueGet(mCmdsSendWork, (void**)&w);
         if (ret)
             break;
@@ -1336,10 +1336,13 @@ static bool hciCmdSubmitSimpleWithCompleteSync(uint8_t ogf, uint16_t ocf, const 
     data.evtBuf = evtBuf;
     data.evtBufSz = evtBufSz;
 
-    sem_init(&sem, 0, 0);
+    if (sem_init(&sem, 0, 0)) {
+        loge("sem init failed\n");
+        return false;
+    }
 
     if (hciCmdSubmitSimple(ogf, ocf, paramData, paramLen, hciCmdSubmitCompleteSyncSimpleCbk, &data, NULL, 0, 255, true, true)) {
-        sem_wait(&sem);
+        r_sem_wait(&sem);
         if (data.goingDown) {
             logi("going down\n");
             ret = false;
@@ -1390,9 +1393,13 @@ static bool hciCmdSubmitSimpleWithStatusSync(uint8_t ogf, uint16_t ocf, const vo
     bool ret = true;
     sem_t sem;
 
-    sem_init(&sem, 0, 0);
+    if (sem_init(&sem, 0, 0)) {
+        loge("sem init failed\n");
+        return false;
+    }
+
     if (hciCmdSubmitSimple(ogf, ocf, paramData, paramLen, hciCmdSubmitStatusSyncSimpleCbk, &sem, dstEvt, 0, 0, true, false))
-        sem_wait(&sem);
+        r_sem_wait(&sem);
     else
         ret = false;
 
