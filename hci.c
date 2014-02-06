@@ -1757,6 +1757,21 @@ static bool hciBtStackUp(void)
         logi("LE should be on\n");
     }
 
+    /* set scan results to most informative format */
+    if (mBtVer >= HCI_VERSION_1_2) {
+        uint8_t mode = HCI_INQ_MODE_STD;
+
+        if (mLocalFtrs[0] & HCI_LMP_FTR_RSSI_WITH_INQUIRY_RESULTS)
+            mode = HCI_INQ_MODE_RSSI;
+
+        if (mBtVer >= HCI_VERSION_2_1 && (mLocalFtrs[0] & HCI_LMP_FTR_EXTENDED_INQUIRY_RESPONSE))
+            mode = HCI_INQ_MODE_EIR;
+
+        logi("Setting inquiry mode to %d\n", mode);
+        ret = hciWriteInquiryModeSync(mode);
+        if (ret)
+            goto out;
+    }
 
 out:
     if (ret) {
