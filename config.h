@@ -3,6 +3,12 @@
 
 
 /*
+ * Default LE scan parameters
+ */
+#define HCI_LE_SCAN_INTERVAL               24 /* 15 ms */
+#define HCI_LE_SCAN_WINDOW                 4  /* 2.5 ms */
+
+/*
  * How long we let other side wait for our decision till we auto-reject (in units of 0.625 ms)
  */
 #define HCI_CONN_RX_TIMEOUT                16000

@@ -4,6 +4,10 @@
 #include "util.h"
 
 
+
+#define HCI_INQUIRY_LENGTH_UNIT                                  1280 /* msec */
+#define HCI_INQUIRY_LENGTH_MAX                                   48 /* units */
+
 #define HCI_LAP_Unlimited_Inquiry                                0x9E8B33
 #define HCI_LAP_Limited_Inquiry                                  0x9E8B00
 
@@ -131,12 +135,6 @@
 #define HCI_MCA_50_PPM                                           0x05
 #define HCI_MCA_30_PPM                                           0x06
 #define HCI_MCA_20_PPM                                           0x07
-
-#define HCI_ADV_TYPE_ADV_IND                                     0x00 /* connectable undirected */
-#define HCI_ADV_TYPE_ADV_DIRECT_IND                              0x01 /* connectable directed */
-#define HCI_ADV_TYPE_ADV_SCAN_IND                                0x02 /* scannable undirected */
-#define HCI_ADV_TYPE_ADV_NONCONN_IND                             0x03 /* non-connectable undirected */
-#define HCI_ADV_TYPE_SCAN_RSP                                    0x04 /* scan response */
 
 #define HCI_VERSION_1_0_B                                         0 /* BT 1.0b */
 #define HCI_VERSION_1_1                                           1 /* BT 1.1  */
@@ -506,7 +504,7 @@ struct hciMasterLinkKey {
 } __packed;
 
 #define HCI_CMD_Remote_Name_Request                              0x0019 /* status */
-struct hciNameRequest {
+struct hciRemoteNameRequest {
     uint8_t mac[6];
     uint8_t PSRM;
     uint8_t PSM; /* deprecated, should be zero for BT 1.2+ */
@@ -2745,7 +2743,7 @@ struct hciEvtSniffSubrating {
 
 #define HCI_EVT_Extended_Inquiry_Result                          0x2F
 struct hciEvtExtendedInquiryResult {
-    uint8_t numResponces; /* must be 1 */
+    uint8_t numResponses; /* must be 1 */
     uint8_t mac[6];
     uint8_t PSRM;
     uint8_t reserved;

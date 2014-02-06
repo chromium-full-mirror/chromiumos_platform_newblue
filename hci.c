@@ -21,7 +21,8 @@
 #include "log.h"
 
 
-#define MAX_FTR_PAGES 4 /* we'll not get any more than this */
+#define MAX_FTR_PAGES         4 /* we'll not get any more than this */
+#define HCI_STAT_GOING_DOWN   0xFF
 
 
 struct hciCmdHdr {
@@ -64,7 +65,7 @@ struct hciEvtHdr {
 
 /* returns true if this is the event we wanted, false else. Do not block! If evt is passed as NULL, stack is shutting down. Do not try to enqueue/dequeue handlers here either */
 typedef bool (*hciEvtCbk)(struct hciEvtHdr *evt, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID);
-typedef void (*hciSimpleCbk)(void* cbkData1, void* cbkData2, struct hciEvtHdr *evt);
+typedef void (*hciSimpleCbk)(void* cbkData1, void* cbkData2, bool stackGoingDown, struct hciEvtHdr *evt);
 
 struct hciEvtWaitState {
     uniq_t                  evtWaitStateID; /* used to cancel THIS waiter */
@@ -95,10 +96,11 @@ struct hciEvtWaitDescrWithID {
     uniq_t id;
 };
 
-struct hciCmdSubmitWithSyncData {
+struct hciCmdSubmitWithCompleteSyncData {
     sem_t   *sem;
     void    *evtBuf;
     uint8_t  evtBufSz;
+    bool     goingDown;
 };
 
 struct hciCmdSendWorkItem {
@@ -114,24 +116,64 @@ struct hciCmdSendWorkItem {
 
 #define CBK_WORK_ITEM_DONE_CBK      0
 #define CBK_WORK_ITEM_SIMPLE_CBK    1
+#define CBK_WORK_EDR_DISC_DEV       2
+#define CBK_WORK_EDR_DISC_NAME      3
+#define CBK_WORK_LE_DISC_DEV        4
+#define CBK_WORK_FLUSH              5
 
+
+struct hciOpaqueDiscId {
+    uniq_t   handle; /* on way out: discovery handle, on way in, req handle */
+    uint8_t  mac[6];
+    uint16_t clockOffset;
+    uint8_t  PSRM;
+    uint8_t  PSM; /* unused in BT 1.2+ */
+};
 
 struct hciCbkWorkItem {
     uint8_t       cbkWorkItemType;
 
     union {
         struct {
-            hciOpDoneCbk  cbk;
-            void         *cbkData;
-            uint8_t       status;
+            hciOpDoneCbk                  cbk;
+            void                         *cbkData;
+            uint8_t                       status;
         } done;
 
         struct {
-            hciSimpleCbk  cbk;
-            void         *cbkData1;
-            void         *cbkData2;
-            bool          haveEvt;
+            hciSimpleCbk                  cbk;
+            void                         *cbkData1;
+            void                         *cbkData2;
+            bool                          stackGoingDown;
+            bool                          haveEvt;
         } simple;
+
+        struct {
+            struct bt_addr                addr;
+            uint32_t                      devCls;
+            struct hciOpaqueDiscId        fng;
+            int8_t                        rssi;
+            uint8_t                       eirLen;
+            uint8_t                       eir[];
+        } edrDev;
+
+        struct {
+            hciDeviceDiscoveredEdrNameCbk cbk;
+            void                         *cbkData;
+            char                          name[];
+        } edrName;
+
+        struct {
+            struct bt_addr                addr;
+            uint8_t                       advType; 
+            int8_t                        rssi;
+            uint8_t                       advLen;
+            uint8_t                       adv[];
+        } leDev;
+
+        struct {
+            sem_t                        *sem;
+        } flush;
     };
 };
 
@@ -154,6 +196,12 @@ struct hciAclConn {
 
     uint8_t            state; //TODO: this
 };
+struct hciDiscoverNameState {
+    struct hciDiscoverNameState   *next;
+    hciDeviceDiscoveredEdrNameCbk  cbk;
+    void                          *cbkData;
+    struct hciOpaqueDiscId         info;
+};
 
 /* our state */
 
@@ -175,6 +223,22 @@ static pthread_t mCallbackThread;
 static pthread_mutex_t mConnsLock = PTHREAD_MUTEX_INITIALIZER;
 static struct hciAclConn *mConns = NULL;
 
+static pthread_mutex_t mDiscoveryStateLock = PTHREAD_MUTEX_INITIALIZER;
+
+static hciDeviceDiscoveredEdrCbk mDiscoverEdrCbk;
+static void *mDiscoverEdrData;
+static uniq_t mDiscoverEdrHandle = 0;
+
+static hciDeviceDiscoveredLeCbk mDiscoverLeCbk;
+static void *mDiscoverLeData;
+static uniq_t mDiscoverLeHandle = 0;
+
+static struct hciDiscoverNameState *mDiscoverNames = NULL;
+
+
+
+
+
 /* read from chip */
 static uint8_t mBtVer = 0; /* HCI_VERSION_* */
 static uint64_t mLocalFtrs[MAX_FTR_PAGES] = {0, };
@@ -192,6 +256,7 @@ static uint8_t mInquiryState = 0;
 
 /* fwd declarations */
 static bool hciBtStackUp(void);
+static void hciDiscoverEdrStopInt(bool cancelCmd);
 
 
 /*
@@ -263,7 +328,7 @@ static bool hciEvtWaitDequeue(uniq_t evtWaitStateID)
 /*
  * FUNCTION: hciEvtWaitDequeueAllForCmd
  * USE:      Dequeue all handler for a given command ID
- * PARAMS:   forCmdID - coammnd ID as pessed to hciEvtWaitEnqueue();
+ * PARAMS:   forCmdID - command ID as passed to hciEvtWaitEnqueue();
  * RETURN:   how many handlers were dequeued
  * NOTES:
  */
@@ -436,7 +501,7 @@ static void hciRxEvt(struct hciEvtHdr *evt)
         struct hciEvtNumCompletedPacketsItem *items = ncp->items;
 
         pthread_mutex_lock(&mConnsLock);
-        for(i = 0; i < utilGetLE8(&ncp->numHandles); i++, items++) {
+        for (i = 0; i < utilGetLE8(&ncp->numHandles); i++, items++) {
             uint16_t connID = utilGetLE16(&items->conn);
             uint16_t numPackets = utilGetLE16(&items->numPackets);
 
@@ -631,7 +696,19 @@ static void* hciCbkWorker(void *unused)
             w->done.cbk(w->done.cbkData, w->done.status);
             break;
         case CBK_WORK_ITEM_SIMPLE_CBK:
-            w->simple.cbk(w->simple.cbkData1, w->simple.cbkData2, w->simple.haveEvt ? (struct hciEvtHdr*)(w + 1) : NULL);
+            w->simple.cbk(w->simple.cbkData1, w->simple.cbkData2, w->simple.stackGoingDown, w->simple.haveEvt ? (struct hciEvtHdr*)(w + 1) : NULL);
+            break;
+        case CBK_WORK_EDR_DISC_DEV:
+            mDiscoverEdrCbk(mDiscoverEdrData, &w->edrDev.addr, w->edrDev.devCls, &w->edrDev.fng, w->edrDev.rssi, w->edrDev.eir, w->edrDev.eirLen);
+            break;
+        case CBK_WORK_EDR_DISC_NAME:
+            w->edrName.cbk(w->edrName.cbkData, w->edrName.name);
+            break;
+        case CBK_WORK_LE_DISC_DEV:
+            mDiscoverLeCbk(mDiscoverLeData, &w->leDev.addr, w->leDev.rssi, w->leDev.advType, w->leDev.adv, w->leDev.advLen);
+            break;
+        case CBK_WORK_FLUSH:
+            sem_post(w->flush.sem);
             break;
         default:
             loge("Unknown callback work type %u\n", w->cbkWorkItemType);
@@ -684,11 +761,12 @@ static bool hciScheduleOpDoneCbk(hciOpDoneCbk cbk, void *cbkData, uint8_t status
  * PARAMS:   cbk - the callback to call
  *           cbkData1 - the data for said callback
  *           cbkData2 - the data for said callback
+ *           stackGoingDown - as the name implies...
  *           evt - event to provide, or NULL if none
  * RETURN:   true if enqueue, false else
  * NOTES:
  */
-static bool hciScheduleSimpleCbk(hciSimpleCbk cbk, void *cbkData1, void *cbkData2, struct hciEvtHdr *evt)
+static bool hciScheduleSimpleCbk(hciSimpleCbk cbk, void *cbkData1, void *cbkData2, bool stackGoingDown, struct hciEvtHdr *evt)
 {
     uint16_t evtLen = evt ? (sizeof(struct hciEvtHdr) + utilGetLE8(&evt->len)) : 0;
     uint32_t neededLen = sizeof(struct hciCbkWorkItem) + evtLen;
@@ -707,6 +785,7 @@ static bool hciScheduleSimpleCbk(hciSimpleCbk cbk, void *cbkData1, void *cbkData
     w->simple.cbk = cbk;
     w->simple.cbkData1 = cbkData1;
     w->simple.cbkData2 = cbkData2;
+    w->simple.stackGoingDown = stackGoingDown;
     w->simple.haveEvt = evt != NULL;
 
     if (evt)
@@ -717,6 +796,44 @@ static bool hciScheduleSimpleCbk(hciSimpleCbk cbk, void *cbkData1, void *cbkData
 
     free(w);
     return false;
+}
+
+/*
+ * FUNCTION: hciWorkFlush
+ * USE:      Flush the workQueue
+ * PARAMS:   NONE
+ * RETURN:   true if success, false else
+ * NOTES:    blocks till all existing work items have been finished
+ */
+static bool hciWorkFlush(void)
+{
+    struct hciCbkWorkItem *w = (struct hciCbkWorkItem*)malloc(sizeof(struct hciCbkWorkItem));
+    bool ret = false;
+    sem_t sem;
+
+    if (!w) {
+        loge("Failed to alloc workQ flush cmd\n");
+        return false;
+    }
+
+    if (sem_init(&sem, 0, 0)) {
+        free(w);
+        loge("Failed to alloc workQ flush sem\n");
+        return false;
+    }
+
+    w->cbkWorkItemType = CBK_WORK_FLUSH;
+    w->flush.sem = &sem;
+
+    if (workQueuePut(mCallbackWork, w)) {
+        sem_wait(&sem);
+        ret = true;
+    } else
+        free(w);
+
+    sem_destroy(&sem);
+
+    return ret;
 }
 
 /*
@@ -754,7 +871,6 @@ static void* hciCmdSendWorker(void *unused)
                 goto failed;
             }
         }
-
 
         if (vendorTx(HCI_PKT_TYP_CMD, w->cmd, len))
             goto success;
@@ -876,6 +992,7 @@ out_lib_open:
  * NOTES:    may take a while, some shutdown actions may go
  *           on after this (in higher layers)
  */
+static bool hciInquiryEvtCbk(struct hciEvtHdr *evt, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID);
 void hciDown(void)
 {
     logd("Cancelling all event waiters\n");
@@ -974,11 +1091,17 @@ static bool hciCmdSubmitSimpleCbk(struct hciEvtHdr *evt, void *cbkData, uniq_t e
     struct hciSimpleCbkData *cbkd = (struct hciSimpleCbkData*)cbkData;
     struct hciEvtCmdComplete *cmpl = (struct hciEvtCmdComplete*)(evt + 1);
     struct hciEvtCmdStatus *stat = (struct hciEvtCmdStatus*)(evt + 1);
-    uint8_t evtType = utilGetLE8(&evt->code);
-    uint8_t paramLen = utilGetLE8(&evt->len);
-    uint8_t evtHdrLen = cbkd->complete ? sizeof(struct hciEvtCmdComplete) : sizeof(struct hciEvtCmdStatus);
     const char* name = cbkd->complete ? "complete" : "status";
-    
+    uint8_t evtType;
+    uint8_t paramLen;
+    uint8_t evtHdrLen;
+
+    if (!evt)
+        return hciScheduleSimpleCbk(cbkd->cbk, cbkd->cbkData1, cbkd->cbkData2, true, NULL);
+
+    evtType = utilGetLE8(&evt->code);
+    paramLen = utilGetLE8(&evt->len);
+    evtHdrLen = cbkd->complete ? sizeof(struct hciEvtCmdComplete) : sizeof(struct hciEvtCmdStatus);
 
     if (paramLen < evtHdrLen) {
         logw("Comand %s event too short @ %ub (wanted %ub+)\n", name, paramLen, evtHdrLen);
@@ -994,7 +1117,7 @@ static bool hciCmdSubmitSimpleCbk(struct hciEvtHdr *evt, void *cbkData, uniq_t e
     }
 
     /* enqueue the callback */
-    return hciScheduleSimpleCbk(cbkd->cbk, cbkd->cbkData1, cbkd->cbkData2, cbkd->wantEventItself ? evt : NULL);
+    return hciScheduleSimpleCbk(cbkd->cbk, cbkd->cbkData1, cbkd->cbkData2, false, cbkd->wantEventItself ? evt : NULL);
 }
 
 /*
@@ -1133,13 +1256,13 @@ static bool hciCmdSubmitSimpleWithStatusNoReplyData(uint8_t ogf, uint16_t ocf, c
  * RETURN:   true if we handled the event (always yes)
  * NOTES:
  */
-static void hciCmdSubmitWithDoneSimpleCbk(void* cbkData1, void* cbkData2, struct hciEvtHdr *evt)
+static void hciCmdSubmitWithDoneSimpleCbk(void* cbkData1, void* cbkData2, bool goingDown, struct hciEvtHdr *evt)
 {
     struct hciEvtCmdComplete *cmpl = (struct hciEvtCmdComplete*)(evt + 1);
     uint8_t *paramP = (uint8_t*)(cmpl + 1);
     hciOpDoneCbk cbkF = (hciOpDoneCbk)cbkData1;
 
-    if (!hciScheduleOpDoneCbk(cbkF, cbkData2, utilGetLE8(paramP)))
+    if (!hciScheduleOpDoneCbk(cbkF, cbkData2, goingDown ? HCI_STAT_GOING_DOWN : utilGetLE8(paramP)))
         loge("Failed to shedule done callback for simple command complete handler\n");
 }
 
@@ -1161,20 +1284,27 @@ static bool hciCmdSubmitSimpleWithCompleteWithDoneCbk(uint8_t ogf, uint16_t ocf,
 }
 
 /*
- * FUNCTION: hciCmdSubmitSyncSyncSimpleCbk
+ * FUNCTION: hciCmdSubmitCompleteSyncSimpleCbk
  * USE:      Event callback for command complete event used by hciCmdSubmitSimpleWithCompleteSync()
- * PARAMS:   cbkData1 - 1st callback data (struct hciCmdSubmitWithSyncData*)
+ * PARAMS:   cbkData1 - 1st callback data (struct hciCmdSubmitWithCompleteSyncData*)
  *           cbkData2 - 2nd callback data (unused)
  *           evt - the arrived event
- * RETURN:   true if we handled the event (always yes)
+ * RETURN:   NONE
  * NOTES:
  */
-static void hciCmdSubmitSyncSyncSimpleCbk(void* cbkData1, void* cbkData2, struct hciEvtHdr *evt)
+static void hciCmdSubmitCompleteSyncSimpleCbk(void* cbkData1, void* cbkData2, bool stackGoingDown, struct hciEvtHdr *evt)
 {
     struct hciEvtCmdComplete *cmpl = (struct hciEvtCmdComplete*)(evt + 1);
-    struct hciCmdSubmitWithSyncData *data = (struct hciCmdSubmitWithSyncData*)cbkData1;
-    uint8_t paramLen = utilGetLE8(&evt->len) - sizeof(struct hciEvtCmdComplete);
+    struct hciCmdSubmitWithCompleteSyncData *data = (struct hciCmdSubmitWithCompleteSyncData*)cbkData1;
     void* evtData = (void*)(cmpl + 1);
+    uint8_t paramLen;
+
+    data->goingDown = stackGoingDown;
+
+    if (stackGoingDown)
+        sem_post(data->sem);
+
+    paramLen = utilGetLE8(&evt->len) - sizeof(struct hciEvtCmdComplete);
 
     if (paramLen > data->evtBufSz) {
         logw("Sync complete event shortened %ud->%ud\n", paramLen, data->evtBufSz);
@@ -1200,7 +1330,7 @@ static bool hciCmdSubmitSimpleWithCompleteSync(uint8_t ogf, uint16_t ocf, const 
 {
     bool ret = true;
     sem_t sem;
-    struct hciCmdSubmitWithSyncData data;
+    struct hciCmdSubmitWithCompleteSyncData data;
 
     data.sem = &sem;
     data.evtBuf = evtBuf;
@@ -1208,7 +1338,60 @@ static bool hciCmdSubmitSimpleWithCompleteSync(uint8_t ogf, uint16_t ocf, const 
 
     sem_init(&sem, 0, 0);
 
-    if (hciCmdSubmitSimple(ogf, ocf, paramData, paramLen, hciCmdSubmitSyncSyncSimpleCbk, &data, NULL, 0, 255, true, true))
+    if (hciCmdSubmitSimple(ogf, ocf, paramData, paramLen, hciCmdSubmitCompleteSyncSimpleCbk, &data, NULL, 0, 255, true, true)) {
+        sem_wait(&sem);
+        if (data.goingDown) {
+            logi("going down\n");
+            ret = false;
+        }
+    } else
+        ret = false;
+
+    sem_destroy(&sem);
+
+    return ret;
+}
+
+/*
+ * FUNCTION: hciCmdSubmitStatusSyncSimpleCbk
+ * USE:      Event callback for command complete event used by hciCmdSubmitSimpleWithCompleteSync()
+ * PARAMS:   cbkData1 - 1st callback data (sem_t* sem)
+ *           cbkData2 - 2nd callback data (struct hciEvtCmdStatus* dstEvt)
+ *           evt - the arrived event
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void hciCmdSubmitStatusSyncSimpleCbk(void* cbkData1, void* cbkData2, bool stackGoingDown, struct hciEvtHdr *evt)
+{
+    struct hciEvtCmdStatus *stat = (struct hciEvtCmdStatus*)(evt + 1);
+    sem_t *sem = (sem_t*)cbkData1;
+    struct hciEvtCmdStatus* dstSta = (struct hciEvtCmdStatus*)cbkData2;
+
+    if (stackGoingDown)
+        utilSetLE8(&dstSta->status, HCI_STAT_GOING_DOWN);
+    else
+        memcpy(dstSta, stat, sizeof(struct hciEvtCmdStatus));
+    sem_post(sem);
+}
+
+/*
+ * FUNCTION: hciCmdSubmitSimpleWithStatusSync
+ * USE:      Send a command and setup a handler for a command status for it. Wait for it. Provide resulting event back.
+ * PARAMS:   ogf - command group
+ *           ocf - command code
+ *           paramData - command params
+ *           paramLen - length of command params
+ *           dstEvt - will store event here
+ * RETURN:   true if it happened. false else
+ * NOTES:    Will block!
+ */
+static bool hciCmdSubmitSimpleWithStatusSync(uint8_t ogf, uint16_t ocf, const void *paramData, uint8_t paramLen, struct hciEvtCmdStatus *dstEvt)
+{
+    bool ret = true;
+    sem_t sem;
+
+    sem_init(&sem, 0, 0);
+    if (hciCmdSubmitSimple(ogf, ocf, paramData, paramLen, hciCmdSubmitStatusSyncSimpleCbk, &sem, dstEvt, 0, 0, true, false))
         sem_wait(&sem);
     else
         ret = false;
@@ -1229,7 +1412,7 @@ static bool hciCmdSubmitSimpleWithCompleteSync(uint8_t ogf, uint16_t ocf, const 
  */
 bool hciSetLocalName(const char *name, hciOpDoneCbk cbkDone, void *cbkData)
 {
-    struct hciWriteLocalName cmd = {0, };
+    struct hciWriteLocalName cmd = {{0,}, };
     unsigned len = strlen(name);
     
     if (len >= sizeof(cmd.name)) {
@@ -1310,34 +1493,64 @@ bool hciSetDeviceClass(uint32_t cls, hciOpDoneCbk cbkDone, void *cbkData)
  *
  *
  *
- * for all generated funcs this applied:
+ * for all generated funcs this applies:
  *
  * RETURN:   status byte or negatives on error
  * NOTES:    sync
  *
- * WRITE funcs just return status value, the reset of the event is discarded
- * READ funcs take "evt" param to save event to
+ * WRITE funcs just return status value, the reset of the event is discarded. expects cmd complete event
+ * READ funcs take "evt" param to save event to. expects cmd complete event
+ * NOCMDPARAMS funcs do not have params. expects cmd complete event
+ * W_STATUS - expects cmd status event
  */
+
+#define HCI_SIMPLY_SYNC_CMD_W_STATUS(name, params, ogf, ocf)                                                         \
+                                           static int hci##name##Sync params                                         \
+                                           {                                                                         \
+                                               struct hci##name cmdD;                                                \
+                                               struct hci##name *cmd = &cmdD;                                        \
+                                               const uint32_t cmdSz = sizeof(*cmd);                                  \
+                                               struct hciEvtCmdStatus evtD;                                          \
+                                               struct hciEvtCmdStatus *evt = &evtD;                                  \
+                                               const uint8_t _ogf = ogf;                                             \
+                                               const uint16_t _ocf = ocf;                                            \
+                                               const bool want_sta = true;                                           \
+                                               uint32_t _len = 0;
+
 #define HCI_SIMPLY_SYNC_WRITE(name, params, ogf, ocf)                                                                \
                                            static int hci##name##Sync params                                         \
                                            {                                                                         \
-                                               struct hci##name cmdD = {0, };                                        \
+                                               struct hci##name cmdD;                                                \
                                                struct hci##name *cmd = &cmdD;                                        \
                                                const uint32_t cmdSz = sizeof(*cmd);                                  \
                                                struct hciCmpl##name evtD;                                            \
                                                struct hciCmpl##name *evt = &evtD;                                    \
                                                const uint8_t _ogf = ogf;                                             \
                                                const uint16_t _ocf = ocf;                                            \
+                                               const bool want_sta = false;                                          \
+                                               uint32_t _len = 0;
+
+#define HCI_SIMPLY_SYNC_WRITE_NOCMDPARAMS(name, ogf, ocf)                                                            \
+                                           static int hci##name##Sync (void)                                         \
+                                           {                                                                         \
+                                               struct hci##name *cmd = NULL;                                         \
+                                               const uint32_t cmdSz = 0;                                             \
+                                               struct hciCmpl##name evtD;                                            \
+                                               struct hciCmpl##name *evt = &evtD;                                    \
+                                               const uint8_t _ogf = ogf;                                             \
+                                               const uint16_t _ocf = ocf;                                            \
+                                               const bool want_sta = false;                                          \
                                                uint32_t _len = 0;
 
 #define HCI_SIMPLY_SYNC_READ(name, params, ogf, ocf)                                                                 \
                                            static int hci##name##Sync params                                         \
                                            {                                                                         \
-                                               struct hci##name cmdD = {0, };                                        \
+                                               struct hci##name cmdD;                                                \
                                                struct hci##name *cmd = &cmdD;                                        \
                                                const uint32_t cmdSz = sizeof(*cmd);                                  \
                                                const uint8_t _ogf = ogf;                                             \
                                                const uint16_t _ocf = ocf;                                            \
+                                               const bool want_sta = false;                                          \
                                                uint32_t _len = 0;
 
 #define HCI_SIMPLY_SYNC_READ_NOCMDPARAMS(name, params, ogf, ocf)                                                     \
@@ -1347,6 +1560,7 @@ bool hciSetDeviceClass(uint32_t cls, hciOpDoneCbk cbkDone, void *cbkData)
                                                const uint32_t cmdSz = 0;                                             \
                                                const uint8_t _ogf = ogf;                                             \
                                                const uint16_t _ocf = ocf;                                            \
+                                               const bool want_sta = false;                                          \
                                                uint32_t _len = 0;
 
 #define REQUIRE_VERSION(_v)                    if (mBtVer < _v) {                                                    \
@@ -1354,7 +1568,7 @@ bool hciSetDeviceClass(uint32_t cls, hciOpDoneCbk cbkDone, void *cbkData)
                                                    return -2;                                                        \
                                                }
 
-#define REQUIRE_FEATURE(_page, _v)             if (!(mLocalFtrs[_page] & _v)) {                                       \
+#define REQUIRE_FEATURE(_page, _v)             if (!(mLocalFtrs[_page] & _v)) {                                      \
                                                    loge("attempt to call 0x%02X.%04X w/o feature\n", _ogf, _ocf);    \
                                                    return -2;                                                        \
                                                }
@@ -1365,14 +1579,18 @@ bool hciSetDeviceClass(uint32_t cls, hciOpDoneCbk cbkDone, void *cbkData)
 #define HCI_COPY_IN_U16(name)                  utilSetLE16(&cmd->name, name);
 #define HCI_COPY_IN_U8(name)                   utilSetLE8(&cmd->name, name);
 #define HCI_COPY_IN_BOOL(name)                 utilSetLE8(&cmd->name, name ? 1 : 0);
+#define HCI_COPY_IN_MAC(name)                  memcpy(cmd->name, name, sizeof(cmd->name));
 #define HCI_COPY_IN_DATA(name,len)             if (len > sizeof(cmd->name)) {                                        \
                                                    logw("Truncating "#name" to %ub\n",(int)sizeof(cmd->name));       \
                                                    len = sizeof(cmd->name);                                          \
                                                }                                                                     \
                                                memcpy(cmd->name, name, len);
-#define HCI_SIMPLY_SYNC_END                    if (!hciCmdSubmitSimpleWithCompleteSync(                              \
-                                                      _ogf, _ocf, cmd, cmdSz,                                        \
-                                                      evt, sizeof(*evt)))                                            \
+
+#define HCI_SIMPLY_SYNC_END                    if (!want_sta && !hciCmdSubmitSimpleWithCompleteSync(_ogf, _ocf, cmd, \
+                                                      cmdSz, evt, sizeof(*evt)))                                     \
+                                                   return -1;                                                        \
+                                               if (want_sta && !hciCmdSubmitSimpleWithStatusSync(_ogf, _ocf, cmd,    \
+                                                      cmdSz, (struct hciEvtCmdStatus*)evt))                          \
                                                    return -1;                                                        \
                                                return (unsigned)utilGetLE8(&evt->status);                            \
                                            }
@@ -1549,10 +1767,327 @@ HCI_SIMPLY_SYNC_END
 HCI_SIMPLY_SYNC_READ_NOCMDPARAMS(ReadBdAddr, (struct hciCmplReadBdAddr *evt), HCI_OGF_Informational, HCI_CMD_Read_BD_ADDR)
 HCI_SIMPLY_SYNC_END
 
+/*
+ * FUNCTION: hciInquiryCancelSync
+ * USE:      Cancel inquiry
+ * PARAMS:   NONE
+ */
+HCI_SIMPLY_SYNC_WRITE_NOCMDPARAMS(InquiryCancel, HCI_OGF_Link_Control, HCI_CMD_Inquiry_Cancel)
+HCI_SIMPLY_SYNC_END
 
+/*
+ * FUNCTION: hciLeSetScanEnableSync
+ * USE:      Enable/disable LE scan
+ * PARAMS:   scanOn - scan on/off
+ *           filterDuplicates - this rarely works, do not use
+ */
+HCI_SIMPLY_SYNC_WRITE(LeSetScanEnable, (bool scanOn, bool filterDuplicates), HCI_OGF_LE, HCI_CMD_LE_Set_Scan_Enable)
+    REQUIRE_VERSION(HCI_VERSION_4_0)
+    REQUIRE_FEATURE(0, HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER);
+    HCI_COPY_IN_BOOL(scanOn)
+    HCI_COPY_IN_BOOL(filterDuplicates)
+HCI_SIMPLY_SYNC_END
+
+/*
+ * FUNCTION: hciLeSetScanParamsSync
+ * USE:      Set LE scan parameters
+ * PARAMS:   scanOn - scan on/off
+ *           filterDuplicates - this rarely works, do not use
+ */
+HCI_SIMPLY_SYNC_WRITE(LeSetScanParams, (uint8_t activeScan, uint16_t scanInterval, uint16_t scanWindow, bool useOwnRandomAddr, bool onlyWhitelist), HCI_OGF_LE, HCI_CMD_LE_Set_Scan_Parameters)
+    REQUIRE_VERSION(HCI_VERSION_4_0)
+    REQUIRE_FEATURE(0, HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER);
+    HCI_COPY_IN_U16(activeScan);
+    HCI_COPY_IN_U16(scanInterval);
+    HCI_COPY_IN_U16(scanWindow);
+    HCI_COPY_IN_BOOL(useOwnRandomAddr);
+    HCI_COPY_IN_BOOL(onlyWhitelist);
+HCI_SIMPLY_SYNC_END
+
+/*
+ * FUNCTION: hciRemoteNameRequestCancelSync
+ * USE:      Cancel a remote name request
+ * PARAMS:   mac -the mac
+ */
+HCI_SIMPLY_SYNC_WRITE(RemoteNameRequestCancel, (const uint8_t *mac), HCI_OGF_LE, HCI_CMD_Remote_Name_Request_Cancel)
+    HCI_COPY_IN_MAC(mac);
+HCI_SIMPLY_SYNC_END
+
+/*
+ * FUNCTION: hciRemoteNameRequestSync
+ * USE:      Request a remote name
+ * PARAMS:   mac - the mac
+ *           PSRM - value from discovery
+ *           PSM - value from discovery (or 0 on BT 1.2+)
+ *           clockOffset - value from discovery
+ */
+HCI_SIMPLY_SYNC_CMD_W_STATUS(RemoteNameRequest, (const uint8_t *mac, uint8_t PSRM, uint8_t PSM, uint16_t clockOffset), HCI_OGF_Link_Control, HCI_CMD_Remote_Name_Request)
+    HCI_COPY_IN_MAC(mac);
+    HCI_COPY_IN_U8(PSRM)
+    HCI_COPY_IN_U8(PSM)
+    HCI_COPY_IN_U16(clockOffset)
+HCI_SIMPLY_SYNC_END
+
+/*
+ * FUNCTION: hciInquirySync
+ * USE:      Enable EDR scan
+ * PARAMS:   lap - the lap to use
+ *           inqLen - how long for (max is 0x30 -> 61.44 sec)
+ *           numResp - max responses (0 = unlimited)
+ */
+HCI_SIMPLY_SYNC_CMD_W_STATUS(Inquiry, (uint32_t lap, uint8_t inqLen, uint8_t numResp), HCI_OGF_Link_Control, HCI_CMD_Inquiry)
+    HCI_COPY_IN_U24(lap)
+    HCI_COPY_IN_U8(inqLen)
+    HCI_COPY_IN_U8(numResp)
+HCI_SIMPLY_SYNC_END
+
+/*
+ * FUNCTION: hciInquiryEvtEdrSingleItem
+ * USE:      Enqueue a callback to discovery EDR cbk
+ * PARAMS:   addr - the address of the remote device
+ *           devCls - device class
+ *           fng - opaque struct to allow a name request
+ *           rssi - the RSSI
+ *           eir - the provided EIR data (if any)
+ *           eirLen - size of the above buffer
+ * RETURN:   NONE
+ * NOTES:    a copy of all params is made
+ */
+static void hciInquiryEvtEdrSingleItem(const struct bt_addr *addr, uint32_t devCls, struct hciOpaqueDiscId* fng, int8_t rssi, const void *eir, uint8_t eirLen)
+{
+    struct hciCbkWorkItem *w = (struct hciCbkWorkItem*)malloc(sizeof(struct hciCbkWorkItem) + eirLen);
+    if (!w) {
+        logw("Dropping EDR discovered item due to memory error\n");
+        return;
+    }
+
+    w->cbkWorkItemType = CBK_WORK_EDR_DISC_DEV;
+    memcpy(&w->edrDev.addr, addr, sizeof(w->edrDev.addr));
+    memcpy(&w->edrDev.fng, fng, sizeof(w->edrDev.fng));
+    memcpy(&w->edrDev.eir, eir, eirLen);
+    w->edrDev.devCls = devCls;
+    w->edrDev.rssi = rssi;
+    w->edrDev.eirLen = eirLen;
+
+
+    if (workQueuePut(mCallbackWork, w))
+        return;
+
+    free(w);
+    logi("Dropping EDR discovered item dues to queue error\n");
+}
+
+/*
+ * FUNCTION: hciInquiryEvtLeSingleItem
+ * USE:      Enqueue a callback to discovery LE cbk
+ * PARAMS:   addr - the address of the remote device
+ *           advType - type of reply
+ *           rssi - the RSSI
+ *           advData - the provided advertisement data
+ *           advDataLen - size of the above buffer
+ * RETURN:   NONE
+ * NOTES:    a copy of all params is made
+ */
+static void hciInquiryEvtLeSingleItem(const struct bt_addr *addr, uint8_t advType, int8_t rssi, const void *advData, uint8_t advDataLen)
+{
+    struct hciCbkWorkItem *w = (struct hciCbkWorkItem*)malloc(sizeof(struct hciCbkWorkItem) + advDataLen);
+    if (!w) {
+        logw("Dropping LE discovered item due to memory error\n");
+        return;
+    }
+
+    w->cbkWorkItemType = CBK_WORK_LE_DISC_DEV;
+    memcpy(&w->leDev.addr, addr, sizeof(w->leDev.addr));
+    memcpy(w->leDev.adv, advData, advDataLen);
+    w->leDev.advType = advType;
+    w->leDev.advLen = advDataLen;
+    w->leDev.rssi = rssi;
+
+    if (workQueuePut(mCallbackWork, w))
+        return;
+
+    free(w);
+    logi("Dropping LE discovered item dues to queue error\n");
+}
+
+/*
+ * FUNCTION: hciInquiryEvtEdrName
+ * USE:      Enqueue a callback to discovery EDR name cbk
+ * PARAMS:   mac - the raw mac address of the remote device 
+ *           name - name buffer pointer (may not be null-terminated)
+ *           nameMaxLen - size of the above buffer
+ * RETURN:   NONE
+ * NOTES:    a copy of all params is made
+ */
+static void hciInquiryEvtEdrName(const uint8_t *mac, const char *name, uint8_t nameMaxLen)
+{
+    struct hciDiscoverNameState *dns, *p = NULL;
+    struct hciCbkWorkItem *w;
+    bool success = false;
+    uint8_t nameLen;
+
+    for (nameLen = 0; nameLen < nameMaxLen && name[nameLen]; nameLen++);
+
+    w = (struct hciCbkWorkItem*)malloc(sizeof(struct hciCbkWorkItem) + nameLen + 1);
+    if (!w) {
+        logw("Dropping EDR name discovered item due to memory error\n");
+        return;
+    }
+
+    w->cbkWorkItemType = CBK_WORK_EDR_DISC_NAME;
+    memcpy(&w->edrName.name, name, nameLen);
+    w->edrName.name[nameLen] = 0;
+
+    /* now find the callback & enqueue the work*/
+    pthread_mutex_lock(&mDiscoveryStateLock);
+    dns = mDiscoverNames;
+    while (dns && memcmp(&dns->info.mac, mac, sizeof(dns->info.mac))) {
+        p = dns;
+        dns = dns->next;
+    }
+    if (!dns)
+        logd("Got name reply with nobody waiting for it. Dropping\n");
+    else{
+        w->edrName.cbk = dns->cbk;
+        w->edrName.cbkData = dns->cbkData;
+        if (workQueuePut(mCallbackWork, w))
+            success = true;
+
+        /* remove the item while we're at it */
+        if (p)
+            p->next = dns->next;
+        else
+            mDiscoverNames = dns->next;
+
+        free(dns);
+    }
+    pthread_mutex_unlock(&mDiscoveryStateLock);
+
+    if (!success) {
+        free(w);
+        logi("Dropping EDR name discovered item due to queue or other error\n");
+    }
+}
+
+/*
+ * FUNCTION: hciInquiryEvtCbk
+ * USE:      Called with inquiry events
+ * PARAMS:   evt - the event
+ *           cbkData - callback data (unused)
+ *           evtWaitStateID - event wait state ID (unused)
+ *           forCmdID - event commadn ID (unused)
+ * RETURN:   false on error
+ * NOTES:
+ */
+static bool hciInquiryEvtCbk(struct hciEvtHdr *evt, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
+{
+    uint8_t evtType;
+    struct bt_addr addr;
+    struct hciOpaqueDiscId fng;
+    uint8_t i, num;
+
+    if (!evt)
+        return false;
+
+    evtType = utilGetLE8(&evt->code);
+
+    if(evtType == HCI_EVT_Inquiry_Result) {
+        struct hciEvtInquiryResult *res = (struct hciEvtInquiryResult*)(evt + 1);
+        struct hciEvtInquiryResultItem *item = res->items;
+
+        addr.type = BT_ADDR_TYPE_EDR;
+        num = utilGetLE8(&res->numResponses);
+
+        for (i = 0; i < num; i++, item++) {
+
+            memcpy(addr.addr, item->mac, sizeof(addr.addr));
+            fng.PSRM = utilGetLE8(&item->PSRM);
+            fng.PSM = mBtVer >= HCI_VERSION_1_2 ? 0 : utilGetLE8(&item->PSM);
+            fng.clockOffset = utilGetLE16(&item->clockOffset);
+            hciInquiryEvtEdrSingleItem(&addr, utilGetLE24(&item->deviceClass), &fng, HCI_RSSI_UNKNOWN, NULL, 0);
+        }
+    } else if(evtType == HCI_EVT_Inquiry_Result_With_RSSI) {
+        struct hciEvtInquiryResultWithRssi *res = (struct hciEvtInquiryResultWithRssi*)(evt + 1);
+        struct hciEvtInquiryResultWithRssiItem *item = res->items;
+
+        addr.type = BT_ADDR_TYPE_EDR;
+        num = utilGetLE8(&res->numResponses);
+
+        for (i = 0; i < num; i++, item++) {
+
+            memcpy(addr.addr, item->mac, sizeof(addr.addr));
+            fng.PSRM = utilGetLE8(&item->PSRM);
+            fng.PSM = 0;
+            fng.clockOffset = utilGetLE16(&item->clockOffset);
+            hciInquiryEvtEdrSingleItem(&addr, utilGetLE24(&item->deviceClass), &fng, utilGetLE8(&item->RSSI), NULL, 0);
+        }
+    } else if(evtType == HCI_EVT_Extended_Inquiry_Result) {
+        struct hciEvtExtendedInquiryResult *res = (struct hciEvtExtendedInquiryResult*)(evt + 1);
+
+        addr.type = BT_ADDR_TYPE_EDR;
+        num = utilGetLE8(&res->numResponses);
+
+        if (num != 1)
+            logw("eir reply with num = %d dropped\n", num);
+        else {
+            memcpy(addr.addr, res->mac, sizeof(addr.addr));
+            fng.PSRM = utilGetLE8(&res->PSRM);
+            fng.PSM = 0;
+            fng.clockOffset = utilGetLE16(&res->clockOffset);
+            hciInquiryEvtEdrSingleItem(&addr, utilGetLE24(&res->deviceClass), &fng, utilGetLE8(&res->RSSI), res->EIR, sizeof(res->EIR));
+        }
+    } else if(evtType == HCI_EVT_LE_Meta) {
+        struct hciEvtLeMeta *meta = (struct hciEvtLeMeta*)(evt + 1);
+        struct hciEvtLeAdvReport *adv = (struct hciEvtLeAdvReport*)(meta + 1);
+        struct hciEvtLeAdvReportItem *item = (struct hciEvtLeAdvReportItem*)(adv + 1);
+        uint8_t subevent = utilGetLE8(&meta->subevent);
+        uint8_t *rssiP;
+
+        if (subevent != HCI_EVTLE_Advertising_Report) {
+            loge("Unexpected LE subevent 0x%02X in discovery event handler\n", subevent);
+            return false;
+        }
+
+        num = utilGetLE8(&adv->numReports);
+
+        for (i = 0; i < num; i++) {
+            uint8_t dataLen = utilGetLE8(&item->dataLen);
+
+            addr.type = utilGetLE8(&item->randomAddr) ? BT_ADDR_TYPE_LE_RANDOM : BT_ADDR_TYPE_LE_PUBLIC;
+            memcpy(addr.addr, item->mac, sizeof(addr.addr));
+            rssiP = item->data + dataLen;
+            hciInquiryEvtLeSingleItem(&addr, utilGetLE8(&item->advType), utilGetLE8(rssiP), item->data, dataLen);
+            item = (struct hciEvtLeAdvReportItem*)(rssiP + 1);
+        }
+    } else if (evtType == HCI_EVT_Remote_Name_Request_Complete) {
+        struct hciEvtRemoteNameReqComplete *cmpl = (struct hciEvtRemoteNameReqComplete*)(evt + 1);
+        uint8_t status = utilGetLE8(&cmpl->status);
+
+        if (status)
+            logw("EDR name discovery failed: %d\n", status);
+        else
+            hciInquiryEvtEdrName(cmpl->mac, cmpl->name, sizeof(cmpl->name));
+    } else if (evtType == HCI_EVT_Inquiry_Complete) {
+        hciDiscoverEdrStopInt(false);
+    } else {
+        loge("Unexopected event 0x%02X in discovery event handler\n", evtType);
+        return false;
+    }
+
+    return true;
+}
+
+/*
+ * FUNCTION: hciBtStackUp
+ * USE:      Brings up the chip in a sane configuration, reags versions, etc
+ * PARAMS:   NONE
+ * RETURN:   false on error
+ * NOTES:
+ */
 static bool hciBtStackUp(void)
 {
     int ret = 0;
+    uint8_t inqMode = HCI_INQ_MODE_STD;
 
     /* read local BT version */
     {
@@ -1615,7 +2150,7 @@ static bool hciBtStackUp(void)
 
         uint8_t page, numPages = 1;
 
-        for(page = 0; page < numPages; page++) {
+        for (page = 0; page < numPages; page++) {
             struct hciCmplReadLocalExtendedFeatures evt;
 
             ret = hciReadLocalExtendedFeaturesSync(page, &evt);
@@ -1759,18 +2294,41 @@ static bool hciBtStackUp(void)
 
     /* set scan results to most informative format */
     if (mBtVer >= HCI_VERSION_1_2) {
-        uint8_t mode = HCI_INQ_MODE_STD;
 
         if (mLocalFtrs[0] & HCI_LMP_FTR_RSSI_WITH_INQUIRY_RESULTS)
-            mode = HCI_INQ_MODE_RSSI;
+            inqMode = HCI_INQ_MODE_RSSI;
 
         if (mBtVer >= HCI_VERSION_2_1 && (mLocalFtrs[0] & HCI_LMP_FTR_EXTENDED_INQUIRY_RESPONSE))
-            mode = HCI_INQ_MODE_EIR;
+            inqMode = HCI_INQ_MODE_EIR;
 
-        logi("Setting inquiry mode to %d\n", mode);
-        ret = hciWriteInquiryModeSync(mode);
+        logi("Setting inquiry mode to %d\n", inqMode);
+        ret = hciWriteInquiryModeSync(inqMode);
         if (ret)
             goto out;
+    }
+
+    /* set up event handler(s) for discovery results */
+    {
+        struct hciEvtWaitDescr ewd = {0, };
+        static const uint8_t discEvtTypes[] = {HCI_EVT_Inquiry_Complete, HCI_EVT_Inquiry_Result, HCI_EVT_Inquiry_Result_With_RSSI,
+                                               HCI_EVT_Extended_Inquiry_Result, HCI_EVT_Remote_Name_Request_Complete, HCI_EVT_LE_Meta, 0};
+        static const uint16_t discEvtExtras[] = {0, 0, 0, 0, 0, HCI_EVTLE_Advertising_Report};
+        uint8_t i;
+
+
+        ewd.cbk = hciInquiryEvtCbk;
+        ewd.persistent = true;
+
+        for (i = 0; discEvtTypes[i]; i++) {
+            ewd.evtType = discEvtTypes[i];
+            ewd.extra = discEvtExtras[i];
+
+            if (!hciEvtWaitEnqueue(&ewd, 0)) {
+                ret = -2;
+                loge("Failed to enqueue inquiry handler %d: 0x%02X.%04X\n", i, ewd.evtType, ewd.extra);
+                goto out;
+            }
+        }
     }
 
 out:
@@ -1781,8 +2339,302 @@ out:
     return true;
 }
 
+/*
+ * FUNCTION: hciDiscoverStopAndFreeNameReq
+ * USE:      Stops EDR name request if possible and frees the struct
+ * PARAMS:   toFree - the name discovery struct
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void hciDiscoverStopAndFreeNameReq(struct hciDiscoverNameState *toFree)
+{
+    if (mBtVer >= HCI_VERSION_1_2)
+        hciRemoteNameRequestCancelSync(toFree->info.mac); /* error ignored on purpose */
+    free(toFree);
+}
 
+/*
+ * FUNCTION: hciDiscoverEdrStart
+ * USE:      Starts EDR discovery
+ * PARAMS:   cbk - device discovered callback
+ *           cbkData - data for said callback
+ *           msec - how long to run for
+ * RETURN:   discovery handle or 0 for error
+ * NOTES:    Callbacks might be called even if func returns false, but
+ *           will stop once said return value is actually returned.
+ *           61440 msec maximum. "forNameGetting" is only valid in EDR
+ *           discovery callback, saving it beyond that is dangerous and
+ *           will not work!
+ */
+uniq_t hciDiscoverEdrStart(hciDeviceDiscoveredEdrCbk cbk, void *cbkData, uint32_t msec)
+{
+    uniq_t ret = 0;
+    uint32_t len;
+    int sta;
 
+    if (!cbk) {
+        loge("Refusing discovery with no callback\n");
+        return 0;
+    }
 
+    pthread_mutex_lock(&mDiscoveryStateLock);
+    if (mDiscoverEdrHandle)
+        logw("Refusing to do EDR discovery while another in progress\n");
+    else {
+        ret = mDiscoverEdrHandle = uniqGetNext();
 
+        mDiscoverEdrCbk = cbk;
+        mDiscoverEdrData = cbkData;
+    }
+    pthread_mutex_unlock(&mDiscoveryStateLock);
+
+    if (!ret)
+        return 0;
+
+    /* round length to units - err on doing it longer */
+    len = (msec + HCI_INQUIRY_LENGTH_UNIT - 1) / HCI_INQUIRY_LENGTH_UNIT;
+    if (len > HCI_INQUIRY_LENGTH_MAX)
+        len = HCI_INQUIRY_LENGTH_MAX;
+
+    logd("Discovery request for %u msec will run for %u units\n", msec, len);
+
+    sta = hciInquirySync(HCI_LAP_Unlimited_Inquiry, len, 0x00);
+    if (!sta)
+        return ret;
+
+    pthread_mutex_lock(&mDiscoveryStateLock);
+    mDiscoverEdrHandle = 0;
+    pthread_mutex_unlock(&mDiscoveryStateLock);
+    loge("Failed to start inquiry: %d\n", sta);
+
+    return 0;
+}
+
+/*
+ * FUNCTION: hciDiscoverEdrStopInt
+ * USE:      Stops EDR discovery and any extant name-getting callbacks for it
+ * PARAMS:   cancelCmd - send the cancel command?
+ * RETURN:   false on error
+ * NOTES:    Callbacks will stop once this returns
+ */
+static void hciDiscoverEdrStopInt(bool cancelCmd)
+{
+    struct hciDiscoverNameState *toCancel = NULL, *t;
+
+    if (cancelCmd)
+        hciInquiryCancelSync();
+
+    pthread_mutex_lock(&mDiscoveryStateLock);
+    mDiscoverEdrHandle = 0;
+    toCancel = mDiscoverNames;
+    mDiscoverNames = NULL;
+    pthread_mutex_unlock(&mDiscoveryStateLock);
+
+    while(toCancel) {
+        t = toCancel;
+        toCancel = toCancel->next;
+        hciDiscoverStopAndFreeNameReq(t);
+    }
+}
+
+/*
+ * FUNCTION: hciDiscoverEdrStop
+ * USE:      Stops EDR discovery and any extant name-getting callbacks for it
+ * PARAMS:   handle - the handle from hciDiscoverEdrStart()
+ * RETURN:   false on error
+ * NOTES:    Callbacks will stop once this returns
+ */
+bool hciDiscoverEdrStop(uniq_t handle)
+{
+    if (!handle) {
+        loge("Cannot pass NULL handle here\n");
+        return false;
+    }
+
+    pthread_mutex_lock(&mDiscoveryStateLock);
+    if (mDiscoverEdrHandle != handle)
+        handle = 0;
+    else
+        mDiscoverEdrHandle = uniqGetNext(); /* not us so nobdy can re-cancel. not zero so nobody can start another scan */
+    pthread_mutex_unlock(&mDiscoveryStateLock);
+
+    hciDiscoverEdrStopInt(true);
+    hciWorkFlush();
+
+    return !!handle;
+}
+
+/*
+ * FUNCTION: hciDiscoverEdrGetName
+ * USE:      Get a device name during EDR discovery
+ * PARAMS:   cbk - name callback
+ *           cbkData - data for said callback
+ *           forNameGetting - data passed to edr discovery callback
+ * RETURN:   name-getting operation handle or 0 on error
+ * NOTES:
+ */
+uniq_t hciDiscoverEdrGetName(hciDeviceDiscoveredEdrNameCbk cbk, void *cbkData, const struct hciOpaqueDiscId *forNameGetting)
+{
+    struct hciDiscoverNameState *dns = (struct hciDiscoverNameState*)malloc(sizeof(struct hciDiscoverNameState));
+    uniq_t ret = 0;
+    bool cancelIt = false;
+    int sta;
+
+    if (!dns)
+        return 0;
+
+    memcpy(&dns->info, forNameGetting, sizeof(dns->info));
+    dns->cbk = cbk;
+    dns->cbkData = cbkData;
+
+    sta = hciRemoteNameRequestSync(dns->info.mac, dns->info.PSRM, dns->info.PSM, dns->info.clockOffset);
+    if (sta) {
+        loge("Failed to enqueue a name request: %d\n", sta);
+        free(dns);
+        return 0;
+    }
+
+    pthread_mutex_lock(&mDiscoveryStateLock);
+    if (mDiscoverEdrHandle != dns->info.handle)
+        cancelIt = true;
+    else {
+        dns->info.handle = ret = uniqGetNext();
+        dns->next = mDiscoverNames;
+        mDiscoverNames = dns->next;
+    }
+    pthread_mutex_unlock(&mDiscoveryStateLock);
+
+    if (cancelIt)
+        hciDiscoverStopAndFreeNameReq(dns);
+
+    return ret;
+}
+
+/*
+ * FUNCTION: hciDiscoverEdrGetNameCancel
+ * USE:      Cancel a device name discovery during EDR discovery
+ * PARAMS:   handle - the handle from hciDiscoverEdrGetName()
+ * RETURN:   false on error
+ * NOTES:    cCallback will certainly not fire once this returns
+ */
+bool hciDiscoverEdrGetNameCancel(uniq_t handle)
+{
+    struct hciDiscoverNameState *c = NULL, *p;
+
+    pthread_mutex_lock(&mDiscoveryStateLock);
+    c = mDiscoverNames;
+    p = NULL;
+    while (c && c->info.handle != handle) {
+        p = c;
+        c = c->next;
+    }
+    if (c) {
+        if (p)
+            p->next = c->next;
+        else
+            mDiscoverNames = c->next;
+    }
+    pthread_mutex_unlock(&mDiscoveryStateLock);
+    if (c)
+        hciDiscoverStopAndFreeNameReq(c);
+
+    return !!c;
+}
+
+/*
+ * FUNCTION: hciDiscoverLeStart
+ * USE:      Starts LE discovery
+ * PARAMS:   cbk - device discovered callback
+ *           cbkData - data for said callback
+ *           active - do active scan?
+ * RETURN:   discovery handle or 0 for error
+ * NOTES:    Callbacks might be called even if func returns false, but
+ *           will stop once said return value is actually returned.
+ *           Discovery goes on until stopped.
+ */
+uniq_t hciDiscoverLeStart(hciDeviceDiscoveredLeCbk cbk, void *cbkData, bool active, bool useRandomAddr)
+{
+    uniq_t ret = 0;
+    uint32_t len;
+    int sta;
+
+    if (!cbk) {
+        loge("Refusing discovery with no callback\n");
+        return 0;
+    }
+
+    if (!mHaveLe) {
+        loge("Failing request to LE discovery due to lack of LE\n");
+        return 0;
+    }
+
+    pthread_mutex_lock(&mDiscoveryStateLock);
+    if (mDiscoverLeHandle)
+        logw("Refusing to do LE discovery while another in progress\n");
+    else {
+        ret = mDiscoverLeHandle = uniqGetNext();
+
+        mDiscoverLeCbk = cbk;
+        mDiscoverLeData = cbkData;
+    }
+    pthread_mutex_unlock(&mDiscoveryStateLock);
+
+    if (!ret)
+        return 0;
+
+    sta = hciLeSetScanParamsSync(active, HCI_LE_SCAN_INTERVAL, HCI_LE_SCAN_WINDOW, useRandomAddr, false);
+    if (sta) {
+        loge("Failed to set LE scan params: %d\n", sta);
+        goto err;
+    }
+
+    sta = hciLeSetScanEnableSync(true, false);
+    if (sta) {
+        loge("Failed to set LE scan on: %d\n", sta);
+        goto err;
+    }
+
+    return ret;
+
+err:
+    pthread_mutex_lock(&mDiscoveryStateLock);
+    mDiscoverLeHandle = 0;
+    pthread_mutex_unlock(&mDiscoveryStateLock);
+
+    return 0;
+}
+
+/*
+ * FUNCTION: hciDiscoverLeStop
+ * USE:      Stops LE discovery
+ * PARAMS:   handle - the handle from hciDiscoverLeStart()
+ * RETURN:   false on error
+ * NOTES:    Callbacks will stop once this returns
+ */
+bool hciDiscoverLeStop(uniq_t handle)
+{
+    int sta;
+
+    if (!handle) {
+        loge("Cannot pass NULL handle here\n");
+        return false;
+    }
+
+    pthread_mutex_lock(&mDiscoveryStateLock);
+    if (mDiscoverLeHandle != handle)
+        handle = 0;
+    else
+        mDiscoverLeHandle = 0;
+    pthread_mutex_unlock(&mDiscoveryStateLock);
+
+    if (handle){
+        sta = hciLeSetScanEnableSync(false, false);
+        if (sta)
+            loge("Failed to set LE scan off: %d\n", sta);
+    }
+
+    hciWorkFlush();
+
+    return !!handle;
+}
 
