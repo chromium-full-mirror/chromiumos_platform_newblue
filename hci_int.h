@@ -317,6 +317,7 @@
 #define HCI_EVENT_ALL_BT_3_0                                     0x1DBFFFFFFFFFFFFFULL
 #define HCI_EVENT_LE_META                                        0x2000000000000000ULL /* BT 4.0+ */
 #define HCI_EVENT_ALL_BT_4_0                                     0x3DBFFFFFFFFFFFFFULL
+#define HCI_EVENT_ALL_BT_4_1                                     0x3DBFFFFFFFFFFFFFULL
 
 #define HCI_EVENT_P2_PHYS_LINK_COMPLETE                          0x0000000000000001ULL /* BT 3.0+ */
 #define HCI_EVENT_P2_CHANNEL_SELECTED                            0x0000000000000002ULL /* BT 3.0+ */
@@ -324,6 +325,7 @@
 #define HCI_EVENT_P2_PHYSICAL_LINK_LOSS_EARLY_WARNING            0x0000000000000008ULL /* BT 3.0+ */
 #define HCI_EVENT_P2_PHYSICAL_LINK_RECOVERY                      0x0000000000000010ULL /* BT 3.0+ */
 #define HCI_EVENT_P2_LOGICAL_LINK_COMPLETE                       0x0000000000000020ULL /* BT 3.0+ */
+#define HCI_EVENT_P2_DISCONNECTION_LOGICAL_LINK_COMPLETE         0x0000000000000040ULL /* BT 3.0+ */
 #define HCI_EVENT_P2_FLOW_SPEC_MODIFY_COMPLETE                   0x0000000000000080ULL /* BT 3.0+ */
 #define HCI_EVENT_P2_NUMBER_OF_COMPLETED_DATA_BLOCKS             0x0000000000000100ULL /* BT 3.0+ */
 #define HCI_EVENT_P2_AMP_START_TEST                              0x0000000000000200ULL /* BT 3.0+ */
@@ -331,6 +333,8 @@
 #define HCI_EVENT_P2_AMP_RECEIVER_REPORT                         0x0000000000000800ULL /* BT 3.0+ */
 #define HCI_EVENT_P2_SHORT_RANGE_MODE_CHANGE_COMPLETE            0x0000000000001000ULL /* BT 3.0+ */
 #define HCI_EVENT_P2_AMP_STATUS_CHANGE                           0x0000000000002000ULL /* BT 3.0+ */
+#define HCI_EVENT_P2_ALL_BT_3_0                                  0x0000000000003FFFULL
+#define HCI_EVENT_P2_ALL_BT_4_0                                  0x0000000000003FFFULL
 #define HCI_EVENT_P2_TRIGGERED_CLOCK_CAPTURE                     0x0000000000004000ULL /* BT 4.1+ */
 #define HCI_EVENT_P2_SYNCH_TRAIN_COMPLETE                        0x0000000000008000ULL /* BT 4.1+ */
 #define HCI_EVENT_P2_SYNCH_TRAIN_RECEIVED                        0x0000000000010000ULL /* BT 4.1+ */
@@ -341,6 +345,7 @@
 #define HCI_EVENT_P2_CONNLESS_SLAVE_BROADCAST_CHANNEL_MAP_CHANGE 0x0000000000200000ULL /* BT 4.1+ */
 #define HCI_EVENT_P2_INQUIRY_RESPONSE_NOTIFICATION               0x0000000000400000ULL /* BT 4.1+ */
 #define HCI_EVENT_P2_AUTHENTICATED_PAYLOAD_TIMEOUT_EXPIRED       0x0000000000800000ULL /* BT 4.1+ */
+#define HCI_EVENT_P2_ALL_BT_4_1                                  0x0000000000FFFFFFULL
 
 #define HCI_LE_EVENT_CONN_COMPLETE                               0x0000000000000001ULL /* BT 4.0+ */
 #define HCI_LE_EVENT_ADV_REPORT                                  0x0000000000000002ULL /* BT 4.0+ */
@@ -1579,7 +1584,7 @@ struct hciCmplWriteLogicalLinkTimeout {
 
 #define HCI_CMD_Set_Event_Mask_Page_2                            0x0063 /* complete */
 struct hciSetEventMaskPage2 {
-    uint64_t events; /* bitmask of HCI_EVENT_P2_* */
+    uint64_t mask; /* bitmask of HCI_EVENT_P2_* */
 } __packed;
 struct hciCmplSetEventMaskPage2 {
     uint8_t status;
@@ -1934,7 +1939,7 @@ struct hciCmplReadLocalSupportedFeatures {
     uint64_t features;  /* bitmask of HCI_LMP_FTR_* */
 } __packed;
 
-#define HCI_CMD_Read_Local_Extended _Features                    0x0004 /* complete */
+#define HCI_CMD_Read_Local_Extended_Features                     0x0004 /* complete */
 struct hciReadLocalExtendedFeatures {
     uint8_t page;
 } __packed;

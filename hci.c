@@ -20,6 +20,10 @@
 #include "hci.h"
 #include "log.h"
 
+
+#define MAX_FTR_PAGES 4 /* we'll not get any more than this */
+
+
 struct hciCmdHdr {
     uint16_t opcode;
     uint8_t paramLen;
@@ -173,7 +177,7 @@ static struct hciAclConn *mConns = NULL;
 
 /* read from chip */
 static uint8_t mBtVer = 0; /* HCI_VERSION_* */
-static uint64_t mLocalFtrs = 0;
+static uint64_t mLocalFtrs[MAX_FTR_PAGES] = {0, };
 static uint16_t mScoBufSz = 0;
 static uint16_t mAclBufSzEdr = 0;
 static uint16_t mAclBufSzLe = 0;
@@ -1350,7 +1354,7 @@ bool hciSetDeviceClass(uint32_t cls, hciOpDoneCbk cbkDone, void *cbkData)
                                                    return -2;                                                        \
                                                }
 
-#define REQUIRE_FEATURE(_v)                    if (!(mLocalFtrs & _v)) {                                             \
+#define REQUIRE_FEATURE(_page, _v)             if (!(mLocalFtrs[_page] & _v)) {                                       \
                                                    loge("attempt to call 0x%02X.%04X w/o feature\n", _ogf, _ocf);    \
                                                    return -2;                                                        \
                                                }
@@ -1456,7 +1460,7 @@ HCI_SIMPLY_SYNC_END
  */
 HCI_SIMPLY_SYNC_WRITE(WriteEIR, (const uint8_t *data, uint8_t dlen, bool useFec), HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Extended_Inquiry_Response)
     REQUIRE_VERSION(HCI_VERSION_2_1)
-    REQUIRE_FEATURE(HCI_LMP_FTR_EXTENDED_INQUIRY_RESPONSE)
+    REQUIRE_FEATURE(0, HCI_LMP_FTR_EXTENDED_INQUIRY_RESPONSE)
     HCI_COPY_IN_BOOL(useFec)
     HCI_COPY_IN_DATA(data, dlen)
 HCI_SIMPLY_SYNC_END
@@ -1468,7 +1472,7 @@ HCI_SIMPLY_SYNC_END
  */
 HCI_SIMPLY_SYNC_WRITE(WriteSimplePairingMode, (bool useSsp), HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Simple_Pairing_Mode)
     REQUIRE_VERSION(HCI_VERSION_2_1)
-    REQUIRE_FEATURE(HCI_LMP_FTR_SSP)
+    REQUIRE_FEATURE(0, HCI_LMP_FTR_SSP)
     HCI_COPY_IN_BOOL(useSsp)
 HCI_SIMPLY_SYNC_END
 
@@ -1480,10 +1484,10 @@ HCI_SIMPLY_SYNC_END
  */
 HCI_SIMPLY_SYNC_WRITE(WriteLeHostSupported, (uint8_t leSupportedHost, uint8_t simultaneousLeHost), HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_LE_Host_Supported)
     REQUIRE_VERSION(HCI_VERSION_4_0)
-    REQUIRE_FEATURE(HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER)
+    REQUIRE_FEATURE(0, HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER)
 
     if (simultaneousLeHost) {
-        REQUIRE_FEATURE(HCI_LMP_FTR_SIMUL_LE_EDR_CAPABLE_CONTROLLER)
+        REQUIRE_FEATURE(0, HCI_LMP_FTR_SIMUL_LE_EDR_CAPABLE_CONTROLLER)
     }
 
     HCI_COPY_IN_BOOL(leSupportedHost)
@@ -1506,6 +1510,19 @@ HCI_SIMPLY_SYNC_END
 HCI_SIMPLY_SYNC_READ_NOCMDPARAMS(ReadLocalSupportedFeatures, (struct hciCmplReadLocalSupportedFeatures *evt), HCI_OGF_Informational, HCI_CMD_Read_Local_Supported_Features)
 HCI_SIMPLY_SYNC_END
 
+
+/*
+ * FUNCTION: hciReadLocalExtendedFeaturesSync
+ * USE:      read local extended features
+ * PARAMS:   evt - event to return
+ */
+HCI_SIMPLY_SYNC_READ(ReadLocalExtendedFeatures, (uint8_t page, struct hciCmplReadLocalExtendedFeatures *evt), HCI_OGF_Informational, HCI_CMD_Read_Local_Extended_Features)
+    REQUIRE_VERSION(HCI_VERSION_2_1)
+    REQUIRE_FEATURE(0, HCI_LMP_FTR_EXTENDED_FEATURES)
+    HCI_COPY_IN_U8(page)
+HCI_SIMPLY_SYNC_END
+
+
 /*
  * FUNCTION: hciReadBufferSizeSync
  * USE:      read local EDR buffer sizes
@@ -1521,7 +1538,7 @@ HCI_SIMPLY_SYNC_END
  */
 HCI_SIMPLY_SYNC_READ_NOCMDPARAMS(LeReadBufferSize, (struct hciCmplLeReadBufferSize *evt), HCI_OGF_LE, HCI_CMD_LE_Read_Buffer_Size)
     REQUIRE_VERSION(HCI_VERSION_4_0)
-    REQUIRE_FEATURE(HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER);
+    REQUIRE_FEATURE(0, HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER);
 HCI_SIMPLY_SYNC_END
 
 /*
@@ -1531,9 +1548,6 @@ HCI_SIMPLY_SYNC_END
  */
 HCI_SIMPLY_SYNC_READ_NOCMDPARAMS(ReadBdAddr, (struct hciCmplReadBdAddr *evt), HCI_OGF_Informational, HCI_CMD_Read_BD_ADDR)
 HCI_SIMPLY_SYNC_END
-
-
-///aaa
 
 
 static bool hciBtStackUp(void)
@@ -1586,13 +1600,32 @@ static bool hciBtStackUp(void)
         if (ret)
             goto out;
 
-        mLocalFtrs = utilGetLE64(&evt.features);
-        logi("BT UP: bt features reported: "FMT64"\n", CNV64(mLocalFtrs));
+        mLocalFtrs[0] = utilGetLE64(&evt.features);
+        logi("BT UP: bt features reported: "FMT64"X\n", CNV64(mLocalFtrs[0]));
 
-        if (mLocalFtrs & HCI_LMP_FTR_BR_EDR_NOT_SUPPORTED) {
+        if (mLocalFtrs[0] & HCI_LMP_FTR_BR_EDR_NOT_SUPPORTED) {
             loge("Currently we do not support controllers with no EDR support\n");
             ret = -3;
             goto out;
+        }
+    }
+
+    /* read extended features if possible */
+    if (mBtVer >= HCI_VERSION_2_1 && (mLocalFtrs[0] & HCI_LMP_FTR_EXTENDED_FEATURES)) {
+
+        uint8_t page, numPages = 1;
+
+        for(page = 0; page < numPages; page++) {
+            struct hciCmplReadLocalExtendedFeatures evt;
+
+            ret = hciReadLocalExtendedFeaturesSync(page, &evt);
+            if (ret)
+                goto out;
+
+            mLocalFtrs[page] = utilGetLE64(&evt.features);
+            if (!page)
+                numPages = utilGetLE8(&evt.maxPage) + 1;
+            logi("BT UP: bt extended features[%d/%d] reported: "FMT64"X\n", page, numPages, CNV64(mLocalFtrs[page]));
         }
     }
 
@@ -1633,7 +1666,7 @@ static bool hciBtStackUp(void)
     }
 
     /* read LE buffer sizes, if LE exists */
-    if (mBtVer >= HCI_VERSION_4_0 && (mLocalFtrs & HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER)) {
+    if (mBtVer >= HCI_VERSION_4_0 && (mLocalFtrs[0] & HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER)) {
         struct hciCmplLeReadBufferSize evt;
         uint8_t numLeBuffers;
 
@@ -1659,7 +1692,6 @@ static bool hciBtStackUp(void)
 
     /* setup a few simple settings */
     {
-
         logi("Setting PIN type to variable\n");
         ret = hciWritePinTypeSync(false);
         if (ret)
@@ -1676,8 +1708,38 @@ static bool hciBtStackUp(void)
             goto out;
     }
 
+    /* set event mask */
+    {
+        uint64_t evts = 0;
+
+        switch (mBtVer) {
+        case HCI_VERSION_1_1:
+            evts = HCI_EVENT_ALL_BT_1_1;
+            break;
+        case HCI_VERSION_1_2:
+            evts = HCI_EVENT_ALL_BT_1_2;
+            break;
+        case HCI_VERSION_2_1:
+            evts = HCI_EVENT_ALL_BT_2_1;
+            break;
+        case HCI_VERSION_3_0:
+            evts = HCI_EVENT_ALL_BT_3_0;
+            break;
+        case HCI_VERSION_4_0:
+            evts = HCI_EVENT_ALL_BT_4_0;
+            break;
+        case HCI_VERSION_4_1:
+            evts = HCI_EVENT_ALL_BT_4_1;
+            break;
+        }
+        logi("Setting event mask to 0x"FMT64"X\n", CNV64(evts));
+        ret = hciSetEventMaskSync(evts);
+        if (ret)
+            goto out;
+    }
+
     /* enable SSP, if possible */
-    if (mBtVer >= HCI_VERSION_2_1 && (mLocalFtrs & HCI_LMP_FTR_SSP)) {
+    if (mBtVer >= HCI_VERSION_2_1 && (mLocalFtrs[0] & HCI_LMP_FTR_SSP)) {
         logi("Enabling SSP\n");
         ret = hciWriteSimplePairingModeSync(true);
         if (ret)
@@ -1687,7 +1749,7 @@ static bool hciBtStackUp(void)
 
     /* enable LE, if possible */
     if (mHaveLe) {
-        mSimulLe = (mLocalFtrs & HCI_LMP_FTR_SIMUL_LE_EDR_CAPABLE_CONTROLLER) != 0;
+        mSimulLe = (mLocalFtrs[0] & HCI_LMP_FTR_SIMUL_LE_EDR_CAPABLE_CONTROLLER) != 0;
         logi("Enabling LE. Simul=%s\n", mSimulLe ? "YES" : "NO");
         ret = hciWriteLeHostSupportedSync(true, mSimulLe);
         if (ret)
