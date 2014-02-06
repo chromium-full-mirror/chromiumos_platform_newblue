@@ -1,5 +1,6 @@
 #include <errno.h>
 #include "util.h"
+#include "log.h"
 
 
 int r_sem_wait(sem_t* sem)
