@@ -894,17 +894,20 @@ success:
 /*
  * FUNCTION: hciUp
  * USE:      Bring up HCI (comms to bt chip)
- * PARAMS:   NONE
+ * PARAMS:   addr - the BT addr
+ *           aclRxF - acl data callback
+ *           scoRxF - sco data callback
+ *           logAll - log all traffic?
  * RETURN:   true on success, false else
  * NOTES:    may take a while
  */
-bool hciUp(const uint8_t *addr, hciAclRxCbk aclRxF, hciScoRxCbk scoRxF)
+bool hciUp(const uint8_t *addr, hciAclRxCbk aclRxF, hciScoRxCbk scoRxF, bool logAll)
 {
     int ret;
 
 
     logd("Vendor open\n");
-    if (!vendorOpen()) {
+    if (!vendorOpen(logAll)) {
         loge("Failed to open vendor lib\n");
         goto out_lib_open;
     }
@@ -1332,6 +1335,11 @@ static bool hciCmdSubmitSimpleWithCompleteSync(uint8_t ogf, uint16_t ocf, const 
     sem_t sem;
     struct hciCmdSubmitWithCompleteSyncData data;
 
+    if (pthread_self() == mCallbackThread) {
+        loge("Refusing to issue sync command from callback thread. This WILL deadlock\n");
+        return false;
+    }
+
     data.sem = &sem;
     data.evtBuf = evtBuf;
     data.evtBufSz = evtBufSz;
@@ -1392,6 +1400,11 @@ static bool hciCmdSubmitSimpleWithStatusSync(uint8_t ogf, uint16_t ocf, const vo
 {
     bool ret = true;
     sem_t sem;
+
+    if (pthread_self() == mCallbackThread) {
+        loge("Refusing to issue sync command from callback thread. This WILL deadlock\n");
+        return false;
+    }
 
     if (sem_init(&sem, 0, 0)) {
         loge("sem init failed\n");

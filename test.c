@@ -121,7 +121,7 @@ int main(int argc, char** argv)
         return -1;
     }
 
-    if (!hciUp(mac, testHciAclRxCbk, testHciScoRxCbk)) {
+    if (!hciUp(mac, testHciAclRxCbk, testHciScoRxCbk, true)) {
         loge("HCI up fail\n");
         return -1;
     }

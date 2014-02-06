@@ -25,7 +25,7 @@
 #define BT_VENDOR_INFACE_STRUCT  "BLUETOOTH_VENDOR_LIB_INTERFACE"
 
 
-static const char mLog = 1;
+static bool mLog = false;
 
 
 /* our state w.r.t. vendor lib */
@@ -350,7 +350,7 @@ static void* vendorWorker(void *pipeFdP)
  * NOTES:    Only needs to be done once.
  *           Keep it open from then on.
  */
-bool vendorOpen(void)
+bool vendorOpen(bool logAll)
 {
     if (mVendorLibHandle) {
         loge("Vendor lib handle not null at open time\n");
@@ -362,6 +362,8 @@ bool vendorOpen(void)
     mFdAclIn = -1;
     mFdAclOut = -1;
     mCmdCompleteWaiting = 0;
+
+    mLog = logAll;
 
     mVendorLibHandle = dlopen(BT_VENDOR_LIB_NAME, 0);
     if (!mVendorLibHandle) {

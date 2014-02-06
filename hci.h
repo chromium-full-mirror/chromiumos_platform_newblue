@@ -39,7 +39,7 @@ typedef void (*hciScoRxCbk)(uint16_t aclConn, const void *data, uint8_t len, uin
 #define SCO_LOSS_AMOUNT_ALL     3
 
 /* bring chip communications up or down */
-bool hciUp(const uint8_t *addr, hciAclRxCbk aclRxF, hciScoRxCbk scoRxF);
+bool hciUp(const uint8_t *addr, hciAclRxCbk aclRxF, hciScoRxCbk scoRxF, bool logAll);
 void hciDown(void);
 
 
