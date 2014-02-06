@@ -12,5 +12,8 @@ int r_sem_wait(sem_t* sem)
             break;
     }
 
+    if (!ret)
+        loge("sem_wait failed!\n");
+
     return ret;
 }
