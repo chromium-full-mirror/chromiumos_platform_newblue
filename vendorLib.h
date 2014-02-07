@@ -7,8 +7,8 @@
 /* callback for chip up, first fw=false for hw up, then fw=true for fw up. If first is false, do not expect second */
 typedef void (*vendorCbkChipUp)(void* cbkData, bool fw, bool up);
 
-/* callback for data rx. do not block int this for long. buf is allocated by vendor lib, freed by callback */
-typedef void (*vendorCbkRx)(void* cbkData, uint8_t typ, void *data, uint32_t len);
+/* callback for data rx. do not block in this for long */
+typedef void (*vendorCbkRx)(void* cbkData, uint8_t typ, const void *data, uint16_t len);
 
 /* open the lib itself - done once ever */
 bool vendorOpen(bool logAll);

@@ -39,7 +39,7 @@ struct EdrDiscDev {
 static uint8_t gStatus = 0;
 
 
-static void testHciAclRxCbk(uint16_t aclConn, const void *data, uint32_t len, bool first)
+static void testHciAclRxCbk(uint16_t aclConn, const void *data, uint16_t len, bool first)
 {
    logi("TEST ACL RX %ub, %s\n", len, first ? "first" : "cont\n");
 }

@@ -45,7 +45,7 @@ typedef void (*hciDeviceDiscoveredEdrNameCbk)(void *cbkData, uint8_t nameReqStat
 typedef void (*hciDeviceDiscoveredLeCbk)(void *cbkData, const struct bt_addr *addr, int8_t rssi, uint8_t replyType, const void *eir, uint8_t eirLen);
 
 typedef void (*hciOpDoneCbk)(void *cbkData, uint8_t status /* 0 = good */);
-typedef void (*hciAclRxCbk)(uint16_t aclConn, const void *data, uint32_t len, bool first);
+typedef void (*hciAclRxCbk)(uint16_t aclConn, const void *data, uint16_t len, bool first);
 typedef void (*hciScoRxCbk)(uint16_t aclConn, const void *data, uint8_t len, uint8_t lossAmount);
 #define SCO_LOSS_AMOUNT_NONE    0
 #define SCO_LOSS_AMOUNT_SOME    1

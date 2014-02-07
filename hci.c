@@ -64,7 +64,7 @@ struct hciEvtHdr {
 
 
 /* returns true if this is the event we wanted, false else. Do not block! If evt is passed as NULL, stack is shutting down. Do not try to enqueue/dequeue handlers here either */
-typedef bool (*hciEvtCbk)(struct hciEvtHdr *evt, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID);
+typedef bool (*hciEvtCbk)(const struct hciEvtHdr *evt, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID);
 typedef void (*hciSimpleCbk)(void* cbkData1, void* cbkData2, bool stackGoingDown, struct hciEvtHdr *evt);
 
 struct hciEvtWaitState {
@@ -520,7 +520,7 @@ static void hciCbkChipHwUp(void *cbkData, bool fw, bool up)
  * RETURN:   NONE
  * NOTES:
  */
-static void hciRxSco(uint16_t hdr, void *data, uint8_t len)
+static void hciRxSco(uint16_t hdr, const void *data, uint8_t len)
 {
     uint8_t loss = 0;
 
@@ -551,7 +551,7 @@ static void hciRxSco(uint16_t hdr, void *data, uint8_t len)
  * RETURN:   NONE
  * NOTES:
  */
-static void hciRxAcl(uint16_t hdr, void *data, uint16_t len)
+static void hciRxAcl(uint16_t hdr, const void *data, uint16_t len)
 {
     uint16_t pb = hdr & ACL_HDR_MASK_PB;
     uint16_t bc = hdr & ACL_HDR_MASK_BC;
@@ -572,7 +572,7 @@ static void hciRxAcl(uint16_t hdr, void *data, uint16_t len)
  * RETURN:   NONE
  * NOTES:
  */
-static void hciRxEvt(struct hciEvtHdr *evt)
+static void hciRxEvt(const struct hciEvtHdr *evt)
 {
     struct hciEvtWaitState *ws = NULL, *cur = NULL;
     bool handled = false, addCredit = false;
@@ -690,7 +690,7 @@ static void hciRxEvt(struct hciEvtHdr *evt)
  * RETURN:   true on success, false else
  * NOTES:    we must free the "data" buffer at some point in time - we own it now
  */
-static void hciRx(void *cbkData, uint8_t typ, void *data, uint32_t datalen)
+static void hciRx(void *cbkData, uint8_t typ, const void *data, uint16_t datalen)
 {
     struct hciAclHdr *hdrAcl = (struct hciAclHdr*)data;
     struct hciScoHdr *hdrSco = (struct hciScoHdr*)data;
@@ -744,7 +744,6 @@ static void hciRx(void *cbkData, uint8_t typ, void *data, uint32_t datalen)
         loge("Dropping unknown packet with type %d\n", typ);
         break;
     }
-    free(data);
 }
 
 /*
@@ -864,7 +863,7 @@ static bool hciScheduleOpDoneCbk(hciOpDoneCbk cbk, void *cbkData, uint8_t status
  * RETURN:   true if enqueue, false else
  * NOTES:
  */
-static bool hciScheduleSimpleCbk(hciSimpleCbk cbk, void *cbkData1, void *cbkData2, bool stackGoingDown, struct hciEvtHdr *evt)
+static bool hciScheduleSimpleCbk(hciSimpleCbk cbk, void *cbkData1, void *cbkData2, bool stackGoingDown, const struct hciEvtHdr *evt)
 {
     uint16_t evtLen = evt ? (sizeof(struct hciEvtHdr) + utilGetLE8(&evt->len)) : 0;
     uint32_t neededLen = sizeof(struct hciCbkWorkItem) + evtLen;
@@ -1186,7 +1185,7 @@ static bool hciCmdSubmit(uint8_t ogf, uint16_t ocf, const void* paramData, uint8
  * RETURN:   true if we handled it, false else
  * NOTES:
  */
-static bool hciCmdSubmitSimpleCbk(struct hciEvtHdr *evt, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
+static bool hciCmdSubmitSimpleCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
 {
     struct hciSimpleCbkData *cbkd = (struct hciSimpleCbkData*)cbkData;
     struct hciEvtCmdComplete *cmpl = (struct hciEvtCmdComplete*)(evt + 1);
@@ -2225,7 +2224,7 @@ static void hciInquiryEvtEdrNameHandle(uniq_t handle, uint8_t nameReqState, bool
  * RETURN:   false on error
  * NOTES:
  */
-static bool hciInquiryEvtCbk(struct hciEvtHdr *evt, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
+static bool hciInquiryEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
 {
     uint8_t evtType;
     struct bt_addr addr;

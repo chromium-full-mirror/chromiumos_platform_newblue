@@ -332,8 +332,10 @@ static void* vendorWorker(void *pipeFdP)
                     packet = NULL;
                 }
             }
-            if (packet)
+            if (packet) {
                 mCbkRx(mCbkData, buf[0], packet, sz);
+                free(packet);
+            }
         }
     }
 
