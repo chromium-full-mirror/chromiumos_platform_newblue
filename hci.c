@@ -158,7 +158,7 @@ struct hciCbkWorkItem {
 
         struct {
             struct bt_addr                addr;
-            uint8_t                       advType; 
+            uint8_t                       advType;
             int8_t                        rssi;
             uint8_t                       advLen;
             uint8_t                       adv[];
@@ -245,6 +245,7 @@ static sem_t mAclPacketsEdr;
 static sem_t mAclPacketsLe;
 static sem_t mScoPackets;
 static bool mHaveLe = false;
+static bool mHaveEdr = true;
 static bool mSimulLe = false;
 static uint8_t mInquiryState = 0;
 
@@ -396,7 +397,7 @@ static uniq_t hciEvtWaitEnqueue(const struct hciEvtWaitDescr *ewd, uniq_t forCmd
 /*
  * FUNCTION: hciCbkChipHwUp
  * USE:      Called when the chip hw or fw are up
- * PARAMS:   cbkData - unused 
+ * PARAMS:   cbkData - unused
  *           fw - true if fw status, false if hw
  *           up - success of bringing said component up
  * RETURN:   true on success, false else
@@ -410,7 +411,7 @@ static void hciCbkChipHwUp(void *cbkData, bool fw, bool up)
 /*
  * FUNCTION: hciRxSco
  * USE:      Called with a valid SCO packet
- * PARAMS:   hdr - packet header 
+ * PARAMS:   hdr - packet header
  *           data - the thing we got
  *           len - data length
  * RETURN:   NONE
@@ -579,7 +580,7 @@ static void hciRxEvt(struct hciEvtHdr *evt)
 /*
  * FUNCTION: hciRx
  * USE:      Called when the chip gives us data/events
- * PARAMS:   cbkData - unused 
+ * PARAMS:   cbkData - unused
  *           typ - type of thing we're getting
  *           data - the thing we got
  *           len - the lenght
@@ -999,7 +1000,7 @@ void hciDown(void)
     }
     pthread_mutex_unlock(&mCmdWaitLock);
 
-    
+
 
     //more deinit here
     workQueueWakeAll(mCallbackWork, 1);
@@ -1030,7 +1031,7 @@ void hciDown(void)
  */
 static bool hciCmdSubmit(uint8_t ogf, uint16_t ocf, const void* paramData, uint8_t paramLen, ...)
 {
-    const struct hciEvtWaitDescr *ewd; 
+    const struct hciEvtWaitDescr *ewd;
     struct hciCmdSendWorkItem *w;
     uint8_t numHandlers = 0;
     va_list vl;
@@ -1107,7 +1108,7 @@ static bool hciCmdSubmitSimpleCbk(struct hciEvtHdr *evt, void *cbkData, uniq_t e
 
     /* is param length within bounds? */
     if (paramLen < cbkd->expectedParamLenMin || paramLen > cbkd->expectedParamLenMax) {
-        logw("Got expected %s event, but wrong size: %u !< %u !< %u\n", name, 
+        logw("Got expected %s event, but wrong size: %u !< %u !< %u\n", name,
             cbkd->expectedParamLenMin, paramLen, cbkd->expectedParamLenMax);
         return false;
     }
@@ -1427,7 +1428,12 @@ bool hciSetLocalName(const char *name, hciOpDoneCbk cbkDone, void *cbkData)
 {
     struct hciWriteLocalName cmd = {{0,}, };
     unsigned len = strlen(name);
-    
+
+    if (!mHaveEdr) {
+        loge("Refusing name setting with no EDR support\n");
+        return false;
+    }
+
     if (len >= sizeof(cmd.name)) {
         memcpy(cmd.name, name, sizeof(cmd.name));
         if (len > sizeof(cmd.name))
@@ -1451,6 +1457,11 @@ bool hciSetLocalName(const char *name, hciOpDoneCbk cbkDone, void *cbkData)
 bool hciSetDiscoverableConnectable(const bool *discoverableStateP, const bool *connectableStateP, hciOpDoneCbk cbkDone, void *cbkData)
 {
     uint8_t newState = mInquiryState;
+
+    if (!mHaveEdr) {
+        loge("Refusing scan state setting with no EDR support\n");
+        return false;
+    }
 
     if (discoverableStateP)
         newState = (newState &~ HCI_SCAN_ENABLE_INQUIRY) | (*discoverableStateP ? HCI_SCAN_ENABLE_INQUIRY : 0);
@@ -1489,13 +1500,111 @@ bool hciSetDeviceClass(uint32_t cls, hciOpDoneCbk cbkDone, void *cbkData)
 {
     struct hciWriteClassOfDevice cmd;
 
-    if (cls >> 24) 
+    if (!mHaveEdr) {
+        loge("Refusing device class setting with no EDR support\n");
+        return false;
+    }
+
+    if (cls >> 24)
         logw("Truncating device class to 24 bits\n");
 
     utilSetLE24(&cmd.cls, cls);
     return hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Class_Of_Device, &cmd, sizeof(cmd), cbkDone, cbkData);
 }
 
+/*
+ * FUNCTION: hciSetEirData
+ * USE:      Set EIR data for EDR
+ * PARAMS:   data - the data
+ *           dlen - length of said data
+ *           cbkDone - callback to call when operation completes
+ *           cbkData - data to pass to the callback
+ * RETURN:   false on error, true if you should expect callback call
+ * NOTES:    We always use FEC
+ */
+bool hciSetEirData(const uint8_t *data, uint8_t dlen, bool fecRequired, hciOpDoneCbk cbkDone, void *cbkData)
+{
+    struct hciWriteEIR cmd = {0, };
+    if (!mHaveEdr) {
+        loge("Refusing EIR setting with no EDR support\n");
+        return false;
+    }
+
+    if (mBtVer <= HCI_VERSION_2_1 || !(mLocalFtrs[0] & HCI_LMP_FTR_EXTENDED_INQUIRY_RESPONSE)) {
+        loge("Refusing EIR setting with no EIR support\n");
+        return false;
+    }
+
+    if (dlen > sizeof(cmd.data)) {
+        loge("Refusing EIR setting that is too long\n");
+        return false;
+    }
+
+    utilSetLE8(&cmd.useFec, 1);
+    memcpy(cmd.data, data, dlen);
+
+    return hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Extended_Inquiry_Response, &cmd, sizeof(cmd), cbkDone, cbkData);
+}
+
+/*
+ * FUNCTION: hciSetAdvData
+ * USE:      Set EIR data for LE advertisements
+ * PARAMS:   data - the data
+ *           dlen - length of said data
+ *           cbkDone - callback to call when operation completes
+ *           cbkData - data to pass to the callback
+ * RETURN:   false on error, true if you should expect callback call
+ * NOTES:
+ */
+bool hciSetAdvData(const uint8_t *data, uint8_t dlen, hciOpDoneCbk cbkDone, void *cbkData)
+{
+    struct hciLeSetAdvData cmd;
+
+    if (!mHaveLe) {
+        loge("Refusing adv data setting with no EDR support\n");
+        return false;
+    }
+
+    if (dlen > sizeof(cmd.advData)) {
+        loge("Refusing LE adv setting that is too long\n");
+        return false;
+    }
+
+    memcpy(cmd.advData, data, dlen);
+    utilSetLE8(&cmd.advDataLen, dlen);
+
+    return hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_LE, HCI_CMD_LE_Set_Advertising_Data, &cmd, sizeof(cmd), cbkDone, cbkData);
+}
+
+/*
+ * FUNCTION: hciSetRspData
+ * USE:      Set EIR data for LE scan responses
+ * PARAMS:   data - the data
+ *           dlen - length of said data
+ *           cbkDone - callback to call when operation completes
+ *           cbkData - data to pass to the callback
+ * RETURN:   false on error, true if you should expect callback call
+ * NOTES:
+ */
+bool hciSetRspData(const uint8_t *data, uint8_t dlen, hciOpDoneCbk cbkDone, void *cbkData)
+{
+    struct hciSetScanResponseData cmd;
+
+    if (!mHaveLe) {
+        loge("Refusing rsp data setting with no EDR support\n");
+        return false;
+    }
+
+    if (dlen > sizeof(cmd.scanRspData)) {
+        loge("Refusing LE rsp setting that is too long\n");
+        return false;
+    }
+
+    memcpy(cmd.scanRspData, data, dlen);
+    utilSetLE8(&cmd.scanRspDataLen, dlen);
+
+    return hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_LE, HCI_CMD_LE_Set_Scan_Response_Data, &cmd, sizeof(cmd), cbkDone, cbkData);
+}
 
 
 /*
@@ -1680,20 +1789,6 @@ HCI_SIMPLY_SYNC_END
 HCI_SIMPLY_SYNC_WRITE(WriteInquiryMode, (uint8_t inqMode), HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Inquiry_Mode)
     REQUIRE_VERSION(HCI_VERSION_1_2)
     HCI_COPY_IN_U8(inqMode)
-HCI_SIMPLY_SYNC_END
-
-/*
- * FUNCTION: hciWriteEIRSync
- * USE:      Set our EIR data and EIR FEC settings
- * PARAMS:   data - the EIR data
- *           dlen - length of said data
- *           fecRequired - send data with error correction?
- */
-HCI_SIMPLY_SYNC_WRITE(WriteEIR, (const uint8_t *data, uint8_t dlen, bool useFec), HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Extended_Inquiry_Response)
-    REQUIRE_VERSION(HCI_VERSION_2_1)
-    REQUIRE_FEATURE(0, HCI_LMP_FTR_EXTENDED_INQUIRY_RESPONSE)
-    HCI_COPY_IN_BOOL(useFec)
-    HCI_COPY_IN_DATA(data, dlen)
 HCI_SIMPLY_SYNC_END
 
 /*
@@ -2200,12 +2295,6 @@ static bool hciBtStackUp(void)
 
         mLocalFtrs[0] = utilGetLE64(&evt.features);
         logi("BT UP: bt features reported: "FMT64"X\n", CNV64(mLocalFtrs[0]));
-
-        if (mLocalFtrs[0] & HCI_LMP_FTR_BR_EDR_NOT_SUPPORTED) {
-            loge("Currently we do not support controllers with no EDR support\n");
-            ret = -3;
-            goto out;
-        }
     }
 
     /* read extended features if possible */
@@ -2276,6 +2365,8 @@ static bool hciBtStackUp(void)
         mAclBufSzLe = utilGetLE16(&evt.leBufferSize);
         numLeBuffers = utilGetLE8(&evt.leNumBuffers);
         mHaveLe = true;
+        if (mLocalFtrs[0] & HCI_LMP_FTR_BR_EDR_NOT_SUPPORTED)
+            mHaveEdr = false;
 
         logi("BT UP: LE buffers: %ux%ub\n", numLeBuffers, mAclBufSzLe);
 
@@ -2299,7 +2390,7 @@ static bool hciBtStackUp(void)
         ret = hciWriteConnAcceptTimeoutSync(HCI_CONN_RX_TIMEOUT);
         if (ret)
             goto out;
-   
+
         logi("Requiting authentication\n");
         ret = hciWriteAuthEnableSync(true);
         if (ret)
@@ -2434,6 +2525,11 @@ uniq_t hciDiscoverEdrStart(hciDeviceDiscoveredEdrCbk cbk, void *cbkData, uint32_
     uint32_t len;
     int sta;
 
+    if (!mHaveEdr) {
+        loge("Refusing EDR discovery with no EDR support\n");
+        return 0;
+    }
+
     if (!cbk) {
         loge("Refusing discovery with no callback\n");
         return 0;
@@ -2514,6 +2610,11 @@ uniq_t hciDiscoverEdrGetName(hciDeviceDiscoveredEdrNameCbk cbk, void *cbkData, c
     struct hciRemoteNameRequest cmd;
     struct hciEvtWaitDescr ewd;
     uniq_t *handleCopy, ret;
+
+    if (!mHaveEdr) {
+        loge("Refusing EDR name discovery with no EDR support\n");
+        return 0;
+    }
 
     if (!dns)
         return 0;

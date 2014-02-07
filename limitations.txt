@@ -10,11 +10,10 @@ we do that, and assume any open()s to the other side are a success, since at wor
 timer support prefers system with at least Linux 2.6.39 kernel for CLOCK_BOOTTIME support
 all others will have issues...
 
-timer assumes pointers are no more than 64-bits on your system
+timer assumes pointers are no more than 64-bits on your system (who is using a 128-bit proc?)
 
 bt_vendor_lib.h is a copy from bluedroid and is needed. once we are in the build system, we can use the real h file and delete this copy
 
-vendor lib does not support xmit callback
 
 bt 1.1 is minimum supported version
 
@@ -24,7 +23,7 @@ TODOs:
 
 
 
-we shoudl support LE-only controllers at some point
+we should support LE-only controllers at some point
 
 sniff mode for sleep mode?
 

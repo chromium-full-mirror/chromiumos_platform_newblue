@@ -56,14 +56,14 @@ void hciDown(void);
 /* misc api. False on error, true if expect callback */
 bool hciSetLocalName(const char *name, hciOpDoneCbk cbkDone, void *cbkData);
 bool hciSetDeviceClass(uint32_t cls, hciOpDoneCbk cbkDone, void *cbkData);
-bool hciSetEirData(const uint8_t *data, uint8_t dlen, bool fecRequired, hciOpDoneCbk cbkDone, void *cbkData);
+bool hciSetEirData(const uint8_t *data, uint8_t dlen, bool fecRequired, hciOpDoneCbk cbkDone, void *cbkData); /* EIR for EDR */
+bool hciSetAdvData(const uint8_t *data, uint8_t dlen, hciOpDoneCbk cbkDone, void *cbkData); /* EIR for LE adv */
+bool hciSetRspData(const uint8_t *data, uint8_t dlen, hciOpDoneCbk cbkDone, void *cbkData); /* EIR for LE rsp */
 bool hciSetDiscoverableConnectable(const bool *discoverableStateP, const bool *connectableStateP, hciOpDoneCbk cbkDone, void *cbkData);/* pass null to keep as is */
-
 uniq_t hciDiscoverEdrStart(hciDeviceDiscoveredEdrCbk cbk, void *cbkData, uint32_t msec);
 bool hciDiscoverEdrStop(uniq_t handle);
 uniq_t hciDiscoverEdrGetName(hciDeviceDiscoveredEdrNameCbk cbk, void *cbkData, const struct hciNameGetInfo *forNameGetting); /* safe to call from hci callbacks */
 bool hciDiscoverEdrGetNameCancel(uniq_t handle);
-
 uniq_t hciDiscoverLeStart(hciDeviceDiscoveredLeCbk cbk, void *cbkData, bool active, bool useRandomAddr);
 bool hciDiscoverLeStop(uniq_t handle);
 
