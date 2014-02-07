@@ -240,6 +240,9 @@ static uint64_t mLocalFtrs[MAX_FTR_PAGES] = {0, };
 static uint16_t mScoBufSz = 0;
 static uint16_t mAclBufSzEdr = 0;
 static uint16_t mAclBufSzLe = 0;
+static uint16_t mScoBufNum = 0;
+static uint16_t mAclBufNumEdr = 0;
+static uint16_t mAclBufNumLe = 0;
 static bool mBtJointBuffers = true; /* use EDR buffers for LE */
 static sem_t mAclPacketsEdr;
 static sem_t mAclPacketsLe;
@@ -2331,7 +2334,7 @@ static bool hciBtStackUp(void)
     /* read EDR buffer sizes */
     {
         struct hciCmplReadBufferSize evt;
-        uint16_t numBufAcl, numBufSco;
+        uint16_t i;
 
         logi("BT UP: reading EDR buffer size\n");
         ret = hciReadBufferSizeSync(&evt);
@@ -2340,22 +2343,23 @@ static bool hciBtStackUp(void)
 
         mScoBufSz = utilGetLE8(&evt.scoBufferLen);
         mAclBufSzEdr = utilGetLE16(&evt.aclBufferLen);
-        numBufAcl = utilGetLE16(&evt.numAclBuffers);
-        numBufSco = utilGetLE16(&evt.numScoBuffers);
+        mAclBufNumEdr = utilGetLE16(&evt.numAclBuffers);
+        mScoBufNum = utilGetLE16(&evt.numScoBuffers);
 
-        logi("BT UP: EDR buffers: %ux%ub ACL + %ux%ub SCO\n", numBufAcl, mAclBufSzEdr, numBufSco, mScoBufSz);
+        logi("BT UP: EDR buffers: %ux%ub ACL + %ux%ub SCO\n", mAclBufNumEdr, mAclBufSzEdr, mScoBufNum, mScoBufSz);
 
-        while (numBufAcl--)
+
+        for (i = 0; i < mAclBufNumEdr; i++)
             sem_post(&mAclPacketsEdr);
 
-        while (numBufSco--)
+        for (i = 0; i < mScoBufNum; i++)
             sem_post(&mScoPackets);
     }
 
     /* read LE buffer sizes, if LE exists */
     if (mBtVer >= HCI_VERSION_4_0 && (mLocalFtrs[0] & HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER)) {
         struct hciCmplLeReadBufferSize evt;
-        uint8_t numLeBuffers;
+        uint16_t i;
 
         logi("BT UP: reading LE buffer size\n");
         ret = hciLeReadBufferSizeSync(&evt);
@@ -2363,19 +2367,19 @@ static bool hciBtStackUp(void)
             goto out;
 
         mAclBufSzLe = utilGetLE16(&evt.leBufferSize);
-        numLeBuffers = utilGetLE8(&evt.leNumBuffers);
+        mAclBufNumLe = utilGetLE8(&evt.leNumBuffers);
         mHaveLe = true;
         if (mLocalFtrs[0] & HCI_LMP_FTR_BR_EDR_NOT_SUPPORTED)
             mHaveEdr = false;
 
-        logi("BT UP: LE buffers: %ux%ub\n", numLeBuffers, mAclBufSzLe);
+        logi("BT UP: LE buffers: %ux%ub\n", mAclBufNumLe, mAclBufSzLe);
 
-        if (!numLeBuffers)
+        if (!mAclBufNumLe)
             logi("BT UP: joint EDR/LE ACL buffers detected\n");
         else
             mBtJointBuffers = false;
 
-        while (numLeBuffers--)
+        for (i = 0; i < mAclBufNumLe; i++)
             sem_post(&mAclPacketsLe);
     }
 
@@ -2784,4 +2788,81 @@ bool hciDiscoverLeStop(uniq_t handle)
 
     return !!handle;
 }
+
+
+/*
+ * FUNCTION: hciInfoSharedBuffers
+ * USE:      Provide info on whether EDR & LE ACL buffers are shared in our controller
+ * PARAMS:   NONE
+ * RETURN:   the answer
+ * NOTES:
+ */
+bool hciInfoSharedBuffers(void)
+{
+   return mBtJointBuffers;
+}
+
+/*
+ * FUNCTION: hciInfoSharedBuffers
+ * USE:      Provide info on SCO buffer size in our controller and SCO support
+ * PARAMS:   bufSz - where to store buffer sizes (or NULL if uninterested)
+ *           bufNum - where to store number of buffers (or NULL if uninterested)
+ * RETURN:   true if SCO supported
+ * NOTES:
+ */
+bool hciInfoScoBufSize(uint16_t *bufSz, uint16_t *bufNum) //false if no EDR support
+{
+    if (!(mLocalFtrs[0] & HCI_LMP_FTR_SCO_LINKS))
+        return false;
+
+    if (bufSz)
+        *bufSz = mScoBufSz;
+    if (bufNum)
+        *bufNum = mScoBufNum;
+
+    return true;
+}
+
+/*
+ * FUNCTION: hciInfoSharedBuffers
+ * USE:      Provide info on EDR ACL buffer size in our controller and EDR support
+ * PARAMS:   bufSz - where to store buffer sizes (or NULL if uninterested)
+ *           bufNum - where to store number of buffers (or NULL if uninterested)
+ * RETURN:   true if EDR supported
+ * NOTES:
+ */
+bool hciInfoAclBufSizeEdr(uint16_t *bufSz, uint16_t *bufNum)
+{
+    if (!mHaveEdr)
+        return false;
+
+    if (bufSz)
+        *bufSz = mAclBufSzEdr;
+    if (bufNum)
+        *bufNum = mAclBufNumEdr;
+
+    return true;
+}
+
+/*
+ * FUNCTION: hciInfoSharedBuffers
+ * USE:      Provide info on LE ACL buffer size in our controller and LE support
+ * PARAMS:   bufSz - where to store buffer sizes (or NULL if uninterested)
+ *           bufNum - where to store number of buffers (or NULL if uninterested)
+ * RETURN:   true if LE supported
+ * NOTES:
+ */
+bool hciInfoAclBufSizeLe(uint16_t *bufSz, uint16_t *bufNum)
+{
+    if (!mHaveLe)
+        return false;
+
+    if (bufSz)
+        *bufSz = mAclBufSzLe;
+    if (bufNum)
+        *bufNum = mAclBufNumLe;
+
+    return true;
+}
+
 

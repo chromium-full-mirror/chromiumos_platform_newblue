@@ -52,6 +52,12 @@ typedef void (*hciScoRxCbk)(uint16_t aclConn, const void *data, uint8_t len, uin
 bool hciUp(const uint8_t *addr, hciAclRxCbk aclRxF, hciScoRxCbk scoRxF, bool logAll);
 void hciDown(void);
 
+/* info api */
+bool hciInfoSharedBuffers(void); //true if EDR & LE share buffers
+bool hciInfoScoBufSize(uint16_t *bufSz, uint16_t *bufNum); //false if no SCO support
+bool hciInfoAclBufSizeEdr(uint16_t *bufSz, uint16_t *bufNum); //false if no EDR support
+bool hciInfoAclBufSizeLe(uint16_t *bufSz, uint16_t *bufNum); //false if no LE support
+
 
 /* misc api. False on error, true if expect callback */
 bool hciSetLocalName(const char *name, hciOpDoneCbk cbkDone, void *cbkData);
