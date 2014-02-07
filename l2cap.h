@@ -108,7 +108,7 @@ bool l2cApiUserAthorizNotify(l2c_handle_t handle, bool authorized);
 /* external code can use this to disconnect a channel */
 void l2cApiDisconnect(l2c_handle_t handle);
 
-/* external code can use this to send to the other side */
+/* external code can use this to send to the other side - blocks till sent */
 bool l2cApiDataTx(l2c_handle_t handle, const void *data, uint32_t size);
 
 /* if no connection exists, one will *not* be created */

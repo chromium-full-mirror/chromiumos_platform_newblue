@@ -3784,7 +3784,7 @@ void l2cApiDisconnect(l2c_handle_t handle)
  *           data - the data
  *           size - how much data there is
  * RETURN:   true is a send was requested. False on immediate error.
- * NOTES:    A copy of the data is made
+ * NOTES:    Blocks till data is sent
  */
 bool l2cApiDataTx(l2c_handle_t handle, const void* data, uint32_t size)
 {
