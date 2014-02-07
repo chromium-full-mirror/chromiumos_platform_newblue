@@ -186,8 +186,17 @@ struct hciAclConn {
     struct bt_addr     addr;
 
     uint16_t           id;
+    bool               amMaster;
+    bool               encrypted;
 
-    uint8_t            state; //TODO: this
+    union {
+        struct {
+            uint16_t   interval;
+            uint16_t   latency;
+            uint16_t   timeout;
+            uint8_t    mca;
+        } le;
+    };
 };
 
 struct hciDiscoverNameState {
@@ -259,7 +268,7 @@ static bool hciBtStackUp(void);
 
 /*
  * FUNCTION: hciConnFindById
- * USE:      Fidn a connection struct given an ID
+ * USE:      Find a connection struct given an ID
  * PARAMS:   id - the id
  * RETURN:   connection struct or NULL if not found
  * NOTES:    call with mConnsLock held
@@ -272,6 +281,97 @@ static struct hciAclConn* hciConnFindById(uint16_t id)
         c = c->next;
 
     return c;
+}
+
+/*
+ * FUNCTION: hciConnUpAcl
+ * USE:      Setup a local ACL conn struct for this conn
+ * PARAMS:   id - the id
+ *           amMaster - true if we're the master
+ *           mac - the mac
+ *           encrypted - true if encrypted
+ * RETURN:   connection struct or NULL if error
+ * NOTES:    call with mConnsLock held
+ */
+static struct hciAclConn* hciConnUpAcl(uint16_t id, bool amMaster, const uint8_t *mac, bool encrypted)
+{
+    struct hciAclConn *c;
+
+    if (hciConnFindById(id)) {
+        loge("Refusing to create conn struct for existing connection %d\n", id);
+        return NULL;
+    }
+
+    c = (struct hciAclConn*)malloc(sizeof(struct hciAclConn));
+    if (!c)
+        return NULL;
+
+    memcpy(c->addr.addr, mac, sizeof(c->addr.addr));
+    c->amMaster = amMaster;
+    c->encrypted = encrypted;
+    c->prev = NULL;
+    c->id = id;
+
+    c->next = mConns;
+    mConns = c;
+}
+
+/*
+ * FUNCTION: hciConnUpAclEdr
+ * USE:      Setup a local ACL.EDR conn struct for this conn
+ * PARAMS:   id - the id
+ *           amMaster - true if we're the master
+ *           mac - the mac
+ *           encrypted - true if encrypted
+ * RETURN:   true on success
+ * NOTES:
+ */
+static bool hciConnUpAclEdr(uint16_t id, bool amMaster, const uint8_t *mac, bool encrypted)
+{
+    struct hciAclConn *c;
+
+    pthread_mutex_lock(&mConnsLock);
+
+    c = hciConnUpAcl(id, amMaster, mac, encrypted);
+    if (c) {
+        c->addr.type = BT_ADDR_TYPE_EDR;
+    }
+    pthread_mutex_unlock(&mConnsLock);
+
+    return !!c;
+}
+
+/*
+ * FUNCTION: hciConnUpAclLe
+ * USE:      Setup a local ACL.LE conn struct for this conn
+ * PARAMS:   id - the id
+ *           amMaster - true if we're the master
+ *           mac - the mac
+ *           addrRandom - true if adddress is random
+ *           interval - LE connection interval
+ *           latency - LE conenction latency
+ *           timeout - LE connection timeout
+ *           mca - LE connection master clock accuracy
+ * RETURN:   true on success
+ * NOTES:
+ */
+static bool hciConnUpAclLe(uint16_t id, bool amMaster, const uint8_t *mac, bool addrRandom, uint16_t interval, uint8_t latency, uint16_t timeout, uint8_t mca)
+{
+    struct hciAclConn *c;
+
+    pthread_mutex_lock(&mConnsLock);
+
+    c = hciConnUpAcl(id, amMaster, mac, false);
+    if (c) {
+        c->addr.type = addrRandom ? BT_ADDR_TYPE_LE_RANDOM : BT_ADDR_TYPE_LE_PUBLIC;
+        c->le.interval = interval;
+        c->le.latency = latency;
+        c->le.timeout = timeout;
+        c->le.mca = mca;
+    }
+    pthread_mutex_unlock(&mConnsLock);
+
+    return !!c;
 }
 
 /*
@@ -586,7 +686,7 @@ static void hciRxEvt(struct hciEvtHdr *evt)
  * PARAMS:   cbkData - unused
  *           typ - type of thing we're getting
  *           data - the thing we got
- *           len - the lenght
+ *           len - the length
  * RETURN:   true on success, false else
  * NOTES:    we must free the "data" buffer at some point in time - we own it now
  */
@@ -2706,7 +2806,6 @@ bool hciDiscoverEdrGetNameCancel(uniq_t handle)
 uniq_t hciDiscoverLeStart(hciDeviceDiscoveredLeCbk cbk, void *cbkData, bool active, bool useRandomAddr)
 {
     uniq_t ret = 0;
-    uint32_t len;
     int sta;
 
     if (!cbk) {

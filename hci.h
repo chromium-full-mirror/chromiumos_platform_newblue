@@ -62,7 +62,6 @@ bool hciInfoScoBufSize(uint16_t *bufSz, uint16_t *bufNum); //false if no SCO sup
 bool hciInfoAclBufSizeEdr(uint16_t *bufSz, uint16_t *bufNum); //false if no EDR support
 bool hciInfoAclBufSizeLe(uint16_t *bufSz, uint16_t *bufNum); //false if no LE support
 
-
 /* misc api. False on error, true if expect callback */
 bool hciSetLocalName(const char *name, hciOpDoneCbk cbkDone, void *cbkData);
 bool hciSetDeviceClass(uint32_t cls, hciOpDoneCbk cbkDone, void *cbkData);
