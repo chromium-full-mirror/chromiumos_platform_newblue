@@ -22,12 +22,22 @@
 #define HCI_ADV_TYPE_ADV_NONCONN_IND                             0x03 /* non-connectable undirected */
 #define HCI_ADV_TYPE_SCAN_RSP                                    0x04 /* scan response */
 
-struct hciOpaqueDiscId;
 
-/* various callbacks */
-/* "devCls" is devic class "forNameGetting" is only valid in callback - do not save it. rssi = 127 -> no RSSI */
-typedef void (*hciDeviceDiscoveredEdrCbk)(void *cbkData, const struct bt_addr *addr, uint32_t devCls, const struct hciOpaqueDiscId *forNameGetting, int8_t rssi, const void *eir, uint8_t eirLen);
-typedef void (*hciDeviceDiscoveredEdrNameCbk)(void *cbkData, const char *name);
+struct hciNameGetInfo {
+    uint8_t  mac[6];
+    uint16_t clockOffset; /* if unknown, set all to zeroes except mac */
+    uint8_t  PSRM;
+    uint8_t  PSM; /* unused in BT 1.2+ */
+};
+
+#define HCI_NAME_REQ_STATUS_IN_PROGRESS  0
+#define HCI_NAME_REQ_STATUS_ERROR        1
+#define HCI_NAME_REQ_STATUS_COMPLETE     2
+
+/* various callbacks - it is universally a bad idea to call back into hci from these, except otherwise noted funcs */
+/* "devCls" is devic class, rssi = 127 -> no RSSI */
+typedef void (*hciDeviceDiscoveredEdrCbk)(void *cbkData, const struct bt_addr *addr, uint32_t devCls, const struct hciNameGetInfo *forNameGetting, int8_t rssi, const void *eir, uint8_t eirLen);
+typedef void (*hciDeviceDiscoveredEdrNameCbk)(void *cbkData, uint8_t nameReqStatus, const char *name);
 typedef void (*hciDeviceDiscoveredLeCbk)(void *cbkData, const struct bt_addr *addr, int8_t rssi, uint8_t replyType, const void *eir, uint8_t eirLen);
 
 typedef void (*hciOpDoneCbk)(void *cbkData, uint8_t status /* 0 = good */);
@@ -51,7 +61,7 @@ bool hciSetDiscoverableConnectable(const bool *discoverableStateP, const bool *c
 
 uniq_t hciDiscoverEdrStart(hciDeviceDiscoveredEdrCbk cbk, void *cbkData, uint32_t msec);
 bool hciDiscoverEdrStop(uniq_t handle);
-uniq_t hciDiscoverEdrGetName(hciDeviceDiscoveredEdrNameCbk cbk, void *cbkData, const struct hciOpaqueDiscId *forNameGetting);
+uniq_t hciDiscoverEdrGetName(hciDeviceDiscoveredEdrNameCbk cbk, void *cbkData, const struct hciNameGetInfo *forNameGetting); /* safe to call from hci callbacks */
 bool hciDiscoverEdrGetNameCancel(uniq_t handle);
 
 uniq_t hciDiscoverLeStart(hciDeviceDiscoveredLeCbk cbk, void *cbkData, bool active, bool useRandomAddr);

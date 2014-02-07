@@ -1,26 +1,39 @@
-#include <stdio.h>
 #include <semaphore.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
-#include "hci.h"
 #include "vendorLib.h"
 #include "l2cap.h"
+#include "hci.h"
 #include "util.h"
 #include "log.h"
 #include "bt.h"
 
 struct LeDiscDev {
-    struct LeDiscDev *next;
-    uint8_t           mac[BT_MAC_LEN];
-    bool              randomAddr;
-    bool              haveRsp;
-    int8_t            rssi;
-    uint8_t           advType;
-    uint8_t           advLen;
-    uint8_t           rspLen;
-    uint8_t           advData[31];
-    uint8_t           rspData[31];
+    struct LeDiscDev  *next;
+    uint8_t            mac[BT_MAC_LEN];
+    bool               randomAddr;
+    bool               haveRsp;
+    int8_t             rssi;
+    uint8_t            advType;
+    uint8_t            advLen;
+    uint8_t            rspLen;
+    uint8_t            advData[31];
+    uint8_t            rspData[31];
 };
+
+struct EdrDiscDev {
+    struct EdrDiscDev *next;
+    uint8_t            mac[BT_MAC_LEN];
+    uint32_t           devCls;
+    int8_t             rssi;
+    bool               haveEir;
+    bool               haveName;
+    uint8_t            eir[240];
+    char               name[249];
+};
+
 
 
 static uint8_t gStatus = 0;
@@ -48,8 +61,7 @@ static void opDoneCbk(void *cbkData, uint8_t status)
 
 static void leDiscoveryCbk(void *cbkData, const struct bt_addr *addr, int8_t rssi, uint8_t replyType, const void *eir, uint8_t eirLen)
 {
-    struct LeDiscDev **leDevicesP = (struct LeDiscDev**)cbkData;
-    struct LeDiscDev *t;
+    struct LeDiscDev **leDevicesP = (struct LeDiscDev**)cbkData, *t;
     char randomAddr = addr->type == BT_ADDR_TYPE_LE_RANDOM;
 
     /* see if this mac exists */
@@ -67,6 +79,7 @@ static void leDiscoveryCbk(void *cbkData, const struct bt_addr *addr, int8_t rss
         memmove(t->mac, addr->addr, BT_MAC_LEN);
         t->next = *leDevicesP;
         *leDevicesP = t;
+        fprintf(stderr, ".");
     }
 
     t->rssi = rssi;
@@ -75,11 +88,66 @@ static void leDiscoveryCbk(void *cbkData, const struct bt_addr *addr, int8_t rss
         memcpy(t->advData, eir, eirLen);
         t->advLen = eirLen;
     } else {
+        if (!t->haveRsp)
+            fprintf(stderr, ",");
         t->haveRsp = true;
         memcpy(t->rspData, eir, eirLen);
         t->rspLen = eirLen;
     }
 }
+
+static void edrDiscoveredNameCbk(void *cbkData, uint8_t nameReqStatus, const char *name)
+{
+    struct EdrDiscDev *t = (struct EdrDiscDev*)cbkData;
+
+    if (nameReqStatus == HCI_NAME_REQ_STATUS_COMPLETE) {
+        t->haveName = true;
+        strcpy(t->name, name);
+        fprintf(stderr, ",");
+    }
+    if (nameReqStatus == HCI_NAME_REQ_STATUS_ERROR)
+        fprintf(stderr, "!");
+    if (nameReqStatus == HCI_NAME_REQ_STATUS_IN_PROGRESS)
+        fprintf(stderr, "-");
+}
+
+static void edrDiscoveredCbk(void *cbkData, const struct bt_addr *addr, uint32_t devCls, const struct hciNameGetInfo *forNameGetting, int8_t rssi, const void *eir, uint8_t eirLen)
+{
+    struct EdrDiscDev **edrDevicesP = (struct EdrDiscDev**)cbkData, *t;
+    bool isNew = false;
+
+    /* see if this mac exists */
+    t = *edrDevicesP;
+    while (t && memcmp(t->mac, addr->addr, sizeof(t->mac)))
+        t = t->next;
+
+    if (!t) {
+        t = (struct EdrDiscDev*)calloc(1, sizeof(struct EdrDiscDev));
+        if (!t)
+            return;
+
+        t->next = *edrDevicesP;
+        *edrDevicesP = t;
+
+        isNew = true;
+        fprintf(stderr, ".");
+    }
+
+    t->rssi = rssi;
+    t->devCls = devCls;
+    memcpy(t->mac, addr->addr, sizeof(t->mac));
+
+    if (eirLen > 1)
+        t->haveEir = 1;
+    if (eirLen > sizeof(t->eir))
+        eirLen = sizeof(t->eir);
+    memcpy(t->eir, eir, eirLen);
+
+    /* doing this at this time lowers discovery efficiency, fyi */
+    if (isNew && !hciDiscoverEdrGetName(edrDiscoveredNameCbk, t, forNameGetting))
+        loge("failed to request name for %02X:%02X:%02X:%02X:%02X:%02X\n", t->mac[5], t->mac[4], t->mac[3], t->mac[2], t->mac[1], t->mac[0]);
+}
+
 
 #define DEVICE_CLASS_SERVICE_RENDERING		0x040000	//PRINTER, SPEAKER
 #define DEVICE_CLASS_SERVICE_AUDIO		0x200000	//SPEAKER, MIC, HEADSET
@@ -121,11 +189,10 @@ int main(int argc, char** argv)
         return -1;
     }
 
-    if (!hciUp(mac, testHciAclRxCbk, testHciScoRxCbk, true)) {
+    if (!hciUp(mac, testHciAclRxCbk, testHciScoRxCbk, false)) {
         loge("HCI up fail\n");
         return -1;
     }
-
 
     logi("setting name\n");
     if (!hciSetLocalName("NewBlue test", opDoneCbk, &sem))
@@ -160,6 +227,7 @@ int main(int argc, char** argv)
         h = hciDiscoverLeStart(leDiscoveryCbk, &leDevices, true, false);
         if (h) {
             sleep(20);
+            fprintf(stderr, "\n");
             logi("discovery stop = %s\n", hciDiscoverLeStop(h) ? "OK" : "FAIL");
 
             while (leDevices) {
@@ -188,6 +256,50 @@ int main(int argc, char** argv)
             loge("Failed to do LE discovery\n");
     }
 
+    //try EDR discovery
+    {
+        struct EdrDiscDev *edrDevices = NULL, *t;
+
+        logi("Trying some EDR discovery...\n");
+        h = hciDiscoverEdrStart(edrDiscoveredCbk, &edrDevices, 20000);
+        if (h) {
+            bool stopret;
+            sleep(20);
+            fprintf(stderr, "|");
+            stopret = hciDiscoverEdrStop(h);
+            sleep(20);
+            fprintf(stderr, "\n");
+            logi("discovery stop = %s\n", stopret ? "OK" : "FAIL");
+
+            while (edrDevices) {
+                char str[128];
+                t = edrDevices;
+                edrDevices = edrDevices->next;
+
+                logi("Device %02X:%02X:%02X:%02X:%02X:%02X\n", t->mac[5], t->mac[4], t->mac[3], t->mac[2], t->mac[1], t->mac[0]);
+                if (t->rssi != HCI_RSSI_UNKNOWN)
+                    logi("\tRSSI: %d dBm\n", t->rssi);
+                else
+                    logi("\tRSSI unknown\n");
+                logi("\tCLASS: 0x%06x\n", t->devCls);
+                if (t->haveName)
+                    logi("\tNAME: '%s'\n", t->name);
+                else
+                    logi("\tNAME unknown\n");
+
+                logData(str, t->eir, 32);
+                if (t->haveEir)
+                    logi("EIR: %s...\n", str);
+                else
+                    logi("EIR not present\n");
+                free(t);
+            }
+
+        } else
+            loge("Failed to do EDR discovery\n");
+    }
+
+
     logi("waiting...press a key\n");
     getchar();
 
@@ -199,3 +311,5 @@ int main(int argc, char** argv)
 
     return 0;
 }
+
+

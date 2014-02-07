@@ -11,6 +11,8 @@
 #define HCI_LAP_Unlimited_Inquiry                                0x9E8B33
 #define HCI_LAP_Limited_Inquiry                                  0x9E8B00
 
+#define HCI_CLOCK_OFST_VALID                                     0x8000
+
 #define HCI_PKT_TYP_NO_2_DH1                                     0x0002 /* BT 2.1+ */
 #define HCI_PKT_TYP_NO_3_DH1                                     0x0004 /* BT 2.1+ */
 #define HCI_PKT_TYP_DM1                                          0x0008 /* BT 1.1+ */
@@ -402,7 +404,6 @@ struct hciCreateConnection {
     uint16_t clockOffset; /* possibly | HCI_CLOCK_OFST_VALID */
     uint8_t allowRoleSwitch;
 } __packed;
-#define HCI_CLOCK_OFST_VALID  0x8000
 
 #define HCI_CMD_Disconnect                                       0x0006 /* status */
 struct hciDisconnect {

@@ -122,14 +122,6 @@ struct hciCmdSendWorkItem {
 #define CBK_WORK_FLUSH              5
 
 
-struct hciOpaqueDiscId {
-    uniq_t   handle; /* on way out: discovery handle, on way in, req handle */
-    uint8_t  mac[6];
-    uint16_t clockOffset;
-    uint8_t  PSRM;
-    uint8_t  PSM; /* unused in BT 1.2+ */
-};
-
 struct hciCbkWorkItem {
     uint8_t       cbkWorkItemType;
 
@@ -151,7 +143,7 @@ struct hciCbkWorkItem {
         struct {
             struct bt_addr                addr;
             uint32_t                      devCls;
-            struct hciOpaqueDiscId        fng;
+            struct hciNameGetInfo         fng;
             int8_t                        rssi;
             uint8_t                       eirLen;
             uint8_t                       eir[];
@@ -160,6 +152,7 @@ struct hciCbkWorkItem {
         struct {
             hciDeviceDiscoveredEdrNameCbk cbk;
             void                         *cbkData;
+            uint8_t                       nameReqState;
             char                          name[];
         } edrName;
 
@@ -196,11 +189,13 @@ struct hciAclConn {
 
     uint8_t            state; //TODO: this
 };
+
 struct hciDiscoverNameState {
     struct hciDiscoverNameState   *next;
     hciDeviceDiscoveredEdrNameCbk  cbk;
     void                          *cbkData;
-    struct hciOpaqueDiscId         info;
+    uint8_t                        mac[6];
+    uniq_t                         handle;
 };
 
 /* our state */
@@ -256,7 +251,6 @@ static uint8_t mInquiryState = 0;
 
 /* fwd declarations */
 static bool hciBtStackUp(void);
-static void hciDiscoverEdrStopInt(bool cancelCmd);
 
 
 /*
@@ -702,7 +696,7 @@ static void* hciCbkWorker(void *unused)
             mDiscoverEdrCbk(mDiscoverEdrData, &w->edrDev.addr, w->edrDev.devCls, &w->edrDev.fng, w->edrDev.rssi, w->edrDev.eir, w->edrDev.eirLen);
             break;
         case CBK_WORK_EDR_DISC_NAME:
-            w->edrName.cbk(w->edrName.cbkData, w->edrName.name);
+            w->edrName.cbk(w->edrName.cbkData, w->edrName.nameReqState, w->edrName.name);
             break;
         case CBK_WORK_LE_DISC_DEV:
             mDiscoverLeCbk(mDiscoverLeData, &w->leDev.addr, w->leDev.rssi, w->leDev.advType, w->leDev.adv, w->leDev.advLen);
@@ -995,7 +989,6 @@ out_lib_open:
  * NOTES:    may take a while, some shutdown actions may go
  *           on after this (in higher layers)
  */
-static bool hciInquiryEvtCbk(struct hciEvtHdr *evt, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID);
 void hciDown(void)
 {
     logd("Cancelling all event waiters\n");
@@ -1033,7 +1026,7 @@ void hciDown(void)
  *           paramLen - parameter length
  *           ... - NULL-terminated list of const struct hciEvtWaitDescr* for wanted events
  * RETURN:   success
- * NOTES:
+ * NOTES:    SHALL FINISH QUICKLY AND NOT BLOCK. WILL NOT DEADLOCK YOU! ALWAYS SAFE TO CALL!
  */
 static bool hciCmdSubmit(uint8_t ogf, uint16_t ocf, const void* paramData, uint8_t paramLen, ...)
 {
@@ -1834,21 +1827,6 @@ HCI_SIMPLY_SYNC_WRITE(RemoteNameRequestCancel, (const uint8_t *mac), HCI_OGF_LE,
 HCI_SIMPLY_SYNC_END
 
 /*
- * FUNCTION: hciRemoteNameRequestSync
- * USE:      Request a remote name
- * PARAMS:   mac - the mac
- *           PSRM - value from discovery
- *           PSM - value from discovery (or 0 on BT 1.2+)
- *           clockOffset - value from discovery
- */
-HCI_SIMPLY_SYNC_CMD_W_STATUS(RemoteNameRequest, (const uint8_t *mac, uint8_t PSRM, uint8_t PSM, uint16_t clockOffset), HCI_OGF_Link_Control, HCI_CMD_Remote_Name_Request)
-    HCI_COPY_IN_MAC(mac);
-    HCI_COPY_IN_U8(PSRM)
-    HCI_COPY_IN_U8(PSM)
-    HCI_COPY_IN_U16(clockOffset)
-HCI_SIMPLY_SYNC_END
-
-/*
  * FUNCTION: hciInquirySync
  * USE:      Enable EDR scan
  * PARAMS:   lap - the lap to use
@@ -1873,14 +1851,13 @@ HCI_SIMPLY_SYNC_END
  * RETURN:   NONE
  * NOTES:    a copy of all params is made
  */
-static void hciInquiryEvtEdrSingleItem(const struct bt_addr *addr, uint32_t devCls, struct hciOpaqueDiscId* fng, int8_t rssi, const void *eir, uint8_t eirLen)
+static void hciInquiryEvtEdrSingleItem(const struct bt_addr *addr, uint32_t devCls, struct hciNameGetInfo* fng, int8_t rssi, const void *eir, uint8_t eirLen)
 {
     struct hciCbkWorkItem *w = (struct hciCbkWorkItem*)malloc(sizeof(struct hciCbkWorkItem) + eirLen);
     if (!w) {
         logw("Dropping EDR discovered item due to memory error\n");
         return;
     }
-
     w->cbkWorkItemType = CBK_WORK_EDR_DISC_DEV;
     memcpy(&w->edrDev.addr, addr, sizeof(w->edrDev.addr));
     memcpy(&w->edrDev.fng, fng, sizeof(w->edrDev.fng));
@@ -1888,7 +1865,6 @@ static void hciInquiryEvtEdrSingleItem(const struct bt_addr *addr, uint32_t devC
     w->edrDev.devCls = devCls;
     w->edrDev.rssi = rssi;
     w->edrDev.eirLen = eirLen;
-
 
     if (workQueuePut(mCallbackWork, w))
         return;
@@ -1933,15 +1909,17 @@ static void hciInquiryEvtLeSingleItem(const struct bt_addr *addr, uint8_t advTyp
 /*
  * FUNCTION: hciInquiryEvtEdrName
  * USE:      Enqueue a callback to discovery EDR name cbk
- * PARAMS:   mac - the raw mac address of the remote device 
+ * PARAMS:   dns - the request state we care about
+ *           prev - the previous request state in line
+ *           nameReqState - HCI_NAME_REQ_STATUS_*
+ *           lastCbk - if set, we'll free the hciDiscoverNameState struct
  *           name - name buffer pointer (may not be null-terminated)
  *           nameMaxLen - size of the above buffer
  * RETURN:   NONE
- * NOTES:    a copy of all params is made
+ * NOTES:    a copy of all params is made as needed. call with mDiscoveryStateLock held
  */
-static void hciInquiryEvtEdrName(const uint8_t *mac, const char *name, uint8_t nameMaxLen)
+static void hciInquiryEvtEdrName(struct hciDiscoverNameState *dns, struct hciDiscoverNameState *prev, uint8_t nameReqState, bool lastCbk, const char *name, uint8_t nameMaxLen)
 {
-    struct hciDiscoverNameState *dns, *p = NULL;
     struct hciCbkWorkItem *w;
     bool success = false;
     uint8_t nameLen;
@@ -1957,14 +1935,8 @@ static void hciInquiryEvtEdrName(const uint8_t *mac, const char *name, uint8_t n
     w->cbkWorkItemType = CBK_WORK_EDR_DISC_NAME;
     memcpy(&w->edrName.name, name, nameLen);
     w->edrName.name[nameLen] = 0;
+    w->edrName.nameReqState = nameReqState;
 
-    /* now find the callback & enqueue the work*/
-    pthread_mutex_lock(&mDiscoveryStateLock);
-    dns = mDiscoverNames;
-    while (dns && memcmp(&dns->info.mac, mac, sizeof(dns->info.mac))) {
-        p = dns;
-        dns = dns->next;
-    }
     if (!dns)
         logd("Got name reply with nobody waiting for it. Dropping\n");
     else{
@@ -1973,15 +1945,16 @@ static void hciInquiryEvtEdrName(const uint8_t *mac, const char *name, uint8_t n
         if (workQueuePut(mCallbackWork, w))
             success = true;
 
-        /* remove the item while we're at it */
-        if (p)
-            p->next = dns->next;
-        else
-            mDiscoverNames = dns->next;
+        /* remove the item if needed */
+        if (lastCbk) {
+            if (prev)
+                prev->next = dns->next;
+            else
+                mDiscoverNames = dns->next;
 
-        free(dns);
+            free(dns);
+        }
     }
-    pthread_mutex_unlock(&mDiscoveryStateLock);
 
     if (!success) {
         free(w);
@@ -1989,11 +1962,66 @@ static void hciInquiryEvtEdrName(const uint8_t *mac, const char *name, uint8_t n
     }
 }
 
+
+/*
+ * FUNCTION: hciInquiryEvtEdrNameMac
+ * USE:      Enqueue a callback to discovery EDR name cbk (find by MAC)
+ * PARAMS:   mac - the raw mac address of the remote device
+ *           nameReqState - HCI_NAME_REQ_STATUS_*
+ *           lastCbk - if set, we'll free the hciDiscoverNameState struct
+ *           name - name buffer pointer (may not be null-terminated)
+ *           nameMaxLen - size of the above buffer
+ * RETURN:   NONE
+ * NOTES:    a copy of all params is made as needed
+ */
+static void hciInquiryEvtEdrNameMac(const uint8_t *mac, uint8_t nameReqState, bool lastCbk, const char *name, uint8_t nameMaxLen)
+{
+    struct hciDiscoverNameState *dns, *prev = NULL;
+
+    /* now find the callback & enqueue the work*/
+    pthread_mutex_lock(&mDiscoveryStateLock);
+    dns = mDiscoverNames;
+    while (dns && memcmp(&dns->mac, mac, sizeof(dns->mac))) {
+        prev = dns;
+        dns = dns->next;
+    }
+
+    hciInquiryEvtEdrName(dns, prev, nameReqState, lastCbk, name, nameMaxLen);
+    pthread_mutex_unlock(&mDiscoveryStateLock);
+}
+
+/*
+ * FUNCTION: hciInquiryEvtEdrNameHandle
+ * USE:      Enqueue a callback to discovery EDR name cbk (find by handle)
+ * PARAMS:   handle - the handle fo the request
+ *           nameReqState - HCI_NAME_REQ_STATUS_*
+ *           lastCbk - if set, we'll free the hciDiscoverNameState struct
+ *           name - name buffer pointer (may not be null-terminated)
+ *           nameMaxLen - size of the above buffer
+ * RETURN:   NONE
+ * NOTES:    a copy of all params is made as needed
+ */
+static void hciInquiryEvtEdrNameHandle(uniq_t handle, uint8_t nameReqState, bool lastCbk, const char *name, uint8_t nameMaxLen)
+{
+    struct hciDiscoverNameState *dns, *prev = NULL;
+
+    /* now find the callback & enqueue the work*/
+    pthread_mutex_lock(&mDiscoveryStateLock);
+    dns = mDiscoverNames;
+    while (dns && dns->handle != handle) {
+        prev = dns;
+        dns = dns->next;
+    }
+
+    hciInquiryEvtEdrName(dns, prev, nameReqState, lastCbk, name, nameMaxLen);
+    pthread_mutex_unlock(&mDiscoveryStateLock);
+}
+
 /*
  * FUNCTION: hciInquiryEvtCbk
  * USE:      Called with inquiry events
  * PARAMS:   evt - the event
- *           cbkData - callback data (unused)
+ *           cbkData - callback data
  *           evtWaitStateID - event wait state ID (unused)
  *           forCmdID - event commadn ID (unused)
  * RETURN:   false on error
@@ -2003,7 +2031,7 @@ static bool hciInquiryEvtCbk(struct hciEvtHdr *evt, void *cbkData, uniq_t evtWai
 {
     uint8_t evtType;
     struct bt_addr addr;
-    struct hciOpaqueDiscId fng;
+    struct hciNameGetInfo fng;
     uint8_t i, num;
 
     if (!evt)
@@ -2023,7 +2051,8 @@ static bool hciInquiryEvtCbk(struct hciEvtHdr *evt, void *cbkData, uniq_t evtWai
             memcpy(addr.addr, item->mac, sizeof(addr.addr));
             fng.PSRM = utilGetLE8(&item->PSRM);
             fng.PSM = mBtVer >= HCI_VERSION_1_2 ? 0 : utilGetLE8(&item->PSM);
-            fng.clockOffset = utilGetLE16(&item->clockOffset);
+            fng.clockOffset = utilGetLE16(&item->clockOffset) | HCI_CLOCK_OFST_VALID;
+            memcpy(fng.mac, item->mac, sizeof(fng.mac));
             hciInquiryEvtEdrSingleItem(&addr, utilGetLE24(&item->deviceClass), &fng, HCI_RSSI_UNKNOWN, NULL, 0);
         }
     } else if(evtType == HCI_EVT_Inquiry_Result_With_RSSI) {
@@ -2038,7 +2067,8 @@ static bool hciInquiryEvtCbk(struct hciEvtHdr *evt, void *cbkData, uniq_t evtWai
             memcpy(addr.addr, item->mac, sizeof(addr.addr));
             fng.PSRM = utilGetLE8(&item->PSRM);
             fng.PSM = 0;
-            fng.clockOffset = utilGetLE16(&item->clockOffset);
+            fng.clockOffset = utilGetLE16(&item->clockOffset) | HCI_CLOCK_OFST_VALID;
+            memcpy(fng.mac, item->mac, sizeof(fng.mac));
             hciInquiryEvtEdrSingleItem(&addr, utilGetLE24(&item->deviceClass), &fng, utilGetLE8(&item->RSSI), NULL, 0);
         }
     } else if(evtType == HCI_EVT_Extended_Inquiry_Result) {
@@ -2053,7 +2083,8 @@ static bool hciInquiryEvtCbk(struct hciEvtHdr *evt, void *cbkData, uniq_t evtWai
             memcpy(addr.addr, res->mac, sizeof(addr.addr));
             fng.PSRM = utilGetLE8(&res->PSRM);
             fng.PSM = 0;
-            fng.clockOffset = utilGetLE16(&res->clockOffset);
+            fng.clockOffset = utilGetLE16(&res->clockOffset) | HCI_CLOCK_OFST_VALID;
+            memcpy(fng.mac, res->mac, sizeof(fng.mac));
             hciInquiryEvtEdrSingleItem(&addr, utilGetLE24(&res->deviceClass), &fng, utilGetLE8(&res->RSSI), res->EIR, sizeof(res->EIR));
         }
     } else if(evtType == HCI_EVT_LE_Meta) {
@@ -2079,16 +2110,28 @@ static bool hciInquiryEvtCbk(struct hciEvtHdr *evt, void *cbkData, uniq_t evtWai
             hciInquiryEvtLeSingleItem(&addr, utilGetLE8(&item->advType), utilGetLE8(rssiP), item->data, dataLen);
             item = (struct hciEvtLeAdvReportItem*)(rssiP + 1);
         }
+    } else if (evtType == HCI_EVT_Command_Status) {
+        struct hciEvtCmdStatus *staEvt = (struct hciEvtCmdStatus*)(evt + 1);
+        uint8_t status = utilGetLE8(&staEvt->status);
+        struct hciDiscoverNameState *dns;
+        uniq_t handle = *(uniq_t*)cbkData;
+
+        if (utilGetLE16(&staEvt->opcode) != CMD_MAKE_OPCODE(HCI_OGF_Link_Control, HCI_CMD_Remote_Name_Request)) {
+            loge("Unexpected status subevent 0x%04X in discovery event handler\n", utilGetLE16(&staEvt->opcode));
+            return false;
+        }
+
+        free(cbkData);
+        hciInquiryEvtEdrNameHandle(handle, status ? HCI_NAME_REQ_STATUS_ERROR : HCI_NAME_REQ_STATUS_IN_PROGRESS, !!status, NULL, 0);
+
     } else if (evtType == HCI_EVT_Remote_Name_Request_Complete) {
         struct hciEvtRemoteNameReqComplete *cmpl = (struct hciEvtRemoteNameReqComplete*)(evt + 1);
         uint8_t status = utilGetLE8(&cmpl->status);
 
-        if (status)
-            logw("EDR name discovery failed: %d\n", status);
-        else
-            hciInquiryEvtEdrName(cmpl->mac, cmpl->name, sizeof(cmpl->name));
+        hciInquiryEvtEdrNameMac(cmpl->mac, status ? HCI_NAME_REQ_STATUS_ERROR : HCI_NAME_REQ_STATUS_COMPLETE, true, cmpl->name, sizeof(cmpl->name));
+
     } else if (evtType == HCI_EVT_Inquiry_Complete) {
-        hciDiscoverEdrStopInt(false);
+        logd("inquiry ended uncancelled\n");
     } else {
         loge("Unexopected event 0x%02X in discovery event handler\n", evtType);
         return false;
@@ -2287,6 +2330,7 @@ static bool hciBtStackUp(void)
             evts = HCI_EVENT_ALL_BT_4_1;
             break;
         }
+        evts &=~ HCI_EVENT_REMOTE_HOST_SUPPORTED_FEATURES; /* we do not want this one - it is spammy and useless for now */
         logi("Setting event mask to 0x"FMT64"X\n", CNV64(evts));
         ret = hciSetEventMaskSync(evts);
         if (ret)
@@ -2369,7 +2413,7 @@ out:
 static void hciDiscoverStopAndFreeNameReq(struct hciDiscoverNameState *toFree)
 {
     if (mBtVer >= HCI_VERSION_1_2)
-        hciRemoteNameRequestCancelSync(toFree->info.mac); /* error ignored on purpose */
+        hciRemoteNameRequestCancelSync(toFree->mac); /* error ignored on purpose */
     free(toFree);
 }
 
@@ -2382,9 +2426,7 @@ static void hciDiscoverStopAndFreeNameReq(struct hciDiscoverNameState *toFree)
  * RETURN:   discovery handle or 0 for error
  * NOTES:    Callbacks might be called even if func returns false, but
  *           will stop once said return value is actually returned.
- *           61440 msec maximum. "forNameGetting" is only valid in EDR
- *           discovery callback, saving it beyond that is dangerous and
- *           will not work!
+ *           61440 msec maximum.
  */
 uniq_t hciDiscoverEdrStart(hciDeviceDiscoveredEdrCbk cbk, void *cbkData, uint32_t msec)
 {
@@ -2431,33 +2473,6 @@ uniq_t hciDiscoverEdrStart(hciDeviceDiscoveredEdrCbk cbk, void *cbkData, uint32_
 }
 
 /*
- * FUNCTION: hciDiscoverEdrStopInt
- * USE:      Stops EDR discovery and any extant name-getting callbacks for it
- * PARAMS:   cancelCmd - send the cancel command?
- * RETURN:   false on error
- * NOTES:    Callbacks will stop once this returns
- */
-static void hciDiscoverEdrStopInt(bool cancelCmd)
-{
-    struct hciDiscoverNameState *toCancel = NULL, *t;
-
-    if (cancelCmd)
-        hciInquiryCancelSync();
-
-    pthread_mutex_lock(&mDiscoveryStateLock);
-    mDiscoverEdrHandle = 0;
-    toCancel = mDiscoverNames;
-    mDiscoverNames = NULL;
-    pthread_mutex_unlock(&mDiscoveryStateLock);
-
-    while(toCancel) {
-        t = toCancel;
-        toCancel = toCancel->next;
-        hciDiscoverStopAndFreeNameReq(t);
-    }
-}
-
-/*
  * FUNCTION: hciDiscoverEdrStop
  * USE:      Stops EDR discovery and any extant name-getting callbacks for it
  * PARAMS:   handle - the handle from hciDiscoverEdrStart()
@@ -2478,7 +2493,7 @@ bool hciDiscoverEdrStop(uniq_t handle)
         mDiscoverEdrHandle = uniqGetNext(); /* not us so nobdy can re-cancel. not zero so nobody can start another scan */
     pthread_mutex_unlock(&mDiscoveryStateLock);
 
-    hciDiscoverEdrStopInt(true);
+    hciInquiryCancelSync();
     hciWorkFlush();
 
     return !!handle;
@@ -2493,39 +2508,50 @@ bool hciDiscoverEdrStop(uniq_t handle)
  * RETURN:   name-getting operation handle or 0 on error
  * NOTES:
  */
-uniq_t hciDiscoverEdrGetName(hciDeviceDiscoveredEdrNameCbk cbk, void *cbkData, const struct hciOpaqueDiscId *forNameGetting)
+uniq_t hciDiscoverEdrGetName(hciDeviceDiscoveredEdrNameCbk cbk, void *cbkData, const struct hciNameGetInfo *forNameGetting)
 {
     struct hciDiscoverNameState *dns = (struct hciDiscoverNameState*)malloc(sizeof(struct hciDiscoverNameState));
-    uniq_t ret = 0;
-    bool cancelIt = false;
-    int sta;
+    struct hciRemoteNameRequest cmd;
+    struct hciEvtWaitDescr ewd;
+    uniq_t *handleCopy, ret;
 
     if (!dns)
         return 0;
 
-    memcpy(&dns->info, forNameGetting, sizeof(dns->info));
-    dns->cbk = cbk;
-    dns->cbkData = cbkData;
-
-    sta = hciRemoteNameRequestSync(dns->info.mac, dns->info.PSRM, dns->info.PSM, dns->info.clockOffset);
-    if (sta) {
-        loge("Failed to enqueue a name request: %d\n", sta);
+    handleCopy = malloc(sizeof(uniq_t));
+    if (!handleCopy) {
         free(dns);
         return 0;
     }
 
-    pthread_mutex_lock(&mDiscoveryStateLock);
-    if (mDiscoverEdrHandle != dns->info.handle)
-        cancelIt = true;
-    else {
-        dns->info.handle = ret = uniqGetNext();
-        dns->next = mDiscoverNames;
-        mDiscoverNames = dns->next;
-    }
-    pthread_mutex_unlock(&mDiscoveryStateLock);
+    dns->cbk = cbk;
+    dns->cbkData = cbkData;
+    dns->handle = *handleCopy = ret = uniqGetNext();
+    memcpy(dns->mac, forNameGetting->mac, sizeof(dns->mac));
 
-    if (cancelIt)
-        hciDiscoverStopAndFreeNameReq(dns);
+    ewd.extra = CMD_MAKE_OPCODE(HCI_OGF_Link_Control, HCI_CMD_Remote_Name_Request);
+    ewd.evtType = HCI_EVT_Command_Status;
+    ewd.cbk = hciInquiryEvtCbk;
+    ewd.cbkData = handleCopy;
+    ewd.persistent = false;
+
+    memcpy(cmd.mac, forNameGetting->mac, sizeof(cmd.mac));
+    utilSetLE8(&cmd.PSRM, forNameGetting->PSRM);
+    utilSetLE8(&cmd.PSM, forNameGetting->PSM);
+    utilSetLE16(&cmd.clockOffset, forNameGetting->clockOffset);
+
+    pthread_mutex_lock(&mDiscoveryStateLock);
+    if (hciCmdSubmit(HCI_OGF_Link_Control, HCI_CMD_Remote_Name_Request, &cmd, sizeof(cmd), &ewd, NULL)) {
+
+        dns->next = mDiscoverNames;
+        mDiscoverNames = dns;
+    } else {
+        free(handleCopy);
+        free(dns);
+        ret = 0;
+    }
+
+    pthread_mutex_unlock(&mDiscoveryStateLock);
 
     return ret;
 }
@@ -2544,7 +2570,7 @@ bool hciDiscoverEdrGetNameCancel(uniq_t handle)
     pthread_mutex_lock(&mDiscoveryStateLock);
     c = mDiscoverNames;
     p = NULL;
-    while (c && c->info.handle != handle) {
+    while (c && c->handle != handle) {
         p = c;
         c = c->next;
     }
