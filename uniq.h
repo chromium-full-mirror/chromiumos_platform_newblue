@@ -11,6 +11,8 @@
  */
 typedef uint64_t uniq_t;
 
+#define UNIQ_MARKER   ((uniq_t)1) /* non-zero (aka: valid) uniq_t guaranteed to be never returned by uniqGetNext() */
+
 /* get another uniq_t */
 uniq_t uniqGetNext(void);
 

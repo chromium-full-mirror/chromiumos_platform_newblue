@@ -4,7 +4,7 @@
 #include "log.h"
 
 static pthread_mutex_t mUniqLock = PTHREAD_MUTEX_INITIALIZER;
-static uniq_t mUniq = 1;
+static uniq_t mUniq = UNIQ_MARKER + 1;
 
 uniq_t uniqGetNext(void)
 {
