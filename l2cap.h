@@ -3,6 +3,7 @@
 
 #include "types.h"
 #include "uniq.h"
+#include "hci.h"
 #include "bt.h"
 
 
@@ -10,8 +11,8 @@
 
 typedef uint16_t psm_t;
 typedef uniq_t l2c_handle_t; /* a 0-valued handle is invalid and indicates error */
-#define HANDLEFMT "0x%016llx"
-#define HANDLECNV (unsigned long long)
+#define HANDLEFMT    UNIQ_FMT"x"
+#define HANDLECNV(x) UNIQ_CONV(x)
 
 
 /* ONE_TIME L2CAP INIT */
@@ -119,25 +120,25 @@ bool l2cApiConnectionlessDataTx(const struct bt_addr *addr, psm_t psm, const voi
 /* LOWER LAYER INTERFACE API */
 
 /* lower layer calls this when new ACL link is up */
-void l2cAclLinkUp(uint16_t aclConn, const struct bt_addr *addr, bool isMaster, bool isEncrypted);
+void l2cAclLinkUp(hci_conn_t aclConn, const struct bt_addr *addr, bool isMaster, bool isEncrypted);
 /* lower layer calls this when an ACL link is down */
-void l2cAclLinkDown(uint16_t aclConn);
+void l2cAclLinkDown(hci_conn_t aclConn);
 /* lower layer calls this when new ACL data arrives */
-void l2cAclDataRx(uint16_t aclConn, const void *data, uint32_t len, bool first);
+void l2cAclDataRx(hci_conn_t aclConn, const void *data, uint32_t len, bool first);
 /* this layer calls this to send ACL data */
-void l2cAclDataTx(uint16_t aclConn, const void *data, uint32_t len);
+void l2cAclDataTx(hci_conn_t aclConn, const void *data, uint32_t len);
 /* this layer calls this to establish a link. *addr need not stay valid after call */
 void l2cAclLinkEstablish(const struct bt_addr *addr);
 /* this layer calls this to close a link, or cancel one being opened */
 void l2cAclLinkClose(const struct bt_addr *addr);
 /* this layer calls this to udpate a connection's LE parameters */
-void l2cAclUpdateParams(uint16_t aclConn, uint16_t minInt, uint16_t maxInt, uint16_t lat, uint16_t to);
+void l2cAclUpdateParams(hci_conn_t aclConn, uint16_t minInt, uint16_t maxInt, uint16_t lat, uint16_t to);
 /* lower layer calls this when connection parameters change */
-void l2cAclLinkParamsChange(uint16_t aclConn, bool success, uint16_t interval, uint16_t latency, uint16_t timeout);
+void l2cAclLinkParamsChange(hci_conn_t aclConn, bool success, uint16_t interval, uint16_t latency, uint16_t timeout);
 /* this layer calls this to demand encryption */
-void l2cAclDemandEncr(uint16_t aclConn);
+void l2cAclDemandEncr(hci_conn_t aclConn);
 /* lower layer calls this when connection encryption changes. called with FALSE if encr failed since BT cannot realyl go from encrypted to not */
-void l2cAclLinkEncrChange(uint16_t aclConn, bool isEncrypted);
+void l2cAclLinkEncrChange(hci_conn_t aclConn, bool isEncrypted);
 
 
 #endif

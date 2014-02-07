@@ -21,18 +21,18 @@
 #define L2C_MIN_CONNECTIONLESS_MTU 48
 
 /* connection bit to indicate in-progress connection */
-#define L2C_CONN_IN_PROGRESS     (1 + HCI_CONN_ID_MASK)
+#define L2C_CONN_IN_PROGRESS       UNIQ_MARKER
 
 /* also, the first non-fixed channel */
-#define L2C_NUM_FIXED_CHANNELS   64
+#define L2C_NUM_FIXED_CHANNELS     64
 
 /* PSM length minimum as per spec */
-#define L2C_PSM_MIN_LEN          2
+#define L2C_PSM_MIN_LEN            2
 
 /* L2CAP channel defines as per spec */
-#define L2C_CH_SIGNALLING_EDR    0x0001
-#define L2C_CH_CONNECTIONLESS    0x0002
-#define L2C_CH_SIGNALLING_LE     0x0005
+#define L2C_CH_SIGNALLING_EDR      0x0001
+#define L2C_CH_CONNECTIONLESS      0x0002
+#define L2C_CH_SIGNALLING_LE       0x0005
 
 
 
@@ -241,12 +241,12 @@ struct l2cAclConn {
     uniq_t             handle;
     uniq_t             openTimer;
     uniq_t             teardownTimer;
+    hci_conn_t         conn;
     uint8_t           *reassBuf;
     uint32_t           reassLen;
 
     uint8_t            ident; /* next ident to use */
     uint16_t           nextChan; /* a guess to a currently-free channel */
-    uint16_t           conn;
     uint16_t           connectionlessMtu;
     struct bt_addr     addr;
     uint8_t            isMaster  : 1;
@@ -309,14 +309,14 @@ struct l2cSvcWork {
             struct bt_addr addr;
         } aclLink;
         struct {
-            uint16_t aclConn;
+            hci_conn_t aclConnID;
             uint16_t minInt;
             uint16_t maxInt;
             uint16_t lat;
             uint16_t to;
         } connUpdt;
         struct {
-            uint16_t aclConn;
+            hci_conn_t aclConnID;
         } demandEncr;
     };
 };
@@ -402,10 +402,10 @@ struct l2cConn {
 
 /* work for seg send thread */
 struct l2cSigFrameWork {
-    void    *data;
-    uint32_t len;
-    uint16_t aclConnID;
-    bool     isLE;
+    hci_conn_t  aclConnID;
+    void       *data;
+    uint32_t    len;
+    bool        isLE;
 };
 
 /* some fwd declarations */
@@ -456,7 +456,7 @@ static pthread_t mSigTxWorker;
  * RETURN:   the found struct or null
  * NOTES:    requires mConnsLock held
  */
-static struct l2cAclConn* l2cAclConnFindById(uint16_t aclConn)
+static struct l2cAclConn* l2cAclConnFindById(hci_conn_t aclConn)
 {
     struct l2cAclConn *c = mAclConns;
 
@@ -842,7 +842,7 @@ static bool l2cSvcWorkScheduleAclLinkClose(void* reqID, const struct bt_addr *ad
  * FUNCTION: l2cSvcWorkScheduleAclConnUpdt
  * USE:      Schedule a connection update call to the lower layer
  * PARAMS:   reqID - request ID to signal completion
- *           aclConn - the connection ID
+ *           aclConnID - the connection ID
  *           minInt - update command parameter
  *           maxInt - update command parameter
  *           lat - update command parameter
@@ -850,13 +850,13 @@ static bool l2cSvcWorkScheduleAclLinkClose(void* reqID, const struct bt_addr *ad
  * RETURN:   NONE
  * NOTES:    actual call will happen in the worker thread.
  */
-static bool l2cSvcWorkScheduleAclConnUpdt(void* reqID, uint16_t aclConn, uint16_t minInt, uint16_t maxInt, uint16_t lat, uint16_t to)
+static bool l2cSvcWorkScheduleAclConnUpdt(void* reqID, hci_conn_t aclConnID, uint16_t minInt, uint16_t maxInt, uint16_t lat, uint16_t to)
 {
     struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_ACL_CONN_UPDT, reqID);
     if (!w)
         return false;
 
-    w->connUpdt.aclConn = aclConn;
+    w->connUpdt.aclConnID = aclConnID;
     w->connUpdt.minInt = minInt;
     w->connUpdt.maxInt = maxInt;
     w->connUpdt.lat = lat;
@@ -874,17 +874,17 @@ static bool l2cSvcWorkScheduleAclConnUpdt(void* reqID, uint16_t aclConn, uint16_
  * FUNCTION: l2cSvcWorkScheduleAclDemandEncr
  * USE:      Schedule a connection encryption request
  * PARAMS:   reqID - request ID to signal completion
- *           aclConn - the connection ID
+ *           aclConnID - the connection ID
  * RETURN:   NONE
  * NOTES:    actual call will happen in the worker thread.
  */
-static bool l2cSvcWorkScheduleAclDemandEncr(void* reqID, uint16_t aclConn)
+static bool l2cSvcWorkScheduleAclDemandEncr(void* reqID, hci_conn_t aclConnID)
 {
     struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_ACL_DEMAND_ENCR, reqID);
     if (!w)
         return false;
 
-    w->demandEncr.aclConn = aclConn;
+    w->demandEncr.aclConnID = aclConnID;
 
     if (workQueuePut(mServiceWork, w))
         return true;
@@ -1039,7 +1039,7 @@ static void l2cHandleConnReq(struct l2cAclConn *aclConn, uint8_t ident, psm_t ps
     }
     localCh = l2cAclFreeCid(aclConn);
     if (!localCh) {
-        logw("No free channels for conn %d\n", aclConn->conn);
+        logw("No free channels for acl "HCI_CONN_FMT"x\n", HCI_CONN_CONV(aclConn->conn));
         free(conn);
         goto out_svcs_lock;
     }
@@ -1187,7 +1187,7 @@ static void l2cPsmSendConfig(struct l2cAclConn *aclConn, struct l2cConn *conn)
         conn->ident = ident;
         conn->cfgTxState = L2C_CFG_STATE_REQ_SENT;
     } else {
-        loge("Failed to send config request on conn for chs %d %d on acl %d\n", conn->localCh, conn->remCh, aclConn->conn);
+        loge("Failed to send config request on conn for chs %d %d on acl "HCI_CONN_FMT"x\n", conn->localCh, conn->remCh, HCI_CONN_CONV(aclConn->conn));
         l2cConnRequestClose(aclConn, conn, true);
     }
 }
@@ -1529,7 +1529,7 @@ static void l2cHandleInfoRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
     aclConn->reqIdent = 0;
     val = utilGetLE16(infoData);
     if (val < L2C_MIN_CONNECTIONLESS_MTU) {
-        logi("Peer reports connectionless mtu %d for acl conn %d. correcting to %d\n", val, aclConn->conn, L2C_MIN_CONNECTIONLESS_MTU);
+        logi("Peer reports connectionless mtu %d for acl "HCI_CONN_FMT"x. correcting to %d\n", val, HCI_CONN_CONV(aclConn->conn), L2C_MIN_CONNECTIONLESS_MTU);
         val = L2C_MIN_CONNECTIONLESS_MTU;
     }
 
@@ -1616,10 +1616,10 @@ error:
  */
 static void l2cHandleConnUpdtRsp(struct l2cAclConn *conn, uint8_t ident, uint16_t result)
 {
-    if (conn->isMaster)
-        loge("Unexpected connection update response for a connection we're master on (%d)\n", conn->conn);
-    else if (!conn->connUpdtRequestIdent)
-        loge("Unexpected connection update response for a connection we had no request on (%d)\n", conn->conn);
+    if (conn->isMaster) /* this shouldnt happen if we're master */
+        loge("Unexpected connection update (ac master) on acl "HCI_CONN_FMT"x\n", HCI_CONN_CONV(conn->conn));
+    else if (!conn->connUpdtRequestIdent) /* if we made no request for this, - error */
+        loge("Unexpected connection update response on acl "HCI_CONN_FMT"x\n", HCI_CONN_CONV(conn->conn));
     else {
         conn->connUpdtRequestIdent = 0;
         if (conn->connUpdtDoneCbk) {
@@ -1686,7 +1686,7 @@ bool l2cApiUpdateConnectionParams(l2c_handle_t handle, uint16_t intMin, uint16_t
             loge("Failed to schedule connection update work\n");
     }
     else if (aclConn->connUpdtRequestIdent)
-        logw("Connection update request while another still in progress (%d) Ignored\n", aclConn->conn);
+        logw("Connection update request while another still in progress on acl "HCI_CONN_FMT"x. Ignored\n", HCI_CONN_CONV(aclConn->conn));
     else {
         uint8_t ident;
 
@@ -1695,7 +1695,7 @@ bool l2cApiUpdateConnectionParams(l2c_handle_t handle, uint16_t intMin, uint16_t
 
         ident = l2cSigSendConnUpdateReq(aclConn, intMin, intMax, latency, timeout);
         if (!ident)
-            loge("Failed to send connection update request for conn %d\n", aclConn->conn);
+            loge("Failed to send connection update request for acl "HCI_CONN_FMT"x\n", HCI_CONN_CONV(aclConn->conn));
         else
             aclConn->connUpdtRequestIdent = ident;
     }
@@ -1890,7 +1890,7 @@ void l2cHandleDiscReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localC
 void l2cHandleDiscRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t remCh, uint16_t localCh)
 {
     /* We do not care about this, really. We commit to the disconnect whenwe send the request */
-    logi("Disconnect response from %d for ch %d %d\n", aclConn->conn, localCh, remCh);
+    logd("Disconnect response from acl "HCI_CONN_FMT"x for ch %d %d\n", HCI_CONN_CONV(aclConn->conn), localCh, remCh);
 }
 
 /*
@@ -2365,19 +2365,19 @@ static bool l2cAclDataRxProcessIfComplete(struct l2cAclConn *conn, const void *d
 /*
  * FUNCTION: l2cAclDataRx
  * USE:      Called by lower layers when ACL data arrives
- * PARAMS:   aclConn - the connection ID
+ * PARAMS:   aclConnID - the connection ID
  *           data - buffer with the data
  *           len - how much data there is
  *           first - whethere this is first or continued packet
  * RETURN:   NONE
  * NOTES:
  */
-void l2cAclDataRx(uint16_t aclConn, const void *data, uint32_t datalen, bool first)
+void l2cAclDataRx(hci_conn_t aclConnID, const void *data, uint32_t datalen, bool first)
 {
     struct l2cAclConn *conn;
 
     pthread_mutex_lock(&mConnsLock);
-    conn = l2cAclConnFindById(aclConn);
+    conn = l2cAclConnFindById(aclConnID);
     if (conn) {
         if (!first && !conn->reassBuf) {
             logw("Got %ub non-first fragment while no reassemble buffer. Dropping\n", datalen);
@@ -2417,7 +2417,7 @@ void l2cAclDataRx(uint16_t aclConn, const void *data, uint32_t datalen, bool fir
             }
         }
     } else
-        loge("Unable to find ACL connection %d. Dropping packet\n", aclConn);
+        loge("Unable to find acl "HCI_CONN_FMT"x. Dropping packet\n", HCI_CONN_CONV(aclConnID));
 
     pthread_mutex_unlock(&mConnsLock);
 }
@@ -2544,13 +2544,13 @@ static void l2cPsmSvcInstAllocDone(void *reqID, psm_t psm, l2cStateCbk stateCbk,
         }
         conn->state = L2C_CONN_STATE_AUTH_WAIT;
         if (aclConn->encrypted) {
-            logi("conn %u already encrypted\n", aclConn->conn);
+            logi("Link acl "HCI_CONN_FMT"x already encrypted\n", HCI_CONN_CONV(aclConn->conn));
             if (!l2cSvcWorkSchedulePsmAlloc(psm, reqID, handle))
                 loge("Failed to re-enquque PSM alloc\n");
         } else {
             if (!l2cSvcWorkScheduleAclDemandEncr(NULL, aclConn->conn))
                 loge("Failed to demand encryption\n");
-            logd("demanded encryptio on %d\n", aclConn->conn);
+            logd("Demanded encryption on acl "HCI_CONN_FMT"x\n", HCI_CONN_CONV(aclConn->conn));
         }
         goto out;
     }
@@ -2632,7 +2632,7 @@ static void l2cFixedChSvcInstAllocDone(void *reqID, uint16_t chan, l2cStateCbk s
 
     if (result == SVC_ALLOC_DEMAND_ENCR) {
         if (aclConn->encrypted) {
-            logi("conn %u already encrypted\n", aclConn->conn);
+            logi("Link acl "HCI_CONN_FMT"x already encrypted\n", HCI_CONN_CONV(aclConn->conn));
             if (!l2cSvcWorkScheduleFixedChAlloc(chan, reqID, handle)) {
                 loge("Failed to re-enquque fixed alloc\n");
                 l2cConnRequestClose(aclConn, conn, false);
@@ -2644,7 +2644,7 @@ static void l2cFixedChSvcInstAllocDone(void *reqID, uint16_t chan, l2cStateCbk s
                 l2cConnRequestClose(aclConn, conn, false);
                 goto out;
             }
-            logd("demanded encryptio on %d\n", aclConn->conn);
+            logd("Demanded encryption on acl "HCI_CONN_FMT"x\n", HCI_CONN_CONV(aclConn->conn));
             conn->state = L2C_CONN_STATE_AUTH_WAIT;
         }
         goto out;
@@ -2805,10 +2805,10 @@ static void* l2cSvcWorker(void* unused)
             l2cAclLinkClose(&work->aclLink.addr);
             break;
         case L2C_WORK_ACL_CONN_UPDT:
-            l2cAclUpdateParams(work->connUpdt.aclConn, work->connUpdt.minInt, work->connUpdt.maxInt, work->connUpdt.lat, work->connUpdt.to);
+            l2cAclUpdateParams(work->connUpdt.aclConnID, work->connUpdt.minInt, work->connUpdt.maxInt, work->connUpdt.lat, work->connUpdt.to);
             break;
         case L2C_WORK_ACL_DEMAND_ENCR:
-            l2cAclDemandEncr(work->demandEncr.aclConn);
+            l2cAclDemandEncr(work->demandEncr.aclConnID);
             break;
         default: {
             loge("Unknown work type %d\n", work->type);
@@ -2864,7 +2864,7 @@ static bool l2cAclEnqueueSigTx(struct l2cAclConn *aclConn, void *data, uint32_t 
  * NOTES:    Call with no locks held - it may block!
  *           ONLY FOR DATA FRAMES
  */
-static bool l2cAclPerformDataTx(uint16_t aclConnID, bool isLE, const void *data, uint32_t len)
+static bool l2cAclPerformDataTx(hci_conn_t aclConnID, bool isLE, const void *data, uint32_t len)
 {
     l2cAclDataTx(aclConnID, data, len);
     return true;
@@ -3072,7 +3072,7 @@ static uint16_t l2cAclFreeCid(struct l2cAclConn *aclConn)
 
         /* see if the guessed free channel is actually free */
         conn = mConns;
-        while (conn && (conn->acl != aclConn->conn || conn->localCh != guess))
+        while (conn && (conn->acl != aclConn->handle || conn->localCh != guess))
             conn = conn->next;
 
         /* if so, we're done! */
@@ -3445,7 +3445,7 @@ static void l2cConnRequestClose(struct l2cAclConn* acl, struct l2cConn *conn, bo
             numConnsOnThisAcl++;
 
     if (!numConnsOnThisAcl) {
-        loge("Unexpected number of connections %d on ACL link %d. Fixing to 1\n", numConnsOnThisAcl, acl->conn);
+        loge("Unexpected number of connections %d on acl "HCI_CONN_FMT"x. Fixing to 1\n", numConnsOnThisAcl, HCI_CONN_CONV(acl->conn));
         numConnsOnThisAcl = 1;
     }
 
@@ -3793,7 +3793,7 @@ bool l2cApiDataTx(l2c_handle_t handle, const void* data, uint32_t size)
     struct l2cConn *conn;
     struct l2cAclConn *aclConn = NULL;
     uint32_t buflen = size + sizeof(struct l2cFrm);
-    uint16_t aclConnID = 0;
+    hci_conn_t aclConnID = 0;
     void *buf = NULL;
     bool ret = false;
     bool isLE = false;
@@ -3852,7 +3852,7 @@ bool l2cApiDataTx(l2c_handle_t handle, const void* data, uint32_t size)
  * RETURN:   true is a send was requested. False on immediate error.
  * NOTES:    A copy of the data is made. Call with no locks held - may block!
  */
-static bool l2cConnectionlessRequestSend(uint16_t aclConnID, psm_t psm, const void *data, uint32_t len)
+static bool l2cConnectionlessRequestSend(hci_conn_t aclConnID, psm_t psm, const void *data, uint32_t len)
 {
     uint32_t buflen = len + sizeof(struct l2cFrm) + sizeof(psm_t);
     void *buf = malloc(buflen);
@@ -3892,7 +3892,7 @@ static bool l2cConnectionlessRequestSend(uint16_t aclConnID, psm_t psm, const vo
 bool l2cApiConnectionlessDataTx(const struct bt_addr *addr, psm_t psm, const void *data, uint32_t size)
 {
     struct l2cAclConn* aclConn;
-    uint16_t aclConnID = 0;
+    hci_conn_t aclConnID = 0;
     bool ret = false;
 
     if (!l2cPsmValid(psm)) {
@@ -4053,12 +4053,12 @@ bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr* addr, uint16_t m
     conn->instance = instance;
     conn->inUse = 1;
 
-    if (!(aclConn->conn & L2C_CONN_IN_PROGRESS)) {
+    if (aclConn->conn != L2C_CONN_IN_PROGRESS) {
         uint8_t ident;
         uint16_t localCh = l2cAclFreeCid(aclConn);
 
         if (!localCh) {
-            logw("No free channels for conn %d\n", aclConn->conn);
+            logw("No free channels for acl "HCI_CONN_FMT"x\n", HCI_CONN_CONV(aclConn->conn));
             goto out;
         }
 
@@ -4151,7 +4151,7 @@ bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr* addr, l2
     conn->instance = instance;
     conn->inUse = 1;
 
-    if (!(aclConn->conn & L2C_CONN_IN_PROGRESS)) {
+    if (aclConn->conn != L2C_CONN_IN_PROGRESS) {
         l2cChannelReadyForData(aclConn, conn);
         l2cAclDownTimerStop(aclConn);
     }
@@ -4185,7 +4185,7 @@ static void l2cAclLinkEncrChangeInt(struct l2cAclConn *aclConn, bool isEncrypted
     }
     if (!isEncrypted) {
         /* encryption failed - is there anyone we need to tell? */
-        logi("encryption failed for conn %d\n", aclConn->conn);
+        logi("Encryption failed for acl "HCI_CONN_FMT"x\n", HCI_CONN_CONV(aclConn->conn));
         return;
     }
     aclConn->encrypted = true;
@@ -4234,10 +4234,10 @@ static void l2cAclConnTeardownTimerCbk(uniq_t which, uint64_t cbkData)
     pthread_mutex_lock(&mConnsLock);
     aclConn = l2cAclConnFindByHandle(aclHandle);
     if (aclConn && aclConn->teardownTimer == which) {
-        logd("ACL link timer expired for %d. Closing\n", aclConn->conn);
+        logd("Link timer expired for acl "HCI_CONN_FMT"x. Closing\n", HCI_CONN_CONV(aclConn->conn));
         aclConn->goingDown = true;
         if (!l2cSvcWorkScheduleAclLinkClose(NULL, &aclConn->addr))
-            loge("Failed to schedule call to close ACL link %d\n", aclConn->conn);
+            loge("Failed to schedule call to close acl "HCI_CONN_FMT"x\n", HCI_CONN_CONV(aclConn->conn));
         l2cAclLinkDownInt(aclConn, true);
     }
     pthread_mutex_unlock(&mConnsLock);
@@ -4258,7 +4258,7 @@ static void l2cAclDownTimerStart(struct l2cAclConn *aclConn)
 
     aclConn->teardownTimer = timerSet(L2C_ACL_LINK_TIMOUT, l2cAclConnTeardownTimerCbk, aclConn->handle);
     if (!aclConn->teardownTimer)
-        loge("Failed to set ACL teardown timer for %d\n", aclConn->conn);
+        loge("Failed to set teardown timer for acl "HCI_CONN_FMT"x\n", HCI_CONN_CONV(aclConn->conn));
 }
 
 
@@ -4285,7 +4285,7 @@ static void l2cAclDownTimerStop(struct l2cAclConn *aclConn)
  * RETURN:   NONE
  * NOTES:
  */
-void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr, bool isMaster, bool isEncrypted)
+void l2cAclLinkUp(hci_conn_t aclConnID, const struct bt_addr* addr, bool isMaster, bool isEncrypted)
 {
     struct l2cAclConn *aclConn;
     struct l2cConn *connIter;
@@ -4294,20 +4294,20 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr, bool isMaster,
 
     pthread_mutex_lock(&mConnsLock);
     if (l2cAclConnFindById(aclConnID))
-        loge("Duplicate ACL connection ID up %d\n", aclConnID);
+        loge("Duplicate ID up (acl "HCI_CONN_FMT"x)\n", HCI_CONN_CONV(aclConnID));
     else {
         aclConn = l2cAclConnFindByAddr(addr);
         if (aclConn) {
-            if (aclConn->conn & L2C_CONN_IN_PROGRESS) {
+            if (aclConn->conn == L2C_CONN_IN_PROGRESS) {
                 aclConn->openTimer = 0;
-                logd("Us-initiated ACL connection up %d\n", aclConnID);
+                logd("Us-initiated link up (acl "HCI_CONN_FMT"x)\n", HCI_CONN_CONV(aclConnID));
             } else {
-                loge("Duplicate ACL link up with same address and different connID (old %d new %d)."
-                    " Ignored.\n", aclConn->conn, aclConnID);
+                loge("Duplicate link up with same address and different acl (old "HCI_CONN_FMT"x new "HCI_CONN_FMT"x)."
+                    " Ignored.\n", HCI_CONN_CONV(aclConn->conn), HCI_CONN_CONV(aclConnID));
                 goto out;
             }
         } else {
-            logd("Remote-initiated ACL connection up %d\n", aclConnID);
+            logd("Remote-initiated link up acl "HCI_CONN_FMT"x\n", HCI_CONN_CONV(aclConnID));
             aclConn = (struct l2cAclConn*)malloc(sizeof(struct l2cAclConn));
             if (aclConn) {
                 aclConn->handle = uniqGetNext();
@@ -4318,7 +4318,7 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr, bool isMaster,
                 mAclConns->prev = aclConn;
                 mAclConns = aclConn;
             } else {
-                loge("Failed to allocate a new l2cAclConn for connection %d\n", aclConnID);
+                loge("Failed to allocate a new l2cAclConn for acl "HCI_CONN_FMT"x\n", HCI_CONN_CONV(aclConnID));
                 goto out;
             }
         }
@@ -4336,7 +4336,7 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr, bool isMaster,
         /* send an info req */
         aclConn->reqIdent = l2cSigSendInfoReq(aclConn, L2C_SIG_INFO_TYPE_UNCONN_MTU);
         if (!aclConn->reqIdent)
-            logw("Failed to send req for connectionless mtu for %d. It will not be known\n", aclConn->conn);
+            logw("Failed to send req for connectionless mtu for acl "HCI_CONN_FMT"x. It will not be known\n", HCI_CONN_CONV(aclConn->conn));
 
         /* handle all pending-open connections */
         connIter = mConns;
@@ -4350,7 +4350,7 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr, bool isMaster,
                 continue;
 
             if (conn->state != L2C_CONN_STATE_CONN_WAIT) { /* wrong state? */
-                loge("L2C connection for new acl link %d not in wait state on link up! Dropping\n", aclConnID);
+                loge("L2C connection for new acl "HCI_CONN_FMT"x not in wait state on link up! Dropping\n", HCI_CONN_CONV(aclConnID));
                 /* There is no sure way to delete this - we have no idea what state it is in. Do our best to not make it worse and do nothing */
                 l2cConnStructDelete(conn);
                 continue;
@@ -4417,7 +4417,7 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr, bool isMaster,
             l2cAclDownTimerStart(aclConn);
             aclConn->teardownTimer = timerSet(L2C_ACL_LINK_TIMOUT, l2cAclConnTeardownTimerCbk, aclConn->handle);
             if (!aclConn->teardownTimer)
-                loge("Failed to set ACL teardown timer for %d\n", aclConn->conn);
+                loge("Failed to set teardown timer for acl "HCI_CONN_FMT"x\n", HCI_CONN_CONV(aclConn->conn));
         }
     }
 
@@ -4428,23 +4428,23 @@ out:
 /*
  * FUNCTION: l2cAclLinkDown
  * USE:      Called when LE ACL link params change
- * PARAMS:   aclConn - the conection ID
+ * PARAMS:   aclConnID - the conection ID
  *           interval - the new interval
  *           latency - the new latency
  *           timeout - the new timeout
  * RETURN:   NONE
  * NOTES:
  */
-void l2cAclLinkParamsChange(uint16_t aclConn, bool success, uint16_t interval, uint16_t latency, uint16_t timeout)
+void l2cAclLinkParamsChange(hci_conn_t aclConnID, bool success, uint16_t interval, uint16_t latency, uint16_t timeout)
 {
     struct l2cAclConn *conn;
 
     pthread_mutex_lock(&mConnsLock);
-    conn = l2cAclConnFindById(aclConn);
+    conn = l2cAclConnFindById(aclConnID);
     if (!conn)
-        loge("Unable to find ACL connection %d. Dropping params change notification\n", aclConn);
+        loge("Unable to find acl "HCI_CONN_FMT"x. Dropping params change notification\n", HCI_CONN_CONV(aclConnID));
     else if (!conn->isMaster)
-        logi("Got update for %d: {%d,%d,%d}\n", aclConn, interval, latency, timeout);
+        logi("Got update for acl "HCI_CONN_FMT"x: {%d,%d,%d}\n", HCI_CONN_CONV(aclConnID), interval, latency, timeout);
     else if (conn->connUpdtRequestIdent) {
         if (!l2cSigSendConnUpdateRsp(conn, conn->connUpdtRequestIdent, success ? L2C_SIG_CONN_UPDT_OK : L2C_SIG_CONN_UPDT_NO))
             loge("Failed to sent connection update response frame\n");
@@ -4484,17 +4484,17 @@ static void l2cAclLinkDownInt(struct l2cAclConn *aclConn, bool tellOtherSide)
  * RETURN:   NONE
  * NOTES:
  */
-void l2cAclLinkDown(uint16_t aclConnID)
+void l2cAclLinkDown(hci_conn_t aclConnID)
 {
     struct l2cAclConn *aclConn;
 
     pthread_mutex_lock(&mConnsLock);
     aclConn = l2cAclConnFindById(aclConnID);
     if (aclConn) {
-        logd("ACL link %d actually down. Handling\n", aclConn->conn);
+        logd("Link acl "HCI_CONN_FMT"x actually down. Handling\n", HCI_CONN_CONV(aclConn->conn));
         l2cAclLinkDownInt(aclConn, false);
     } else
-        logd("ACL link %d down. down ignored.\n", aclConnID);
+        logd("Link acl "HCI_CONN_FMT"x not found. Down ignored.\n", HCI_CONN_CONV(aclConnID));
     pthread_mutex_unlock(&mConnsLock);
 }
 
@@ -4505,19 +4505,19 @@ void l2cAclLinkDown(uint16_t aclConnID)
  * RETURN:   NONE
  * NOTES:
  */
-void l2cAclLinkEncrChange(uint16_t aclConnID, bool isEncrypted)
+void l2cAclLinkEncrChange(hci_conn_t aclConnID, bool isEncrypted)
 {
     struct l2cAclConn *aclConn;
 
-    logd("l2cAclLinkEncrChange(%d, %d)\n", aclConnID, isEncrypted);
+    logd("l2cAclLinkEncrChange(acl "HCI_CONN_FMT"x, %d)\n", HCI_CONN_CONV(aclConnID), isEncrypted);
 
     pthread_mutex_lock(&mConnsLock);
     aclConn = l2cAclConnFindById(aclConnID);
     if (aclConn) {
-        logd("ACL link %d encr change to %d. Handling\n", aclConn->conn, isEncrypted);
+        logd("Link acl "HCI_CONN_FMT"x encr change to %d. Handling\n", HCI_CONN_CONV(aclConn->conn), isEncrypted);
         l2cAclLinkEncrChangeInt(aclConn, isEncrypted);
     } else
-        logd("ACL link %d down. Encr change ignored.\n", aclConnID);
+        logd("Link acl "HCI_CONN_FMT"x not found. Encr change ignored.\n", HCI_CONN_CONV(aclConnID));
     pthread_mutex_unlock(&mConnsLock);
 }
 

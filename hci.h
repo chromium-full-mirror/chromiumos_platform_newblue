@@ -30,6 +30,10 @@ struct hciNameGetInfo {
     uint8_t  PSM; /* unused in BT 1.2+ */
 };
 
+typedef uniq_t hci_conn_t;
+#define HCI_CONN_FMT      UNIQ_FMT
+#define HCI_CONN_CONV(x)  UNIQ_CONV(x)
+
 #define HCI_NAME_REQ_STATUS_IN_PROGRESS  0
 #define HCI_NAME_REQ_STATUS_ERROR        1
 #define HCI_NAME_REQ_STATUS_COMPLETE     2
