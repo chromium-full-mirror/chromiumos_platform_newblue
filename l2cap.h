@@ -49,6 +49,7 @@ struct l2cServicePsmDescriptor {
     /* these are null if connectionless only */
     uint8_t (*serviceInstanceAlloc)(void *userData, l2c_handle_t handle, void **instanceP); /* return SVC_ALLOC_* */
     l2cStateCbk serviceInstanceStateCbk; /* free when called with the close state */
+    uint16_t mtu; /* max data size we're willing to accept */
 
     /* is null if connection-oriented only */
     void (*serviceConnectionlessRx)(void *userData, l2c_handle_t handle, const void *data, uint32_t size);
@@ -83,7 +84,7 @@ bool l2cApiServiceFixedChUnregister(uint16_t chan, void (*doneCbk)(void*), void 
 
 
 /* call this to connect to a remote PSM-based service Expect an MTU callback. */
-bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr *addr, l2cStateCbk stateCbk, void *userData, void *instance);
+bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr *addr, uint16_t mtu, l2cStateCbk stateCbk, void *userData, void *instance);
 
 /* call this to connect to a remote FixedCh service. Do not expect an MTU callback. */
 bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr *addr, l2cStateCbk stateCbk, void *userData, void *instance);

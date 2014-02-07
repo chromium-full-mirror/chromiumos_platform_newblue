@@ -371,7 +371,8 @@ struct l2cConn {
     psm_t              psm; /* 0 for fixedCh */
     uint16_t           localCh; /* both this & remCh ==0 means */
     uint16_t           remCh; /* this is connectionless conn struct */
-    uint16_t           mtu; /* for other side */
+    uint16_t           ourMtu;   /* for our side */
+    uint16_t           theirMtu; /* for other side */
 
     uint8_t            weOpened : 1; /* 1 if we asked for this, 0 if peer */
     uint8_t            inUse : 1;    /* 1 if connection is in use, 0 else */
@@ -975,12 +976,13 @@ static void l2cConnTimer(struct l2cConn *conn, uint64_t timeout)
  *           localCh - localCh value to set
  *           remCh - remCh value to set
  *           psm - psm value to set
+ *           ourMtu - the MTU we're willing to accept
  *           remCh - the remote channel used to make the request
  *           weOpened - true if we're opening this conn, false if peer
  * RETURN:   The struct or NULL on error
  * NOTES:
  */
-static struct l2cConn* l2cNewConnStruct(uint8_t state, uniq_t acl, uint16_t localCh, uint16_t remCh, psm_t psm, bool weOpened)
+static struct l2cConn* l2cNewConnStruct(uint8_t state, uniq_t acl, uint16_t localCh, uint16_t remCh, psm_t psm, uint16_t ourMtu, bool weOpened)
 {
     struct l2cConn* conn = (struct l2cConn*)calloc(1, sizeof(struct l2cConn));
 
@@ -989,7 +991,8 @@ static struct l2cConn* l2cNewConnStruct(uint8_t state, uniq_t acl, uint16_t loca
 
     conn->acl = acl;
     conn->psm = psm;
-    conn->mtu = 0xFFFF;
+    conn->theirMtu = 0xFFFF;
+    conn->ourMtu = ourMtu;
     conn->handle = uniqGetNext();
     conn->remCh = remCh;
     conn->localCh = localCh;
@@ -1029,7 +1032,7 @@ static void l2cHandleConnReq(struct l2cAclConn *aclConn, uint8_t ident, psm_t ps
     if (!svc)
         goto out_svcs_lock;
 
-    conn = l2cNewConnStruct(L2C_CONN_STATE_RX_OPEN_SVC, aclConn->handle, 0, remCh, psm, false);
+    conn = l2cNewConnStruct(L2C_CONN_STATE_RX_OPEN_SVC, aclConn->handle, 0, remCh, psm, svc->desc.mtu, false);
     if (!conn) {
         loge("Failed to allocate an L2C conn\n");
         goto out_svcs_lock;
@@ -1154,7 +1157,6 @@ static void l2cHandleConnRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
     conn->cfgTxState = L2C_CFG_STATE_INITIAL;
     conn->cfgRxState = L2C_CFG_STATE_INITIAL;
     conn->remCh = remCh;
-    conn->mtu = 0xFFFF;
 
     l2cPsmSendConfig(aclConn, conn);
 }
@@ -1171,8 +1173,8 @@ static void l2cPsmSendConfig(struct l2cAclConn *aclConn, struct l2cConn *conn)
 {
     /* for now our hardwired config is a large MTU */
     uint8_t ident;
-    static const uint8_t config[] = {
-        L2C_CONF_MTU, 0x02, OUR_MTU & 0xFF, OUR_MTU >> 8
+    uint8_t config[] = {
+        L2C_CONF_MTU, 0x02, conn->ourMtu & 0xFF, conn->ourMtu >> 8
     };
 
     if (conn->cfgTxState != L2C_CFG_STATE_INITIAL) {
@@ -1200,7 +1202,7 @@ static void l2cPsmSendConfig(struct l2cAclConn *aclConn, struct l2cConn *conn)
  */
 static void l2cChannelReadyForData(struct l2cAclConn *aclConn, struct l2cConn *conn)
 {
-    uint32_t mtu = conn->mtu;
+    uint32_t mtu = conn->theirMtu;
 
     l2cSvcWorkScheduleStateCall(NULL, conn, L2C_STATE_OPEN, &conn->handle, sizeof(l2c_handle_t));
     if (conn->psm)
@@ -1281,10 +1283,10 @@ static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
                 logi("other side sent bad sized mtu conf: %db\n", optLen);
                 result = L2C_SIG_CONF_RSP_REJECTED;
             } else {
-                conn->mtu = utilGetLE16(opt);
+                conn->theirMtu = utilGetLE16(opt);
                 utilSetLE8(end + 0, L2C_CONF_MTU);
                 utilSetLE8(end + 1, sizeof(uint16_t));
-                utilSetLE16(end + 2, conn->mtu);
+                utilSetLE16(end + 2, conn->theirMtu);
                 end += 4;
             }
             break;
@@ -3809,6 +3811,8 @@ bool l2cApiDataTx(l2c_handle_t handle, const void* data, uint32_t size)
         logw("Request send on invalid ACL handle "HANDLEFMT"\n", HANDLECNV(conn->acl));
     else if (conn->state != L2C_CONN_STATE_ESTABLISHED)
         logw("Attempt to send data over connection in state %d\n", conn->state);
+    else if (size > conn->theirMtu)
+        logw("Attempt to send data over MTU size (%u > %u)\n", size, conn->theirMtu);
     else {
         struct l2cFrm *frm;
 
@@ -4002,7 +4006,7 @@ static struct l2cAclConn* l2cCreateAndOpenNewAclConn(const struct bt_addr* addr)
  *           true was returned, at least one call to the callback
  *           will happen
  */
-bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr* addr, l2cStateCbk stateCbk, void* userData, void* instance)
+bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr* addr, uint16_t mtu, l2cStateCbk stateCbk, void* userData, void* instance)
 {
     struct l2cAclConn *aclConn;
     struct l2cConn *conn = NULL;
@@ -4037,7 +4041,7 @@ bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr* addr, l2cStateCb
         goto out;
     }
 
-    conn = l2cNewConnStruct(L2C_CONN_STATE_CONN_WAIT, aclConn->handle, 0, 0, psm, true);
+    conn = l2cNewConnStruct(L2C_CONN_STATE_CONN_WAIT, aclConn->handle, 0, 0, psm, mtu, true);
     if (!conn) {
         loge("Failed to allocate an L2C conn\n");
         goto out;
@@ -4134,7 +4138,7 @@ bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr* addr, l2
         goto out;
     }
 
-    conn = l2cNewConnStruct(L2C_CONN_STATE_CONN_WAIT, aclConn->handle, chan, chan, 0, true);
+    conn = l2cNewConnStruct(L2C_CONN_STATE_CONN_WAIT, aclConn->handle, chan, chan, 0, 0, true);
     if (!conn) {
         loge("Failed to allocate an L2C conn\n");
         return false;
@@ -4395,7 +4399,7 @@ void l2cAclLinkUp(uint16_t aclConnID, const struct bt_addr* addr, bool isMaster,
                     continue;
                 }
 
-                conn = l2cNewConnStruct(L2C_CONN_STATE_RX_OPEN_SVC, aclConn->handle, svc->chan, svc->chan, 0, false);
+                conn = l2cNewConnStruct(L2C_CONN_STATE_RX_OPEN_SVC, aclConn->handle, svc->chan, svc->chan, 0, 0, false);
                 if (!conn) {
                     logw("Not initing FixedCh %d svc - cannot alloc conn struct\n", svc->chan);
                     continue;
