@@ -38,6 +38,7 @@ struct EdrDiscDev {
 
 static uint8_t gStatus = 0;
 
+
 static void testHciAclRxCbk(uint16_t aclConn, const void *data, uint32_t len, bool first)
 {
    logi("TEST ACL RX %ub, %s\n", len, first ? "first" : "cont\n");
@@ -179,8 +180,6 @@ int main(int argc, char** argv)
     sem_t sem;
     uniq_t h;
 
-
-
     fprintf(stderr, "NewBlue test\n");
     logi("LOG UP\n");
 
@@ -189,7 +188,7 @@ int main(int argc, char** argv)
         return -1;
     }
 
-    if (!hciUp(mac, testHciAclRxCbk, testHciScoRxCbk, false)) {
+    if (!hciUp(mac, testHciAclRxCbk, testHciScoRxCbk, true)) {
         loge("HCI up fail\n");
         return -1;
     }
@@ -219,86 +218,88 @@ int main(int argc, char** argv)
     if(gStatus)
         loge("Failed to set discoverable. Sta = %d\n", gStatus);
 
-    //try LE discovery
-    {
-        struct LeDiscDev *leDevices = NULL, *t;
+    if (argc == 2 && !strcmp(argv[1], "scan")) {
 
-        logi("Trying some LE discovery...\n");
-        h = hciDiscoverLeStart(leDiscoveryCbk, &leDevices, true, false);
-        if (h) {
-            sleep(20);
-            fprintf(stderr, "\n");
-            logi("discovery stop = %s\n", hciDiscoverLeStop(h) ? "OK" : "FAIL");
+        //try LE discovery
+        {
+            struct LeDiscDev *leDevices = NULL, *t;
 
-            while (leDevices) {
-                char str[128];
-                t = leDevices;
-                leDevices = leDevices->next;
+            logi("Trying some LE discovery...\n");
+            h = hciDiscoverLeStart(leDiscoveryCbk, &leDevices, true, false);
+            if (h) {
+                sleep(20);
+                fprintf(stderr, "\n");
+                logi("discovery stop = %s\n", hciDiscoverLeStop(h) ? "OK" : "FAIL");
 
-                logi("Device %c %02X:%02X:%02X:%02X:%02X:%02X\n", t->randomAddr ? 'R' : 'P', t->mac[5], t->mac[4], t->mac[3], t->mac[2], t->mac[1], t->mac[0]);
-                if (t->rssi != HCI_RSSI_UNKNOWN)
-                    logi("\tRSSI: %d dBm\n", t->rssi);
-                else
-                    logi("\tRSSI unknown\n");
-                logi("\tADV_TYPE: %d, RSP? %s\n", t->advType, t->haveRsp ? "YES" : "NO");
+                while (leDevices) {
+                    char str[128];
+                    t = leDevices;
+                    leDevices = leDevices->next;
 
-                logData(str, t->advData, t->advLen);
-                logi("\tADV %s\n", str);
+                    logi("Device %c %02X:%02X:%02X:%02X:%02X:%02X\n", t->randomAddr ? 'R' : 'P', t->mac[5], t->mac[4], t->mac[3], t->mac[2], t->mac[1], t->mac[0]);
+                    if (t->rssi != HCI_RSSI_UNKNOWN)
+                        logi("\tRSSI: %d dBm\n", t->rssi);
+                    else
+                        logi("\tRSSI unknown\n");
+                    logi("\tADV_TYPE: %d, RSP? %s\n", t->advType, t->haveRsp ? "YES" : "NO");
 
-                if (t->haveRsp) {
-                    logData(str, t->rspData, t->rspLen);
-                    logi("\tRSP %s\n", str);
+                    logData(str, t->advData, t->advLen);
+                    logi("\tADV %s\n", str);
+
+                    if (t->haveRsp) {
+                        logData(str, t->rspData, t->rspLen);
+                        logi("\tRSP %s\n", str);
+                    }
+                    free(t);
                 }
-                free(t);
-            }
 
-        } else
-            loge("Failed to do LE discovery\n");
+            } else
+                loge("Failed to do LE discovery\n");
+        }
+
+        //try EDR discovery
+        {
+            struct EdrDiscDev *edrDevices = NULL, *t;
+
+            logi("Trying some EDR discovery...\n");
+            h = hciDiscoverEdrStart(edrDiscoveredCbk, &edrDevices, 20000);
+            if (h) {
+                bool stopret;
+                sleep(20);
+                fprintf(stderr, "|");
+                stopret = hciDiscoverEdrStop(h);
+                sleep(20);
+                fprintf(stderr, "\n");
+                logi("discovery stop = %s\n", stopret ? "OK" : "FAIL");
+
+                while (edrDevices) {
+                    char str[128];
+                    t = edrDevices;
+                    edrDevices = edrDevices->next;
+
+                    logi("Device %02X:%02X:%02X:%02X:%02X:%02X\n", t->mac[5], t->mac[4], t->mac[3], t->mac[2], t->mac[1], t->mac[0]);
+                    if (t->rssi != HCI_RSSI_UNKNOWN)
+                        logi("\tRSSI: %d dBm\n", t->rssi);
+                    else
+                        logi("\tRSSI unknown\n");
+                    logi("\tCLASS: 0x%06x\n", t->devCls);
+                    if (t->haveName)
+                        logi("\tNAME: '%s'\n", t->name);
+                    else
+                        logi("\tNAME unknown\n");
+
+                    logData(str, t->eir, 32);
+                    if (t->haveEir)
+                        logi("EIR: %s...\n", str);
+                    else
+                        logi("EIR not present\n");
+                    free(t);
+                }
+
+            } else
+                loge("Failed to do EDR discovery\n");
+        }
     }
-
-    //try EDR discovery
-    {
-        struct EdrDiscDev *edrDevices = NULL, *t;
-
-        logi("Trying some EDR discovery...\n");
-        h = hciDiscoverEdrStart(edrDiscoveredCbk, &edrDevices, 20000);
-        if (h) {
-            bool stopret;
-            sleep(20);
-            fprintf(stderr, "|");
-            stopret = hciDiscoverEdrStop(h);
-            sleep(20);
-            fprintf(stderr, "\n");
-            logi("discovery stop = %s\n", stopret ? "OK" : "FAIL");
-
-            while (edrDevices) {
-                char str[128];
-                t = edrDevices;
-                edrDevices = edrDevices->next;
-
-                logi("Device %02X:%02X:%02X:%02X:%02X:%02X\n", t->mac[5], t->mac[4], t->mac[3], t->mac[2], t->mac[1], t->mac[0]);
-                if (t->rssi != HCI_RSSI_UNKNOWN)
-                    logi("\tRSSI: %d dBm\n", t->rssi);
-                else
-                    logi("\tRSSI unknown\n");
-                logi("\tCLASS: 0x%06x\n", t->devCls);
-                if (t->haveName)
-                    logi("\tNAME: '%s'\n", t->name);
-                else
-                    logi("\tNAME unknown\n");
-
-                logData(str, t->eir, 32);
-                if (t->haveEir)
-                    logi("EIR: %s...\n", str);
-                else
-                    logi("EIR not present\n");
-                free(t);
-            }
-
-        } else
-            loge("Failed to do EDR discovery\n");
-    }
-
 
     logi("waiting...press a key\n");
     getchar();
@@ -311,5 +312,6 @@ int main(int argc, char** argv)
 
     return 0;
 }
+
 
 
