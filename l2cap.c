@@ -3788,7 +3788,7 @@ void l2cApiDisconnect(l2c_handle_t handle)
  * RETURN:   true is a send was requested. False on immediate error.
  * NOTES:    Blocks till data is sent
  */
-bool l2cApiDataTx(l2c_handle_t handle, const void* data, uint32_t size)
+bool l2cApiDataTx(l2c_handle_t handle, const void* data, uint16_t size)
 {
     struct l2cConn *conn;
     struct l2cAclConn *aclConn = NULL;
@@ -3889,7 +3889,7 @@ static bool l2cConnectionlessRequestSend(hci_conn_t aclConnID, psm_t psm, const 
  * RETURN:   true is a send was requested. False on immediate error.
  * NOTES:    A copy of the data is made
  */
-bool l2cApiConnectionlessDataTx(const struct bt_addr *addr, psm_t psm, const void *data, uint32_t size)
+bool l2cApiConnectionlessDataTx(const struct bt_addr *addr, psm_t psm, const void *data, uint16_t size)
 {
     struct l2cAclConn* aclConn;
     hci_conn_t aclConnID = 0;
@@ -3902,11 +3902,15 @@ bool l2cApiConnectionlessDataTx(const struct bt_addr *addr, psm_t psm, const voi
 
     pthread_mutex_lock(&mConnsLock);
     aclConn = l2cAclConnFindByAddr(addr);
-    if (aclConn)
+    if (aclConn) {
         aclConnID = aclConn->conn;
-    if (!BT_ADDR_IS_EDR(aclConn->addr)) {
-        logw("Cannot send connectionless data over non-EDR link\n");
-        aclConn = NULL;
+        if (!BT_ADDR_IS_EDR(aclConn->addr)) {
+            logw("Cannot send connectionless data over non-EDR link\n");
+            aclConn = NULL;
+        } else if (aclConn->connectionlessMtu < size) {
+            logw("Refusing connectionless send > mtu (%u > %u)\n", size, aclConn->connectionlessMtu);
+            aclConn = NULL;
+        }
     }
     pthread_mutex_unlock(&mConnsLock);
 
