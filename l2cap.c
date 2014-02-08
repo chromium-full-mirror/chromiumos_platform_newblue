@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <sched.h>
 #include "workQueue.h"
 #include "config.h"
 #include "l2cap.h"
@@ -19,6 +20,8 @@
 #define L2C_EXT_FTRS_SUPPORTED     0x180 /* support fixedCh & unicast data Rx */
 #define L2C_FIXED_CHS_SUPPORTED    0x6   /* as mandated by the spec */
 #define L2C_MIN_CONNECTIONLESS_MTU 48
+#define L2C_MIN_SIG_MTU            48
+
 
 /* connection bit to indicate in-progress connection */
 #define L2C_CONN_IN_PROGRESS       UNIQ_MARKER
@@ -248,6 +251,7 @@ struct l2cAclConn {
     uint8_t            ident; /* next ident to use */
     uint16_t           nextChan; /* a guess to a currently-free channel */
     uint16_t           connectionlessMtu;
+    uint16_t           sigMtu;
     struct bt_addr     addr;
     uint8_t            isMaster  : 1;
     uint8_t            goingDown : 1;
@@ -265,7 +269,14 @@ struct l2cAclConn {
     };
 };
 
-
+struct l2cSigPduSendItem {
+    struct l2cSigPduSendItem *next;
+    struct l2cSigPduSendItem *prev;
+    hci_conn_t                aclConnID;
+    void                     *data;
+    uint16_t                  len;
+    uint16_t                  extraLen; /* how many more bytes the MTU will allow */
+};
 
 /* our work struct for service worker theread */
 union l2cPsmOrChan {
@@ -417,10 +428,10 @@ static struct l2cConn* l2cConnFindByHandle(l2c_handle_t handle);
 static void l2cConnStructDelete(struct l2cConn *conn);
 static void l2cAclConnStructDelete(struct l2cAclConn *conn);
 static void l2cPsmSendConfig(struct l2cAclConn *aclConn, struct l2cConn *conn);
-static uint8_t l2cSigSendConfigReq(struct l2cAclConn *aclConn, uint16_t remCh, uint16_t flags, const void *cfgData, uint32_t cfgLen);
-static uint8_t l2cSigSendConfigRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t remCh, uint16_t flags, uint16_t result, const void *cfgData, uint32_t cfgLen);
-static uint8_t l2cSigSendInfoRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t infoType, uint16_t result, const void *infoData, uint32_t infoLen);
-static uint8_t l2cSigSendEchoRsp(struct l2cAclConn *aclConn, uint8_t ident, const void *echoData, uint32_t echoLen);
+static uint8_t l2cSigSendConfigReq(struct l2cAclConn *aclConn, uint16_t remCh, uint16_t flags, const void *cfgData, uint16_t cfgLen);
+static uint8_t l2cSigSendConfigRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t remCh, uint16_t flags, uint16_t result, const void *cfgData, uint16_t cfgLen);
+static uint8_t l2cSigSendInfoRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t infoType, uint16_t result, const void *infoData, uint16_t infoLen);
+static uint8_t l2cSigSendEchoRsp(struct l2cAclConn *aclConn, uint8_t ident, const void *echoData, uint16_t echoLen);
 static uint8_t l2cSigSendConnUpdateRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t result);
 static uint8_t l2cSigSendConnUpdateReq(struct l2cAclConn *aclConn, uint16_t intMin, uint16_t intMax, uint16_t latency, uint16_t timeoutMult);
 static uint8_t l2cSigSendDiscRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localCh, uint16_t remCh);
@@ -429,9 +440,16 @@ static void l2cAclDownTimerStart(struct l2cAclConn *aclConn);
 static void l2cAclDownTimerStop(struct l2cAclConn *aclConn);
 static void l2cAclLinkDownInt(struct l2cAclConn *aclConn, bool tellOtherSide);
 static void l2cPsmCfgStart(struct l2cAclConn *aclConn, struct l2cConn *conn);
+static void l2cTryMakeSendProgress(bool forLeBuffers, bool needLock);
 
 
 /* our state */
+static bool mChipJointBuffers;
+static uint16_t mChipBufLenEdr;
+static uint16_t mChipBufLenLe;
+static uint16_t mChipBufNumEdr;
+static uint16_t mChipBufNumLe;
+
 static pthread_t mSvcWorker;
 static struct workQueue *mServiceWork = NULL;
 
@@ -443,10 +461,18 @@ static psm_t nextPsm = 0x1001;
 static pthread_mutex_t mConnsLock = PTHREAD_MUTEX_INITIALIZER;
 static struct l2cAclConn *mAclConns = NULL;
 static struct l2cConn *mConns = NULL;
-
-static struct workQueue *mSigTxWork = NULL;
-static pthread_t mSigTxWorker;
-
+static void *mQueueBufLe = NULL;
+static void *mQueueBufEdr = NULL;
+static uint16_t mQueueLenLe = 0;
+static uint16_t mQueueLenEdr = 0;
+static bool mQueueFirstLe = true;
+static bool mQueueFirstEdr = true;
+static hci_conn_t mQueueConnLe = 0;
+static hci_conn_t mQueueConnEdr = 0;
+static struct l2cSigPduSendItem *sigSendHeadEdr = NULL;
+static struct l2cSigPduSendItem *sigSendTailEdr = NULL;
+static struct l2cSigPduSendItem *sigSendHeadLe = NULL;
+static struct l2cSigPduSendItem *sigSendTailLe = NULL;
 
 
 /*
@@ -2824,78 +2850,60 @@ static void* l2cSvcWorker(void* unused)
 
 /*
  * FUNCTION: l2cAclEnqueueSigTx
- * USE:      Request a send on an ACL connection
+ * USE:      Enqueue a signalling PDU
  * PARAMS:   aclConn - the ACL connection structure
  *           data - the data
- *           size - how much data there is
+ *           len - how much data there is
  * RETURN:   true is a send was requested. False on immediate error.
  * NOTES:    Call only with mConnsLock held.
  *           Buffer becomes owned by this code & will be freed later
- *           ONLY FOR SIGNALLING FRAMES
+ *           ONLY FOR SIGNALLING FRAMES. WILL NOT BLOCK.
  */
-static bool l2cAclEnqueueSigTx(struct l2cAclConn *aclConn, void *data, uint32_t len)
+static bool l2cAclEnqueueSigTx(struct l2cAclConn *aclConn, void *data, uint16_t len)
 {
-    struct l2cSigFrameWork *w;
+    bool isLE = BT_ADDR_IS_LE(aclConn->addr);
+    bool useLeBuffers = isLE && !mChipJointBuffers;
+    struct l2cSigPduSendItem **qH = isLE ? &sigSendHeadLe : &sigSendHeadEdr;
+    struct l2cSigPduSendItem **qT = isLE ? &sigSendTailLe : &sigSendTailEdr;
+    struct l2cSigPduSendItem *item;
 
-    w = (struct l2cSigFrameWork*)malloc(sizeof(struct l2cSigFrameWork));
-    if (!w)
+    if (len > aclConn->sigMtu) {
+        loge("Rejecting L2C SIG TX over MTU len: %u > %u\n", len, aclConn->sigMtu);
         return false;
-
-    w->data = data;
-    w->len = len;
-    w->aclConnID = aclConn->conn;
-    w->isLE = BT_ADDR_IS_LE(aclConn->addr);
-
-    if (workQueuePut(mSigTxWork, w))
-        return true;
-
-    free(w);
-    return false;
-}
-
-/*
- * FUNCTION: l2cAclPerformDataTx
- * USE:      Send DATA on an ACL connection
- * PARAMS:   aclConn - the ACL connection structure
- *           isLE - the the data for the LE channel?
- *           data - the data
- *           size - how much data there is
- * RETURN:   False on certain failure, true else
- * NOTES:    Call with no locks held - it may block!
- *           ONLY FOR DATA FRAMES
- */
-static bool l2cAclPerformDataTx(hci_conn_t aclConnID, bool isLE, const void *data, uint32_t len)
-{
-    l2cAclDataTx(aclConnID, data, len);
-    return true;
-}
-
-/*
- * FUNCTION: l2cSigTxWorker
- * USE:      Worker thread for sending signalling frames
- * PARAMS:   unused - unused
- * RETURN:   unused
- * NOTES:
- */
-static void* l2cSigTxWorker(void* unused)
-{
-    struct l2cSigFrameWork *work;
-    int status;
-
-    while(1) {
-
-        status = workQueueGet(mSigTxWork, (void**)&work);
-
-        /* The only one thing we use the work queue status for - exiting */
-        if (status)
-            break;
-
-        l2cAclPerformDataTx(work->aclConnID, work->isLE, work->data, work->len);
-        free(work->data);
-        free(work);
     }
 
-    return NULL;
+    /* merge multiple packets together up to MTU if not LE */
+    if (!isLE && *qT && (*qT)->extraLen <= len) {
+
+        uint8_t *buf = (uint8_t*)realloc((*qT)->data, (*qT)->len + len);
+        if (buf) {
+            memcpy(buf + (*qT)->len, data, len);
+            (*qT)->data = buf;
+            (*qT)->len += len;
+            (*qT)->extraLen -= len;
+            free(data);
+            return true;
+        }
+    }
+
+    item = (struct l2cSigPduSendItem*)malloc(sizeof(struct l2cSigPduSendItem));
+    if (!item)
+        return false;
+
+    item->aclConnID = aclConn->conn;
+    item->data = data;
+    item->len = len;
+    item->extraLen = aclConn->sigMtu - len;
+    item->next = NULL;
+    item->prev = (*qT);
+    if (item->prev)
+        item->prev->next = item;
+    else
+        (*qH) = item;
+
+    l2cTryMakeSendProgress(useLeBuffers, false);
+
+    return true;
 }
 
 /*
@@ -2955,36 +2963,21 @@ int l2cInit(void)
         goto out_service_q;
     }
 
-
-    mSigTxWork = workQueueAlloc(L2C_SVC_NUM_OUTSTANDING_SIG_FRAMES);
-    if (!mSigTxWork){
-        loge("Failed to allocate sig TX workqueue\n");
-        ret = ENOMEM;
-        goto out_sig_q;
-    }
-
     ret = pthread_create(&mSvcWorker, NULL, l2cSvcWorker, NULL);
     if (ret) {
         loge("Failed(%d) to create service worker\n", ret);
         goto out_service_thread;
     }
 
-    ret = pthread_create(&mSigTxWorker, NULL, l2cSigTxWorker, NULL);
-    if (ret) {
-        loge("Failed(%d) to create signalling TX worker\n", ret);
-        goto out_sig_thread;
-    }
+    mChipJointBuffers = hciInfoSharedBuffers();
+    if (!hciInfoAclBufSizeLe(&mChipBufLenLe, &mChipBufNumLe))
+        logi("No LE support found\n");
+    if (!hciInfoAclBufSizeEdr(&mChipBufLenEdr, &mChipBufNumEdr))
+        logi("No EDR support found\n");
 
     return 0;
 
-out_sig_thread:
-    workQueueWakeAll(mServiceWork, 1);
-    pthread_join(mSvcWorker, NULL);
-
 out_service_thread:
-    workQueueFree(mSigTxWork, l2cWorkFreeSigTx);
-
-out_sig_q:
     workQueueFree(mServiceWork, l2cWorkFreeService);
 
 out_service_q:
@@ -3105,7 +3098,7 @@ static uint16_t l2cAclFreeCid(struct l2cAclConn *aclConn)
  * RETURN:   ident if request was sent, else 0
  * NOTES:    call with mConnsLock held
  */
-static uint8_t l2cSigSend(struct l2cAclConn *aclConn, uint8_t ident, uint8_t code, const void *sigFrm, uint32_t sigFrmLen, const void *extraPtr, uint32_t extraLen)
+static uint8_t l2cSigSend(struct l2cAclConn *aclConn, uint8_t ident, uint8_t code, const void *sigFrm, uint16_t sigFrmLen, const void *extraPtr, uint16_t extraLen)
 {
     const int len = sizeof(struct l2cFrm) + sizeof(struct l2cSigFrm) + sigFrmLen + extraLen;
     struct l2cFrm *frm = (struct l2cFrm*)malloc(len);
@@ -3193,7 +3186,7 @@ static uint8_t l2cSigSendConnectionRsp(struct l2cAclConn *aclConn, uint8_t ident
  * RETURN:   ident if request was sent, else 0
  * NOTES:    call with mConnsLock held
  */
-static uint8_t l2cSigSendConfigReq(struct l2cAclConn *aclConn, uint16_t remCh, uint16_t flags, const void *cfgData, uint32_t cfgLen)
+static uint8_t l2cSigSendConfigReq(struct l2cAclConn *aclConn, uint16_t remCh, uint16_t flags, const void *cfgData, uint16_t cfgLen)
 {
     struct l2cSigConfReq req;
 
@@ -3216,7 +3209,7 @@ static uint8_t l2cSigSendConfigReq(struct l2cAclConn *aclConn, uint16_t remCh, u
  * RETURN:   ident if request was sent, else 0
  * NOTES:    call with mConnsLock held
  */
-static uint8_t l2cSigSendConfigRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t remCh, uint16_t flags, uint16_t result, const void *cfgData, uint32_t cfgLen)
+static uint8_t l2cSigSendConfigRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t remCh, uint16_t flags, uint16_t result, const void *cfgData, uint16_t cfgLen)
 {
     struct l2cSigConfRsp rsp;
 
@@ -3276,7 +3269,7 @@ static uint8_t l2cSigSendDiscRsp(struct l2cAclConn *aclConn, uint8_t ident, uint
  * RETURN:   ident vlue used for request or 0 if none was sent
  * NOTES:    call with mConnsLock held
  */
-static uint8_t l2cSigSendEchoRsp(struct l2cAclConn *aclConn, uint8_t ident, const void *echoData, uint32_t echoLen)
+static uint8_t l2cSigSendEchoRsp(struct l2cAclConn *aclConn, uint8_t ident, const void *echoData, uint16_t echoLen)
 {
     return l2cSigSend(aclConn, ident, L2C_SIG_ECHO_RSP, NULL, 0, echoData, echoLen);
 }
@@ -3310,7 +3303,7 @@ static uint8_t l2cSigSendInfoReq(struct l2cAclConn *aclConn, uint16_t infoType)
  * RETURN:   ident if request was sent, else 0
  * NOTES:    call with mConnsLock held
  */
-static uint8_t l2cSigSendInfoRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t infoType, uint16_t result, const void *infoData, uint32_t infoLen)
+static uint8_t l2cSigSendInfoRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t infoType, uint16_t result, const void *infoData, uint16_t infoLen)
 {
     struct l2cSigInfoRsp rsp;
 
@@ -3372,7 +3365,7 @@ static uint8_t l2cSigSendConnUpdateRsp(struct l2cAclConn *aclConn, uint8_t ident
  * RETURN:   ident if request was sent, else 0
  * NOTES:    call with mConnsLock held
  */
-static uint8_t l2cSigSendErrCmdReject(struct l2cAclConn *aclConn, uint8_t ident, uint16_t reason, const void *rejData, uint32_t rejLen)
+static uint8_t l2cSigSendErrCmdReject(struct l2cAclConn *aclConn, uint8_t ident, uint16_t reason, const void *rejData, uint16_t rejLen)
 {
     struct l2cSigCmdRej rej;
 
@@ -3780,23 +3773,230 @@ void l2cApiDisconnect(l2c_handle_t handle)
 }
 
 /*
+ * FUNCTION: l2cTryMakeSendProgress
+ * USE:      Try to make forward progress on sending data to HCI for radio transmssion.
+ *           Called when we either have new data or new credits.
+ * PARAMS:   forLeBuffers - which set of buffers we should work on
+ *           needLock - set if calling context does not hold mConnsLock
+ * RETURN:   NONE
+ * NOTES:    will take mConnsLock is not already held as indicated by needLock
+ */
+static void l2cTryMakeSendProgress(bool forLeBuffers, bool needLock)
+{
+    struct l2cSigPduSendItem *picked = NULL;
+    struct l2cSigPduSendItem **sigQHP;
+    struct l2cSigPduSendItem **sigQTP;
+    uint16_t chipBufSz;
+    hci_conn_t *qConnP;
+    uint16_t *qLenP;
+    bool *qFirstP;
+    uint8_t ret;
+    void **qBufP;
+    hci_conn_t sendConn;
+    uint16_t wantSendLen, actualSendLen;
+    bool sendFirst;
+    uint8_t *sendPtr;
+    bool definitelyHaveMore;
+
+    while(1) {
+        if (needLock)
+            pthread_mutex_lock(&mConnsLock);
+
+        if (forLeBuffers) {
+            qBufP = &mQueueBufLe;
+            qLenP = &mQueueLenLe;
+            qFirstP = &mQueueFirstLe;
+            qConnP = &mQueueConnLe;
+            sigQHP = &sigSendHeadLe;
+            sigQTP = &sigSendTailLe;
+            chipBufSz = mChipBufLenLe;
+        } else {
+            qBufP = &mQueueBufEdr;
+            qLenP = &mQueueLenEdr;
+            qFirstP = &mQueueFirstEdr;
+            qConnP = &mQueueConnEdr;
+            sigQHP = &sigSendHeadEdr;
+            sigQTP = &sigSendTailEdr;
+            chipBufSz = mChipBufLenEdr;
+        }
+
+        /*
+         * We always send SIG frames ahead of DATA frames, but we cannot do that if we
+         * already sent a fragmented data frame's start on the same ACL link, so we
+         * check for that special case here. We can reorder SIG frames for different
+         * links though. So this case only bites us if we only have SIG frames enqueued
+         * for the same link we have data frame half-sent on. The code segment that
+         * follows will detect if we cannot send SIG frames for some conection at this
+         * time and will find us another SEG frame to send, if there is one. Else it will
+         * just pick the first SIG frame. A further complication is if we pick a SIG frame
+         * that does not fit in the controller's buffer. In this case we'd have to somehow
+         * rememebr to send the rest of it later, but if our queue already has a DATA
+         * packet it in (in a half-sent state), we're royally boned. For this case, we also
+         * avoid SIG packets over controller's buffer size while we have a half-sent DATA
+         * packet in the queue.
+         */
+        picked = *sigQHP;
+        while (picked && *qBufP && ((!*qFirstP && picked->aclConnID == *qConnP) || (picked->len > chipBufSz)) )
+            picked = picked->next;
+
+        if (picked){ /* we have a SIG frame to send */
+            sendConn = picked->aclConnID;
+            sendPtr = (uint8_t*)picked->data;
+            wantSendLen = picked->len;
+            sendFirst = true;
+        } else { /* we continue the existing DATA frame */
+            sendConn = *qConnP;
+            sendPtr = (uint8_t*)*qBufP;
+            wantSendLen = *qLenP;
+            sendFirst = *qFirstP;
+            //TODO: in case we succeed, fire the callbacks to tell everyone we may be ready for more data */
+            //we still need a way for ppl to sibscribe to when mroe credits are available and a way to notify them
+            //this is a todo
+
+        }
+
+        if (!sendConn) { /* nothing to send anymore */
+            if (needLock)
+                pthread_mutex_unlock(&mConnsLock);
+            break;
+        }
+
+        actualSendLen = (wantSendLen > chipBufSz) ? chipBufSz : wantSendLen;
+
+        ret = l2cAclDataTx(sendConn, sendPtr, actualSendLen, sendFirst);
+
+        if (ret == L2C_HCI_TX_SEND_OK || ret == L2C_HCI_TX_SEND_NO_CONN) { /* either way we do not resend this in its current state */
+
+            if (picked) { /* dequeue the SIG frame we [partially] sent */
+                if (picked->prev)
+                    picked->prev->next = picked->next;
+                else
+                    *sigQHP = picked->next;
+
+                if (picked->next)
+                    picked->next->prev = picked->prev;
+                else
+                    *sigQTP = picked->prev;
+
+                free(picked);
+            } else { /* clear out the global queue state - if needed it will be reset later */
+                *qConnP = 0;
+                *qBufP = NULL;
+                *qLenP = 0;
+                *qFirstP = true;
+            }
+        }
+
+        if (ret == L2C_HCI_TX_SEND_OK) {
+
+            if (actualSendLen != wantSendLen) { /* not done? enqueue the rest of the fragment */
+                memmove(sendPtr, sendPtr + actualSendLen, wantSendLen - actualSendLen);
+                *qConnP = sendConn;
+                *qBufP = sendPtr;
+                *qLenP = wantSendLen - actualSendLen;
+                *qFirstP = false;
+                definitelyHaveMore = true;
+            } else { /* done? free the buf */
+                definitelyHaveMore = true;
+                free(sendPtr);
+            }
+        }
+
+        /* releasing the lock here allows threads waiting to write to do so and helps keep the pipeline full */
+        if (needLock) {
+            pthread_mutex_unlock(&mConnsLock);
+            if (!definitelyHaveMore) /* yeild will have no point if we hold the lock */
+                sched_yield();
+        }
+
+        if (ret == L2C_HCI_TX_SEND_NO_CREDITS)
+            break;
+    }
+}
+
+/*
+ * FUNCTION: l2cAclCreditAvail
+ * USE:      Called by lower layers when a send credit becomes available
+ * PARAMS:   le = was it an LE credit
+ * RETURN:   NONE
+ * NOTES:
+ */
+void l2cAclCreditAvail(bool le)
+{
+   l2cTryMakeSendProgress(le, true);
+}
+
+/*
+ * FUNCTION: l2cDataSendOnAclLink
+ * USE:      Request a send on an ACL link of data with a header
+ * PARAMS:   aclConn - the link
+ *           buf - the data
+ *           size - how much data there is
+ *           hdr - the header to prepend
+ *           hdrSize - size of the header
+ * RETURN:   L2C_TX_*
+ * NOTES:    call with mConnsLock held
+ */
+static uint8_t l2cDataSendOnAclLink(struct l2cAclConn *aclConn, const void* buf, uint16_t size, const void* hdr, uint16_t hdrSize)
+{
+    uint8_t ret = L2C_TX_ACCEPTED;
+    void **queueBufP;
+    uint16_t *queueLenP;
+    hci_conn_t *queueConnP;
+    bool *queueFirstP;
+    bool useLeBuffers;
+
+    /* see which queue (LE/EDR) we need to use */
+    useLeBuffers = BT_ADDR_IS_LE(aclConn->addr) && !mChipJointBuffers;
+    if (useLeBuffers) {
+        queueBufP = &mQueueBufLe;
+        queueLenP = &mQueueLenLe;
+        queueFirstP = &mQueueFirstLe;
+        queueConnP = &mQueueConnLe;
+    } else {
+        queueBufP = &mQueueBufEdr;
+        queueLenP = &mQueueLenEdr;
+        queueFirstP = &mQueueFirstEdr;
+        queueConnP = &mQueueConnEdr;
+    }
+
+    /* if queue is not busy, make it busy */
+    if (*queueBufP)
+        ret = L2C_TX_TRY_LATER;
+    else {
+        uint16_t buflen = size + hdrSize;
+        uint8_t *buf = (uint8_t*)malloc(buflen);
+
+        if (!buf) {
+            loge("Failed to alloc buf for l2c tx\n");
+            ret = L2C_TX_ERROR;
+        } else {
+            memcpy(buf, hdr, hdrSize);
+            memcpy(buf + hdrSize, buf, size);
+
+            *queueBufP = buf;
+            *queueLenP = buflen;
+            *queueFirstP = true;
+            l2cTryMakeSendProgress(useLeBuffers, true);
+        }
+    }
+    return ret;
+}
+
+/*
  * FUNCTION: l2cApiDataTx
  * USE:      Request a send on a pipe
  * PARAMS:   handle - the handle
  *           data - the data
  *           size - how much data there is
- * RETURN:   true is a send was requested. False on immediate error.
- * NOTES:    Blocks till data is sent
+ * RETURN:   L2C_TX_*
+ * NOTES:    Never blocks!
  */
-bool l2cApiDataTx(l2c_handle_t handle, const void* data, uint16_t size)
+uint8_t l2cApiDataTx(l2c_handle_t handle, const void* data, uint16_t size)
 {
-    struct l2cConn *conn;
     struct l2cAclConn *aclConn = NULL;
-    uint32_t buflen = size + sizeof(struct l2cFrm);
-    hci_conn_t aclConnID = 0;
-    void *buf = NULL;
-    bool ret = false;
-    bool isLE = false;
+    uint8_t ret = L2C_TX_ACCEPTED;
+    struct l2cConn *conn;
 
     pthread_mutex_lock(&mConnsLock);
     conn = l2cConnFindByHandle(handle);
@@ -3805,16 +4005,25 @@ bool l2cApiDataTx(l2c_handle_t handle, const void* data, uint16_t size)
 
     /* we only support L2CAP simple mode for now */
 
-    if (!conn)
+    if (!conn) {
+        ret = L2C_TX_NO_CONN;
         logw("Request send on invalid handle "HANDLEFMT"\n", HANDLECNV(handle));
-    else if (!aclConn)
+    } else if (!aclConn) {
+        ret = L2C_TX_NO_CONN;
         logw("Request send on invalid ACL handle "HANDLEFMT"\n", HANDLECNV(conn->acl));
-    else if (conn->state != L2C_CONN_STATE_ESTABLISHED)
+    } else if (conn->state != L2C_CONN_STATE_ESTABLISHED) {
+        /*
+         * In this case, we could send a retry-later return code, but if you tried to send
+         * at this point, you clearly do not know right from wrong, and do not deserve
+         * another chance
+         */
+        ret = L2C_TX_ERROR;
         logw("Attempt to send data over connection in state %d\n", conn->state);
-    else if (size > conn->theirMtu)
+    } else if (size > conn->theirMtu) {
+        ret = L2C_TX_ERROR;
         logw("Attempt to send data over MTU size (%u > %u)\n", size, conn->theirMtu);
-    else {
-        struct l2cFrm *frm;
+    } else {
+        struct l2cFrm frm;
 
         if (!conn->inUse) {
             logd("Marking conn "HANDLEFMT" as in use due to TX\n", HANDLECNV(conn->handle));
@@ -3822,78 +4031,31 @@ bool l2cApiDataTx(l2c_handle_t handle, const void* data, uint16_t size)
             l2cAclDownTimerStop(aclConn);
         }
 
-        aclConnID = aclConn->conn;
-        isLE = BT_ADDR_IS_LE(aclConn->addr);
-        buf = malloc(buflen);
-        if (buf) {
-            frm = (struct l2cFrm*)buf;
-            memcpy(frm + 1, data, size);
-            utilSetLE16(&frm->len, size);
-            utilSetLE16(&frm->cid, conn->remCh);
-        }
+        utilSetLE16(&frm.len, size);
+        utilSetLE16(&frm.cid, conn->remCh);
+
+        ret = l2cDataSendOnAclLink(aclConn, data, size, &frm, sizeof(frm));
     }
     pthread_mutex_unlock(&mConnsLock);
-
-    ret = buf && l2cAclPerformDataTx(aclConnID, isLE, buf, buflen);
-
-    if(buf)
-        free (buf);
-
-    return false;
-}
-
-/*
- * FUNCTION: l2cConnectionlessRequestSend
- * USE:      Request a send on a connectioneless pipe
- * PARAMS:   aclConn - the ACL connection structure
- *           psm - the psm
- *           data - the data
- *           size - how much data there is
- * RETURN:   true is a send was requested. False on immediate error.
- * NOTES:    A copy of the data is made. Call with no locks held - may block!
- */
-static bool l2cConnectionlessRequestSend(hci_conn_t aclConnID, psm_t psm, const void *data, uint32_t len)
-{
-    uint32_t buflen = len + sizeof(struct l2cFrm) + sizeof(psm_t);
-    void *buf = malloc(buflen);
-    struct l2cFrm *frm;
-    psm_t *psmP;
-    bool ret = false;
-
-    /* connectionless data is always in a simple frame */
-
-    if (!buf)
-        return false;
-
-    frm = (struct l2cFrm*)buf;
-    psmP = (psm_t*)(frm + 1);
-    memcpy(psmP + 1, data, len);
-    utilSetLE16(psmP, psm);
-    utilSetLE16(&frm->len, len + sizeof(psm_t));
-    utilSetLE16(&frm->cid, L2C_CH_CONNECTIONLESS);
-
-    ret = l2cAclPerformDataTx(aclConnID, false, buf, buflen);
-
-    free(buf);
 
     return ret;
 }
 
 /*
- * FUNCTION: l2cApiDataTx
- * USE:      Request a send on a pipe
+ * FUNCTION: l2cApiConnectionlessDataTx
+ * USE:      Request a send on a connectionless pipe
  * PARAMS:   addr - the peer address
  *           psm - the PSM to send to
  *           data - the data
  *           size - how much data there is
- * RETURN:   true is a send was requested. False on immediate error.
- * NOTES:    A copy of the data is made
+ * RETURN:   L2C_TX_*
+ * NOTES:    Never blocks!
  */
-bool l2cApiConnectionlessDataTx(const struct bt_addr *addr, psm_t psm, const void *data, uint16_t size)
+uint8_t l2cApiConnectionlessDataTx(const struct bt_addr *addr, psm_t psm, const void *data, uint16_t size)
 {
     struct l2cAclConn* aclConn;
     hci_conn_t aclConnID = 0;
-    bool ret = false;
+    bool ret;
 
     if (!l2cPsmValid(psm)) {
         logw("Invalid PSM %d\n", psm);
@@ -3902,22 +4064,26 @@ bool l2cApiConnectionlessDataTx(const struct bt_addr *addr, psm_t psm, const voi
 
     pthread_mutex_lock(&mConnsLock);
     aclConn = l2cAclConnFindByAddr(addr);
-    if (aclConn) {
-        aclConnID = aclConn->conn;
-        if (!BT_ADDR_IS_EDR(aclConn->addr)) {
-            logw("Cannot send connectionless data over non-EDR link\n");
-            aclConn = NULL;
-        } else if (aclConn->connectionlessMtu < size) {
-            logw("Refusing connectionless send > mtu (%u > %u)\n", size, aclConn->connectionlessMtu);
-            aclConn = NULL;
-        }
+    if (!aclConn) {
+        logw("Dropping connectionless send to a device whom we aren't connected to\n");
+        ret = L2C_TX_ERROR;
+    } else if (!BT_ADDR_IS_EDR(aclConn->addr)) {
+        logw("Dropping connectionless send to an LE device\n");
+        ret = L2C_TX_ERROR;
+    } else if (aclConn->connectionlessMtu < size) {
+        logw("Dropping connectionless send over MTU %u > %u\n", size, aclConn->connectionlessMtu);
+        ret = L2C_TX_ERROR;
+    } else {
+        uint8_t hdr[sizeof(struct l2cFrm) + sizeof(psm_t)];
+        struct l2cFrm *frm = (struct l2cFrm*)hdr;
+
+        utilSetLE16(&frm->len, size + sizeof(psm_t));
+        utilSetLE16(&frm->cid, L2C_CH_CONNECTIONLESS);
+        utilSetLE16(frm + 1, psm);
+
+        ret = l2cDataSendOnAclLink(aclConn, data, size, hdr, sizeof(hdr));
     }
     pthread_mutex_unlock(&mConnsLock);
-
-    if (aclConn)
-        ret = l2cConnectionlessRequestSend(aclConnID, psm, data, size);
-    else
-        logi("dropping connectionless tx for psm %d due to lack of connection to peer\n", psm);
 
     return ret;
 }
@@ -3980,6 +4146,7 @@ static struct l2cAclConn* l2cCreateAndOpenNewAclConn(const struct bt_addr* addr)
     conn->prev = NULL;
     conn->reassBuf = NULL;
     conn->reassLen = 0;
+    conn->sigMtu = L2C_MIN_SIG_MTU;
 
     if (!l2cSvcWorkScheduleAclLinkOpen(NULL, &conn->addr)) {
         free(conn);
@@ -4319,6 +4486,7 @@ void l2cAclLinkUp(hci_conn_t aclConnID, const struct bt_addr* addr, bool isMaste
                 aclConn->reassBuf = NULL;
                 aclConn->reassLen = 0;
                 aclConn->next = mAclConns;
+                aclConn->sigMtu = L2C_MIN_SIG_MTU;
                 mAclConns->prev = aclConn;
                 mAclConns = aclConn;
             } else {

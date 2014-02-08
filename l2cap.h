@@ -21,6 +21,10 @@ typedef uniq_t l2c_handle_t; /* a 0-valued handle is invalid and indicates error
 int l2cInit(void);
 
 
+#define L2C_TX_ACCEPTED      0 /* data will be sent if connection remains - done */
+#define L2C_TX_NO_CONN       1 /* no such connection - do not retry */
+#define L2C_TX_TRY_LATER     2 /* no send capacity now - retry later */
+#define L2C_TX_ERROR         3 /* some other error - do not retry */
 
 
 /* HIGHER LAYER INTERFACE API */
@@ -104,17 +108,18 @@ bool l2cApiIsConnEncrypted(l2c_handle_t handle);
 /* external code can use this to demand encrypted be used */
 bool l2cApiDemandEncryption(l2c_handle_t handle);
 
-/* external code can use this to notify other size of athorization (only if svc alloc returned SVC_ALLOC_WAIT_FOR_AUTHORIZ). */
+/* external code can use this to notify other size of athorization (only if your svc alloc returned SVC_ALLOC_WAIT_FOR_AUTHORIZ). */
 bool l2cApiUserAthorizNotify(l2c_handle_t handle, bool authorized);
 
 /* external code can use this to disconnect a channel */
 void l2cApiDisconnect(l2c_handle_t handle);
 
-/* external code can use this to send to the other side - blocks till sent */
-bool l2cApiDataTx(l2c_handle_t handle, const void *data, uint16_t size);
+/* external code can use this to send to the other side - never blocks. returns L2C_TX_* */
+uint8_t l2cApiDataTx(l2c_handle_t handle, const void *data, uint16_t size);
 
-/* if no connection exists, one will *not* be created */
-bool l2cApiConnectionlessDataTx(const struct bt_addr *addr, psm_t psm, const void *data, uint16_t size);
+/* if no connection exists, one will *not* be created. if sending does not work, there is no retry callback */
+uint8_t l2cApiConnectionlessDataTx(const struct bt_addr *addr, psm_t psm, const void *data, uint16_t size);
+
 
 
 /* LOWER LAYER INTERFACE API */
@@ -125,20 +130,31 @@ void l2cAclLinkUp(hci_conn_t aclConn, const struct bt_addr *addr, bool isMaster,
 void l2cAclLinkDown(hci_conn_t aclConn);
 /* lower layer calls this when new ACL data arrives */
 void l2cAclDataRx(hci_conn_t aclConn, const void *data, uint32_t len, bool first);
-/* this layer calls this to send ACL data */
-void l2cAclDataTx(hci_conn_t aclConn, const void *data, uint32_t len);
+/* lower layer calls this to tell us that a data credit just became available */
+void l2cAclCreditAvail(bool le);
+/* lower layer calls this when connection parameters change */
+void l2cAclLinkParamsChange(hci_conn_t aclConn, bool success, uint16_t interval, uint16_t latency, uint16_t timeout);
+/* lower layer calls this when connection encryption changes. called with FALSE if encr failed since BT cannot realyl go from encrypted to not */
+void l2cAclLinkEncrChange(hci_conn_t aclConn, bool isEncrypted);
+
+
+//these will be renamed to proper HCI funcs/defines later
+
+
+#define L2C_HCI_TX_SEND_OK          0
+#define L2C_HCI_TX_SEND_NO_CREDITS  1
+#define L2C_HCI_TX_SEND_NO_CONN     2
+
+/* this layer calls this to send ACL data. shall not block! returns L2C_HCI_TX_SEND_* */
+uint8_t l2cAclDataTx(hci_conn_t aclConn, const void *data, uint32_t len, bool first);
 /* this layer calls this to establish a link. *addr need not stay valid after call */
 void l2cAclLinkEstablish(const struct bt_addr *addr);
 /* this layer calls this to close a link, or cancel one being opened */
 void l2cAclLinkClose(const struct bt_addr *addr);
 /* this layer calls this to udpate a connection's LE parameters */
 void l2cAclUpdateParams(hci_conn_t aclConn, uint16_t minInt, uint16_t maxInt, uint16_t lat, uint16_t to);
-/* lower layer calls this when connection parameters change */
-void l2cAclLinkParamsChange(hci_conn_t aclConn, bool success, uint16_t interval, uint16_t latency, uint16_t timeout);
 /* this layer calls this to demand encryption */
 void l2cAclDemandEncr(hci_conn_t aclConn);
-/* lower layer calls this when connection encryption changes. called with FALSE if encr failed since BT cannot realyl go from encrypted to not */
-void l2cAclLinkEncrChange(hci_conn_t aclConn, bool isEncrypted);
 
 
 #endif
