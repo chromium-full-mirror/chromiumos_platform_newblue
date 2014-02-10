@@ -6,6 +6,7 @@
 #include <string.h>
 #include <errno.h>
 #include <sched.h>
+#include "multiNotif.h"
 #include "workQueue.h"
 #include "config.h"
 #include "l2cap.h"
@@ -473,6 +474,9 @@ static struct l2cSigPduSendItem *sigSendHeadEdr = NULL;
 static struct l2cSigPduSendItem *sigSendTailEdr = NULL;
 static struct l2cSigPduSendItem *sigSendHeadLe = NULL;
 static struct l2cSigPduSendItem *sigSendTailLe = NULL;
+
+static struct multiNotifList *mWriteNotif = NULL;
+
 
 
 /*
@@ -2969,6 +2973,12 @@ int l2cInit(void)
         goto out_service_thread;
     }
 
+    mWriteNotif = multiNotifCreate();
+    if (!mWriteNotif) {
+        loge("Failed to create write notif list\n");
+        goto out_multinotif;
+    }
+
     mChipJointBuffers = hciInfoSharedBuffers();
     if (!hciInfoAclBufSizeLe(&mChipBufLenLe, &mChipBufNumLe))
         logi("No LE support found\n");
@@ -2976,6 +2986,10 @@ int l2cInit(void)
         logi("No EDR support found\n");
 
     return 0;
+
+out_multinotif:
+    workQueueWakeAll(mServiceWork, 1);
+    pthread_join(mSvcWorker, NULL);
 
 out_service_thread:
     workQueueFree(mServiceWork, l2cWorkFreeService);
@@ -3849,10 +3863,6 @@ static void l2cTryMakeSendProgress(bool forLeBuffers, bool needLock)
             sendPtr = (uint8_t*)*qBufP;
             wantSendLen = *qLenP;
             sendFirst = *qFirstP;
-            //TODO: in case we succeed, fire the callbacks to tell everyone we may be ready for more data */
-            //we still need a way for ppl to sibscribe to when mroe credits are available and a way to notify them
-            //this is a todo
-
         }
 
         if (!sendConn) { /* nothing to send anymore */
@@ -3885,6 +3895,9 @@ static void l2cTryMakeSendProgress(bool forLeBuffers, bool needLock)
                 *qLenP = 0;
                 *qFirstP = true;
             }
+
+            /* tell everyone we may have buffer space */
+            multiNotifNotify(mWriteNotif, NULL);
         }
 
         if (ret == L2C_HCI_TX_SEND_OK) {
@@ -3915,15 +3928,43 @@ static void l2cTryMakeSendProgress(bool forLeBuffers, bool needLock)
 }
 
 /*
+ * FUNCTION: l2cApiRegisterWriteBufNotif
+ * USE:      Register for write buffer notifs
+ * PARAMS:   cbk - the cbk to call
+ *           cbkData - the data to pass to it
+ * RETURN:   handle fo the notif for l2cApiUnegisterWriteBufNotif()
+ * NOTES:    cbk may be called before this func returns
+ */
+uniq_t l2cApiRegisterWriteBufNotif(multiNotifCbk cbk, void *cbkData)
+{
+    return multiNotifRegister(mWriteNotif, cbk, cbkData);
+}
+
+/*
+ * FUNCTION: l2cApiUnegisterWriteBufNotif
+ * USE:      Unregister from write buffer notif created by l2cApiRegisterWriteBufNotif()
+ * PARAMS:   notifHandle - the notif handle
+ * RETURN:   NONE
+ * NOTES:    cbk will definitely not be called once this func returns
+ */
+void l2cApiUnegisterWriteBufNotif(uniq_t notifHandle)
+{
+    multiNotifUnregister(mWriteNotif, notifHandle);
+}
+
+/*
  * FUNCTION: l2cAclCreditAvail
  * USE:      Called by lower layers when a send credit becomes available
- * PARAMS:   le = was it an LE credit
+ * PARAMS:   le - was it an LE credit
  * RETURN:   NONE
  * NOTES:
  */
 void l2cAclCreditAvail(bool le)
 {
-   l2cTryMakeSendProgress(le, true);
+    l2cTryMakeSendProgress(le, true);
+
+    /* again, tell everyone we may have buffer space */
+    multiNotifNotify(mWriteNotif, NULL);
 }
 
 /*

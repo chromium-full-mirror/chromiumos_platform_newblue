@@ -1,6 +1,7 @@
 #ifndef _L2CAP_H_
 #define _L2CAP_H_
 
+#include "multiNotif.h"
 #include "types.h"
 #include "uniq.h"
 #include "hci.h"
@@ -116,6 +117,12 @@ void l2cApiDisconnect(l2c_handle_t handle);
 
 /* external code can use this to send to the other side - never blocks. returns L2C_TX_* */
 uint8_t l2cApiDataTx(l2c_handle_t handle, const void *data, uint16_t size);
+
+/* exteranl code can use this to know when it shoudl retry its write. Do not do that in the callback! - queue it for later */
+uniq_t l2cApiRegisterWriteBufNotif(multiNotifCbk cbk, void *cbkData);
+
+/* exteranl code can use this to unregister from notif created by l2cApiRegisterWriteBufNotif() */
+void l2cApiUnegisterWriteBufNotif(uniq_t notifHandle);
 
 /* if no connection exists, one will *not* be created. if sending does not work, there is no retry callback */
 uint8_t l2cApiConnectionlessDataTx(const struct bt_addr *addr, psm_t psm, const void *data, uint16_t size);
