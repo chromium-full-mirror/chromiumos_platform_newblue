@@ -330,6 +330,9 @@ struct l2cSvcWork {
         struct {
             hci_conn_t aclConnID;
         } demandEncr;
+        struct {
+            bool useLeBuffers;
+        } tryTx;
     };
 };
 #define L2C_WORK_PSM_INST_ALLOC          0
@@ -343,6 +346,7 @@ struct l2cSvcWork {
 #define L2C_WORK_ACL_LINK_CLOSE          8
 #define L2C_WORK_ACL_CONN_UPDT           9
 #define L2C_WORK_ACL_DEMAND_ENCR         10
+#define L2C_WORK_TRY_HCI_TX              11
 
 /* our per-service struct for PSM-based services */
 struct l2cPsmSvc {
@@ -919,7 +923,31 @@ static bool l2cSvcWorkScheduleAclDemandEncr(void* reqID, hci_conn_t aclConnID)
     if (workQueuePut(mServiceWork, w))
         return true;
 
-    loge("Failed to enqueue service work for ACL connection update!\n");
+    loge("Failed to enqueue service work for ACL connection encprypt!\n");
+    free(w);
+    return false;
+}
+
+/*
+ * FUNCTION: l2cSvcWorkScheduleTryTx
+ * USE:      Schedule an attempt to do some TX
+ * PARAMS:   reqID - request ID to signal completion
+ *           useLeBuffers - which buffer set to try TX on
+ * RETURN:   NONE
+ * NOTES:    actual call will happen in the worker thread.
+ */
+static bool l2cSvcWorkScheduleTryTx(void* reqID, bool useLeBuffers)
+{
+    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_TRY_HCI_TX, reqID);
+    if (!w)
+        return false;
+
+    w->tryTx.useLeBuffers = useLeBuffers;
+
+    if (workQueuePut(mServiceWork, w))
+        return true;
+
+    loge("Failed to enqueue service work for ACL TX!\n");
     free(w);
     return false;
 }
@@ -2829,16 +2857,23 @@ static void* l2cSvcWorker(void* unused)
             work->connUpdtCbk.doneCbk(work->connUpdtCbk.cbkData, work->connUpdtCbk.success);
             break;
         case L2C_WORK_ACL_LINK_OPEN:
-            l2cAclLinkEstablish(&work->aclLink.addr);
+            if (!hciConnect(&work->aclLink.addr))
+                loge("HCI refused to connect\n");
             break;
         case L2C_WORK_ACL_LINK_CLOSE:
-            l2cAclLinkClose(&work->aclLink.addr);
+            if (!hciDisconnect(&work->aclLink.addr))
+                loge("HCI refused to disconnect\n");
             break;
         case L2C_WORK_ACL_CONN_UPDT:
-            l2cAclUpdateParams(work->connUpdt.aclConnID, work->connUpdt.minInt, work->connUpdt.maxInt, work->connUpdt.lat, work->connUpdt.to);
+            if (!hciUpdateLeParams(work->connUpdt.aclConnID, work->connUpdt.minInt, work->connUpdt.maxInt, work->connUpdt.lat, work->connUpdt.to))
+                loge("HCI refused to update LE params\n");
             break;
         case L2C_WORK_ACL_DEMAND_ENCR:
-            l2cAclDemandEncr(work->demandEncr.aclConnID);
+            if (!hciDemandEncr(work->demandEncr.aclConnID))
+                loge("HCI refused to encrypt\n");
+            break;
+        case L2C_WORK_TRY_HCI_TX:
+            l2cTryMakeSendProgress(work->tryTx.useLeBuffers, true);
             break;
         default: {
             loge("Unknown work type %d\n", work->type);
@@ -2905,7 +2940,8 @@ static bool l2cAclEnqueueSigTx(struct l2cAclConn *aclConn, void *data, uint16_t 
     else
         (*qH) = item;
 
-    l2cTryMakeSendProgress(useLeBuffers, false);
+    if (!l2cSvcWorkScheduleTryTx(NULL, useLeBuffers))
+        loge("Failed to schedule TX attempt\n");
 
     return true;
 }
@@ -3873,9 +3909,9 @@ static void l2cTryMakeSendProgress(bool forLeBuffers, bool needLock)
 
         actualSendLen = (wantSendLen > chipBufSz) ? chipBufSz : wantSendLen;
 
-        ret = l2cAclDataTx(sendConn, sendPtr, actualSendLen, sendFirst);
+        ret = hciTryToTx(sendConn, sendPtr, actualSendLen, sendFirst);
 
-        if (ret == L2C_HCI_TX_SEND_OK || ret == L2C_HCI_TX_SEND_NO_CONN) { /* either way we do not resend this in its current state */
+        if (ret == HCI_TX_SEND_OK || ret == HCI_TX_SEND_NO_CONN) { /* either way we do not resend this in its current state */
 
             if (picked) { /* dequeue the SIG frame we [partially] sent */
                 if (picked->prev)
@@ -3900,7 +3936,7 @@ static void l2cTryMakeSendProgress(bool forLeBuffers, bool needLock)
             multiNotifNotify(mWriteNotif, NULL);
         }
 
-        if (ret == L2C_HCI_TX_SEND_OK) {
+        if (ret == HCI_TX_SEND_OK) {
 
             if (actualSendLen != wantSendLen) { /* not done? enqueue the rest of the fragment */
                 memmove(sendPtr, sendPtr + actualSendLen, wantSendLen - actualSendLen);
@@ -3922,7 +3958,7 @@ static void l2cTryMakeSendProgress(bool forLeBuffers, bool needLock)
                 sched_yield();
         }
 
-        if (ret == L2C_HCI_TX_SEND_NO_CREDITS)
+        if (ret == HCI_TX_SEND_NO_CREDITS)
             break;
     }
 }
@@ -3961,10 +3997,8 @@ void l2cApiUnegisterWriteBufNotif(uniq_t notifHandle)
  */
 void l2cAclCreditAvail(bool le)
 {
-    l2cTryMakeSendProgress(le, true);
-
-    /* again, tell everyone we may have buffer space */
-    multiNotifNotify(mWriteNotif, NULL);
+    if (!l2cSvcWorkScheduleTryTx(NULL, le))
+        loge("Failed to schedule TX attempt\n");
 }
 
 /*
@@ -4018,7 +4052,8 @@ static uint8_t l2cDataSendOnAclLink(struct l2cAclConn *aclConn, const void* buf,
             *queueBufP = buf;
             *queueLenP = buflen;
             *queueFirstP = true;
-            l2cTryMakeSendProgress(useLeBuffers, true);
+            if (!l2cSvcWorkScheduleTryTx(NULL, useLeBuffers))
+                loge("Failed to schedule TX attempt\n");
         }
     }
     return ret;

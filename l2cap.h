@@ -145,24 +145,5 @@ void l2cAclLinkParamsChange(hci_conn_t aclConn, bool success, uint16_t interval,
 void l2cAclLinkEncrChange(hci_conn_t aclConn, bool isEncrypted);
 
 
-//these will be renamed to proper HCI funcs/defines later
-
-
-#define L2C_HCI_TX_SEND_OK          0
-#define L2C_HCI_TX_SEND_NO_CREDITS  1
-#define L2C_HCI_TX_SEND_NO_CONN     2
-
-/* this layer calls this to send ACL data. shall not block! returns L2C_HCI_TX_SEND_* */
-uint8_t l2cAclDataTx(hci_conn_t aclConn, const void *data, uint32_t len, bool first);
-/* this layer calls this to establish a link. *addr need not stay valid after call */
-void l2cAclLinkEstablish(const struct bt_addr *addr);
-/* this layer calls this to close a link, or cancel one being opened */
-void l2cAclLinkClose(const struct bt_addr *addr);
-/* this layer calls this to udpate a connection's LE parameters */
-void l2cAclUpdateParams(hci_conn_t aclConn, uint16_t minInt, uint16_t maxInt, uint16_t lat, uint16_t to);
-/* this layer calls this to demand encryption */
-void l2cAclDemandEncr(hci_conn_t aclConn);
-
-
 #endif
 

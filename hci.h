@@ -76,6 +76,22 @@ bool hciDiscoverEdrGetNameCancel(uniq_t handle);
 uniq_t hciDiscoverLeStart(hciDeviceDiscoveredLeCbk cbk, void *cbkData, bool active, bool useRandomAddr);
 bool hciDiscoverLeStop(uniq_t handle);
 
+#define HCI_TX_SEND_OK          0
+#define HCI_TX_SEND_NO_CREDITS  1
+#define HCI_TX_SEND_NO_CONN     2
+
+/* connect using default settings */
+bool hciConnect(const struct bt_addr* addr);
+/* disconnect/cancel connection attempt */
+bool hciDisconnect(const struct bt_addr* addr);
+/* try to send data -> HCI_TX_SEND_* */
+uint8_t hciTryToTx(hci_conn_t aclConn, const void *data, uint32_t len, bool first);
+/* LE connection update */
+void hciUpdateLeParams(hci_conn_t aclConn, uint16_t minInt, uint16_t maxInt, uint16_t lat, uint16_t to);
+/* request encryption */
+void hciDemandEncr(hci_conn_t aclConn);
+
+
 
 #endif
 
