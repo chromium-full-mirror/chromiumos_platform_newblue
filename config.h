@@ -3,6 +3,17 @@
 
 
 /*
+ * Default LE connection parameters
+ */
+#define HCI_LE_CONN_INT_MIN                10 /* 12.5 ms */
+#define HCI_LE_CONN_INT_MAX                20 /* 25.0 ms */
+#define HCI_LE_CONN_LATENCY                10
+#define HCI_LE_CONN_TIMEOUT                83  /* .83 s */
+#define HCI_LE_CONN_USE_RAND_ADDR          true
+#define HCI_LE_CONN_SCAN_INTERVAL          24 /* 15 ms */
+#define HCI_LE_CONN_SCAN_WINDOW            6  /* 3.75 ms */
+
+/*
  * Default LE scan parameters
  */
 #define HCI_LE_SCAN_INTERVAL               24 /* 15 ms */
