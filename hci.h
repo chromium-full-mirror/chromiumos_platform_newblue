@@ -45,15 +45,13 @@ typedef void (*hciDeviceDiscoveredEdrNameCbk)(void *cbkData, uint8_t nameReqStat
 typedef void (*hciDeviceDiscoveredLeCbk)(void *cbkData, const struct bt_addr *addr, int8_t rssi, uint8_t replyType, const void *eir, uint8_t eirLen);
 
 typedef void (*hciOpDoneCbk)(void *cbkData, uint8_t status /* 0 = good */);
-typedef void (*hciAclRxCbk)(uint16_t aclConn, const void *data, uint16_t len, bool first);
-typedef void (*hciScoRxCbk)(uint16_t aclConn, const void *data, uint8_t len, uint8_t lossAmount);
 #define SCO_LOSS_AMOUNT_NONE    0
 #define SCO_LOSS_AMOUNT_SOME    1
 #define SCO_LOSS_AMOUNT_UNKNOWN 2
 #define SCO_LOSS_AMOUNT_ALL     3
 
 /* bring chip communications up or down */
-bool hciUp(const uint8_t *addr, hciAclRxCbk aclRxF, hciScoRxCbk scoRxF, bool logAll);
+bool hciUp(const uint8_t *addr, bool logAll);
 void hciDown(void);
 
 /* info api */
@@ -87,9 +85,9 @@ bool hciDisconnect(const struct bt_addr* addr);
 /* try to send data -> HCI_TX_SEND_* */
 uint8_t hciTryToTx(hci_conn_t aclConn, const void *data, uint32_t len, bool first);
 /* LE connection update */
-void hciUpdateLeParams(hci_conn_t aclConn, uint16_t minInt, uint16_t maxInt, uint16_t lat, uint16_t to);
+bool hciUpdateLeParams(hci_conn_t aclConn, uint16_t minInt, uint16_t maxInt, uint16_t lat, uint16_t to);
 /* request encryption */
-void hciDemandEncr(hci_conn_t aclConn);
+bool hciDemandEncr(hci_conn_t aclConn);
 
 
 

@@ -2430,7 +2430,7 @@ static bool l2cAclDataRxProcessIfComplete(struct l2cAclConn *conn, const void *d
  * RETURN:   NONE
  * NOTES:
  */
-void l2cAclDataRx(hci_conn_t aclConnID, const void *data, uint32_t datalen, bool first)
+void l2cAclDataRx(hci_conn_t aclConnID, const void *data, uint16_t datalen, bool first)
 {
     struct l2cAclConn *conn;
 

@@ -120,7 +120,11 @@ struct hciCmdSendWorkItem {
 #define CBK_WORK_EDR_DISC_NAME      3
 #define CBK_WORK_LE_DISC_DEV        4
 #define CBK_WORK_FLUSH              5
-
+#define CBK_WORK_CONN_UP            6
+#define CBK_WORK_CONN_DOWN          7
+#define CBK_WORK_PARAMS_CHANGE      8
+#define CBK_WORK_ENCR_CHANGE        9
+#define CBK_WORK_ACL_DATA           10
 
 struct hciCbkWorkItem {
     uint8_t       cbkWorkItemType;
@@ -167,6 +171,36 @@ struct hciCbkWorkItem {
         struct {
             sem_t                        *sem;
         } flush;
+
+        struct {
+            hci_conn_t                    conn;
+            struct bt_addr                addr;
+            bool                          isMaster;
+            bool                          isEncrypted;
+        } connUp;
+
+        struct {
+            hci_conn_t                    conn;
+        } connDown;
+
+        struct {
+            hci_conn_t                    conn;
+            bool                          success;
+            uint16_t                      interval;
+            uint16_t                      latency;
+            uint16_t                      timeout;
+        } leParamChange;
+
+        struct {
+            hci_conn_t                    conn;
+            bool                          nowEncrypted;
+        } encrChange;
+
+        struct {
+            hci_conn_t                    conn;
+            uint16_t                      len;
+            bool                          first;
+        } aclDataRx;
     };
 };
 
@@ -184,6 +218,7 @@ struct hciAclConn {
     struct hciAclConn *next;
     struct hciAclConn *prev;
     struct bt_addr     addr;
+    hci_conn_t         handle;
 
     uint16_t           id;
     bool               amMaster;
@@ -208,9 +243,6 @@ struct hciDiscoverNameState {
 };
 
 /* our state */
-
-static hciAclRxCbk mAclRxF;
-static hciScoRxCbk mScoRxF;
 
 static pthread_mutex_t mCmdWaitLock = PTHREAD_MUTEX_INITIALIZER;
 static struct hciEvtWaitState *mEvtWaitHead = NULL;
@@ -264,6 +296,9 @@ static uint8_t mInquiryState = 0;
 
 /* fwd declarations */
 static bool hciBtStackUp(void);
+static bool hciScheduleConnUpNotif(hci_conn_t conn, const struct bt_addr *addr, bool isMaster, bool isEncrypted);
+static bool hciScheduleConnDownNotif(hci_conn_t conn);
+static bool hciScheduleConnDataRx(hci_conn_t conn, const void* data, uint16_t len, bool first);
 
 
 /*
@@ -284,16 +319,51 @@ static struct hciAclConn* hciConnFindById(uint16_t id)
 }
 
 /*
+ * FUNCTION: hciConnFindByHandle
+ * USE:      Find a connection struct given a handle
+ * PARAMS:   addr - the address
+ * RETURN:   connection struct or NULL if not found
+ * NOTES:    call with mConnsLock held
+ */
+static struct hciAclConn* hciConnFindByHandle(hci_conn_t handle)
+{
+    struct hciAclConn *c = mConns;
+
+    while (c && c->handle != handle)
+        c = c->next;
+
+    return c;
+}
+
+/*
+ * FUNCTION: hciConnFindByAddr
+ * USE:      Find a connection struct given an address
+ * PARAMS:   addr - the address
+ * RETURN:   connection struct or NULL if not found
+ * NOTES:    call with mConnsLock held
+ */
+static struct hciAclConn* hciConnFindByAddr(const struct bt_addr *addr)
+{
+    struct hciAclConn *c = mConns;
+
+    while (c && memcmp(&c->addr, addr, sizeof(c->addr)))
+        c = c->next;
+
+    return c;
+}
+
+/*
  * FUNCTION: hciConnUpAcl
  * USE:      Setup a local ACL conn struct for this conn
  * PARAMS:   id - the id
  *           amMaster - true if we're the master
  *           mac - the mac
+ *           addrType - the address type for bt_addr struct
  *           encrypted - true if encrypted
  * RETURN:   connection struct or NULL if error
  * NOTES:    call with mConnsLock held
  */
-static struct hciAclConn* hciConnUpAcl(uint16_t id, bool amMaster, const uint8_t *mac, bool encrypted)
+static struct hciAclConn* hciConnUpAcl(uint16_t id, bool amMaster, const uint8_t *mac, uint8_t addrType, bool encrypted)
 {
     struct hciAclConn *c;
 
@@ -307,6 +377,8 @@ static struct hciAclConn* hciConnUpAcl(uint16_t id, bool amMaster, const uint8_t
         return NULL;
 
     memcpy(c->addr.addr, mac, sizeof(c->addr.addr));
+    c->addr.type = addrType;
+    c->handle = uniqGetNext();
     c->amMaster = amMaster;
     c->encrypted = encrypted;
     c->prev = NULL;
@@ -314,6 +386,9 @@ static struct hciAclConn* hciConnUpAcl(uint16_t id, bool amMaster, const uint8_t
 
     c->next = mConns;
     mConns = c;
+
+    if (!hciScheduleConnUpNotif(c->handle, &c->addr, amMaster, encrypted))
+        loge("Failed to enqueue upcall for conn up\n");
 }
 
 /*
@@ -329,15 +404,14 @@ static struct hciAclConn* hciConnUpAcl(uint16_t id, bool amMaster, const uint8_t
 static bool hciConnUpAclEdr(uint16_t id, bool amMaster, const uint8_t *mac, bool encrypted)
 {
     struct hciAclConn *c;
+    hci_conn_t handle = 0;
 
     pthread_mutex_lock(&mConnsLock);
 
-    c = hciConnUpAcl(id, amMaster, mac, encrypted);
-    if (c) {
-        c->addr.type = BT_ADDR_TYPE_EDR;
-    }
+    c = hciConnUpAcl(id, amMaster, mac, BT_ADDR_TYPE_EDR, encrypted);
+    if (c)
+        handle = c->handle;
     pthread_mutex_unlock(&mConnsLock);
-
     return !!c;
 }
 
@@ -358,19 +432,19 @@ static bool hciConnUpAclEdr(uint16_t id, bool amMaster, const uint8_t *mac, bool
 static bool hciConnUpAclLe(uint16_t id, bool amMaster, const uint8_t *mac, bool addrRandom, uint16_t interval, uint8_t latency, uint16_t timeout, uint8_t mca)
 {
     struct hciAclConn *c;
+    hci_conn_t handle = 0;
 
     pthread_mutex_lock(&mConnsLock);
 
-    c = hciConnUpAcl(id, amMaster, mac, false);
+    c = hciConnUpAcl(id, amMaster, mac, addrRandom ? BT_ADDR_TYPE_LE_RANDOM : BT_ADDR_TYPE_LE_PUBLIC, false);
     if (c) {
-        c->addr.type = addrRandom ? BT_ADDR_TYPE_LE_RANDOM : BT_ADDR_TYPE_LE_PUBLIC;
         c->le.interval = interval;
         c->le.latency = latency;
         c->le.timeout = timeout;
         c->le.mca = mca;
+        handle = c->handle;
     }
     pthread_mutex_unlock(&mConnsLock);
-
     return !!c;
 }
 
@@ -522,6 +596,9 @@ static void hciCbkChipHwUp(void *cbkData, bool fw, bool up)
  */
 static void hciRxSco(uint16_t hdr, const void *data, uint8_t len)
 {
+    uint16_t pb = hdr & ACL_HDR_MASK_PB;
+    uint16_t bc = hdr & ACL_HDR_MASK_BC;
+    uint16_t cid = hdr & ACL_HDR_MASK_CONN_ID;
     uint8_t loss = 0;
 
     switch (hdr & SCO_HDR_MASK_STATUS){
@@ -539,7 +616,7 @@ static void hciRxSco(uint16_t hdr, const void *data, uint8_t len)
         break;
     }
 
-    mScoRxF(hdr & SCO_HDR_MASK_CONN_ID, data, len, loss);
+    //TODO: do something with the sco data
 }
 
 /*
@@ -555,6 +632,8 @@ static void hciRxAcl(uint16_t hdr, const void *data, uint16_t len)
 {
     uint16_t pb = hdr & ACL_HDR_MASK_PB;
     uint16_t bc = hdr & ACL_HDR_MASK_BC;
+    uint16_t cid = hdr & ACL_HDR_MASK_CONN_ID;
+    struct hciAclConn* conn;
 
 
     if (pb == ACL_HDR_PB_FIRST_NONAUTO || pb == ACL_HDR_PB_COMPLETE) {
@@ -562,7 +641,13 @@ static void hciRxAcl(uint16_t hdr, const void *data, uint16_t len)
         return;
     }
 
-    mAclRxF(hdr & SCO_HDR_MASK_CONN_ID, data, len, pb == ACL_HDR_PB_FIRST_AUTO);
+    pthread_mutex_lock(&mConnsLock);
+    conn = hciConnFindById(cid);
+    if (!conn)
+        logi("Dropping packet for unknown acl link %d\n", cid);
+    else if (!hciScheduleConnDataRx(conn->handle, data, len, pb == ACL_HDR_PB_FIRST_AUTO))
+        logi("Failed to enqueue packet RX for link %d\n", cid);
+    pthread_mutex_unlock(&mConnsLock);
 }
 
 /*
@@ -755,7 +840,7 @@ static void hciRx(void *cbkData, uint8_t typ, const void *data, uint16_t datalen
  */
 static void hciCallbackWorkDeallocator(void *workItem)
 {
-    free(workItem);
+   free(workItem);
 }
 
 /*
@@ -807,6 +892,21 @@ static void* hciCbkWorker(void *unused)
         case CBK_WORK_FLUSH:
             sem_post(w->flush.sem);
             break;
+        case CBK_WORK_CONN_UP:
+            l2cAclLinkUp(w->connUp.conn, &w->connUp.addr, w->connUp.isMaster, w->connUp.isEncrypted);
+            break;
+        case CBK_WORK_CONN_DOWN:
+            l2cAclLinkDown(w->connDown.conn);
+            break;
+        case CBK_WORK_PARAMS_CHANGE:
+            l2cAclLinkParamsChange(w->leParamChange.conn, w->leParamChange.success, w->leParamChange.interval, w->leParamChange.latency, w->leParamChange.timeout);
+            break;
+        case CBK_WORK_ENCR_CHANGE:
+            l2cAclLinkEncrChange(w->leParamChange.conn, w->encrChange.nowEncrypted);
+            break;
+        case CBK_WORK_ACL_DATA:
+            l2cAclDataRx(w->aclDataRx.conn, (const void*)(w + 1), w->aclDataRx.len, w->aclDataRx.first);
+            break;
         default:
             loge("Unknown callback work type %u\n", w->cbkWorkItemType);
             break;
@@ -824,7 +924,7 @@ static void* hciCbkWorker(void *unused)
  * PARAMS:   cbk - the callback to call
  *           cbkData - the data for said callback
  *           status - the status byte
- * RETURN:   true if enqueue, false else
+ * RETURN:   true if enqueued, false else
  * NOTES:
  */
 static bool hciScheduleOpDoneCbk(hciOpDoneCbk cbk, void *cbkData, uint8_t status)
@@ -860,7 +960,7 @@ static bool hciScheduleOpDoneCbk(hciOpDoneCbk cbk, void *cbkData, uint8_t status
  *           cbkData2 - the data for said callback
  *           stackGoingDown - as the name implies...
  *           evt - event to provide, or NULL if none
- * RETURN:   true if enqueue, false else
+ * RETURN:   true if enqueued, false else
  * NOTES:
  */
 static bool hciScheduleSimpleCbk(hciSimpleCbk cbk, void *cbkData1, void *cbkData2, bool stackGoingDown, const struct hciEvtHdr *evt)
@@ -934,6 +1034,155 @@ static bool hciWorkFlush(void)
 }
 
 /*
+ * FUNCTION: hciScheduleConnUpNotif
+ * USE:      Enqueue a call to the ACL link up notif
+ * PARAMS:   conn - the connection
+ *           addr - peer address
+ *           isMaster - are we master on the link
+ *           isEncrypted - is the link encrypted
+ * RETURN:   true if enqueued, false else
+ * NOTES:
+ */
+static bool hciScheduleConnUpNotif(hci_conn_t conn, const struct bt_addr *addr, bool isMaster, bool isEncrypted)
+{
+    struct hciCbkWorkItem *w;
+
+    w = (struct hciCbkWorkItem*)malloc(sizeof(struct hciCbkWorkItem));
+    if (!w)
+        return false;
+
+    w->cbkWorkItemType = CBK_WORK_CONN_UP;
+    w->connUp.conn = conn;
+    w->connUp.isMaster = isMaster;
+    w->connUp.isEncrypted = isEncrypted;
+
+    memcpy(&w->connUp.addr, addr, sizeof(w->connUp.addr));
+
+    if (workQueuePut(mCallbackWork, w))
+        return true;
+
+    free(w);
+    return false;
+}
+
+/*
+ * FUNCTION: hciScheduleConnDownNotif
+ * USE:      Enqueue a call to the ACL link down notif
+ * PARAMS:   conn - the connection
+ * RETURN:   true if enqueued, false else
+ * NOTES:
+ */
+static bool hciScheduleConnDownNotif(hci_conn_t conn)
+{
+    struct hciCbkWorkItem *w;
+
+    w = (struct hciCbkWorkItem*)malloc(sizeof(struct hciCbkWorkItem));
+    if (!w)
+        return false;
+
+    w->cbkWorkItemType = CBK_WORK_CONN_DOWN;
+    w->connDown.conn = conn;
+
+    if (workQueuePut(mCallbackWork, w))
+        return true;
+
+    free(w);
+    return false;
+}
+
+/*
+ * FUNCTION: hciScheduleConnParamChange
+ * USE:      Enqueue a call to the connection param change notif
+ * PARAMS:   conn - the conenction
+ *           success - success?
+ *           interval - new interval
+ *           latency - new latency
+ *           timeout - new timeout
+ * RETURN:   true if enqueued, false else
+ * NOTES:
+ */
+static bool hciScheduleConnParamChange(hci_conn_t conn, bool success, uint16_t interval, uint16_t latency, uint16_t timeout)
+{
+    struct hciCbkWorkItem *w;
+
+    w = (struct hciCbkWorkItem*)malloc(sizeof(struct hciCbkWorkItem));
+    if (!w)
+        return false;
+
+    w->cbkWorkItemType = CBK_WORK_PARAMS_CHANGE;
+    w->leParamChange.conn = conn;
+    w->leParamChange.success = success;
+    w->leParamChange.interval = interval;
+    w->leParamChange.latency = latency;
+    w->leParamChange.timeout = timeout;
+
+    if (workQueuePut(mCallbackWork, w))
+        return true;
+
+    free(w);
+    return false;
+}
+
+/*
+ * FUNCTION: hciScheduleConnEncrChange
+ * USE:      Enqueue a call to the connection encr change notif
+ * PARAMS:   conn - the conenction
+ *           nowEncrypted - are we now encrypted?
+ * RETURN:   true if enqueued, false else
+ * NOTES:
+ */
+static bool hciScheduleConnEncrChange(hci_conn_t conn, bool nowEncrypted)
+{
+    struct hciCbkWorkItem *w;
+
+    w = (struct hciCbkWorkItem*)malloc(sizeof(struct hciCbkWorkItem));
+    if (!w)
+        return false;
+
+    w->cbkWorkItemType = CBK_WORK_PARAMS_CHANGE;
+    w->encrChange.conn = conn;
+    w->encrChange.nowEncrypted = nowEncrypted;
+
+    if (workQueuePut(mCallbackWork, w))
+        return true;
+
+    free(w);
+    return false;
+}
+
+
+/*
+ * FUNCTION: hciScheduleConnDataRx
+ * USE:      Enqueue a call to the connection RX notif
+ * PARAMS:   conn - the conenction
+ *           data - the data
+ *           len - date len
+ *           first - was packet marked as first?
+ * RETURN:   true if enqueued, false else
+ * NOTES:    data is copied
+ */
+static bool hciScheduleConnDataRx(hci_conn_t conn, const void* data, uint16_t len, bool first)
+{
+    struct hciCbkWorkItem *w;
+
+    w = (struct hciCbkWorkItem*)malloc(sizeof(struct hciCbkWorkItem) + len);
+    if (!w)
+        return false;
+
+    w->cbkWorkItemType = CBK_WORK_ACL_DATA;
+    w->aclDataRx.conn = conn;
+    w->aclDataRx.len = len;
+    w->aclDataRx.first = first;
+    memcpy(w + 1, data, len);
+
+    if (workQueuePut(mCallbackWork, w))
+        return true;
+
+    free(w);
+    return false;
+}
+
+/*
  * FUNCTION: hciCmdSendWorker
  * USE:      Worker thread for sending commands to the chip
  * PARAMS:   unused - unused
@@ -992,13 +1241,11 @@ success:
  * FUNCTION: hciUp
  * USE:      Bring up HCI (comms to bt chip)
  * PARAMS:   addr - the BT addr
- *           aclRxF - acl data callback
- *           scoRxF - sco data callback
  *           logAll - log all traffic?
  * RETURN:   true on success, false else
  * NOTES:    may take a while
  */
-bool hciUp(const uint8_t *addr, hciAclRxCbk aclRxF, hciScoRxCbk scoRxF, bool logAll)
+bool hciUp(const uint8_t *addr, bool logAll)
 {
     int ret;
 
@@ -1044,9 +1291,6 @@ bool hciUp(const uint8_t *addr, hciAclRxCbk aclRxF, hciScoRxCbk scoRxF, bool log
         loge("Failed(%d) to create hci cmd send worker\n", ret);
         goto out_cmd_worker;
     }
-
-    mAclRxF = aclRxF;
-    mScoRxF = scoRxF;
 
     logd("Stack up\n");
     if (!hciBtStackUp()) {
@@ -2962,5 +3206,159 @@ bool hciInfoAclBufSizeLe(uint16_t *bufSz, uint16_t *bufNum)
 
     return true;
 }
+
+/*
+ * FUNCTION: hciConnectEdr
+ * USE:      Start an EDR connection to a given address
+ * PARAMS:   mac - the mac
+ * RETURN:   true if attempt will be made
+ * NOTES:    call with mConnsLock held
+ */
+static bool hciConnectEdr(const uint8_t *mac)
+{
+    //TODO
+
+    return false;
+}
+
+/*
+ * FUNCTION: hciConnectLe
+ * USE:      Start an LE connection to a given address
+ * PARAMS:   mac - the mac
+ *           randomAddr - peer address is random?
+ *           scanInt - connect scan interval 
+ *           scanWindow - connect scan window
+ *           intMin - minimum wanted interval
+ *           intMax - maximum wanted interval
+ *           latency - wanted latency
+ *           timeout - wanted timeout
+ *           useOwnRandomAddr - send peer our random addr?
+ * RETURN:   true if attempt will be made
+ * NOTES:    call with mConnsLock held
+ */
+static bool hciConnectLe(const uint8_t *mac, bool randomAddr, uint16_t scanInt, uint16_t scanWindow, uint16_t intMin, uint16_t intMax, uint16_t latency, uint16_t timeout, bool useOwnRandomAddr)
+{
+    //TODO
+
+    return false;
+}
+
+/*
+ * FUNCTION: hciConnect
+ * USE:      Start a connection to a given address
+ * PARAMS:   addr - the address
+ * RETURN:   true if attempt will be made
+ * NOTES:    For LE default params will be used
+ */
+bool hciConnect(const struct bt_addr* addr)
+{
+    bool ret = false;
+
+    pthread_mutex_lock(&mConnsLock);
+    if (hciConnFindByAddr(addr))
+        logw("refusing to connect to address i already have a connection to\n");
+    else if (BT_ADDR_IS_EDR(*addr))
+        ret = hciConnectEdr(addr->addr);
+    else
+        ret = hciConnectLe(addr->addr, addr->type == BT_ADDR_TYPE_LE_RANDOM, HCI_LE_CONN_SCAN_INTERVAL,
+                           HCI_LE_CONN_SCAN_WINDOW, HCI_LE_CONN_INT_MIN, HCI_LE_CONN_INT_MAX,
+                           HCI_LE_CONN_LATENCY, HCI_LE_CONN_TIMEOUT, HCI_LE_CONN_USE_RAND_ADDR);
+    pthread_mutex_unlock(&mConnsLock);
+
+    return ret;
+}
+
+/*
+ * FUNCTION: hciDisconnect
+ * USE:      Kill a connection [attempty] to a given address
+ * PARAMS:   addr - the address
+ * RETURN:   true if attempt will be made
+ * NOTES:
+ */
+bool hciDisconnect(const struct bt_addr* addr)
+{
+    struct hciAclConn* conn;
+
+    pthread_mutex_lock(&mConnsLock);
+    conn = hciConnFindByAddr(addr);
+    if (conn) {
+        //TODO
+    }
+    pthread_mutex_unlock(&mConnsLock);
+
+    return !!conn;
+}
+
+/*
+ * FUNCTION: hciUpdateLeParams
+ * USE:      Try to update LE params
+ * PARAMS:   aclConn - the connection
+ *           minInt - the minimum wanted interval
+ *           maxInt - the maximum wanted interval
+ *           lat - wanted latency
+ *           to - wanted timeout
+ * RETURN:   true if attempt will be made
+ * NOTES:
+ */
+bool hciUpdateLeParams(hci_conn_t aclConn, uint16_t minInt, uint16_t maxInt, uint16_t lat, uint16_t to)
+{
+    struct hciAclConn* conn;
+
+    pthread_mutex_lock(&mConnsLock);
+    conn = hciConnFindByHandle(aclConn);
+    if (conn) {
+        //TODO
+    }
+    pthread_mutex_unlock(&mConnsLock);
+
+    return !!conn;
+}
+
+/*
+ * FUNCTION: hciDemandEncr
+ * USE:      Try to encrypt a connection
+ * PARAMS:   aclConn - the connection
+ * RETURN:   true if attempt will be made
+ * NOTES:
+ */
+bool hciDemandEncr(hci_conn_t aclConn)
+{
+    struct hciAclConn* conn;
+
+    pthread_mutex_lock(&mConnsLock);
+    conn = hciConnFindByHandle(aclConn);
+    if (conn) {
+        //TODO
+    }
+    pthread_mutex_unlock(&mConnsLock);
+
+    return !!conn;
+}
+
+/*
+ * FUNCTION: hciTryToTx
+ * USE:      Try to send some data
+ * PARAMS:   aclConn - the connection
+ *           data - the data
+ *           len - the length
+ *           first - mark as first fragment?
+ * RETURN:   true if attempt will be made
+ * NOTES:    all data larger then controller's buffer WILL be dropped. WILL NOT BLOCK!
+ */
+uint8_t hciTryToTx(hci_conn_t aclConn, const void *data, uint32_t len, bool first)
+{
+    struct hciAclConn* conn;
+
+    pthread_mutex_lock(&mConnsLock);
+    conn = hciConnFindByHandle(aclConn);
+    if (conn) {
+        //TODO
+    }
+    pthread_mutex_unlock(&mConnsLock);
+
+    return 0/*TODO:*/;
+}
+
+
 
 

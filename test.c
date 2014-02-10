@@ -39,12 +39,7 @@ struct EdrDiscDev {
 static uint8_t gStatus = 0;
 
 
-static void testHciAclRxCbk(uint16_t aclConn, const void *data, uint16_t len, bool first)
-{
-   logi("TEST ACL RX %ub, %s\n", len, first ? "first" : "cont\n");
-}
-
-static void testHciScoRxCbk(uint16_t aclConn, const void *data, uint8_t len, uint8_t lossAmount)
+static void testHciScoRxCbk(hci_conn_t aclConn, const void *data, uint8_t len, uint8_t lossAmount)
 {
    static const char *lossAmtStr[] = {"none", "some", "unknown", "all"};
 
@@ -188,7 +183,7 @@ int main(int argc, char** argv)
         return -1;
     }
 
-    if (!hciUp(mac, testHciAclRxCbk, testHciScoRxCbk, true)) {
+    if (!hciUp(mac, true)) {
         loge("HCI up fail\n");
         return -1;
     }
@@ -300,6 +295,8 @@ int main(int argc, char** argv)
                 loge("Failed to do EDR discovery\n");
         }
     }
+
+    l2cInit();
 
     logi("waiting...press a key\n");
     getchar();

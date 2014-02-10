@@ -136,8 +136,8 @@ void l2cAclLinkUp(hci_conn_t aclConn, const struct bt_addr *addr, bool isMaster,
 /* lower layer calls this when an ACL link is down */
 void l2cAclLinkDown(hci_conn_t aclConn);
 /* lower layer calls this when new ACL data arrives */
-void l2cAclDataRx(hci_conn_t aclConn, const void *data, uint32_t len, bool first);
-/* lower layer calls this to tell us that a data credit just became available */
+void l2cAclDataRx(hci_conn_t aclConn, const void *data, uint16_t len, bool first);
+/* lower layer calls this to tell us that a data credit just became available. called directly. DO NOT BLOCK! */
 void l2cAclCreditAvail(bool le);
 /* lower layer calls this when connection parameters change */
 void l2cAclLinkParamsChange(hci_conn_t aclConn, bool success, uint16_t interval, uint16_t latency, uint16_t timeout);
