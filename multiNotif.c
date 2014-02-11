@@ -37,12 +37,12 @@ struct multiNotifList *multiNotifCreate(void)
     if (!nl)
         goto out_alloc;
 
-    if (!pthread_mutex_init(&nl->structLock, NULL)) {
+    if (pthread_mutex_init(&nl->structLock, NULL)) {
         loge("failed to init notif list struct mutex\n");
         goto out_mutex_1;
     }
 
-    if (!pthread_mutex_init(&nl->structLock, NULL)) {
+    if (pthread_mutex_init(&nl->structLock, NULL)) {
         loge("failed to init notif list bcast mutex\n");
         goto out_mutex_2;
     }
