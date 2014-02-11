@@ -7,7 +7,7 @@
 
 /* handles EINTR */
 int r_sem_wait(sem_t* sem);
-
+int r_sem_trywait(sem_t* sem);
 
 /* big endian getters return value */
 static uint8_t utilGetBE8(const void *buf);

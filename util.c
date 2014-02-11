@@ -18,3 +18,19 @@ int r_sem_wait(sem_t* sem)
 
     return ret;
 }
+
+int r_sem_trywait(sem_t* sem)
+{
+    int ret;
+
+    while(1) {
+        ret = sem_trywait(sem);
+        if (ret != -1 || errno != EINTR)
+            break;
+    }
+
+    if (ret && ret != EAGAIN)
+        loge("sem_trywait failed!\n");
+
+    return ret;
+}
