@@ -77,13 +77,14 @@ bool hciDiscoverLeStop(uniq_t handle);
 #define HCI_TX_SEND_OK          0
 #define HCI_TX_SEND_NO_CREDITS  1
 #define HCI_TX_SEND_NO_CONN     2
+#define HCI_TX_SEND_ERROR       3
 
 /* connect using default settings */
 bool hciConnect(const struct bt_addr* addr);
 /* disconnect/cancel connection attempt */
 bool hciDisconnect(const struct bt_addr* addr);
 /* try to send data -> HCI_TX_SEND_* */
-uint8_t hciTryToTx(hci_conn_t aclConn, const void *data, uint32_t len, bool first);
+uint8_t hciTryToTx(hci_conn_t aclConn, const void *data, uint16_t len, bool first);
 /* LE connection update */
 bool hciUpdateLeParams(hci_conn_t aclConn, uint16_t minInt, uint16_t maxInt, uint16_t lat, uint16_t to);
 /* request encryption */

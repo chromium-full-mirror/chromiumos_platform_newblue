@@ -3910,8 +3910,10 @@ static void l2cTryMakeSendProgress(bool forLeBuffers, bool needLock)
         actualSendLen = (wantSendLen > chipBufSz) ? chipBufSz : wantSendLen;
 
         ret = hciTryToTx(sendConn, sendPtr, actualSendLen, sendFirst);
+        if (ret == HCI_TX_SEND_ERROR)
+            logw("State indeterminate after hci tx fail!\n");
 
-        if (ret == HCI_TX_SEND_OK || ret == HCI_TX_SEND_NO_CONN) { /* either way we do not resend this in its current state */
+        if (ret == HCI_TX_SEND_OK || ret == HCI_TX_SEND_NO_CONN || ret == HCI_TX_SEND_ERROR) { /* either way we do not resend this in its current state */
 
             if (picked) { /* dequeue the SIG frame we [partially] sent */
                 if (picked->prev)
@@ -3936,7 +3938,7 @@ static void l2cTryMakeSendProgress(bool forLeBuffers, bool needLock)
             multiNotifNotify(mWriteNotif, NULL);
         }
 
-        if (ret == HCI_TX_SEND_OK) {
+        if (ret == HCI_TX_SEND_OK || ret == HCI_TX_SEND_ERROR) {
 
             if (actualSendLen != wantSendLen) { /* not done? enqueue the rest of the fragment */
                 memmove(sendPtr, sendPtr + actualSendLen, wantSendLen - actualSendLen);

@@ -25,6 +25,7 @@
 #define HCI_PKT_TYP_NO_3_DH5                                     0x1000 /* BT 2.1+ */
 #define HCI_PKT_TYP_DM5                                          0x4000 /* BT 1.1+ */
 #define HCI_PKT_TYP_DH5                                          0x8000 /* BT 1.1+ */
+#define HCI_PKT_TYP_DEFAULT                                      0xCC18
 
 #define HCI_PKT_TYP_SCO_HV1                                      0x0001 /* BT 1.1+ */
 #define HCI_PKT_TYP_SCO_HV2                                      0x0002 /* BT 1.1+ */
@@ -2503,7 +2504,8 @@ struct hciEvtRemoteNameReqComplete {
 #define HCI_EVT_Encryption_Change                                0x08
 struct hciEvtEncrChange {
     uint8_t status;
-    uint16_t handle;
+    uint16_t conn
+;
     uint8_t encrOn;
 } __packed;
 
