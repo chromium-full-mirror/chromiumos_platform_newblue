@@ -124,8 +124,10 @@ void multiNotifNotify(struct multiNotifList *nl, const void *notifData)
     nl->bcastThread = pthread_self();
     pthread_mutex_unlock(&nl->structLock);
 
-    if (!notifTodo)
+    if (!notifTodo) {
+        pthread_mutex_unlock(&nl->bcastLock);
         return;
+    }
 
     while (notifTodo) {
 
