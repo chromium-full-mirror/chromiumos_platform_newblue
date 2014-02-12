@@ -3666,7 +3666,7 @@ uint8_t hciTryToTx(hci_conn_t aclConn, const void *data, uint16_t len, bool firs
         logw("Cannot send on a not-yet-established connection\n");
     } else {
         bool useLeBuffers = BT_ADDR_IS_LE(conn->addr) && !mBtJointBuffers;
-        sem_t *relevantSem = useLeBuffers ? &mAclPacketsLe : &mAclPacketsLe;
+        sem_t *relevantSem = useLeBuffers ? &mAclPacketsLe : &mAclPacketsEdr;
         int rv;
 
         rv = r_sem_trywait(relevantSem);
