@@ -4062,6 +4062,7 @@ static uint8_t l2cDataSendOnAclLink(struct l2cAclConn *aclConn, const void* buf,
             *queueBufP = buf;
             *queueLenP = buflen;
             *queueFirstP = true;
+            *queueConnP = aclConn->conn;
             if (!l2cSvcWorkScheduleTryTx(NULL, useLeBuffers))
                 loge("Failed to schedule TX attempt\n");
         }
