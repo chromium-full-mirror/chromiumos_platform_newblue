@@ -2879,6 +2879,7 @@ static bool hciBtStackUp(void)
             break;
         }
         evts &=~ HCI_EVENT_REMOTE_HOST_SUPPORTED_FEATURES; /* we do not want this one - it is spammy and useless for now */
+        evts &=~ HCI_EVENT_MAX_SLOTS_CHANGE; /* same here really */
         logi("Setting event mask to 0x"FMT64"X\n", CNV64(evts));
         ret = hciSetEventMaskSync(evts);
         if (ret)
@@ -3502,6 +3503,9 @@ static struct hciAclConn* hciConnAclStructNew(uint16_t id, const struct bt_addr 
     conn->isMaster = isMaster;
     conn->id = id;
     conn->handle = uniqGetNext();
+
+    conn->next = mConns;
+    mConns = conn;
 
     return conn;
 }
