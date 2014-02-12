@@ -528,7 +528,7 @@ static struct l2cAclConn* l2cAclConnFindByAddr(const struct bt_addr* addr)
 {
     struct l2cAclConn *c = mAclConns;
 
-    while (c && memcmp(&c->addr, addr, sizeof(struct bt_addr)));
+    while (c && memcmp(&c->addr, addr, sizeof(struct bt_addr)))
         c = c->next;
 
     return c;
@@ -4231,7 +4231,8 @@ static struct l2cAclConn* l2cCreateAndOpenNewAclConn(const struct bt_addr* addr)
         conn = NULL;
     } else {
         conn->next = mAclConns;
-        mAclConns->prev = conn;
+        if (mAclConns)
+            mAclConns->prev = conn;
         mAclConns = conn;
         conn->openTimer = timerSet(L2C_ACL_LINK_UP_TIMEOUT, l2cAclLinkUpTimeout, conn->handle);
         if (!conn->openTimer)
@@ -4565,7 +4566,8 @@ void l2cAclLinkUp(hci_conn_t aclConnID, const struct bt_addr* addr, bool isMaste
                 aclConn->reassLen = 0;
                 aclConn->next = mAclConns;
                 aclConn->sigMtu = L2C_MIN_SIG_MTU;
-                mAclConns->prev = aclConn;
+                if (mAclConns)
+                    mAclConns->prev = aclConn;
                 mAclConns = aclConn;
             } else {
                 loge("Failed to allocate a new l2cAclConn for acl "HCI_CONN_FMT"x\n", HCI_CONN_CONV(aclConnID));
