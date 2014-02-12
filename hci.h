@@ -90,6 +90,9 @@ bool hciUpdateLeParams(hci_conn_t aclConn, uint16_t minInt, uint16_t maxInt, uin
 /* request encryption */
 bool hciDemandEncr(hci_conn_t aclConn);
 
+/* connection request handling */
+bool hciConnRequestReplyYes(const struct bt_addr *addr, bool becomeMaster);
+bool hciConnRequestReplyNo(const struct bt_addr *addr);
 
 
 #endif

@@ -330,6 +330,7 @@ static bool hciHandleConnAclEncr(uint16_t cid, bool encrOn);
 static bool hciHandleConnAclRoleChange(const uint8_t* mac, bool amSlave);
 static bool hciHandleConnAclLeUpdate(uint8_t status, uint16_t cid, uint16_t interval, uint16_t latency, uint16_t timeout);
 static bool hciConnUpdate(uint16_t cid, uint16_t minInt, uint16_t maxInt, uint16_t latency, uint16_t timeout);
+static void hciCmdStatusCbk(void *cbkData, uint8_t status);
 static bool hciConnDisconnect(uint16_t cid);
 static bool hciConnLeCancel(void);
 
@@ -2359,6 +2360,51 @@ static void hciInquiryEvtEdrNameHandle(uniq_t handle, uint8_t nameReqState, bool
 }
 
 /*
+ * FUNCTION: hciConnRequestReplyYes
+ * USE:      Called externally to accept a connection request
+ * PARAMS:   addr - the address of requestor
+ *           becomeMaster - try to become master?
+ * RETURN:   false on error
+ * NOTES:
+ */
+bool hciConnRequestReplyYes(const struct bt_addr *addr, bool becomeMaster)
+{
+    struct hciAcceptConnection cmd;
+
+    if (!BT_ADDR_IS_EDR(*addr)) {
+        logw("Acoonot accept non-EDR connection\n");
+        return false;
+    }
+
+    memcpy(cmd.mac, addr->addr, sizeof(cmd.mac));
+    utilSetLE8(&cmd.remainSlave, becomeMaster ? 1 : 0);
+
+    return hciCmdSubmitSimpleWithStatusWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Accept_Connection_Request, &cmd, sizeof(cmd), hciCmdStatusCbk, NULL);
+}
+
+/*
+ * FUNCTION: hciConnRequestReplyNo
+ * USE:      Called externally to refuse a connection request
+ * PARAMS:   addr - the address of requestor
+ * RETURN:   false on error
+ * NOTES:
+ */
+bool hciConnRequestReplyNo(const struct bt_addr *addr)
+{
+    struct hciRejectConnection cmd;
+
+    if (!BT_ADDR_IS_EDR(*addr)) {
+        logw("Acoonot accept non-EDR connection\n");
+        return false;
+    }
+
+    memcpy(cmd.mac, addr->addr, sizeof(cmd.mac));
+    utilSetLE8(&cmd.reason, 0x13); //TODO: better dealings with this value...
+
+    return hciCmdSubmitSimpleWithStatusWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Reject_Connection_Request, &cmd, sizeof(cmd), hciCmdStatusCbk, NULL);
+}
+
+/*
  * FUNCTION: hciConnEvtCbk
  * USE:      Called with connection state events
  * PARAMS:   evt - the event
@@ -2380,7 +2426,10 @@ static bool hciConnEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evt
 
         //TODO: ask user?
         logd("ACL EDR conn request from "MACFMT" of class "CLSFMT" -> accepting\n", MACCONV(req->mac), CLSCONV(req->deviceClass));
-        //TODO: accept conn
+
+        //TODO: ask higher layer/user/whatever?
+
+
     } else if (evtType == HCI_EVT_Connection_Complete) {
         struct hciEvtConnComplete *conn = (struct hciEvtConnComplete*)(evt + 1);
         uint16_t cid = utilGetLE16(&conn->conn);
@@ -3264,11 +3313,11 @@ bool hciInfoAclBufSizeLe(uint16_t *bufSz, uint16_t *bufNum)
 
 /*
  * FUNCTION: hciCmdStatusCbk
- * USE:      Gives us the status of a connection attempt we started
+ * USE:      Gives us the status of a command we started
  * PARAMS:   cbkData - non-null for LE
  *           status - status from the chip
  * RETURN:   NONE
- * NOTES:
+ * NOTES:    This is the universal sink for status events we do not care much about
  */
 static void hciCmdStatusCbk(void *cbkData, uint8_t status)
 {
