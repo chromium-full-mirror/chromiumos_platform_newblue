@@ -613,7 +613,7 @@ static bool l2cSvcWorkSchedulePsmAlloc(psm_t psm, void* reqID, l2c_handle_t hand
  * RETURN:   NONE
  * NOTES:    actual call will happen in the worker thread. Buffer is copied
  */
-static bool l2cSvcWorkSchedulePsmConnectionlessRx(psm_t psm, void* reqID, l2c_handle_t handle, const void* data, uint32_t size)
+static bool l2cSvcWorkSchedulePsmConnectionlessRx(psm_t psm, void* reqID, l2c_handle_t handle, const void* data, uint16_t size)
 {
     void* copy;
     struct l2cSvcWork* w;
@@ -1960,7 +1960,7 @@ void l2cHandleDiscRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t remCh,
  * RETURN:   num bytes used/needed or 0 for error
  * NOTES:    call with mConnsLock held
  */
-static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t datalen)
+static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint16_t datalen)
 {
     struct l2cSigFrm *sig;
 
@@ -2303,7 +2303,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint32_t 
  * RETURN:   false if data went nowhere
  * NOTES:    call with mConnsLock lock held.
  */
-static bool l2cSendRxToChannel(struct l2cAclConn *aclConn, uint16_t chan, const void *data, uint32_t len)
+static bool l2cSendRxToChannel(struct l2cAclConn *aclConn, uint16_t chan, const void *data, uint16_t len)
 {
     struct l2cConn *iter, *cur = NULL;
     bool ret;
@@ -2348,7 +2348,7 @@ static bool l2cSendRxToChannel(struct l2cAclConn *aclConn, uint16_t chan, const 
  * RETURN:   NONE
  * NOTES:    call with mConnsLock held
  */
-static void l2cAclDataRxCompletePacket(struct l2cAclConn *conn, uint16_t cid, const void *data, uint32_t len)
+static void l2cAclDataRxCompletePacket(struct l2cAclConn *conn, uint16_t cid, const void *data, uint16_t len)
 {
     if (cid == L2C_CH_SIGNALLING_EDR) {
         if (!BT_ADDR_IS_EDR(conn->addr))
@@ -2394,7 +2394,7 @@ static void l2cAclDataRxCompletePacket(struct l2cAclConn *conn, uint16_t cid, co
  *           false if more data is needed
  * NOTES:    call with mConnsLock held
  */
-static bool l2cAclDataRxProcessIfComplete(struct l2cAclConn *conn, const void *data, uint32_t len)
+static bool l2cAclDataRxProcessIfComplete(struct l2cAclConn *conn, const void *data, uint16_t len)
 {
     const struct l2cFrm *frm = (struct l2cFrm*)data;
     uint16_t frmLen, totalLen;
