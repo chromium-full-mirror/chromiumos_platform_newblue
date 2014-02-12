@@ -2581,7 +2581,7 @@ struct hciEvtRoleChange {
 
 #define HCI_EVT_Number_Of_Completed_Packets                      0x13
 struct hciEvtNumCompletedPacketsItem {
-    uint8_t conn;
+    uint16_t conn;
     uint16_t numPackets;
 } __packed;
 struct hciEvtNumCompletedPackets {
