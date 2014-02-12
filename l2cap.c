@@ -4678,7 +4678,7 @@ out:
 }
 
 /*
- * FUNCTION: l2cAclLinkDown
+ * FUNCTION: l2cAclLinkParamsChange
  * USE:      Called when LE ACL link params change
  * PARAMS:   aclConnID - the conection ID
  *           interval - the new interval
