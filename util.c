@@ -14,7 +14,7 @@ int r_sem_wait(sem_t* sem)
     }
 
     if (ret)
-        loge("sem_wait failed!\n");
+        loge("sem_wait failed with ret %d and errono %d!\n", ret, errno);
 
     return ret;
 }
@@ -30,7 +30,7 @@ int r_sem_trywait(sem_t* sem)
     }
 
     if (ret && ret != EAGAIN)
-        loge("sem_trywait failed!\n");
+        loge("sem_trywait failed with ret %d and errono %d!\n", ret, errno);
 
     return ret;
 }
