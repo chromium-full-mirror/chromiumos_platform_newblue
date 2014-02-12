@@ -29,7 +29,7 @@ int r_sem_trywait(sem_t* sem)
             break;
     }
 
-    if (ret && ret != EAGAIN)
+    if (ret && errno != EAGAIN)
         loge("sem_trywait failed with ret %d and errono %d!\n", ret, errno);
 
     return ret;
