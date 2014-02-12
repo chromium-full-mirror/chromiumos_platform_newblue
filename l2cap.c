@@ -2939,6 +2939,7 @@ static bool l2cAclEnqueueSigTx(struct l2cAclConn *aclConn, void *data, uint16_t 
         item->prev->next = item;
     else
         (*qH) = item;
+    *qT = item;
 
     if (!l2cSvcWorkScheduleTryTx(NULL, useLeBuffers))
         loge("Failed to schedule TX attempt\n");
