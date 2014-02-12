@@ -67,12 +67,11 @@ static void* timersThread(void *unused)
         pthread_mutex_lock(&mTimersLock);
         do {
             struct timer *p = NULL;
-            uint64_t curTime, nextTime;
+            uint64_t curTime;
 
             /* grab the part of the list that is due, disconnect it, save head to "toFire" */
             
             curTime = timerCurTime();
-            nextTime = 0;
 
             t = mTimers;
             while (t && t->fireTime <= curTime) {
@@ -90,14 +89,9 @@ static void* timersThread(void *unused)
             if (toFire)
                 break;
 
-            if (mTimers) {
-                struct timespec waitTime;
-                nextTime = mTimers->fireTime;
-                waitTime.tv_sec = (nextTime - curTime) / 1000ULL;
-                waitTime.tv_nsec = ((nextTime - curTime) % 1000ULL) * 1000000ULL;
-
-                pthread_cond_timedwait(&mTimersCond, &mTimersLock, &waitTime);
-            } else
+            if (mTimers)
+                pthread_cond_timeout_np(&mTimersCond, &mTimersLock, mTimers->fireTime - curTime);
+            else
                 pthread_cond_wait(&mTimersCond, &mTimersLock);
 
         } while(1);
