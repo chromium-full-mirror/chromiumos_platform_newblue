@@ -1121,7 +1121,7 @@ out_svcs_lock:
 out_nolocks:
     if (!svc) {
         result = L2C_SIG_CONN_RSP_BAD_PSM;
-        logi("Request for connect to unknown pesm %d\n", psm);
+        logi("Request for connect to unknown psm %d\n", psm);
     } else if (!conn) {
         result = L2C_SIG_CONN_RSP_NO_RSRC;
         logi("Couldnt allocate a connection struct for incoming psm %d open request\n", psm);
