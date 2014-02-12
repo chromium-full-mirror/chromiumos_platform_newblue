@@ -3658,9 +3658,10 @@ uint8_t hciTryToTx(hci_conn_t aclConn, const void *data, uint16_t len, bool firs
 
     pthread_mutex_lock(&mConnsLock);
     conn = hciConnFindByHandle(aclConn);
-    if (!conn)
+    if (!conn) {
         ret = HCI_TX_SEND_NO_CONN;
-    else if (conn->state != CONN_STATE_RUNNING) {
+        logw("Cannot send on a nonexistent connection\n");
+    } else if (conn->state != CONN_STATE_RUNNING) {
         ret = HCI_TX_SEND_NO_CONN;
         logw("Cannot send on a not-yet-established connection\n");
     } else {
