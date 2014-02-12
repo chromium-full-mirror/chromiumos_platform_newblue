@@ -2748,6 +2748,8 @@ static void* l2cSvcWorker(void* unused)
     int status;
 
     while(1) {
+        void *instance = NULL;
+        uint8_t result;
 
         status = workQueueGet(mServiceWork, (void**)&work);
 
@@ -2758,95 +2760,95 @@ static void* l2cSvcWorker(void* unused)
         psm = work->i_alloc.which.psm;
         chan = work->i_alloc.which.chan;
 
-        pthread_mutex_lock(&mSvcsLock);
         switch (work->type) {
         case L2C_WORK_PSM_INST_ALLOC:
+            pthread_mutex_lock(&mSvcsLock);
             psmSvc = l2cPsmSvcFindByPsm(psm);
             if (!psmSvc) {
                 logw("Got work for a not-found PSM-based service %d\n", psm);
-                break;
-            }
-            if (psmSvc->beingRemoved) {
+                result = SVC_ALLOC_FAIL_OTHER;
+            } else if (psmSvc->beingRemoved) {
                 logi("Ignoring instance alloc for service (psm=%d) being removed\n", psm);
-                l2cPsmSvcInstAllocDone(work->reqID, psm, NULL, NULL, SVC_ALLOC_FAIL_BEING_REMOVED, NULL, work->i_alloc.handle);
+                result = SVC_ALLOC_FAIL_BEING_REMOVED;
             } else if (!psmSvc->desc.serviceInstanceAlloc) {
                 logi("Ignoring instance alloc for service (psm=%d) not supporting connections\n", psm);
-                l2cPsmSvcInstAllocDone(work->reqID, psm, NULL, NULL, SVC_ALLOC_FAIL_NO_CONNS, NULL, work->i_alloc.handle);
+                result = SVC_ALLOC_FAIL_NO_CONNS;
             } else {
-                uint8_t result;
-                void *instance;
-
                 result = psmSvc->desc.serviceInstanceAlloc(psmSvc->desc.userData, work->i_alloc.handle, &instance);
-                l2cPsmSvcInstAllocDone(work->reqID, psm, psmSvc->desc.serviceInstanceStateCbk, psmSvc->desc.userData, result, instance, work->i_alloc.handle);
             }
+            pthread_mutex_unlock(&mSvcsLock);
+            l2cPsmSvcInstAllocDone(work->reqID, psm, psmSvc->desc.serviceInstanceStateCbk, psmSvc->desc.userData, result, instance, work->i_alloc.handle);
             break;
         case L2C_WORK_PSM_CONNECTIONLESS_RX:
+            pthread_mutex_lock(&mSvcsLock);
             psmSvc = l2cPsmSvcFindByPsm(psm);
             if (!psmSvc) {
                 logw("Got work for a not-found PSM-based service %d\n", psm);
-                break;
-            }
-            if (psmSvc->beingRemoved) {
-                logi("Ignoring connectionless rx for service (psm=%d) being removed\n", psm);
             } else {
-                if (psmSvc->desc.serviceConnectionlessRx)
-                    psmSvc->desc.serviceConnectionlessRx(psmSvc->desc.userData,
-                    work->cl_rx.handle, work->cl_rx.data, work->cl_rx.size);
+                if (psmSvc->beingRemoved) {
+                    logi("Ignoring connectionless rx for service (psm=%d) being removed\n", psm);
+                } else {
+                    if (psmSvc->desc.serviceConnectionlessRx)
+                        psmSvc->desc.serviceConnectionlessRx(psmSvc->desc.userData, work->cl_rx.handle, work->cl_rx.data, work->cl_rx.size);
+                }
+                free(work->cl_rx.data);
             }
-            free(work->cl_rx.data);
+            pthread_mutex_unlock(&mSvcsLock);
             break;
         case L2C_WORK_PSM_UNREGISTER:
+            pthread_mutex_lock(&mSvcsLock);
             psmSvc = l2cPsmSvcFindByPsm(psm);
             if (!psmSvc) {
                 logw("Got work for a not-found PSM-based service %d\n", psm);
-                break;
+            } else {
+                if (!psmSvc->beingRemoved)
+                    logw("Unregistering a service (psm=%d) unexpectedly\n", psm);
+                if (psmSvc->next)
+                    psmSvc->next->prev = psmSvc->prev;
+                if (psmSvc->prev)
+                    psmSvc->prev->next = psmSvc->next;
+                else
+                    mPsmSvcs = psmSvc->next;
+                free(psmSvc);
+                if (work->unreg.doneCbk)
+                    work->unreg.doneCbk(work->unreg.cbkData);
             }
-            if (!psmSvc->beingRemoved)
-                logw("Unregistering a service (psm=%d) unexpectedly\n", psm);
-            if (psmSvc->next)
-                psmSvc->next->prev = psmSvc->prev;
-            if (psmSvc->prev)
-                psmSvc->prev->next = psmSvc->next;
-            else
-                mPsmSvcs = psmSvc->next;
-            free(psmSvc);
-            if (work->unreg.doneCbk)
-                work->unreg.doneCbk(work->unreg.cbkData);
+            pthread_mutex_unlock(&mSvcsLock);
             break;
         case L2C_WORK_FIXEDCH_INST_ALLOC:
+            pthread_mutex_lock(&mSvcsLock);
             fixedSvc = l2cFixedChSvcFindByChan(chan);
             if (!fixedSvc) {
                 logw("Got work for a not-found FixedCh service %d\n", chan);
-                break;
-            }
-            if (fixedSvc->beingRemoved) {
+                result = SVC_ALLOC_FAIL_OTHER;
+            } else if (fixedSvc->beingRemoved) {
                 logi("Ignoring instance alloc for service (chan=%d) being removed\n", chan);
-                l2cFixedChSvcInstAllocDone(work->reqID, chan, NULL, NULL, SVC_ALLOC_FAIL_BEING_REMOVED, NULL, work->i_alloc.handle);
+                result = SVC_ALLOC_FAIL_BEING_REMOVED;
             } else {
-                uint8_t result;
-                void *instance;
-
                 result = fixedSvc->desc.serviceFixedChAlloc(fixedSvc->desc.userData, work->i_alloc.handle, &instance);
-                l2cFixedChSvcInstAllocDone(work->reqID, chan, fixedSvc->desc.serviceFixedChStateCbk, fixedSvc->desc.userData, result, instance, work->i_alloc.handle);
             }
+            pthread_mutex_unlock(&mSvcsLock);
+            l2cFixedChSvcInstAllocDone(work->reqID, chan, fixedSvc->desc.serviceFixedChStateCbk, fixedSvc->desc.userData, result, instance, work->i_alloc.handle);
             break;
         case L2C_WORK_FIXEDCH_UNREGISTER:
+            pthread_mutex_lock(&mSvcsLock);
             fixedSvc = l2cFixedChSvcFindByChan(chan);
             if (!fixedSvc) {
                 logw("Got work for a not-found FixedCh service %d\n", chan);
-                break;
+            } else {
+                if (!fixedSvc->beingRemoved)
+                    logw("Unregistering a service (chan=%d) unexpectedly\n", chan);
+                if (fixedSvc->next)
+                    fixedSvc->next->prev = fixedSvc->prev;
+                if (fixedSvc->prev)
+                    fixedSvc->prev->next = fixedSvc->next;
+                else
+                    mFixedSvcs = fixedSvc->next;
+                free(fixedSvc);
+                if (work->unreg.doneCbk)
+                    work->unreg.doneCbk(work->unreg.cbkData);
             }
-            if (!fixedSvc->beingRemoved)
-                logw("Unregistering a service (chan=%d) unexpectedly\n", chan);
-            if (fixedSvc->next)
-                fixedSvc->next->prev = fixedSvc->prev;
-            if (fixedSvc->prev)
-                fixedSvc->prev->next = fixedSvc->next;
-            else
-                mFixedSvcs = fixedSvc->next;
-            free(fixedSvc);
-            if (work->unreg.doneCbk)
-                work->unreg.doneCbk(work->unreg.cbkData);
+            pthread_mutex_unlock(&mSvcsLock);
             break;
         case L2C_WORK_STATE_CBK:
             work->state.stateCbk(work->state.userData, work->state.instance, work->state.state, work->state.data, work->state.len);
@@ -2880,7 +2882,6 @@ static void* l2cSvcWorker(void* unused)
             break;
         }
         }
-        pthread_mutex_unlock(&mSvcsLock);
         free(work);
     }
 
@@ -3561,6 +3562,7 @@ static void l2cConnRequestClose(struct l2cAclConn* acl, struct l2cConn *conn, bo
  *           service - the service descriptor for the service
  * RETURN:   the psm you were assigned or zero in case of some error
  * NOTES:    service callbacks may be called before this function returns
+ *           DOES NOT AND CANNOT TAKE mConnsLock
  */
 psm_t l2cApiServicePsmRegister(psm_t psm, const struct l2cServicePsmDescriptor *service)
 {
@@ -3659,6 +3661,7 @@ bool l2cApiServicePsmUnregister(psm_t psm, void (*doneCbk)(void*), void* cbkData
     pthread_mutex_unlock(&mConnsLock);
 
     /* schedule demolition of the psm itself */
+    /* cannot take services lock staring here */
     pthread_mutex_lock(&mSvcsLock);
     svc = l2cPsmSvcFindByPsm(psm);
     if (svc) {
@@ -3677,6 +3680,7 @@ bool l2cApiServicePsmUnregister(psm_t psm, void (*doneCbk)(void*), void* cbkData
  *           service - the service descriptor for the service
  * RETURN:   truwe on success
  * NOTES:    service callbacks may be called before this function returns
+ *           DOES NOT AND CANNOT TAKE mConnsLock
  */
 bool l2cApiServiceFixedChRegister(uint16_t chan, const struct l2cServiceFixedChDescriptor *service)
 {
@@ -3748,6 +3752,7 @@ bool l2cApiServiceFixedChUnregister(uint16_t chan, void (*doneCbk)(void*), void*
     pthread_mutex_unlock(&mConnsLock);
 
     /* schedule demolition of the fixedCh registration itself */
+    /* cannot take services lock staring here */
     pthread_mutex_lock(&mSvcsLock);
     svc = l2cFixedChSvcFindByChan(chan);
     if (svc) {
