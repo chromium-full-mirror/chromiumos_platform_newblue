@@ -3483,9 +3483,11 @@ static void l2cConnRequestClose(struct l2cAclConn* acl, struct l2cConn *conn, bo
     }
 
     /* see how many connections exist on this ACL link */
-    while (t)
+    while (t) {
         if (t->acl == acl->handle && t->inUse)
             numConnsOnThisAcl++;
+        t = t->next;
+    }
 
     if (!numConnsOnThisAcl) {
         loge("Unexpected number of connections %d on acl "HCI_CONN_FMT"x. Fixing to 1\n", numConnsOnThisAcl, HCI_CONN_CONV(acl->conn));
