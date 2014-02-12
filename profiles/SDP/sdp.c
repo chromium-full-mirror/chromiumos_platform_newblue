@@ -725,6 +725,7 @@ void sdpRegisterProfile(){
         .serviceInstanceAlloc = sdpInstAlloc,
         .serviceInstanceStateCbk = sdpInstState,
         .serviceConnectionlessRx = NULL,
+        .mtu = 32768, /* why not ? */
     };
 
     if (!l2cApiServicePsmRegister(PSM_SDP, &sdpSvc)) {
