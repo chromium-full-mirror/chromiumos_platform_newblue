@@ -969,7 +969,7 @@ static void l2cConnTimeout(uniq_t timerH,  uint64_t connH)
     if (!conn)
         logw("Timer callback "HANDLEFMT" for nonexistent connection "HANDLEFMT"\n", HANDLECNV(timerH), HANDLECNV(connH));
     else if (conn->timer != timerH)
-        logd("Stale timer callback "HANDLEFMT" for nonexistent connection "HANDLEFMT"\n", HANDLECNV(timerH), HANDLECNV(connH));
+        logd("Stale timer callback "HANDLEFMT" for connection "HANDLEFMT"\n", HANDLECNV(timerH), HANDLECNV(connH));
     else {
         /* We found a genuine timeout - figure out what kind by looking at state
          * Note that this is purely for logging purposes, since we handle them all
@@ -3568,6 +3568,11 @@ psm_t l2cApiServicePsmRegister(psm_t psm, const struct l2cServicePsmDescriptor *
 
     if (!l2cPsmValid(psm)) {
         logw("Invalid PSM %d\n", psm);
+        return false;
+    }
+
+    if (!service->mtu && service->serviceInstanceAlloc) {
+        logw("Invalid MTU 0 for conn-oriented svc for psm %d\n", psm);
         return false;
     }
 
