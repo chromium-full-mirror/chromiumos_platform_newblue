@@ -2428,6 +2428,14 @@ static bool hciConnEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evt
         logd("ACL EDR conn request from "MACFMT" of class "CLSFMT" -> accepting\n", MACCONV(req->mac), CLSCONV(req->deviceClass));
 
         //TODO: ask higher layer/user/whatever?
+        {
+            struct bt_addr addr;
+            memcpy(addr.addr, req->mac, sizeof(addr.addr));
+            addr.type = BT_ADDR_TYPE_EDR;
+
+            if (!hciConnRequestReplyYes(&addr, true))
+                loge("Failed to accept this connection\n");
+        }
 
 
     } else if (evtType == HCI_EVT_Connection_Complete) {
