@@ -2455,7 +2455,7 @@ static bool hciConnEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evt
         uint16_t cid = utilGetLE16(&disc->conn);
         uint8_t reason = utilGetLE8(&disc->reason);
 
-        logd("ACL conn %d down for reason %d with status %d", cid, reason, status);
+        logd("ACL conn %d down for reason %d with status %d\n", cid, reason, status);
         hciHandleConnAclDown(cid, reason);
 
     } else if (evtType == HCI_EVT_Encryption_Change) {
@@ -2464,7 +2464,7 @@ static bool hciConnEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evt
         uint16_t cid = utilGetLE16(&encr->conn);
         bool encrOn = !!utilGetLE8(&encr->encrOn);
 
-        logd("ACL conn %d encr %d with status %d", cid, encrOn, status);
+        logd("ACL conn %d encr %d with status %d\n", cid, encrOn, status);
         if (!hciHandleConnAclEncr(cid, encrOn))
             loge("Failed to handle conn encr\n");
     } else if (evtType == HCI_EVT_Role_Change) {
@@ -2472,7 +2472,7 @@ static bool hciConnEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evt
         uint8_t status = utilGetLE8(&role->status);
         bool amSlave = !!utilGetLE8(&role->amSlave);
 
-        logd("ACL EDR conn to "MACFMT" changed role to %c with status %d", MACCONV(role->mac), amSlave ? 'S' : 'M', status);
+        logd("ACL EDR conn to "MACFMT" changed role to %c with status %d\n", MACCONV(role->mac), amSlave ? 'S' : 'M', status);
         if (!hciHandleConnAclRoleChange(role->mac, amSlave))
             loge("Failed to handle EDR conn role change\n");
     } else if (evtType == HCI_EVT_LE_Meta) {
