@@ -2,6 +2,10 @@
 //our "extra" param for event filtering canhandle other events to as long as we're willing to have a giant switch-case... and check against it in all structs
 //todo: always request remote versions & features before using them (eg: le encrypt support) and before telling anyone a link is up!
 //todo: always set flush timout to infinite
+//todo: since only one LE connection attempt can exist at a time, enqueue others...
+//todo: when link up do not upcall to l2cap until we have all features and versions from the other side gotten already!
+//todo: The LE_Create_Connection_Cancel command is used to cancel the LE_Create_Connection command. This command shall only be issued after the LE_Create_Connection command has been issued, a Command Status event has been received for the LE Create Connection command and before the LE Connection Complete event
+
 
 #include <semaphore.h>
 #include <pthread.h>
@@ -236,11 +240,15 @@ struct hciAclConn {
 
     union {
         struct {
+            uint64_t   ftrs;
             uint16_t   interval;
             uint16_t   latency;
             uint16_t   timeout;
             uint8_t    mca;
         } le;
+        struct {
+            uint64_t   ftrs[MAX_FTR_PAGES];
+        } edr;
     };
 };
 
@@ -318,7 +326,12 @@ static bool hciCmdSubmitSimpleWithStatusWithDoneCbk(uint8_t ogf, uint16_t ocf, c
 static void hciHandleConnAclDown(uint16_t cid, uint8_t reason);
 static bool hciHandleConnAclEdrUp(uint8_t status, uint16_t id, const uint8_t *mac, bool encrypted);
 static bool hciHandleConnAclLeUp(uint8_t status, uint16_t id, bool isMaster, const uint8_t *mac, bool addrRandom, uint16_t interval, uint16_t latency, uint16_t timeout, uint8_t mca);
-
+static bool hciHandleConnAclEncr(uint16_t cid, bool encrOn);
+static bool hciHandleConnAclRoleChange(const uint8_t* mac, bool amSlave);
+static bool hciHandleConnAclLeUpdate(uint8_t status, uint16_t cid, uint16_t interval, uint16_t latency, uint16_t timeout);
+static bool hciConnUpdate(uint16_t cid, uint16_t minInt, uint16_t maxInt, uint16_t latency, uint16_t timeout);
+static bool hciConnDisconnect(uint16_t cid);
+static bool hciConnLeCancel(void);
 
 
 
@@ -1064,7 +1077,7 @@ static bool hciScheduleConnEncrChange(hci_conn_t conn, bool nowEncrypted)
     if (!w)
         return false;
 
-    w->cbkWorkItemType = CBK_WORK_PARAMS_CHANGE;
+    w->cbkWorkItemType = CBK_WORK_ENCR_CHANGE;
     w->encrChange.conn = conn;
     w->encrChange.nowEncrypted = nowEncrypted;
 
@@ -2404,7 +2417,7 @@ static bool hciConnEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evt
 
         logd("ACL conn %d encr %d with status %d", cid, encrOn, status);
         if (!hciHandleConnAclEncr(cid, encrOn))
-                loge("Failed to handle conn encr\n");
+            loge("Failed to handle conn encr\n");
     } else if (evtType == HCI_EVT_Role_Change) {
         struct hciEvtRoleChange *role = (struct hciEvtRoleChange*)(evt + 1);
         uint8_t status = utilGetLE8(&role->status);
@@ -2412,7 +2425,7 @@ static bool hciConnEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evt
 
         logd("ACL EDR conn to "MACFMT" changed role to %c with status %d", MACCONV(role->mac), amSlave ? 'S' : 'M', status);
         if (!hciHandleConnAclRoleChange(role->mac, amSlave))
-                loge("Failed to handle EDR conn role change\n");
+            loge("Failed to handle EDR conn role change\n");
     } else if (evtType == HCI_EVT_LE_Meta) {
         struct hciEvtLeMeta *meta = (struct hciEvtLeMeta*)(evt + 1);
         evtType = utilGetLE8(&meta->subevent);
@@ -3250,16 +3263,16 @@ bool hciInfoAclBufSizeLe(uint16_t *bufSz, uint16_t *bufNum)
 }
 
 /*
- * FUNCTION: hciConnectEdrStatusCbk
+ * FUNCTION: hciCmdStatusCbk
  * USE:      Gives us the status of a connection attempt we started
  * PARAMS:   cbkData - non-null for LE
  *           status - status from the chip
  * RETURN:   NONE
  * NOTES:
  */
-static void hciConnectStatusCbk(void *cbkData, uint8_t status)
+static void hciCmdStatusCbk(void *cbkData, uint8_t status)
 {
-    logd("%s connection status: %d\n", cbkData ? "LE" : "EDR", status);
+    logd("status: %d\n", status);
 }
 
 /*
@@ -3284,11 +3297,35 @@ static bool hciConnectEdr(const uint8_t *mac)
     utilSetLE16(&cmd.clockOffset, 0);
     utilSetLE8(&cmd.allowRoleSwitch, 0);
 
-    if (!hciCmdSubmitSimpleWithStatusWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Create_Connection, &cmd, sizeof(cmd), hciConnectStatusCbk, NULL)) {
+    if (!hciCmdSubmitSimpleWithStatusWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Create_Connection, &cmd, sizeof(cmd), hciCmdStatusCbk, NULL)) {
         logi("Failed to request connect to "MACFMT"\n", MACCONV(mac));
         return false;
     }
     return true;
+}
+
+/*
+ * FUNCTION: hciConnEncryptLe
+ * USE:      Start an encryption attempt for an LE connection
+ * PARAMS:   conn - the connection
+ * RETURN:   true if attempt will be made
+ * NOTES:    call with mConnsLock held
+ */
+static bool hciConnEncryptLe(struct hciAclConn *conn)
+{
+    if (!(mLocalLeFtrs & HCI_LE_FTR_ENCRYPTION)) {
+        loge("Encryption not supported\n");
+        return false;
+    }
+
+    if (!(conn->le.ftrs & HCI_LE_FTR_ENCRYPTION)) {
+        loge("Encryption not supported remotely\n");
+        return false;
+    }
+    
+    //TODO: LE Security Manager integration
+
+    return false;
 }
 
 /*
@@ -3298,18 +3335,28 @@ static bool hciConnectEdr(const uint8_t *mac)
  * RETURN:   true if attempt will be made
  * NOTES:    call with mConnsLock held
  */
-static bool hciConnEncrypt(struct hciAclConn *conn)
+static bool hciConnEncryptEdr(struct hciAclConn *conn)
 {
+    struct hciSetConnectionEncryption cmd;
+
     if (!(mLocalFtrs[0] & HCI_LMP_FTR_ENCRYPTION)) {
-        loge("Encryption not supported\n");
+        loge("Encryption not supported locally\n");
+        return false;
+    }
+
+    if (!(conn->edr.ftrs[0] & HCI_LMP_FTR_ENCRYPTION)) {
+        loge("Encryption not supported remotely\n");
         return false;
     }
     
-    
+    utilSetLE16(&cmd.conn, conn->id);
+    utilSetLE8(&cmd.encrOn, 1);
+    if (!hciCmdSubmitSimpleWithStatusWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Set_Connection_Encryption, &cmd, sizeof(cmd), hciCmdStatusCbk, NULL)) {
+        logi("Failed to request encr to cid %d\n", conn->id);
+        return false;
+    }
+    return true;
 }
-
-
-///HCI_LE_FTR_ENCRYPTION
 
 /*
  * FUNCTION: hciConnectLe
@@ -3349,7 +3396,7 @@ static bool hciConnectLe(const uint8_t *mac, bool randomAddr, uint16_t scanInt, 
     utilSetLE16(&cmd.maxConnLen, intMin * 2);
 
 
-    if (!hciCmdSubmitSimpleWithStatusWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_LE_Create_Connection, &cmd, sizeof(cmd), hciConnectStatusCbk, &cmd/*anything non-null will do*/)) {
+    if (!hciCmdSubmitSimpleWithStatusWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_LE_Create_Connection, &cmd, sizeof(cmd), hciCmdStatusCbk, NULL)) {
         logi("Failed to request connect to "MACFMT"\n", MACCONV(mac));
         return false;
     }
@@ -3459,14 +3506,15 @@ bool hciDisconnect(const struct bt_addr* addr)
 
         switch (conn->state) {
         case CONN_STATE_WAIT:
-            if (isLE)
-                hciConnLeCancel(conn);
-            else
+            if (isLE) {
+                if (!hciConnLeCancel())
+                    loge("Failed to request LE conection cancellation for "ADDRFMT"\n", ADDRCONV(conn->addr));
+            } else
                 logd("cannot cancel in-progress EDR connection\n");
             conn->state = CONN_STATE_DELETING;
             break;
         case CONN_STATE_RUNNING:
-            hciConnDisconnect(conn);
+            hciConnDisconnect(conn->id);
             hciConnAclStructDel(conn);
             break;
         case CONN_STATE_DELETING:
@@ -3505,7 +3553,7 @@ bool hciUpdateLeParams(hci_conn_t aclConn, uint16_t minInt, uint16_t maxInt, uin
     else if (conn->state != CONN_STATE_RUNNING)
         logw("Cannot update params for not-yet-established connection\n");
     else
-        ret = hciConnUpdate(conn, minInt, maxInt, lat, to);
+        ret = hciConnUpdate(conn->id, minInt, maxInt, lat, to);
     pthread_mutex_unlock(&mConnsLock);
 
     return ret;
@@ -3707,7 +3755,7 @@ static bool hciHandleConnAclEdrUp(uint8_t status, uint16_t id, const uint8_t *ma
  * FUNCTION: hciHandleConnAclLeUp
  * USE:      Setup a local ACL.LE conn struct for this conn
  * PARAMS:   status - the connection status
- *           id - the id
+ *           id - the conection id
  *           isMaster - true if we're the master
  *           mac - the mac
  *           addrRandom - true if adddress is random
@@ -3733,5 +3781,151 @@ static bool hciHandleConnAclLeUp(uint8_t status, uint16_t id, bool isMaster, con
     pthread_mutex_unlock(&mConnsLock);
     return !!c;
 }
+
+/*
+ * FUNCTION: hciHandleConnAclEncr
+ * USE:      Notify all interested in encryption change
+ * PARAMS:   cid - the connection id
+ *           encrOn - is encryption on?
+ * RETURN:   true on success
+ * NOTES:
+ */
+static bool hciHandleConnAclEncr(uint16_t cid, bool encrOn)
+{
+    struct hciAclConn *c;
+    bool ret = false;
+
+    logd("cid %d now %sencrypted\n", cid, encrOn ? "" : "not ");
+
+    pthread_mutex_lock(&mConnsLock);
+    c = hciConnFindById(cid);
+    if (c) {
+        logd("cid %d was %sencrypted\n", cid, c->encrypted ? "" : "not ");
+        c->encrypted = encrOn;
+        ret = hciScheduleConnEncrChange(c->handle, encrOn);
+    }
+    pthread_mutex_unlock(&mConnsLock);
+    return ret;
+}
+
+/*
+ * FUNCTION: hciHandleConnAclRoleChange
+ * USE:      Notify all interested in role change
+ * PARAMS:   mac - the peer address
+ *           amSlave - am i now slave?
+ * RETURN:   true on success
+ * NOTES:
+ */
+static bool hciHandleConnAclRoleChange(const uint8_t* mac, bool amSlave)
+{
+    struct hciAclConn *c;
+    struct bt_addr addr;
+    bool ret = false;
+
+    memcpy(addr.addr, mac, sizeof(addr.addr));
+    addr.type = BT_ADDR_TYPE_EDR;
+
+    logd("conn to "MACFMT" now %s\n", MACCONV(mac), amSlave? "slave" : "master");
+
+    pthread_mutex_lock(&mConnsLock);
+    c = hciConnFindByAddr(&addr);
+    if (c) {
+        logd("conn to "MACFMT" was %s\n", MACCONV(mac), c->isMaster? "master" : "slave");
+        c->isMaster = !amSlave;
+        ret = true;
+    }
+    pthread_mutex_unlock(&mConnsLock);
+    return ret;
+}
+
+/*
+ * FUNCTION: hciHandleConnAclLeUpdate
+ * USE:      Notify all interested in conn param update
+ * PARAMS:   status - did update succeed?
+ *           cid - the connection id
+ *           interval - the new interval (valid only in case of success)
+ *           latency - the new latency (valid only in case of success)
+ *           timeout - the new timeout (valid only in case of success)
+ * RETURN:   true on success
+ * NOTES:
+ */
+static bool hciHandleConnAclLeUpdate(uint8_t status, uint16_t cid, uint16_t interval, uint16_t latency, uint16_t timeout)
+{
+    struct hciAclConn *c;
+    bool ret = false;
+
+    logd("cid %d update success: %d\n", cid, status);
+
+    pthread_mutex_lock(&mConnsLock);
+    c = hciConnFindById(cid);
+    if (c) {
+        if (!status) {
+            logd("update: {%d,%d,%d} -> {%d,%d,%d}\n", c->le.interval, c->le.latency, c->le.timeout, interval, latency, timeout);
+            c->le.interval = interval;
+            c->le.latency = latency;
+            c->le.timeout = timeout;
+        }
+        ret = hciScheduleConnParamChange(c->handle, !status, c->le.interval, c->le.latency, c->le.timeout);
+    }
+    pthread_mutex_unlock(&mConnsLock);
+    return ret;
+}
+
+/*
+ * FUNCTION: hciConnLeCancel
+ * USE:      Cancel an ongoing LE connection attempt
+ * PARAMS:   addr - whom the connection was to
+ * RETURN:   true on success
+ * NOTES:
+ */
+static bool hciConnLeCancel(void)
+{
+    return hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_LE, HCI_CMD_LE_Create_Connection_Cancel, NULL, 0, hciCmdStatusCbk, NULL);
+}
+
+
+/*
+ * FUNCTION: hciConnUpdate
+ * USE:      Start a connection update for an LE connection
+ * PARAMS:   cid - the cid
+ *           intMin - minimum wanted interval
+ *           intMax - maximum wanted itnerval
+ *           latency - wanted latency
+ *           timeout - wanted timeout
+ * RETURN:   false on failure. else wait.
+ * NOTES:
+ */
+static bool hciConnUpdate(uint16_t cid, uint16_t intMin, uint16_t intMax, uint16_t latency, uint16_t timeout)
+{
+    struct hciLeConnectionUpdate cmd;
+
+    utilSetLE16(&cmd.conn, cid);
+    utilSetLE16(&cmd.connIntervalMin, intMin);
+    utilSetLE16(&cmd.connIntervalMax, intMax);
+    utilSetLE16(&cmd.connLatency, latency);
+    utilSetLE16(&cmd.supervisionTimeout, timeout);
+    utilSetLE16(&cmd.minConnLen, 0); /* not a useful hint, i know */
+    utilSetLE16(&cmd.maxConnLen, intMin * 2);
+
+    return hciCmdSubmitSimpleWithStatusWithDoneCbk(HCI_OGF_LE, HCI_CMD_LE_Connection_Update, &cmd, sizeof(cmd), hciCmdStatusCbk, NULL);
+}
+
+/*
+ * FUNCTION: hciConnDisconnect
+ * USE:      Start a disconnection process
+ * PARAMS:   cid - the cid
+ * RETURN:   false on failure. else wait.
+ * NOTES:
+ */
+static bool hciConnDisconnect(uint16_t cid)
+{
+    struct hciDisconnect cmd;
+
+    utilSetLE16(&cmd.conn, cid);
+    utilSetLE16(&cmd.reason, 0x13); //TODO: better dealings with this value...
+
+    return hciCmdSubmitSimpleWithStatusWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Disconnect, &cmd, sizeof(cmd), hciCmdStatusCbk, NULL);
+}
+
 
 

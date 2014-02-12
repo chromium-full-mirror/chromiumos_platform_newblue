@@ -2504,8 +2504,7 @@ struct hciEvtRemoteNameReqComplete {
 #define HCI_EVT_Encryption_Change                                0x08
 struct hciEvtEncrChange {
     uint8_t status;
-    uint16_t conn
-;
+    uint16_t conn;
     uint8_t encrOn;
 } __packed;
 
