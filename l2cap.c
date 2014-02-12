@@ -4015,14 +4015,14 @@ void l2cAclCreditAvail(bool le)
  * FUNCTION: l2cDataSendOnAclLink
  * USE:      Request a send on an ACL link of data with a header
  * PARAMS:   aclConn - the link
- *           buf - the data
+ *           databuf - the data
  *           size - how much data there is
  *           hdr - the header to prepend
  *           hdrSize - size of the header
  * RETURN:   L2C_TX_*
  * NOTES:    call with mConnsLock held
  */
-static uint8_t l2cDataSendOnAclLink(struct l2cAclConn *aclConn, const void* buf, uint16_t size, const void* hdr, uint16_t hdrSize)
+static uint8_t l2cDataSendOnAclLink(struct l2cAclConn *aclConn, const void* databuf, uint16_t size, const void* hdr, uint16_t hdrSize)
 {
     uint8_t ret = L2C_TX_ACCEPTED;
     void **queueBufP;
@@ -4057,7 +4057,7 @@ static uint8_t l2cDataSendOnAclLink(struct l2cAclConn *aclConn, const void* buf,
             ret = L2C_TX_ERROR;
         } else {
             memcpy(buf, hdr, hdrSize);
-            memcpy(buf + hdrSize, buf, size);
+            memcpy(buf + hdrSize, databuf, size);
 
             *queueBufP = buf;
             *queueLenP = buflen;
