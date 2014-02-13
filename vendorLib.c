@@ -318,7 +318,7 @@ static void* vendorWorker(void *pipeFdP)
             if (mLog) {
                 char x[128];
                 unsigned i;
-                sprintf(x,"RX %02X (%4u):", buf[0], sz);
+                sprintf(x,"RX (%4u): %02X", sz, buf[0]);
                 for(i = 0; i < 32 && i < sz; i++) sprintf(x + strlen(x), " %02X", ((uint8_t*)packet)[i]);
                 if (i < sz) strcat(x, " ...");
                 logd("%s\n", x);
