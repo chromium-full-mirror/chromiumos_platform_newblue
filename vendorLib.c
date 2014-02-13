@@ -106,6 +106,43 @@ static void vcbkDealloc(void *p_buf)
 }
 
 /*
+ * FUNCTION: vcbkXmit
+ * USE:      Send a command on behalf of the vendor lib
+ * PARAMS:   opcode - the opcode sent (for matching reply)
+ *           p_buf - the buffer containing the command
+ *           p_cback - the callback to call when reply arrives
+ * RETURN:   nonzero on success
+ * NOTES:    We do nto implement it since the spec is unclear and nobody uses this
+ */ 
+static uint8_t vcbkXmit(uint16_t opcode, void *p_buf, tINT_CMD_CBACK p_cback)
+{
+    HC_BT_HDR *h = (HC_BT_HDR*)p_buf;
+    sg cmdSg;
+    uint8_t *cmd = (uint8_t*)(h + 1);
+    uint8_t paramLen = cmd[2]; /* as per vendor code */
+    uint16_t totalLen = 3 + paramLen;
+
+    mCmdCompleteWaiting = opcode;
+    mCmdCompleteCbk = p_cback;
+
+    /* we hand the pointer to sg - it will free it */
+    cmdSg = sgNewWithAllocedData(p_buf, totalLen + sizeof(HC_BT_HDR));
+    if (!cmdSg) {
+        loge("Failed to alloc sg for vendor lib tx\n");
+        return 0;
+    }
+    /* but we also do not want to send the header, so we cleverly truncate it away */
+    sgTruncFront(cmdSg, sizeof(HC_BT_HDR));
+
+    if (vendorTx(HCI_PKT_TYP_CMD, cmdSg))
+        return 1;
+
+    loge("vendorTx() failed for vendor lib cmd\n");
+    sgFree(cmdSg);
+    return 0;
+}
+
+/*
  * FUNCTION: rread
  * USE:      Read while handing EINTR
  * PARAMS:   fd - the fd
@@ -163,34 +200,6 @@ static int rwrite(int fd, const void *buf, uint32_t sz)
     }
 
     return 0;
-}
-
-/*
- * FUNCTION: vcbkXmit
- * USE:      Send a command on behalf of the vendor lib
- * PARAMS:   opcode - the opcode sent (for matching reply)
- *           p_buf - the buffer containing the command
- *           p_cback - the callback to call when reply arrives
- * RETURN:   NONE
- * NOTES:    We do nto implement it since the spec is unclear and nobody uses this
- */ 
-static uint8_t vcbkXmit(uint16_t opcode, void *p_buf, tINT_CMD_CBACK p_cback)
-{
-    HC_BT_HDR *h = (HC_BT_HDR*)p_buf;
-    uint8_t *cmd = (uint8_t*)(h + 1);
-    uint8_t paramLen = cmd[2]; /* as per vendor code */
-    uint16_t totalLen = 3 + paramLen;
-    uint8_t typ = HCI_PKT_TYP_CMD;
-
-    mCmdCompleteWaiting = opcode;
-    mCmdCompleteCbk = p_cback;
-
-    rwrite(mFdCmdOut, &typ, 1);
-    rwrite(mFdCmdOut, cmd, totalLen);
-
-    vcbkDealloc(p_buf);
-
-    return 1;
 }
 
 /*
