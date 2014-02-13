@@ -637,6 +637,13 @@ static void hciRxEvt(const struct hciEvtHdr *evt)
     if (evtType == HCI_EVT_Command_Complete && !utilGetLE16(&cmdComplete->opcode))
         handled = true;
 
+    /* handle HW failure */
+    if (evtType == HCI_EVT_Hardware_Error) {
+        struct hciEvtHwError *hwErr = (struct hciEvtHwError*)(evt + 1);
+        loge("Chip reported HW failure, code %d -> catastropic stack failure\n", utilGetLE8(&hwErr->errCode));
+        abort();
+    }
+
     if (!handled) {
         pthread_mutex_lock(&mCmdWaitLock);
         ws = mEvtWaitHead;
