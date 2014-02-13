@@ -215,7 +215,7 @@ void sgConcat(sg front, sg back)
  */
 void sgTruncBack(sg s, uint32_t bytes_to_delete)
 {
-    struct sgitem *item = s->head, *t;
+    struct sgitem *item = s->head, *t = NULL;
     uint32_t bytes_to_keep;
 
     if (bytes_to_delete >= s->len)
@@ -223,16 +223,28 @@ void sgTruncBack(sg s, uint32_t bytes_to_delete)
     else
         bytes_to_keep = s->len - bytes_to_delete;
 
+    /* skip all chunks we're wholly keeping */
     s->len = bytes_to_keep;
     while (bytes_to_keep >= item->len) {
         bytes_to_keep -= item->len;
+        t = item;
         item = item->next;
     }
 
-    /* now truncate the item we're at - we are sure it needs it */
-    item->len = bytes_to_keep;
+    /* spilt chunk if needed */
+    if (bytes_to_keep)  {
+        item->len = bytes_to_keep;
+        t = item;
+        item = item->next;
+    }
 
-    s->tail = item;
+    /* now item points to first item we want to delete, t is the previous item - adjust pointers appropriately */
+    if (t)
+        t->next = NULL;
+    else
+        s->head = NULL;
+    s->tail = t;
+
     item = item->next;
     while (item) {
         t = item;
@@ -257,6 +269,7 @@ void sgTruncFront(sg s, uint32_t bytes_to_delete)
     if (bytes_to_delete >= s->len)
         bytes_to_delete = s->len;
 
+    /* delete all the chunks we wholly don't need */
     s->len -= bytes_to_delete; 
     while (bytes_to_delete >= item->len) {
         bytes_to_keep -= item->len;
@@ -265,10 +278,15 @@ void sgTruncFront(sg s, uint32_t bytes_to_delete)
         sgitemFree(t);
     }
     s->head = item;
+    if (!item)
+        s->tail = item;
 
-    /* now split the next chunk - we are sure it is to be split */
-    item->offset += bytes_to_delete;
-    item->len -= bytes_to_delete;
+    /* split chunk if needed */
+    if (bytes_to_delete) {
+        item->offset += bytes_to_delete;
+        item->len -= bytes_to_delete;
+        item = item->next;
+    }
 }
 
 /*
@@ -291,6 +309,7 @@ bool sgConcatFrontCopy(sg s, const void *data, uint32_t len)
     s->head = item;
     if (!s->tail)
         s->tail = item;
+    s->len += len;
 
     return true;
 }
@@ -315,6 +334,7 @@ bool sgConcatFrontAlloced(sg s, void *data, uint32_t len)
     s->head = item;
     if (!s->tail)
         s->tail = item;
+    s->len += len;
 
     return true;
 }
@@ -340,6 +360,7 @@ bool sgConcatBackCopy(sg s, const void *data, uint32_t len)
     else
         s->head = item;
     s->tail = item;
+    s->len += len;
 
     return true;
 }
@@ -365,6 +386,7 @@ bool sgConcatBackAlloced(sg s, void *data, uint32_t len)
     else
         s->head = item;
     s->tail = item;
+    s->len += len;
 
     return true;
 }
