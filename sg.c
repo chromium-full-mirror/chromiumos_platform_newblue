@@ -424,6 +424,80 @@ bool sgConcatBackAlloced(sg s, void *data, uint32_t len)
 }
 
 /*
+ * FUNCTION: sgSplit
+ * USE:      Split an sg into two
+ * PARAMS:   s - the sg
+ *           firstLen - how mnay bytes to leave with the first part
+ * RETURN:   the sg containing the second part or NULL on error;
+ * NOTES:
+ */
+sg sgSplit(sg s, uint32_t firstPart)
+{
+    struct sgitem *i = s->head, *p = NULL, *t;
+    uint32_t leftToCut = firstPart;
+    sg ret = sgNew();
+
+    if (!ret)
+        return NULL;
+
+
+    /* first, check for stupid inputs (part 1: cut off all that we have) */
+    if (!firstPart) {
+        struct sgbuf tmp;
+
+        /*
+         * Ah, the "cut off everything" case. We simply swap the empty sg we
+         * just created into s, and s's internal structure into ret. Dirty?
+         * Sure. Clever? Definitely!
+         */
+        memcpy(&tmp, s, sizeof(struct sgbuf));
+        memcpy(s, ret, sizeof(struct sgbuf));
+        memcpy(ret, &tmp, sizeof(struct sgbuf));
+        return ret;
+    }
+
+    /* first, check for stupid inputs (part 2: cut off nothing) */
+    if (firstPart >= s->len) {
+        /* nothing to cut off */
+        return ret;
+    }
+
+    /* if we got here, we have actual splitting we need to do... */
+    ret->len = s->len - firstPart;
+    s->len = firstPart;
+    while (i->len <= leftToCut) {
+        leftToCut -= i->len;
+        p = i;
+        i = i->next;
+    }
+
+    if (!leftToCut) { /* exact boundary. nice! */
+        ret->tail = s->tail;
+
+        p->next = NULL;
+        s->tail = p;
+
+        ret->head = i;
+    } else { /* this is the messiest case */
+        t = sgitemNewWithCopy(sgitemGetDataPtr(i) + leftToCut, i->len - leftToCut);
+        if (!t) {
+            sgFree(ret);
+            return NULL;
+        }
+
+        i->len -= leftToCut;
+
+        ret->tail = s->tail;
+        ret->head = t;
+        t->next = i->next;
+        i->next = NULL;
+        s->tail = i;
+    }
+
+    return ret;
+}
+
+/*
  * FUNCTION: sgSerialize
  * USE:      Serialize a piece of the sg into a buffer
  * PARAMS:   s - the sg
