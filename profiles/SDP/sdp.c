@@ -673,7 +673,7 @@ static void sdpServiceDataRx(void* service, const uint8_t* data, uint16_t size){
         else if (!(replySg = sgNewWithAllocedData(rbuf, rlen))) {
             loge("Failed to alloc sdp reply sg\n");
             free(rbuf);
-        } else if (!l2cApiDataTx(inst->handle, replySg)) {
+        } else if (l2cApiDataTx(inst->handle, replySg)) {
             sgFree(replySg);
             loge("Failed to TX SDP reply\n");
         }
