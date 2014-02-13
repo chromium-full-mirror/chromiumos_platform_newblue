@@ -3671,7 +3671,7 @@ bool hciDemandEncr(hci_conn_t aclConn)
  * RETURN:   true if attempt will be made
  * NOTES:    all data larger then controller's buffer WILL be dropped. WILL NOT BLOCK!
  */
-uint8_t hciTryToTx(hci_conn_t aclConn, sg data, bool first)
+uint8_t hciTryToTx(hci_conn_t aclConn, sg data, uint8_t boundary)
 {
     struct hciAclConn* conn;
     uint8_t ret;
@@ -3685,7 +3685,8 @@ uint8_t hciTryToTx(hci_conn_t aclConn, sg data, bool first)
         ret = HCI_TX_SEND_NO_CONN;
         logw("Cannot send on a not-yet-established connection\n");
     } else {
-        bool useLeBuffers = BT_ADDR_IS_LE(conn->addr) && !mBtJointBuffers;
+        bool isLE = BT_ADDR_IS_LE(conn->addr);
+        bool useLeBuffers = isLE && !mBtJointBuffers;
         sem_t *relevantSem = useLeBuffers ? &mAclPacketsLe : &mAclPacketsEdr;
         int rv;
 
@@ -3696,9 +3697,24 @@ uint8_t hciTryToTx(hci_conn_t aclConn, sg data, bool first)
             ret = HCI_TX_SEND_ERROR;
         else {
             struct hciAclHdr hdr;
+            uint16_t pb = 0xFFFF; /* this will catch all other cases */
+            uint16_t start_pb = mBtVer >= HCI_VERSION_2_1 ? ACL_HDR_PB_FIRST_NONAUTO : ACL_HDR_PB_FIRST_AUTO;
+            uint16_t complete_pb = mBtVer >= HCI_VERSION_3_0 ? ACL_HDR_PB_COMPLETE : start_pb;
+
+            switch(boundary) {
+            case HCI_BOUNDARY_COMPLETE:
+                pb = isLE ? start_pb : complete_pb;
+                break;
+            case HCI_BOUNDARY_START:
+                pb = start_pb;
+                break;
+            case HCI_BOUNDARY_CONT:
+                pb = ACL_HDR_PB_CONINUED;
+                break;
+            }
 
             utilSetLE16(&hdr.len, sgLength(data));
-            utilSetLE16(&hdr.hdr, conn->id | (first ? ACL_HDR_PB_FIRST_AUTO : ACL_HDR_PB_CONINUED));
+            utilSetLE16(&hdr.hdr, conn->id | pb);
 
             ret = (sgConcatFrontCopy(data, &hdr, sizeof(hdr)) && vendorTx(HCI_PKT_TYP_ACL, data)) ? HCI_TX_SEND_OK : HCI_TX_SEND_ERROR;
         }

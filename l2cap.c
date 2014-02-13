@@ -3932,7 +3932,7 @@ static void l2cTryMakeSendProgress(bool forLeBuffers, bool needLock)
         } else
             remainSg = NULL;
 
-        ret = hciTryToTx(sendConn, sendSg, sendFirst);
+        ret = hciTryToTx(sendConn, sendSg, sendFirst ? (remainSg ? HCI_BOUNDARY_START : HCI_BOUNDARY_COMPLETE) : HCI_BOUNDARY_CONT);
         if (ret == HCI_TX_SEND_ERROR)
             logw("State indeterminate after hci tx fail!\n");
 
