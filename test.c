@@ -298,7 +298,7 @@ int main(int argc, char** argv)
     }
 
     l2cInit();
-    //sdpRegisterProfile();
+    sdpRegisterProfile();
 
     logi("waiting...press a key\n");
     getchar();

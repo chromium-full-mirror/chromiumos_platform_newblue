@@ -3,6 +3,7 @@
 #include "l2cap.h"
 #include "log.h"
 #include "sdp.h"
+#include "sg.h"
 
 
 #define SDP_PDU_Error_Response				1
@@ -657,6 +658,8 @@ static void sdpServiceDataRx(void* service, const uint8_t* data, uint16_t size){
 */
         uint8_t *rbuf;
         uint32_t rlen;
+        sg replySg;
+
         rbuf = malloc(rlen = sg_length(reply));
         if (rbuf)
             sg_copyto(reply, rbuf);
@@ -665,9 +668,15 @@ static void sdpServiceDataRx(void* service, const uint8_t* data, uint16_t size){
         sg_free(reply);
         free(reply);
 
-        if (rbuf && !l2cApiDataTx(inst->handle, rbuf, rlen))
+        if (!rbuf)
+            loge("Failed to alloc sdp reply\n");
+        else if (!(replySg = sgNewWithAllocedData(rbuf, rlen))) {
+            loge("Failed to alloc sdp reply sg\n");
+            free(rbuf);
+        } else if (!l2cApiDataTx(inst->handle, replySg)) {
+            sgFree(replySg);
             loge("Failed to TX SDP reply\n");
-        free(rbuf); /* free on NULL is ok as per posix */
+        }
     }
 }
 
