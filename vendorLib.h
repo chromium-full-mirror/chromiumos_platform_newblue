@@ -2,6 +2,7 @@
 #define _VENDOR_LIB_H_
 
 #include "types.h"
+#include "sg.h"
 
 
 /* callback for chip up, first fw=false for hw up, then fw=true for fw up. If first is false, do not expect second */
@@ -17,7 +18,7 @@ bool vendorOpen(bool logAll);
 bool vendorUp(const uint8_t *addr, vendorCbkChipUp chipUpCbk, vendorCbkRx dataRxCbk, void *chipCbkData);
 
 /* send - may block */
-bool vendorTx(uint8_t typ, const void *data, uint32_t len);
+bool vendorTx(uint8_t typ, sg data);
 
 /* bring down the chip */
 void vendorDown(void);

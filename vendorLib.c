@@ -106,30 +106,6 @@ static void vcbkDealloc(void *p_buf)
 }
 
 /*
- * FUNCTION: vcbkXmit
- * USE:      Send a command on behalf of the vendor lib
- * PARAMS:   opcode - the opcode sent (for matching reply)
- *           p_buf - the buffer containing the command
- *           p_cback - the callback to call when reply arrives
- * RETURN:   NONE
- * NOTES:    We do nto implement it since the spec is unclear and nobody uses this
- */ 
-static uint8_t vcbkXmit(uint16_t opcode, void *p_buf, tINT_CMD_CBACK p_cback)
-{
-    HC_BT_HDR *h = (HC_BT_HDR*)p_buf;
-    uint8_t *cmd = (uint8_t*)(h + 1);
-    uint8_t paramLen = cmd[2]; /* as per vendor code */
-    uint16_t totalLen = 3 + paramLen;
-
-    mCmdCompleteWaiting = opcode;
-    mCmdCompleteCbk = p_cback;
-    vendorTx(HCI_PKT_TYP_CMD, cmd, totalLen);
-    vcbkDealloc(p_buf);
-
-    return 1;
-}
-
-/*
  * FUNCTION: rread
  * USE:      Read while handing EINTR
  * PARAMS:   fd - the fd
@@ -187,6 +163,34 @@ static int rwrite(int fd, const void *buf, uint32_t sz)
     }
 
     return 0;
+}
+
+/*
+ * FUNCTION: vcbkXmit
+ * USE:      Send a command on behalf of the vendor lib
+ * PARAMS:   opcode - the opcode sent (for matching reply)
+ *           p_buf - the buffer containing the command
+ *           p_cback - the callback to call when reply arrives
+ * RETURN:   NONE
+ * NOTES:    We do nto implement it since the spec is unclear and nobody uses this
+ */ 
+static uint8_t vcbkXmit(uint16_t opcode, void *p_buf, tINT_CMD_CBACK p_cback)
+{
+    HC_BT_HDR *h = (HC_BT_HDR*)p_buf;
+    uint8_t *cmd = (uint8_t*)(h + 1);
+    uint8_t paramLen = cmd[2]; /* as per vendor code */
+    uint16_t totalLen = 3 + paramLen;
+    uint8_t typ = HCI_PKT_TYP_CMD;
+
+    mCmdCompleteWaiting = opcode;
+    mCmdCompleteCbk = p_cback;
+
+    rwrite(mFdCmdOut, &typ, 1);
+    rwrite(mFdCmdOut, cmd, totalLen);
+
+    vcbkDealloc(p_buf);
+
+    return 1;
 }
 
 /*
@@ -550,20 +554,27 @@ out_need_close:
  * USE:      Send data to che chip
  * PARAMS:   typ - data type
  *           data - the data to send
- *           len - the length of the data
  * RETURN:   success
  * NOTES:    May block
  */
-bool vendorTx(uint8_t typ, const void *data, uint32_t len)
+bool vendorTx(uint8_t typ, sg data)
 {
-    int fd, ret;
+    int fd, ret = 0;
+    void *iter;
+
+    if (!sgConcatFrontCopy(data, &typ, 1))
+        return false;
 
     if (mLog) {
        char x[128];
        unsigned i;
-       sprintf(x,"TX %02X (%4u):", typ, len);
-       for(i = 0; i < 32 && i < len; i++) sprintf(x + strlen(x), " %02X", ((uint8_t*)data)[i]);
-       if (i < len) strcat(x, " ...");
+       sprintf(x,"TX (%4u):", sgLength(data));
+       for(i = 0; i < 33 && i < sgLength(data); i++) { /* this is not even remotely a good idea, speedwise */
+           uint8_t byte;
+           sgSerialize(data, i, 1, &byte);
+           sprintf(x + strlen(x), " %02X", byte);
+       }
+       if (i < sgLength(data)) strcat(x, " ...");
        logd("%s\n", x);
     }
 
@@ -582,15 +593,17 @@ bool vendorTx(uint8_t typ, const void *data, uint32_t len)
         return false;
     }
 
-    ret = rwrite(fd, &typ, 1);
-    if (ret)
-        loge("Write failed for type %d: %d\n", fd, ret);
+    /* quite elegant, don't you find? */
+    for (iter = sgIterStart(data); iter; iter = sgIterAdvance(iter)) {
+        ret = rwrite(fd, sgIterCurData(iter), sgIterCurLen(iter));
+        if (ret) {
+            loge("Write failed for data %d: %d\n", fd, ret);
+            return false;
+        }
+    }
 
-    ret = rwrite(fd, data, len);
-    if (ret)
-        loge("Write failed for data %d: %d\n", fd, ret);
-
-    return !ret;   
+    sgFree(data);
+    return true;   
 }
 
 

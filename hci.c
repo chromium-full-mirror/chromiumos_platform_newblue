@@ -111,12 +111,10 @@ struct hciCmdSubmitWithCompleteSyncData {
 struct hciCmdSendWorkItem {
     uniq_t cmdID;
     uint8_t numEventWaiters;
-    struct hciCmdHdr *cmd;
+    sg cmd;
 
     /* even handlers */
     struct hciEvtWaitDescrWithID ewds[];
-
-    /* command itself goes here */
 };
 
 #define CBK_WORK_ITEM_DONE_CBK      0
@@ -1123,7 +1121,6 @@ static bool hciScheduleConnDataRx(hci_conn_t conn, const void* data, uint16_t le
 static void* hciCmdSendWorker(void *unused)
 {
     struct hciCmdSendWorkItem *w;
-    uint16_t len;
     int ret, i;
 
     while (1) {
@@ -1132,8 +1129,6 @@ static void* hciCmdSendWorker(void *unused)
         ret = workQueueGet(mCmdsSendWork, (void**)&w);
         if (ret)
             break;
-
-        len = sizeof(struct hciCmdHdr) + utilGetLE8(&w->cmd->paramLen);
 
         /*
          * This lock makes sure adding a handler for an event and sending the
@@ -1149,13 +1144,14 @@ static void* hciCmdSendWorker(void *unused)
             }
         }
 
-        if (vendorTx(HCI_PKT_TYP_CMD, w->cmd, len))
+        if (vendorTx(HCI_PKT_TYP_CMD, w->cmd))
             goto success;
 
-        loge("Failed to TX\n");
+        loge("Failed to TX a cmd\n");
+        sgFree(w->cmd);
 
 failed:
-        loge("Command 0x%04X not sent\n", utilGetLE16(&w->cmd->opcode));
+        loge("Command not sent\n");
         while (i)
             hciEvtWaitDequeue(w->ewds[--i].id);
 
@@ -1311,7 +1307,9 @@ static bool hciCmdSubmit(uint8_t ogf, uint16_t ocf, const void* paramData, uint8
     const struct hciEvtWaitDescr *ewd;
     struct hciCmdSendWorkItem *w;
     uint8_t numHandlers = 0;
+    struct hciCmdHdr cmdhdr;
     va_list vl;
+    sg cmd;
 
     /* count up the events we want to wait for */
     va_start(vl, paramLen);
@@ -1319,12 +1317,17 @@ static bool hciCmdSubmit(uint8_t ogf, uint16_t ocf, const void* paramData, uint8
         numHandlers++;
     va_end(vl);
 
+    cmd = sgNew();
+    if (!cmd) {
+        loge("Failed to alloc cmd sg\n");
+        goto out_ret;
+    }
+
     /* allocate the work item */
-    w = (struct hciCmdSendWorkItem*)malloc(sizeof(struct hciCmdSendWorkItem) + sizeof(struct hciEvtWaitDescrWithID[numHandlers]) + paramLen + sizeof(struct hciCmdHdr));
-    w->cmd = (struct hciCmdHdr*)(w->ewds + numHandlers);
+    w = (struct hciCmdSendWorkItem*)malloc(sizeof(struct hciCmdSendWorkItem) + sizeof(struct hciEvtWaitDescrWithID[numHandlers]));
     if (!w) {
         loge("Failed to alloc command work for cmd 0x%02X.%04X\n", ogf, ocf);
-        return false;
+        goto out_sgfree;
     }
 
     /* copy wait state objects into it */
@@ -1335,18 +1338,29 @@ static bool hciCmdSubmit(uint8_t ogf, uint16_t ocf, const void* paramData, uint8
     va_end(vl);
     w->numEventWaiters = numHandlers;
 
-    /* copy the command in */
-    utilSetLE16(&w->cmd->opcode, CMD_MAKE_OPCODE(ogf, ocf));
-    utilSetLE16(&w->cmd->paramLen, paramLen);
-    memcpy(w->cmd + 1, paramData, paramLen);
+    /* create the command */
+    utilSetLE16(&cmdhdr.opcode, CMD_MAKE_OPCODE(ogf, ocf));
+    utilSetLE16(&cmdhdr.paramLen, paramLen);
+    if (!sgConcatBackCopy(cmd, &cmdhdr, sizeof(cmdhdr)) || !sgConcatBackCopy(cmd, paramData, paramLen)) {
+        loge("Failed to fill command sg\n");
+        goto out_wfree;
+    }
+    w->cmd = cmd;
 
     /* try to enqueue it */
     if (workQueuePut(mCmdsSendWork, w))
         return true;
 
     /* in case of failure, free all that we allocated */
-    free(w);
     loge("Failed to enqueue command\n");
+
+out_wfree:
+    free(w);
+
+out_sgfree:
+    sgFree(cmd);
+
+out_ret:
     return false;
 }
 
@@ -3646,12 +3660,11 @@ bool hciDemandEncr(hci_conn_t aclConn)
  * USE:      Try to send some data
  * PARAMS:   aclConn - the connection
  *           data - the data
- *           len - the length
  *           first - mark as first fragment?
  * RETURN:   true if attempt will be made
  * NOTES:    all data larger then controller's buffer WILL be dropped. WILL NOT BLOCK!
  */
-uint8_t hciTryToTx(hci_conn_t aclConn, const void *data, uint16_t len, bool first)
+uint8_t hciTryToTx(hci_conn_t aclConn, sg data, bool first)
 {
     struct hciAclConn* conn;
     uint8_t ret;
@@ -3675,17 +3688,12 @@ uint8_t hciTryToTx(hci_conn_t aclConn, const void *data, uint16_t len, bool firs
         else if (rv)
             ret = HCI_TX_SEND_ERROR;
         else {
-            uint32_t totalLen = sizeof(struct hciAclHdr) + len;
-            struct hciAclHdr *hdr = (struct hciAclHdr*)malloc(totalLen);
-            if (!hdr)
-                ret = HCI_TX_SEND_ERROR;
-            else {
-                utilSetLE16(&hdr->len, len);
-                utilSetLE16(&hdr->hdr, conn->id | (first ? ACL_HDR_PB_FIRST_AUTO : ACL_HDR_PB_CONINUED));
-                memcpy(hdr + 1, data, len);
-                ret = vendorTx(HCI_PKT_TYP_ACL, hdr, totalLen) ? HCI_TX_SEND_OK : HCI_TX_SEND_ERROR;
-                free(hdr);
-            }
+            struct hciAclHdr hdr;
+
+            utilSetLE16(&hdr.len, sgLength(data));
+            utilSetLE16(&hdr.hdr, conn->id | (first ? ACL_HDR_PB_FIRST_AUTO : ACL_HDR_PB_CONINUED));
+
+            ret = (sgConcatFrontCopy(data, &hdr, sizeof(hdr)) && vendorTx(HCI_PKT_TYP_ACL, data)) ? HCI_TX_SEND_OK : HCI_TX_SEND_ERROR;
         }
     }
     pthread_mutex_unlock(&mConnsLock);

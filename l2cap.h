@@ -6,6 +6,7 @@
 #include "uniq.h"
 #include "hci.h"
 #include "bt.h"
+#include "sg.h"
 
 
 #define OUR_MTU  0xEFFF /* no reason to limit it pointlessly */
@@ -116,7 +117,7 @@ bool l2cApiUserAthorizNotify(l2c_handle_t handle, bool authorized);
 void l2cApiDisconnect(l2c_handle_t handle);
 
 /* external code can use this to send to the other side - never blocks. returns L2C_TX_* */
-uint8_t l2cApiDataTx(l2c_handle_t handle, const void *data, uint16_t size);
+uint8_t l2cApiDataTx(l2c_handle_t handle, sg data);
 
 /* exteranl code can use this to know when it shoudl retry its write. Do not do that in the callback! - queue it for later */
 uniq_t l2cApiRegisterWriteBufNotif(multiNotifCbk cbk, void *cbkData);
@@ -125,7 +126,7 @@ uniq_t l2cApiRegisterWriteBufNotif(multiNotifCbk cbk, void *cbkData);
 void l2cApiUnegisterWriteBufNotif(uniq_t notifHandle);
 
 /* if no connection exists, one will *not* be created. if sending does not work, there is no retry callback */
-uint8_t l2cApiConnectionlessDataTx(const struct bt_addr *addr, psm_t psm, const void *data, uint16_t size);
+uint8_t l2cApiConnectionlessDataTx(const struct bt_addr *addr, psm_t psm, sg data);
 
 
 

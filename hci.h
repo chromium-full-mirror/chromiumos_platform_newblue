@@ -4,6 +4,7 @@
 #include "types.h"
 #include "uniq.h"
 #include "bt.h"
+#include "sg.h"
 
 #define HCI_CONN_ID_MASK	0x0FFF
 
@@ -93,7 +94,7 @@ bool hciConnect(const struct bt_addr* addr);
 /* disconnect/cancel connection attempt */
 bool hciDisconnect(const struct bt_addr* addr);
 /* try to send data -> HCI_TX_SEND_* */
-uint8_t hciTryToTx(hci_conn_t aclConn, const void *data, uint16_t len, bool first);
+uint8_t hciTryToTx(hci_conn_t aclConn, sg data, bool first);
 /* LE connection update */
 bool hciUpdateLeParams(hci_conn_t aclConn, uint16_t minInt, uint16_t maxInt, uint16_t lat, uint16_t to);
 /* request encryption */
