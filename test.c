@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
-#include "profiles/SDP/sdp.h"
+#include "sdp.h"
 #include "vendorLib.h"
 #include "l2cap.h"
 #include "hci.h"

@@ -1,5 +1,5 @@
 #include <string.h>
-#include "sg_buf.h"
+#include <stdlib.h>
 #include "l2cap.h"
 #include "log.h"
 #include "sdp.h"
@@ -22,39 +22,37 @@
 #define SDP_ERR_Insufficient_Resources			0x0006
 
 
-typedef struct{
+struct uuid{
 
     uint64_t hi, lo;
 
-}uuid;
+};
 
-#define MAX_UUIDS_IN_SEARCH		12	//as per spec
-#define MAX_ATTRS_IN_SEARCH_STRING	8	//as per my opinion
-#define MAX_SEARCH_RESULTS		16	//no more than this will ever be returned
+#define MAX_UUIDS_IN_SEARCH		12	/* as per spec                               */
+#define MAX_ATTRS_IN_SEARCH_STRING	8	/* arbitrary                                 */
+#define MAX_SEARCH_RESULTS		16	/* no more than this will ever be returned   */
 
-typedef struct SdpService{
+struct SdpService {
 
-    struct SdpService* next;
+    struct SdpService *next;
 
-    uint32_t handle;
-    const uint8_t* descriptor;
-    uint16_t descrLen;
+    uint32_t           handle;
+    const uint8_t     *descriptor;
+    uint16_t           descrLen;
 
-}SdpService;
+};
 
-typedef struct{
+struct SdpInstance {
 
-    l2c_handle_t handle;
+    l2c_handle_t       handle;
 
-    uint32_t contDescr; //which continuation descriptor we expect
-    uint8_t* result;
-    uint32_t resultSz;
-    uint16_t numMatches; //for servicesearch
+    uint32_t           contDescr; /* which continuation descriptor we expect */
+    sg                 result;
+    uint16_t           numMatches; /* for service search */
+};
 
-}SdpInstance;
-
-
-static SdpService* knownServices = NULL;
+static const struct uuid bt_base_uuid = {0x0000000000001000ULL, 0x800000805F9B34FBULL};
+static struct SdpService *knownServices = NULL;
 static uint32_t sdpContVal = 0x12345678;
 static uint32_t sdpNextHandle = 0;
 
@@ -78,22 +76,21 @@ static const uint8_t sdpDescrSdp[] =
         SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), 0xDD, 0xDD, SDP_ITEM_DESC(SDP_TYPE_TEXT, SDP_SZ_u8), 18, 0x42, 0x79, 0x20, 0x44, 0x6D, 0x69, 0x74, 0x72, 0x79, 0x20, 0x47, 0x72, 0x69, 0x6e, 0x62, 0x65, 0x72, 0x67,
 };
 
-static const uuid bt_base_uuid = {0x0000000000001000ULL, 0x800000805F9B34FBULL};
 
-static void sdpIntToUUID(uuid* dst, uint32_t val){
+static void sdpIntToUUID(struct uuid *dst, uint32_t val){
 
     *dst = bt_base_uuid;
     dst->hi += ((uint64_t)val) << 32;
 }
 
-static char sdpUuidEqual(const uuid* a, const uuid* b){
+static char sdpUuidEqual(const struct uuid *a, const struct uuid *b){
 
     return a->lo == b->lo && a->hi == b->hi;
 }
 
-static uint32_t btSdpGetElemSz(const uint8_t** descr){
+static uint32_t btSdpGetElemSz(const uint8_t **descr){
 
-    const uint8_t* ptr = *descr;
+    const uint8_t *ptr = *descr;
     uint8_t item = *ptr++;
     uint32_t sz = 0;
 
@@ -136,10 +133,10 @@ static uint32_t btSdpGetElemSz(const uint8_t** descr){
     return sz;
 }
 
-static uint8_t btSdpGetUUID(const uint8_t** descr, uuid* dst){ //return num bytes consumed
+static uint8_t btSdpGetUUID(const uint8_t **descr, struct uuid *dst){ //return num bytes consumed
 
     uint32_t sz, i;
-    const uint8_t* orig = *descr;
+    const uint8_t *orig = *descr;
 
     if(((**descr) >> 3) != SDP_TYPE_UUID) return 0; //not valid UUID type
     sz = btSdpGetElemSz(descr);
@@ -177,33 +174,33 @@ static uint8_t btSdpGetUUID(const uint8_t** descr, uuid* dst){ //return num byte
     return (*descr) - orig;
 }
 
-static void btStdRecursiveWalk(void* itemList, uint8_t* listSzP, sg_buf** walkResultP, const uint8_t** ptr, uint32_t len){ 
+static void btStdRecursiveWalk(void *itemList, uint8_t *listSzP, sg *walkResultP, const uint8_t **ptr, uint32_t len){ 
 
     uint32_t sz;
     uint8_t typ, numWantedIDs;
-    const uint8_t* end = (*ptr) + len;
-    uuid id;
-    sg_buf* result = NULL;
+    const uint8_t *end = (*ptr) + len;
+    struct uuid id;
+    sg result = NULL;
     char isID = 1, skipNext = 0;
-    uuid* wantedIDs;
-    uint8_t* numWantedIDsP;
-    uint32_t* wantedRanges;
+    struct uuid *wantedIDs;
+    uint8_t *numWantedIDsP;
+    uint32_t *wantedRanges;
     uint8_t wantedRangesListSz;
 
 
     if(walkResultP){	//copy-traversal
 
-        result = sg_alloc();
+        result = sgNew();
         if(!result) return;
 
         wantedIDs = NULL;
         numWantedIDsP = NULL;
-        wantedRanges = itemList;
+        wantedRanges = (uint32_t*)itemList;
         wantedRangesListSz = *listSzP;
     }
     else{		//search for UUIDs
 
-        wantedIDs = itemList;
+        wantedIDs = (struct uuid*)itemList;
         numWantedIDsP = listSzP;
         numWantedIDs = *numWantedIDsP;
         wantedRanges = NULL;
@@ -219,7 +216,7 @@ static void btStdRecursiveWalk(void* itemList, uint8_t* listSzP, sg_buf** walkRe
             sz = btSdpGetUUID(ptr, &id);
             if(end < (*ptr)){
 
-                logw("SDP: UUID size > allowed size (%d, %d)\n", sz, end - (*ptr));
+                logw("SDP: UUID size > allowed size (%u, %u)\n", sz, (unsigned)(end - (*ptr)));
                 goto out;
             }
 
@@ -235,13 +232,13 @@ static void btStdRecursiveWalk(void* itemList, uint8_t* listSzP, sg_buf** walkRe
         }
         else{
 
-            const uint8_t* itemStart = *ptr;
+            const uint8_t *itemStart = *ptr;
 
             sz = btSdpGetElemSz(ptr);
 
             if(sz > (unsigned)(end - (*ptr))){
 
-                logw("SDP: element size > allowed size (%d, %d)\n", sz, end - (*ptr));
+                logw("SDP: element size > allowed size (%u, %u)\n", sz, (unsigned)(end - (*ptr)));
                 goto out;
             }
 
@@ -279,9 +276,9 @@ static void btStdRecursiveWalk(void* itemList, uint8_t* listSzP, sg_buf** walkRe
                 }
                 else{
 
-                    if(!sg_add_back(result, itemStart, (*ptr) - itemStart, SG_FLAG_MAKE_A_COPY)){
+                    if(!sgConcatBackCopy(result, itemStart, (*ptr) - itemStart)){
 
-                        sg_free(result);
+                        sgFree(result);
                         return;
                     }
                 }
@@ -294,10 +291,10 @@ out:
     if(numWantedIDsP) *numWantedIDsP = numWantedIDs;
 }
 
-static char btSdpPutIntoGroup(sg_buf* buf){
+static char btSdpPutIntoGroup(sg buf){
 
     uint8_t i, sizeFieldSz, sizeFieldName;
-    uint32_t sz = sg_length(buf);
+    uint32_t sz = sgLength(buf);
     uint8_t res[5];
 
     //figure out needed header size field
@@ -322,34 +319,24 @@ static char btSdpPutIntoGroup(sg_buf* buf){
     //add the header
     res[0] = SDP_ITEM_DESC(SDP_TYPE_ARRAY, sizeFieldName);
     for(i = 0; i < sizeFieldSz; i++, sz <<= 8) res[1 + i] = sz >> 24;
-    return sg_add_front(buf, res, 1 + sizeFieldSz, SG_FLAG_MAKE_A_COPY);
+    return sgConcatFrontCopy(buf, res, 1 + sizeFieldSz);
 }
 
-static sg_buf* btSdpError(const uint8_t* trans, uint16_t errNum){
+static sg btSdpError(const uint8_t *trans, uint16_t errNum){
 
-    sg_buf* buf;
-    uint8_t data[] = {SDP_PDU_Error_Response, trans[0], trans[1], errNum >> 8, errNum, 0, 0};
+    uint8_t data[] = {SDP_PDU_Error_Response, trans[0], trans[1], 0, 2, errNum >> 8, errNum};
 
-    buf = sg_alloc();
-    if(buf){
-
-        if(!sg_add_front(buf, data, sizeof(data), SG_FLAG_MAKE_A_COPY)){
-
-            sg_free(buf);
-            buf = NULL;
-        }
-    }
-    return NULL;
+    return sgNewWithCopyData(data, sizeof(data));
 }
 
-static sg_buf* btSdpProcessRequest(SdpInstance* inst, const uint8_t* req, uint16_t reqSz){
+static sg btSdpProcessRequest(struct SdpInstance *inst, const uint8_t *req, uint16_t reqSz){
     uint8_t trans[2] ,cmd, contStateSz, numIDs = 0, numAttrs = 0;
     uint32_t maxReplSz = 0, wantedHandle = 0, sz;
     uint32_t attrs[MAX_ATTRS_IN_SEARCH_STRING];
-    SdpService* results[MAX_SEARCH_RESULTS];
-    uuid ids[MAX_UUIDS_IN_SEARCH];
-    const uint8_t* end;
-    sg_buf* result;
+    struct SdpService *results[MAX_SEARCH_RESULTS];
+    struct uuid ids[MAX_UUIDS_IN_SEARCH];
+    const uint8_t *end;
+    sg result = NULL;
     unsigned i, j;
 
     cmd = *req++;
@@ -360,7 +347,7 @@ static sg_buf* btSdpProcessRequest(SdpInstance* inst, const uint8_t* req, uint16
     if(reqSz != (((uint16_t)req[0]) << 8) + req[1]) return btSdpError(trans, SDP_ERR_Invalid_PDU_Size);
     req += 2;
 
-    logd("SDP request cmd %d (session %02X%02X) with %d bytes of data\n", cmd, trans[0], trans[1], reqSz);
+    logd("SDP request cmd %u (session %02X%02X) with %u bytes of data\n", cmd, trans[0], trans[1], reqSz);
 
     if(cmd == SDP_PDU_Service_Search_Request || cmd == SDP_PDU_Service_Search_Attribute_Request){
 
@@ -369,7 +356,6 @@ static sg_buf* btSdpProcessRequest(SdpInstance* inst, const uint8_t* req, uint16
         end = req + sz;
 
         while(req < end){
-
             if(numIDs == MAX_UUIDS_IN_SEARCH) return btSdpError(trans, SDP_ERR_Invalid_Request_Syntax);	//too many requests
             if(!btSdpGetUUID(&req, &ids[numIDs++])) return btSdpError(trans, SDP_ERR_Invalid_Request_Syntax);	//malformed UUID
         }
@@ -380,7 +366,7 @@ static sg_buf* btSdpProcessRequest(SdpInstance* inst, const uint8_t* req, uint16
     }
     else{
 
-        logw("SDP: invalid request: %d\n", cmd);
+        logw("SDP: invalid request: %u\n", cmd);
         return btSdpError(trans, SDP_ERR_Invalid_Request_Syntax);
     }
 
@@ -425,7 +411,7 @@ static sg_buf* btSdpProcessRequest(SdpInstance* inst, const uint8_t* req, uint16
             logw("SDP: invalid continuation state. Wanted %08X, got %08X\n", inst->contDescr, contState);
             if(inst->result){
 
-                free(inst->result);
+                sgFree(inst->result);
                 inst->result = NULL;
             }
             return btSdpError(trans, SDP_ERR_Invalid_Continuation_State);
@@ -433,13 +419,13 @@ static sg_buf* btSdpProcessRequest(SdpInstance* inst, const uint8_t* req, uint16
     }
     else{			//perform the actual search
 
-        SdpService* curSvc = knownServices;
+        struct SdpService *curSvc = knownServices;
         uint8_t numFound = 0;
 
         //cleanup first
         if(inst->result){
 
-            free(inst->result);
+            sgFree(inst->result);
             inst->result = NULL;
         }
 
@@ -448,8 +434,8 @@ static sg_buf* btSdpProcessRequest(SdpInstance* inst, const uint8_t* req, uint16
 
             for(curSvc = knownServices; curSvc && numFound < MAX_SEARCH_RESULTS; curSvc = curSvc->next){
 
-                const uint8_t* ptr = curSvc->descriptor;
-                uuid uuids_copy[MAX_UUIDS_IN_SEARCH];
+                const uint8_t *ptr = curSvc->descriptor;
+                struct uuid uuids_copy[MAX_UUIDS_IN_SEARCH];
                 uint8_t num;
 
                 for(num = 0; num < numIDs; num++) uuids_copy[num] = ids[num];
@@ -471,17 +457,18 @@ static sg_buf* btSdpProcessRequest(SdpInstance* inst, const uint8_t* req, uint16
         if(cmd == SDP_PDU_Service_Attribute_Request || cmd == SDP_PDU_Service_Search_Attribute_Request){
 
             //we'll assemble the whole result in this buffer
-            sg_buf* resultSoFar = sg_alloc();
+            sg resultSoFar = sgNew();
             if(!resultSoFar) return btSdpError(trans, SDP_ERR_Insufficient_Resources);
 
             //process each match
             for(i = 0; i < numFound; i++){
 
-                const uint8_t* ptr = results[i]->descriptor;
-                sg_buf* res;
+                const uint8_t *ptr = results[i]->descriptor;
+                sg res;
 
                 //collect wanted attributes
                 btStdRecursiveWalk(attrs, &numAttrs, &res, &ptr, results[i]->descrLen);
+
                 if(!res) continue;
 
                 //if requested, add the handle attribute
@@ -494,53 +481,38 @@ static sg_buf* btSdpProcessRequest(SdpInstance* inst, const uint8_t* req, uint16
                     buf[6] = results[i]->handle >> 8;
                     buf[7] = results[i]->handle;
 
-                    if(!sg_add_back(res, buf, sizeof(buf), SG_FLAG_MAKE_A_COPY)){
+                    if(!sgConcatBackCopy(res, buf, sizeof(buf))){
 
-                        sg_free(res);
-                        free(res);
+                        sgFree(res);
                         continue;
                     }
                 }
 
                 //wrap and append to the full results list
-                if(btSdpPutIntoGroup(res)) sg_concat_back(resultSoFar, res);
-                sg_free(res);
-                free(res);
+                if(btSdpPutIntoGroup(res)) sgConcat(resultSoFar, res);
             }
 
             //wrap the whole thing if required
             if((cmd == SDP_PDU_Service_Search_Attribute_Request) && !btSdpPutIntoGroup(resultSoFar)){
                 loge("SDP: Failed to put results into a group\n");
-                sg_free(resultSoFar);
-                free(resultSoFar);
+                sgFree(resultSoFar);
                 return btSdpError(trans, SDP_ERR_Insufficient_Resources);
             }
 
-            //flatten to a buffer
-            uint8_t* buf = malloc(sg_length(resultSoFar));
-            if(!buf){
-
-                loge("SDP: Failed to allocate flattened result array (%ub)\n", sg_length(resultSoFar));
-                sg_free(resultSoFar);
-                free(resultSoFar);
-                return btSdpError(trans, SDP_ERR_Insufficient_Resources);
-            }
-            inst->resultSz = sg_length(resultSoFar);
-            inst->result = buf;
+            //save result
+            inst->result = resultSoFar;
             inst->contDescr = sdpContVal;
-            sg_copyto(resultSoFar, buf);
-            sg_free(resultSoFar);
-            free(resultSoFar);
         }
         else if(cmd == SDP_PDU_Service_Search_Request){
 
+            uint32_t size = sizeof(uint32_t[numFound]);
+
             //allocate the array
-            inst->resultSz = sizeof(uint32_t[numFound]);
-            uint8_t* buf = malloc(inst->resultSz);
+            uint8_t *buf = (uint8_t*)malloc(size);
 
             if(!buf){
 
-                loge("SDP: Failed to allocate flattened result array (%ub)\n", sizeof(uint32_t[numFound]));
+                loge("SDP: Failed to allocate flattened result array (%ub)\n", (unsigned)sizeof(uint32_t[numFound]));
                 return btSdpError(trans, SDP_ERR_Insufficient_Resources);
             }
 
@@ -554,7 +526,13 @@ static sg_buf* btSdpProcessRequest(SdpInstance* inst, const uint8_t* req, uint16
             }
 
             //put everything in the right place
-            inst->result = buf;
+            inst->result = sgNewWithAllocedData(buf, size);
+            if (!inst->result){
+
+                loge("SDP: Failed to allocate result sg\n");
+                return btSdpError(trans, SDP_ERR_Insufficient_Resources);
+            }
+
             inst->contDescr = sdpContVal;
             inst->numMatches = numFound;
         }
@@ -564,14 +542,14 @@ static sg_buf* btSdpProcessRequest(SdpInstance* inst, const uint8_t* req, uint16
     //produce the packet to send
     uint8_t bufPrepend[9], bufPostpend[5] = {0, }, preSz = 5, postSz = 1;
     uint32_t sendSz = 0;
-    result = sg_alloc();
-    if(!result) return btSdpError(trans, SDP_ERR_Insufficient_Resources);
+    sg t;
+    if(!inst->result) return btSdpError(trans, SDP_ERR_Insufficient_Resources);
 
     if(cmd == SDP_PDU_Service_Attribute_Request || cmd == SDP_PDU_Service_Search_Attribute_Request){
 
         if(maxReplSz > 256) maxReplSz = 256;	//no harm in fragmenting - keep the packets small
 
-        sendSz = inst->resultSz;
+        sendSz = sgLength(inst->result);
         if(sendSz > maxReplSz) sendSz = maxReplSz;
 
         bufPrepend[preSz++] = sendSz >> 8;
@@ -581,7 +559,7 @@ static sg_buf* btSdpProcessRequest(SdpInstance* inst, const uint8_t* req, uint16
 
         if(maxReplSz > 64) maxReplSz = 64;	//no harm in fragmenting - keep the packets small
 
-        sendSz = inst->resultSz;
+        sendSz = sgLength(inst->result);
         if(sendSz > maxReplSz * sizeof(uint32_t)) sendSz = maxReplSz * sizeof(uint32_t);
 
         bufPrepend[preSz++] = inst->numMatches >> 8;
@@ -590,34 +568,19 @@ static sg_buf* btSdpProcessRequest(SdpInstance* inst, const uint8_t* req, uint16
         bufPrepend[preSz++] = (sendSz / sizeof(uint32_t)) & 0xFF;
     }
 
-    if(!sg_add_back(result, inst->result, sendSz, SG_FLAG_MAKE_A_COPY)){
+    t = sgSplit(inst->result, sendSz);
+    result = inst->result;
+    inst->result = t;
 
-        loge("SDP: Failed to attach reply. Droping");
-        free(inst->result);
-        inst->result = NULL;
-        sg_free(result);
-        free(result);
-        return btSdpError(trans, SDP_ERR_Insufficient_Resources);
-    }
-    else{
-
-        inst->resultSz -= sendSz;
-        if(inst->resultSz){
-
-            memcpy(inst->result, inst->result + sendSz, inst->resultSz);
-            inst->result = realloc(inst->result, inst->resultSz);
-        }
-        else{
-            free(inst->result);
-            inst->result = NULL;
-        }
-    }
-
-    if(inst->result){ //have more
+    if (sgLength(inst->result)) { //have more
 
         bufPostpend[0] = 4;
         for(i = 0; i < 4; i++) bufPostpend[i + 1] = inst->contDescr >> ((3 - i) << 3);
         postSz = 5;
+
+    } else { //no more
+        sgFree(inst->result);
+        inst->result = NULL;
     }
 
     bufPrepend[0] = cmd + 1; //response to this request
@@ -626,62 +589,27 @@ static sg_buf* btSdpProcessRequest(SdpInstance* inst, const uint8_t* req, uint16
     bufPrepend[3] = (sendSz + preSz + postSz - 5) >> 8;
     bufPrepend[4] = (sendSz + preSz + postSz - 5) & 0xFF;
             
-    if(sg_add_front(result, bufPrepend, preSz, SG_FLAG_MAKE_A_COPY) && sg_add_back(result, bufPostpend, postSz, SG_FLAG_MAKE_A_COPY)){
-
+    if(sgConcatFrontCopy(result, bufPrepend, preSz) && sgConcatBackCopy(result, bufPostpend, postSz))
         return result;
-    }
-    sg_free(result);
-    free(result);
+
+    sgFree(result);
     return btSdpError(trans, SDP_ERR_Insufficient_Resources);
 }
 
 
-static void sdpServiceDataRx(void* service, const uint8_t* data, uint16_t size){
+static void sdpServiceDataRx(void *service, const uint8_t *data, uint16_t size){
 
-    SdpInstance* inst = (SdpInstance*)service;
+    struct SdpInstance *inst = (struct SdpInstance*)service;
 
-    sg_buf* reply = btSdpProcessRequest(inst, data, size);
-    if(reply){
-
-/*//  -- ugly debugging code --
-        unsigned i;
-        uint8_t buf[256];
-        sg_copyto(reply, buf);
-
-        logd("SDP req got (0x%x): ", size);
-        for(i = 0; i < size; i++) logd(" %02X", data[i]);
-        logd("\n");
-
-        logd("SDP reply sent (0x%x): ", sg_length(reply));
-        for(i = 0; i < sg_length(reply); i++) logd(" %02X", buf[i]);
-        logd("\n");
-*/
-        uint8_t *rbuf;
-        uint32_t rlen;
-        sg replySg;
-
-        rbuf = malloc(rlen = sg_length(reply));
-        if (rbuf)
-            sg_copyto(reply, rbuf);
-        else
-            loge("failed to flatten reply\n");
-        sg_free(reply);
-        free(reply);
-
-        if (!rbuf)
-            loge("Failed to alloc sdp reply\n");
-        else if (!(replySg = sgNewWithAllocedData(rbuf, rlen))) {
-            loge("Failed to alloc sdp reply sg\n");
-            free(rbuf);
-        } else if (l2cApiDataTx(inst->handle, replySg)) {
-            sgFree(replySg);
-            loge("Failed to TX SDP reply\n");
-        }
+    sg reply = btSdpProcessRequest(inst, data, size);
+    if (l2cApiDataTx(inst->handle, reply)) {
+        sgFree(reply);
+        loge("Failed to TX SDP reply\n");
     }
 }
 
 static uint8_t sdpInstAlloc(void *userData, l2c_handle_t handle, void **instanceP){
-    SdpInstance* inst = calloc(1, sizeof(SdpInstance));
+    struct SdpInstance *inst = (struct SdpInstance*)calloc(1, sizeof(struct SdpInstance));
     
     if(inst){
         inst->handle = handle;
@@ -699,7 +627,7 @@ static uint8_t sdpInstAlloc(void *userData, l2c_handle_t handle, void **instance
 #define L2C_STATE_CLOSED     4 /* or error on openining */ 
 static void sdpInstState(void *userData, void *instance, uint8_t state, const void *data, uint32_t len)
 {
-    SdpInstance* inst = (SdpInstance*)instance;
+    struct SdpInstance *inst = (struct SdpInstance*)instance;
 
     switch(state){
     case L2C_STATE_OPEN:
@@ -716,11 +644,11 @@ static void sdpInstState(void *userData, void *instance, uint8_t state, const vo
         break;
     case L2C_STATE_CLOSED:
         logi("SDP closed\n");
-        if(inst->result) free(inst->result);
+        if(inst->result) sgFree(inst->result);
         free(instance);
         break;
     default:
-        logw("SDP state %d unsupported\n", state);
+        logw("SDP state %u unsupported\n", state);
         break;
     }
 }
@@ -743,9 +671,9 @@ void sdpRegisterProfile(){
     sdpServiceDescriptorAdd(sdpDescrSdp, sizeof(sdpDescrSdp));
 }
 
-void sdpServiceDescriptorAdd(const uint8_t* descriptor, uint16_t descrLen){
+void sdpServiceDescriptorAdd(const uint8_t *descriptor, uint16_t descrLen){
 
-    SdpService *t, *s = malloc(sizeof(SdpService));
+    struct SdpService *t, *s = (struct SdpService*)malloc(sizeof(struct SdpService));
     if(s){
 
         s->handle = sdpNextHandle;
@@ -764,9 +692,9 @@ void sdpServiceDescriptorAdd(const uint8_t* descriptor, uint16_t descrLen){
     }
 }
 
-void sdpServiceDescriptorDel(const uint8_t* descriptor){
+void sdpServiceDescriptorDel(const uint8_t *descriptor){
 
-    SdpService *s = knownServices, *p = NULL;
+    struct SdpService *s = knownServices, *p = NULL;
 
     while(s && s->descriptor != descriptor){
 

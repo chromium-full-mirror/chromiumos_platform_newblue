@@ -3,7 +3,6 @@
 
 #include "types.h"
 
-//advised reading: https://www.bluetooth.org/Technical/AssignedNumbers/service_discovery.htm
 
 #define SDP_TYPE_NIL			0
 #define SDP_TYPE_UINT			1
