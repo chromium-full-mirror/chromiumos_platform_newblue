@@ -2907,8 +2907,8 @@ static bool l2cAclEnqueueSigTx(struct l2cAclConn *aclConn, sg pdu)
         return false;
     }
 
-    /* merge multiple packets together up to MTU if not LE */
-    if (!isLE && *qT && sgLength((*qT)->pdu) + len <= aclConn->sigMtu) {
+    /* merge multiple SIG packets to same ACL link together up to MTU if not LE */
+    if (!isLE && *qT && (*qT)->aclConnID == aclConn->conn && sgLength((*qT)->pdu) + len <= aclConn->sigMtu) {
 
         sgConcat((*qT)->pdu, pdu);
         return true;
