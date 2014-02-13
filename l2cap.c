@@ -275,6 +275,8 @@ struct l2cSigPduSendItem {
     struct l2cSigPduSendItem *prev;
     hci_conn_t                aclConnID;
     sg                        pdu;
+    uint16_t                  cid;
+    bool                      hasL2cHdr; /* if we've added a header already, we can no longer merge */
 };
 
 /* our work struct for service worker theread */
@@ -2907,11 +2909,15 @@ static bool l2cAclEnqueueSigTx(struct l2cAclConn *aclConn, sg pdu)
         return false;
     }
 
-    /* merge multiple SIG packets to same ACL link together up to MTU if not LE */
-    if (!isLE && *qT && (*qT)->aclConnID == aclConn->conn && sgLength((*qT)->pdu) + len <= aclConn->sigMtu) {
-
-        sgConcat((*qT)->pdu, pdu);
-        return true;
+    /* if not LE, we try to merge. Find last SIG frame to same connection and see if we can merge with it. */
+    if (!isLE) {
+        struct l2cSigPduSendItem *i = *qT;
+        while (i && i->aclConnID != aclConn->conn)
+            i = i->prev;
+        if (i && !i->hasL2cHdr && sgLength(i->pdu) + len <= aclConn->sigMtu) {
+            sgConcat(i->pdu, pdu);
+            return true;
+        }
     }
 
     item = (struct l2cSigPduSendItem*)malloc(sizeof(struct l2cSigPduSendItem));
@@ -2922,6 +2928,8 @@ static bool l2cAclEnqueueSigTx(struct l2cAclConn *aclConn, sg pdu)
     item->pdu = pdu;
     item->next = NULL;
     item->prev = (*qT);
+    item->cid = BT_ADDR_IS_LE(aclConn->addr) ? L2C_CH_SIGNALLING_LE : L2C_CH_SIGNALLING_EDR;
+    item->hasL2cHdr = false;
     if (item->prev)
         item->prev->next = item;
     else
@@ -3138,20 +3146,16 @@ static uint16_t l2cAclFreeCid(struct l2cAclConn *aclConn)
  */
 static uint8_t l2cSigSend(struct l2cAclConn *aclConn, uint8_t ident, uint8_t code, const void *sigFrm, uint16_t sigFrmLen, const void *extraPtr, uint16_t extraLen)
 {
-    uint8_t hdr[sizeof(struct l2cFrm) + sizeof(struct l2cSigFrm)];
-    struct l2cFrm *frm = (struct l2cFrm*)hdr;
-    struct l2cSigFrm *sig = (struct l2cSigFrm*)(frm + 1);
+    struct l2cSigFrm sig;
     bool newIdent = ident == 0;
     sg pdu;
 
-    utilSetLE16(&frm->len, sizeof(struct l2cSigFrm) + sigFrmLen + extraLen);
-    utilSetLE16(&frm->cid, BT_ADDR_IS_LE(aclConn->addr) ? L2C_CH_SIGNALLING_LE : L2C_CH_SIGNALLING_EDR);
-    utilSetLE8(&sig->code, code);
-    utilSetLE16(&sig->len, sigFrmLen + extraLen);
+    utilSetLE8(&sig.code, code);
+    utilSetLE16(&sig.len, sigFrmLen + extraLen);
     
     if (newIdent)
         ident = l2cAclSigNextIdent(aclConn, false);
-    utilSetLE8(&sig->ident, ident);
+    utilSetLE8(&sig.ident, ident);
 
     pdu = sgNew();
     if (!pdu) {
@@ -3159,7 +3163,7 @@ static uint8_t l2cSigSend(struct l2cAclConn *aclConn, uint8_t ident, uint8_t cod
         return 0;
     }
 
-    if (!sgConcatBackCopy(pdu, hdr, sizeof(hdr)) || !sgConcatBackCopy(pdu, sigFrm, sigFrmLen) || !sgConcatBackCopy(pdu, extraPtr, extraLen)) {
+    if (!sgConcatBackCopy(pdu, &sig, sizeof(sig)) || !sgConcatBackCopy(pdu, sigFrm, sigFrmLen) || !sgConcatBackCopy(pdu, extraPtr, extraLen)) {
         sgFree(pdu);
         loge("L2C PDU concat error - will not send\n");
         return 0;
@@ -3894,6 +3898,19 @@ static void l2cTryMakeSendProgress(bool forLeBuffers, bool needLock)
             sendConn = picked->aclConnID;
             sendSg = picked->pdu;
             sendFirst = true;
+
+            if (!picked->hasL2cHdr) {
+                struct l2cFrm frm;
+
+                utilSetLE16(&frm.len, sgLength(picked->pdu));
+                utilSetLE16(&frm.cid, picked->cid);
+
+                if (!sgConcatFrontCopy(picked->pdu, &frm, sizeof(frm)))
+                    loge("catastrophic failure in concatting l2c header to SIG frm\n");
+                else
+                    picked->hasL2cHdr = true;
+            }
+
         } else { /* we continue the existing DATA frame */
             sendConn = *qConnP;
             sendSg = *qBufP;
