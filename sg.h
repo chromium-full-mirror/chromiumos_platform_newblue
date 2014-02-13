@@ -38,6 +38,9 @@ void sgTruncBack(sg s, uint32_t bytes_to_delete);
 //truncation (delete front)
 void sgTruncFront(sg s, uint32_t bytes_to_delete);
 
+//cuts the last few bytes off into a new sg. param is how many bytes stay with the first sg
+sg sgSplit(sg s, uint32_t firstPart);
+
 //serialization
 uint32_t sgSerialize(sg s, uint32_t offset, uint32_t len, void* dstBuf);
 

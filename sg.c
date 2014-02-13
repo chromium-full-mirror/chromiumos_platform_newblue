@@ -131,8 +131,14 @@ void sgFree(sg s)
  */
 sg sgNewWithCopyData(const void* data, uint32_t len)
 {
-    struct sgitem *item = sgitemNewWithCopy(data, len);
-    sg s = sgNew();
+    struct sgitem *item;
+    sg s;
+
+    if (!len)
+        return sgNew();
+
+    item = sgitemNewWithCopy(data, len);
+    s = sgNew();
 
     if (s && item) {
         s->len = len;
@@ -157,8 +163,14 @@ sg sgNewWithCopyData(const void* data, uint32_t len)
  */
 sg sgNewWithAllocedData(void *data, uint32_t len)
 {
-    struct sgitem *item = sgitemNewWithAllocedBuf(data, len);
-    sg s = sgNew();
+    struct sgitem *item;
+    sg s;
+
+    if (!len)
+        return sgNew();
+
+    item = sgitemNewWithAllocedBuf(data, len);
+    s = sgNew();
 
     if (s && item) {
         s->len = len;
@@ -300,7 +312,12 @@ void sgTruncFront(sg s, uint32_t bytes_to_delete)
  */
 bool sgConcatFrontCopy(sg s, const void *data, uint32_t len)
 {
-    struct sgitem *item = sgitemNewWithCopy(data, len);
+    struct sgitem *item;
+
+    if (!len)
+        return true;
+
+    item = sgitemNewWithCopy(data, len);
 
     if (!item)
         return false;
@@ -325,7 +342,12 @@ bool sgConcatFrontCopy(sg s, const void *data, uint32_t len)
  */
 bool sgConcatFrontAlloced(sg s, void *data, uint32_t len)
 {
-    struct sgitem *item = sgitemNewWithAllocedBuf(data, len);
+    struct sgitem *item;
+
+    if (!len)
+        return true;
+
+    item = sgitemNewWithAllocedBuf(data, len);
 
     if (!item)
         return false;
@@ -350,7 +372,12 @@ bool sgConcatFrontAlloced(sg s, void *data, uint32_t len)
  */
 bool sgConcatBackCopy(sg s, const void *data, uint32_t len)
 {
-    struct sgitem *item = sgitemNewWithCopy(data, len);
+    struct sgitem *item;
+
+    if (!len)
+        return true;
+
+    item = sgitemNewWithCopy(data, len);
 
     if (!item)
         return false;
@@ -376,7 +403,12 @@ bool sgConcatBackCopy(sg s, const void *data, uint32_t len)
  */
 bool sgConcatBackAlloced(sg s, void *data, uint32_t len)
 {
-    struct sgitem *item = sgitemNewWithAllocedBuf(data, len);
+    struct sgitem *item;
+
+    if (!len)
+        return true;
+
+    item = sgitemNewWithAllocedBuf(data, len);
 
     if (!item)
         return false;
