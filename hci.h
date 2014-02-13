@@ -28,7 +28,7 @@
 #define MACFMT                "%02X:%02X:%02X:%02X:%02X:%02X"
 #define MACCONV(x)            (x)[5],(x)[4],(x)[3],(x)[2],(x)[1],(x)[0]
 #define ADDRFMT               "%c-"MACFMT
-#define ADDRCONV(x)           (((x).type == BT_ADDR_TYPE_EDR) ? 'E' : ((x).type == BT_ADDR_TYPE_LE_PUBLIC ? 'P' : ((x).type == BT_ADDR_TYPE_LE_RANDOM ? 'R' : ' ?'))) , MACCONV((x).addr)
+#define ADDRCONV(x)           (((x).type == BT_ADDR_TYPE_EDR) ? 'E' : ((x).type == BT_ADDR_TYPE_LE_PUBLIC ? 'P' : ((x).type == BT_ADDR_TYPE_LE_RANDOM ? 'R' : '?'))) , MACCONV((x).addr)
 #define CLSFMT                "0x%02X%02X%02X"
 #define CLSCONV(x)            (x)[2],(x)[1],(x)[0]
 
