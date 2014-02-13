@@ -3149,6 +3149,10 @@ static uint8_t l2cSigSend(struct l2cAclConn *aclConn, uint8_t ident, uint8_t cod
     utilSetLE8(&sig->code, code);
     utilSetLE16(&sig->len, sigFrmLen + extraLen);
     
+    if (newIdent)
+        ident = l2cAclSigNextIdent(aclConn, false);
+    utilSetLE8(&sig->ident, ident);
+
     pdu = sgNew();
     if (!pdu) {
         loge("L2C PDU oom - will not send\n");
@@ -3160,10 +3164,6 @@ static uint8_t l2cSigSend(struct l2cAclConn *aclConn, uint8_t ident, uint8_t cod
         loge("L2C PDU concat error - will not send\n");
         return 0;
     }
-
-    if (newIdent)
-        ident = l2cAclSigNextIdent(aclConn, false);
-    utilSetLE8(&sig->ident, ident);
 
     if (l2cAclEnqueueSigTx(aclConn, pdu)) {
         if (newIdent)
