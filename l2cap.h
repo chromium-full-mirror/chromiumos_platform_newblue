@@ -35,9 +35,9 @@ int l2cInit(void);
 /* callbacks for connections */
 #define L2C_STATE_OPEN       0 /* dataPtr points to l2c_handle_t */
 #define L2C_STATE_MTU        1 /* dataPtr points to a uint32_t mtu */
-#define L2C_STATE_ENCR       2 /* connection became encrypted */
-#define L2C_STATE_RX         3 /* dataPtr points to data, len to length */
-#define L2C_STATE_CLOSED     4 /* or error on openining */ 
+#define L2C_STATE_ENCR       2 /* dataPtr points nowhere, connection became encrypted */
+#define L2C_STATE_RX         3 /* dataPtr points to an sg */
+#define L2C_STATE_CLOSED     4 /* dataPtr points nowhere, or error on openining */ 
 typedef void (*l2cStateCbk)(void *userData, void *instance, uint8_t state, const void *data, uint32_t len);
 
 #define SVC_ALLOC_SUCCESS             0 /* must alloc state, success */
@@ -59,7 +59,7 @@ struct l2cServicePsmDescriptor {
     uint16_t mtu; /* max data size we're willing to accept */
 
     /* is null if connection-oriented only */
-    void (*serviceConnectionlessRx)(void *userData, l2c_handle_t handle, const void *data, uint32_t size);
+    void (*serviceConnectionlessRx)(void *userData, l2c_handle_t handle, sg payload);
 };
 
 
@@ -137,7 +137,7 @@ void l2cAclLinkUp(hci_conn_t aclConn, const struct bt_addr *addr, bool isMaster,
 /* lower layer calls this when an ACL link is down */
 void l2cAclLinkDown(hci_conn_t aclConn);
 /* lower layer calls this when new ACL data arrives */
-void l2cAclDataRx(hci_conn_t aclConn, const void *data, uint16_t len, bool first);
+void l2cAclDataRx(hci_conn_t aclConn, sg packet, bool first);
 /* lower layer calls this to tell us that a data credit just became available. called directly. DO NOT BLOCK! */
 void l2cAclCreditAvail(bool le);
 /* lower layer calls this when connection parameters change */

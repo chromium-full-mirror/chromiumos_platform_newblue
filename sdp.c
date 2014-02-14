@@ -597,11 +597,20 @@ static sg btSdpProcessRequest(struct SdpInstance *inst, const uint8_t *req, uint
 }
 
 
-static void sdpServiceDataRx(void *service, const uint8_t *data, uint16_t size){
+static void sdpServiceDataRx(void *service, sg request){
 
     struct SdpInstance *inst = (struct SdpInstance*)service;
+    uint16_t reqSz = sgLength(request);
+    uint8_t *req;
+    sg reply = NULL;
 
-    sg reply = btSdpProcessRequest(inst, data, size);
+    req = malloc(reqSz);
+    if (req) {
+        sgSerialize(request, 0, reqSz, req);
+        reply = btSdpProcessRequest(inst, req, reqSz);
+        free(req);
+    }
+    sgFree(request);
     if (l2cApiDataTx(inst->handle, reply)) {
         sgFree(reply);
         loge("Failed to TX SDP reply\n");
@@ -620,14 +629,10 @@ static uint8_t sdpInstAlloc(void *userData, l2c_handle_t handle, void **instance
     return SVC_ALLOC_FAIL_OTHER;
 }
 
-#define L2C_STATE_OPEN       0 /* dataPtr points to l2c_handle_t */
-#define L2C_STATE_MTU        1 /* dataPtr points to a uint32_t mtu */
-#define L2C_STATE_ENCR       2 /* connection became encrypted */
-#define L2C_STATE_RX         3 /* dataPtr points to data, len to length */
-#define L2C_STATE_CLOSED     4 /* or error on openining */ 
 static void sdpInstState(void *userData, void *instance, uint8_t state, const void *data, uint32_t len)
 {
     struct SdpInstance *inst = (struct SdpInstance*)instance;
+    sg payload;
 
     switch(state){
     case L2C_STATE_OPEN:
@@ -640,7 +645,12 @@ static void sdpInstState(void *userData, void *instance, uint8_t state, const vo
         logi("SDP ENCR\n");
         break;
     case L2C_STATE_RX:
-        sdpServiceDataRx(instance, (const uint8_t*)data, len);
+        if (len != sizeof(sg))
+            loge("unexpected length for RX\n");
+        else {
+            payload = *(sg*)data;
+            sdpServiceDataRx(instance, payload);
+        }
         break;
     case L2C_STATE_CLOSED:
         logi("SDP closed\n");

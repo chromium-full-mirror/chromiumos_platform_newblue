@@ -346,8 +346,13 @@ static void* vendorWorker(void *pipeFdP)
                 }
             }
             if (packet) {
-                mCbkRx(mCbkData, buf[0], packet, sz);
-                free(packet);
+                sg data = sgNewWithAllocedData(packet, sz);
+                if (data)
+                    mCbkRx(mCbkData, buf[0], data);
+                else {
+                    loge("failed to alloc RX sg\n");
+                    free(packet);
+                }
             }
         }
     }

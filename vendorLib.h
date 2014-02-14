@@ -9,7 +9,7 @@
 typedef void (*vendorCbkChipUp)(void* cbkData, bool fw, bool up);
 
 /* callback for data rx. do not block in this for long */
-typedef void (*vendorCbkRx)(void* cbkData, uint8_t typ, const void *data, uint16_t len);
+typedef void (*vendorCbkRx)(void* cbkData, uint8_t typ, sg data);
 
 /* open the lib itself - done once ever */
 bool vendorOpen(bool logAll);

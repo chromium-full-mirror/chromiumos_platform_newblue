@@ -246,8 +246,7 @@ struct l2cAclConn {
     uniq_t             openTimer;
     uniq_t             teardownTimer;
     hci_conn_t         conn;
-    uint8_t           *reassBuf;
-    uint32_t           reassLen;
+    sg                 reassSg;
 
     uint8_t            ident; /* next ident to use */
     uint16_t           nextChan; /* a guess to a currently-free channel */
@@ -295,9 +294,9 @@ struct l2cSvcWork {
         } i_alloc;
         struct {
             l2c_handle_t handle;
-            void* data;
+            sg payload;
             uint32_t size;
-            union l2cPsmOrChan which;
+            psm_t psm;
         } cl_rx;
         struct {
             union l2cPsmOrChan which;
@@ -606,41 +605,28 @@ static bool l2cSvcWorkSchedulePsmAlloc(psm_t psm, void* reqID, l2c_handle_t hand
  * PARAMS:   psm - the psm which this is for
  *           reqID - request ID to signal completion
  *           handle - the handle to pass to the service RX connectionless handler
- *           data - the data buffer (a copy will be made)
- *           size - length of the data buffer
+ *           payload - the data that arrived
  * RETURN:   NONE
  * NOTES:    actual call will happen in the worker thread. Buffer is copied
  */
-static bool l2cSvcWorkSchedulePsmConnectionlessRx(psm_t psm, void* reqID, l2c_handle_t handle, const void* data, uint16_t size)
+static bool l2cSvcWorkSchedulePsmConnectionlessRx(psm_t psm, void* reqID, l2c_handle_t handle, sg payload)
 {
-    void* copy;
     struct l2cSvcWork* w;
-
-
-    copy = malloc(size);
-    if (!copy) {
-        loge("Failed to allocate service work data copy for service connectionless RX!\n");
-        return false;
-    }
 
     w = l2cSvcWorkAlloc(L2C_WORK_PSM_CONNECTIONLESS_RX, reqID);
     if (!w) {
-        free(copy);
         return false;
     }
 
-    memcpy(copy, data, size);
-
     w->cl_rx.handle = handle;
-    w->cl_rx.data = copy;
-    w->cl_rx.size = size;
-    w->cl_rx.which.psm = psm;
+    w->cl_rx.payload = payload;
+    w->cl_rx.psm = psm;
 
     if (workQueuePut(mServiceWork, w))
         return true;
 
     loge("Failed to enqueue service work for service connectionless RX!\n");
-    free(copy);
+    sgFree(payload);
     free(w);
     return false;
 }
@@ -1274,17 +1260,17 @@ static void l2cChannelReadyForData(struct l2cAclConn *aclConn, struct l2cConn *c
  *           ident - the ident in the response packet
  *           localCh -local channel number
  *           flags - the flags the remote side sent
- *           data - the data from the remote side
- *           len - the length of the abovementioned data
+ *           payload - the conf payload
+ *           len - the length of the abovementioned payload
  * RETURN:   NONE
  * NOTES:    call with mConnsLock held
  */
-static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localCh, uint16_t flags, const void *dataP, uint16_t len)
+static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localCh, uint16_t flags, sg payload, uint16_t len)
 {
     struct l2cConn *conn = NULL;
     uint8_t *reply, *end;
-    const uint8_t *data = (const uint8_t*)dataP;
     uint16_t result = L2C_SIG_CONF_RSP_OK;
+    uint32_t offset = 0;
 
     conn = mConns;
     while (conn && (conn->acl != aclConn->handle || conn->localCh != localCh))
@@ -1318,9 +1304,12 @@ static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
     }
 
     while (len > 2) {
-        uint8_t optType = utilGetLE8(data++);
-        uint8_t optLen = utilGetLE8(data++);
-        const uint8_t *opt;
+        uint8_t optType;
+        uint8_t optLen;
+        uint32_t optOfst;
+
+        sgSerialize(payload, offset++, 1, &optType);
+        sgSerialize(payload, offset++, 1, &optLen);
 
         len -= 2;
 
@@ -1329,8 +1318,8 @@ static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
             optLen = len;
             break;
         }
-        opt = data;
-        data += optLen;
+        optOfst = offset;
+        offset += optLen;
         len -= optLen;
 
         switch (optType){
@@ -1339,10 +1328,10 @@ static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
                 logi("other side sent bad sized mtu conf: %db\n", optLen);
                 result = L2C_SIG_CONF_RSP_REJECTED;
             } else {
-                conn->theirMtu = utilGetLE16(opt);
                 utilSetLE8(end + 0, L2C_CONF_MTU);
                 utilSetLE8(end + 1, sizeof(uint16_t));
-                utilSetLE16(end + 2, conn->theirMtu);
+                sgSerialize(payload, optOfst, sizeof(uint16_t), end + 2); /* copy their mtu */
+                conn->theirMtu = utilGetLE16(end + 2);
                 end += 4;
             }
             break;
@@ -1354,7 +1343,7 @@ static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
             } else {
                 utilSetLE8(end + 0, L2C_CONF_FLUSH_TIMEOUT);
                 utilSetLE8(end + 1, sizeof(uint16_t));
-                utilSetLE16(end + 2, utilGetLE16(opt));
+                sgSerialize(payload, optOfst, sizeof(uint16_t), end + 2); /* copy the timeout */
                 end += 4;
             }
             break;
@@ -1372,7 +1361,7 @@ static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
                 end += 2;
                 qosOut = (struct l2cConfQosOpts*)end;
                 end += sizeof(struct l2cConfQosOpts);
-                memcpy(qosOut, opt, sizeof(struct l2cConfQosOpts));
+                sgSerialize(payload, optOfst, sizeof(struct l2cConfQosOpts), qosOut);
 
                 // change any "required"s to "best effort"s
                 if (utilGetLE8(&qosOut->serviceType) == L2C_QOS_SVC_TYPE_GUARANTEED)
@@ -1446,12 +1435,12 @@ static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
  *           localCh -local channel number
  *           flags - the flags the remote side sent
  *           result - the result the remote side sent
- *           data - the data from the remote side
- *           len - the length of the abovementioned data
+ *           payload - the payload from the remote side
+ *           len - the length of the abovementioned payload
  * RETURN:   NONE
  * NOTES:    call with mConnsLock held
  */
-static void l2cHandleConfRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localCh, uint16_t flags, uint16_t result, const void *data, uint16_t len)
+static void l2cHandleConfRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localCh, uint16_t flags, uint16_t result, sg payload, uint16_t len) //TODO
 {
     struct l2cConn *conn = NULL;
 
@@ -1553,12 +1542,12 @@ static void l2cHandleInfoReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
  *           ident - the ident in the response packet
  *           infoType - the requested info type
  *           result - the result of the request
- *           infoData - the returned data
+ *           payload - the returned data
  *           infoLen - the returned data's length
  * RETURN:   NONE
  * NOTES:    call with mConnsLock held
  */
-static void l2cHandleInfoRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t infoType, uint16_t result, const void* infoData, uint32_t infoLen)
+static void l2cHandleInfoRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t infoType, uint16_t result, sg payload, uint32_t infoLen)
 {
     uint16_t val;
 
@@ -1583,7 +1572,8 @@ static void l2cHandleInfoRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
     }
 
     aclConn->reqIdent = 0;
-    val = utilGetLE16(infoData);
+    sgSerialize(payload, 0, sizeof(uint16_t), &val); /* reads it in BT endianness */
+    val = utilGetLE16(&val); /* converts to our endianness */
     if (val < L2C_MIN_CONNECTIONLESS_MTU) {
         logi("Peer reports connectionless mtu %d for acl "HCI_CONN_FMT"x. correcting to %d\n", val, HCI_CONN_CONV(aclConn->conn), L2C_MIN_CONNECTIONLESS_MTU);
         val = L2C_MIN_CONNECTIONLESS_MTU;
@@ -1597,12 +1587,12 @@ static void l2cHandleInfoRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
  * USE:      Handle an incoming echo request
  * PARAMS:   conn - the per-ACL-connection structure
  *           ident - the ident in the response packet
- *           echoData - the data we got
+ *           payload - the data we got
  *           echoLen - the len we got
  * RETURN:   NONE
  * NOTES:    call with mConnsLock held
  */
-static void l2cHandleEchoReq(struct l2cAclConn *aclConn, uint8_t ident, const void* echoData, uint32_t echoLen)
+static void l2cHandleEchoReq(struct l2cAclConn *aclConn, uint8_t ident, sg payload, uint32_t echoLen)
 {
     logi("Got echo packet with %db of data\n", echoLen);
 
@@ -1953,137 +1943,151 @@ void l2cHandleDiscRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t remCh,
  * FUNCTION: l2cSignallingRx
  * USE:      Process arriving data over signalling channels
  * PARAMS:   conn - the per-ACL-connection structure
- *           data - buffer with the data
- *           len - how much data there is
+ *           payload - the signalling packet payload
  * RETURN:   num bytes used/needed or 0 for error
  * NOTES:    call with mConnsLock held
  */
-static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint16_t datalen)
+static void l2cSignallingRx(struct l2cAclConn *conn, sg payload)
 {
-    struct l2cSigFrm *sig;
+    struct l2cSigFrm sig;
 
-    while (datalen >= sizeof(struct l2cSigFrm)) {
-
-        const uint8_t *paramsP;
+    while (sgLength(payload) >= sizeof(struct l2cSigFrm)) {
         uint8_t code, ident;
+        bool cmdParamsSkipped = false;
         uint16_t len;
 
-        sig = (struct l2cSigFrm*)data;
-        paramsP = (const uint8_t*)(sig + 1);
-        code = utilGetLE8(&sig->code);
-        ident = utilGetLE8(&sig->ident);
-        len = utilGetLE16(&sig->len);
-        data = paramsP + len;
-        datalen -= sizeof(struct l2cSigFrm) + len;
+        sgSerialize(payload, 0, sizeof(struct l2cSigFrm), &sig);
+        sgTruncFront(payload, sizeof(struct l2cSigFrm));
+
+        code = utilGetLE8(&sig.code);
+        ident = utilGetLE8(&sig.ident);
+        len = utilGetLE16(&sig.len);
 
         if (!ident)
             logw("Got signalling ident 0. Dropping\n");
         else switch (code){
         case L2C_SIG_CMD_REJ: {
-            struct l2cSigCmdRej *params = (struct l2cSigCmdRej*)paramsP;
-            if (len < sizeof(*params))
+            struct l2cSigCmdRej params;
+
+            sgSerialize(payload, 0, sizeof(params), &params);
+            if (len < sizeof(params))
                 logw("Got a short Command Reject packet\n");
             else
-                logw("Got a reject for id %d with reason %d\n", ident,
-                    utilGetLE16(&params->reason));
+                logw("Got a reject for id %d with reason %d\n", ident, utilGetLE16(&params.reason));
             break;
         }
         case L2C_SIG_CONN_REQ: {
-            struct l2cSigConnReq *params = (struct l2cSigConnReq*)paramsP;
+            struct l2cSigConnReq params;
+
+            sgSerialize(payload, 0, sizeof(params), &params);
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Connection Request packet on a non-EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
-            } else if (len < sizeof(*params))
+            } else if (len < sizeof(params))
                 logw("Got a short Connection Request packet\n");
             else {
-                psm_t psm = utilGetLE16(&params->psm);
-                uint16_t scid = utilGetLE16(&params->scid);
+                psm_t psm = utilGetLE16(&params.psm);
+                uint16_t scid = utilGetLE16(&params.scid);
 
                 l2cHandleConnReq(conn, ident, psm, scid);
             }
             break;
         }
         case L2C_SIG_CONN_RSP: {
-            struct l2cSigConnRsp *params = (struct l2cSigConnRsp*)paramsP;
+            struct l2cSigConnRsp params;
+
+            sgSerialize(payload, 0, sizeof(params), &params);
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Connection Response packet on a non-EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
-            } else if (len < sizeof(*params))
+            } else if (len < sizeof(params))
                 logw("Got a short Connection Response packet\n");
             else {
-                uint16_t dcid = utilGetLE16(&params->dcid);
-                uint16_t scid = utilGetLE16(&params->scid);
-                uint16_t result = utilGetLE16(&params->result);
-                uint16_t status = utilGetLE16(&params->status);
+                uint16_t dcid = utilGetLE16(&params.dcid);
+                uint16_t scid = utilGetLE16(&params.scid);
+                uint16_t result = utilGetLE16(&params.result);
+                uint16_t status = utilGetLE16(&params.status);
 
                 l2cHandleConnRsp(conn, ident, dcid, scid, result, status);
             }
             break;
         }
         case L2C_SIG_CONF_REQ: {
-            struct l2cSigConfReq *params = (struct l2cSigConfReq*)paramsP;
+            struct l2cSigConfReq params;
+
+            sgSerialize(payload, 0, sizeof(params), &params);
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Configuration Request packet on a non-EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
-            } else if (len < sizeof(*params))
+            } else if (len < sizeof(params))
                 logw("Got a short Configuration Request packet\n");
             else {
-                uint16_t dcid = utilGetLE16(&params->dcid);
-                uint16_t flags = utilGetLE16(&params->flags);
+                uint16_t dcid = utilGetLE16(&params.dcid);
+                uint16_t flags = utilGetLE16(&params.flags);
 
-                l2cHandleConfReq(conn, ident, dcid, flags,
-                    (const void*)(params + 1), len - sizeof(*params));
+                sgTruncFront(payload, sizeof(params));
+                l2cHandleConfReq(conn, ident, dcid, flags, payload, len - sizeof(params));
+                sgTruncFront(payload, len - sizeof(params));
+                cmdParamsSkipped = true;
             }
             break;
         }
         case L2C_SIG_CONF_RSP: {
-            struct l2cSigConfRsp *params = (struct l2cSigConfRsp*)paramsP;
+            struct l2cSigConfRsp params;
+
+            sgSerialize(payload, 0, sizeof(params), &params);
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Configuration Response packet on a non-EDR link\n");
                if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
-            } else if (len < sizeof(*params))
+            } else if (len < sizeof(params))
                 logw("Got a short Configuration Response packet\n");
             else {
-                uint16_t scid = utilGetLE16(&params->scid);
-                uint16_t flags = utilGetLE16(&params->flags);
-                uint16_t result = utilGetLE16(&params->result);
+                uint16_t scid = utilGetLE16(&params.scid);
+                uint16_t flags = utilGetLE16(&params.flags);
+                uint16_t result = utilGetLE16(&params.result);
 
-                l2cHandleConfRsp(conn, ident, scid, flags, result,
-                    (const void*)(params + 1), len - sizeof(*params));
+                sgTruncFront(payload, sizeof(params));
+                l2cHandleConfRsp(conn, ident, scid, flags, result, payload, len - sizeof(params));
+                sgTruncFront(payload, len - sizeof(params));
+                cmdParamsSkipped = true;
             }
             break;
         }
         case L2C_SIG_DISC_REQ: {
-            struct l2cSigDiscReq *params = (struct l2cSigDiscReq*)paramsP;
+            struct l2cSigDiscReq params;
+
+            sgSerialize(payload, 0, sizeof(params), &params);
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Disconnect Request packet on a non-EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
-            } else if (len < sizeof(*params))
+            } else if (len < sizeof(params))
                 logw("Got a short Disconnect Request packet\n");
             else {
-                uint16_t dcid = utilGetLE16(&params->dcid);
-                uint16_t scid = utilGetLE16(&params->scid);
+                uint16_t dcid = utilGetLE16(&params.dcid);
+                uint16_t scid = utilGetLE16(&params.scid);
 
                 l2cHandleDiscReq(conn, ident, dcid, scid);
             }
             break;
         }
         case L2C_SIG_DISC_RSP: {
-            struct l2cSigDiscRsp *params = (struct l2cSigDiscRsp*)paramsP;
+            struct l2cSigDiscRsp params;
+
+            sgSerialize(payload, 0, sizeof(params), &params);
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Disconnect Response packet on a non-EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
-            } else if (len < sizeof(*params))
+            } else if (len < sizeof(params))
                 logw("Got a short Disconnect Response packet\n");
             else {
-                uint16_t dcid = utilGetLE16(&params->dcid);
-                uint16_t scid = utilGetLE16(&params->scid);
+                uint16_t dcid = utilGetLE16(&params.dcid);
+                uint16_t scid = utilGetLE16(&params.scid);
 
                 l2cHandleDiscRsp(conn, ident, dcid, scid);
             }
@@ -2095,147 +2099,157 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint16_t 
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
             } else
-                l2cHandleEchoReq(conn, ident, paramsP, len);
+                l2cHandleEchoReq(conn, ident, payload, len);
             break;
         }
-/*
-        case L2C_SIG_ECHO_RSP: {
-            if (!BT_ADDR_IS_EDR(conn->addr)) {
-                logw("Got a Echo Response packet on a non-EDR link\n");
-                if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
-                    loge("Failed to send command not understood msg to the other side\n");
-            } else
-                l2cHandleEchoRsp(conn, ident, paramsP, len);
-            break;
-        }
-*/
+
+/*      case L2C_SIG_ECHO_RSP: is not needed (we do not ping anyone) */
+
         case L2C_SIG_INFO_REQ: {
-            struct l2cSigInfoReq *params = (struct l2cSigInfoReq*)paramsP;
+            struct l2cSigInfoReq params;
+
+            sgSerialize(payload, 0, sizeof(params), &params);
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Info Request packet on a non-EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
-            } else if (len < sizeof(*params))
+            } else if (len < sizeof(params))
                 logw("Got a short Info Request packet\n");
             else {
-                uint16_t infoType = utilGetLE16(&params->infoType);
+                uint16_t infoType = utilGetLE16(&params.infoType);
 
                 l2cHandleInfoReq(conn, ident, infoType);
             }
             break;
         }
         case L2C_SIG_INFO_RSP: {
-            struct l2cSigInfoRsp *params = (struct l2cSigInfoRsp*)paramsP;
+            struct l2cSigInfoRsp params;
+
+            sgSerialize(payload, 0, sizeof(params), &params);
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Info Response packet on a non-EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
-            } else if (len < sizeof(*params))
+            } else if (len < sizeof(params))
                 logw("Got a short Info Response packet\n");
             else {
-                uint16_t infoType = utilGetLE16(&params->infoType);
-                uint16_t result = utilGetLE16(&params->result);
+                uint16_t infoType = utilGetLE16(&params.infoType);
+                uint16_t result = utilGetLE16(&params.result);
 
-                l2cHandleInfoRsp(conn, ident, infoType, result,
-                    (const void*)(params + 1), len - sizeof(*params));
+                sgTruncFront(payload, sizeof(params));
+                l2cHandleInfoRsp(conn, ident, infoType, result, payload, len - sizeof(params));
+                sgTruncFront(payload, len - sizeof(params));
+                cmdParamsSkipped = true;
             }
             break;
         }
 /*
         case L2C_SIG_CH_CREAT_REQ: {
-            struct l2cSigChCreatReq *params = (struct l2cSigChCreatReq*)paramsP;
+            struct l2cSigChCreatReq params;
+
+            sgSerialize(payload, 0, sizeof(params), &params);
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Channel Create Request packet on a non-EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
-            } else if (len < sizeof(*params))
+            } else if (len < sizeof(params))
                 logw("Got a short Channel Create Request packet\n");
             else {
-                psm_t psm = utilGetLE16(&params->psm);
-                uint16_t scid = utilGetLE16(&params->scid);
-                uint8_t controller = utilGetLE8(&params->controller);
+                psm_t psm = utilGetLE16(&params.psm);
+                uint16_t scid = utilGetLE16(&params.scid);
+                uint8_t controller = utilGetLE8(&params.controller);
 
                 l2cHandleChCreatReq(conn, ident, psm, scid, controller);
             }
             break;
         }
         case L2C_SIG_CH_CREAT_RSP: {
-            struct l2cSigChCreatRsp *params = (struct l2cSigChCreatRsp*)paramsP;
+            struct l2cSigChCreatRsp params;
+
+            sgSerialize(payload, 0, sizeof(params), &params);
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Channel Create Response packet on a non-EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
-            } else if (len < sizeof(*params))
+            } else if (len < sizeof(params))
                 logw("Got a short Channel Create Response packet\n");
             else {
-                uint16_t dcid = utilGetLE16(&params->dcid);
-                uint16_t scid = utilGetLE16(&params->scid);
-                uint16_t result = utilGetLE16(&params->result);
-                uint16_t status = utilGetLE16(&params->status);
+                uint16_t dcid = utilGetLE16(&params.dcid);
+                uint16_t scid = utilGetLE16(&params.scid);
+                uint16_t result = utilGetLE16(&params.result);
+                uint16_t status = utilGetLE16(&params.status);
 
                 l2cHandleChCreatRsp(conn, ident, dcid, scid, result, status);
             }
             break;
         }
         case L2C_SIG_CH_MOVE_REQ: {
-            struct l2cSigChMoveReq *params = (struct l2cSigChMoveReq*)paramsP;
+            struct l2cSigChMoveReq params;
+
+            sgSerialize(payload, 0, sizeof(params), &params);
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Channel Move Request packet on a non-EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
-            } else if (len < sizeof(*params))
+            } else if (len < sizeof(params))
                 logw("Got a short Channel Move Request packet\n");
             else {
-                uint16_t icid = utilGetLE16(&params->icid);
-                uint8_t controller = utilGetLE8(&params->controller);
+                uint16_t icid = utilGetLE16(&params.icid);
+                uint8_t controller = utilGetLE8(&params.controller);
 
                 l2cHandleChMoveReq(conn, ident, icid, controller);
             }
             break;
         }
         case L2C_SIG_CH_MOVE_RSP: {
-            struct l2cSigChMoveRsp *params = (struct l2cSigChMoveRsp*)paramsP;
+            struct l2cSigChMoveRsp params;
+
+            sgSerialize(payload, 0, sizeof(params), &params);
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Channel Move Response packet on a non-EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
-            } else if (len < sizeof(*params))
+            } else if (len < sizeof(params))
                 logw("Got a short Channel Move Response packet\n");
             else {
-                uint16_t icid = utilGetLE16(&params->icid);
-                uint16_t result = utilGetLE8(&params->result);
+                uint16_t icid = utilGetLE16(&params.icid);
+                uint16_t result = utilGetLE8(&params.result);
 
                 l2cHandleChMoveRsp(conn, ident, icid, result);
             }
             break;
         }
         case L2C_SIG_CH_MOVE_CNF_REQ: {
-            struct l2cSigChMoveCnfReq *params = (struct l2cSigChMoveCnfReq*)paramsP;
+            struct l2cSigChMoveCnfReq params;
+
+            sgSerialize(payload, 0, sizeof(params), &params);
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Channel Move Confirmation packet on a non-EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
-            } else if (len < sizeof(*params))
+            } else if (len < sizeof(params))
                 logw("Got a short Channel Move Confirmation packet\n");
             else {
-                uint16_t icid = utilGetLE16(&params->icid);
-                uint16_t result = utilGetLE8(&params->result);
+                uint16_t icid = utilGetLE16(&params.icid);
+                uint16_t result = utilGetLE8(&params.result);
 
                 l2cHandleChMoveCnfReq(conn, ident, icid, result);
             }
             break;
         }
         case L2C_SIG_CH_MOVE_CNF_RSP: {
-            struct l2cSigChMoveCnfRsp *params = (struct l2cSigChMoveCnfRsp*)paramsP;
+            struct l2cSigChMoveCnfRsp params;
+
+            sgSerialize(payload, 0, sizeof(params), &params);
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Channel Move Confirmation Response "
                     "packet on a non-EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
-            } else if (len < sizeof(*params))
+            } else if (len < sizeof(params))
                 logw("Got a short Channel Move Confirmation Response packet\n");
             else {
-                uint16_t icid = utilGetLE16(&params->icid);
+                uint16_t icid = utilGetLE16(&params.icid);
 
                 l2cHandleChMoveCnfRsp(conn, ident, icid);
             }
@@ -2243,33 +2257,37 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint16_t 
         }
 */
         case L2C_SIG_CONN_UPDT_REQ: {
-            struct l2cSigConnUpdtReq *params = (struct l2cSigConnUpdtReq*)paramsP;
+            struct l2cSigConnUpdtReq params;
+
+            sgSerialize(payload, 0, sizeof(params), &params);
             if (!BT_ADDR_IS_EDR(conn->addr)) {
                 logw("Got a Connection Update Request packet on an EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
-            } else if (len < sizeof(*params))
+            } else if (len < sizeof(params))
                 logw("Got a short Connection Update Request packet\n");
             else {
-                uint16_t intMin = utilGetLE16(&params->intMin);
-                uint16_t intMax = utilGetLE16(&params->intMax);
-                uint16_t latency = utilGetLE16(&params->latency);
-                uint16_t timeoutMult = utilGetLE16(&params->timeoutMult);
+                uint16_t intMin = utilGetLE16(&params.intMin);
+                uint16_t intMax = utilGetLE16(&params.intMax);
+                uint16_t latency = utilGetLE16(&params.latency);
+                uint16_t timeoutMult = utilGetLE16(&params.timeoutMult);
 
                 l2cHandleConnUpdtReq(conn, ident, intMin, intMax, latency, timeoutMult);
             }
             break;
         }
         case L2C_SIG_CONN_UPDT_RSP: {
-            struct l2cSigConnUpdtRsp *params = (struct l2cSigConnUpdtRsp*)paramsP;
+            struct l2cSigConnUpdtRsp params;
+
+            sgSerialize(payload, 0, sizeof(params), &params);
             if (!BT_ADDR_IS_LE(conn->addr)) {
                 logw("Got a Connection Update Response packet on a non-LE link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
-            } else if (len < sizeof(*params))
+            } else if (len < sizeof(params))
                 logw("Got a short Connection Update Response packet\n");
             else {
-                uint16_t result = utilGetLE8(&params->result);
+                uint16_t result = utilGetLE8(&params.result);
 
                 l2cHandleConnUpdtRsp(conn, ident, result);
             }
@@ -2282,12 +2300,17 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint16_t 
         }
         }
 
+        /* truncate off all the params this command had */
+        if (!cmdParamsSkipped)
+            sgTruncFront(payload, len);
+
         if (!BT_ADDR_IS_EDR(conn->addr)) /* only EDR can put multiple commands here */
             break;
     }
 
-    if (datalen)
-        loge("Leftover %d bytes in signalling frame\n", datalen);
+    if (sgLength(payload))
+        loge("Leftover %d bytes in signalling frame\n", sgLength(payload));
+    sgFree(payload);
 }
 
 /*
@@ -2296,12 +2319,11 @@ static void l2cSignallingRx(struct l2cAclConn *conn, const void *data, uint16_t 
  *           to the right destination
  * PARAMS:   aclConn - the ACL connection
  *           cid - the channel data arrived on
- *           data - buffer with the data
- *           len - how much data there is
+ *           payload - the arrived payload
  * RETURN:   false if data went nowhere
  * NOTES:    call with mConnsLock lock held.
  */
-static bool l2cSendRxToChannel(struct l2cAclConn *aclConn, uint16_t chan, const void *data, uint16_t len)
+static bool l2cSendRxToChannel(struct l2cAclConn *aclConn, uint16_t chan, sg payload)
 {
     struct l2cConn *iter, *cur = NULL;
     bool ret;
@@ -2331,9 +2353,11 @@ static bool l2cSendRxToChannel(struct l2cAclConn *aclConn, uint16_t chan, const 
             cur->inUse = 1;
             l2cAclDownTimerStop(aclConn);
         }
-        return l2cSvcWorkScheduleStateCall(NULL, cur, L2C_STATE_RX, data, len);
+        if (l2cSvcWorkScheduleStateCall(NULL, cur, L2C_STATE_RX, &payload, sizeof(payload)))
+            return true;
     }
 
+    sgFree(payload);
     return false;
 }
 
@@ -2341,42 +2365,43 @@ static bool l2cSendRxToChannel(struct l2cAclConn *aclConn, uint16_t chan, const 
  * FUNCTION: l2cAclDataRxCompletePacket
  * USE:      Called when a complete reassembled packet has arrived
  * PARAMS:   aclConn - the connection ID
- *           data - buffer with the data
- *           len - how much data there is
+ *           packet - a complete received ACL packet
  * RETURN:   NONE
  * NOTES:    call with mConnsLock held
  */
-static void l2cAclDataRxCompletePacket(struct l2cAclConn *conn, uint16_t cid, const void *data, uint16_t len)
+static void l2cAclDataRxCompletePacket(struct l2cAclConn *conn, uint16_t cid, sg packet)
 {
     if (cid == L2C_CH_SIGNALLING_EDR) {
         if (!BT_ADDR_IS_EDR(conn->addr))
             loge("Received EDR signalling packet on non-EDR link. Dropping.\n");
         else
-            l2cSignallingRx(conn, data, len);
+            l2cSignallingRx(conn, packet);
     } else if (cid == L2C_CH_SIGNALLING_LE) {
         if (!BT_ADDR_IS_LE(conn->addr))
             loge("Received LE signalling packet on non-LE link. Dropping.\n");
         else
-            l2cSignallingRx(conn, data, len);
+            l2cSignallingRx(conn, packet);
     } else if (cid == L2C_CH_CONNECTIONLESS) {
         psm_t psm;
 
-        if (len < sizeof(psm_t))
-            loge("Short connectionless L2CAP data RXed: %db\n", len);
-        else {
-
-            psm = utilGetLE16(data);
-            data = ((uint16_t*)data) + 1;
-            len -= sizeof(uint16_t);
-            if (!l2cSvcWorkSchedulePsmConnectionlessRx(psm, NULL, conn->handle, data, len))
+        if (sgLength(packet) < sizeof(psm_t)) {
+            loge("Short connectionless L2CAP data RXed: %db\n", sgLength(packet));
+            sgFree(packet);
+        } else {
+            sgSerialize(packet, 0, sizeof(psm_t), &psm);
+            sgTruncFront(packet, sizeof(psm_t));
+            if (!l2cSvcWorkSchedulePsmConnectionlessRx(psm, NULL, conn->handle, packet)) {
                 loge("Failed to schedule call to connectionless RX for psm %d\n", psm);
+                sgFree(packet);
+            }
         }
     } else {
-        if (!l2cSendRxToChannel(conn, cid, data, len)) {
+        if (!l2cSendRxToChannel(conn, cid, packet)) {
             if (cid < L2C_NUM_FIXED_CHANNELS)
                 logw("Dropping RXed FixedCh data for cid %d\n", cid);
             else
                 logw("Dropping RXed PSM data for unknown cid %d\n", cid);
+            sgFree(packet);
         }
     }
 }
@@ -2386,22 +2411,24 @@ static void l2cAclDataRxCompletePacket(struct l2cAclConn *conn, uint16_t cid, co
  * USE:      Called with a [partially] RXed packet to see if it is
  *           complete, and if so process it
  * PARAMS:   conn - the ACL connection struct
- *           data - buffer with the data
- *           len - how much data there is
+ *           packet - the incoming (possibly complete) packet
  * RETURN:   true if packet was compelte and was processed
  *           false if more data is needed
  * NOTES:    call with mConnsLock held
  */
-static bool l2cAclDataRxProcessIfComplete(struct l2cAclConn *conn, const void *data, uint16_t len)
+static bool l2cAclDataRxProcessIfComplete(struct l2cAclConn *conn, sg packet)
 {
-    const struct l2cFrm *frm = (struct l2cFrm*)data;
+    struct l2cFrm frm;
     uint16_t frmLen, totalLen;
+    uint32_t len = sgLength(packet);
 
     /* must be long enough to fit a header */
     if (len < sizeof(struct l2cFrm))
         return false;
 
-    frmLen = utilGetLE16(&frm->len);
+    sgSerialize(packet, 0, sizeof(struct l2cFrm), &frm);
+
+    frmLen = utilGetLE16(&frm.len);
     totalLen = frmLen + sizeof(struct l2cFrm);
 
     /* must fit header and data */
@@ -2413,7 +2440,8 @@ static bool l2cAclDataRxProcessIfComplete(struct l2cAclConn *conn, const void *d
         logw("ACL data packet %ub but L2C expects %ub\n", len, totalLen);
 
     /* full packet - process it */
-    l2cAclDataRxCompletePacket(conn, utilGetLE16(&frm->cid), frm + 1, frmLen);
+    sgTruncFront(packet, sizeof(struct l2cFrm));
+    l2cAclDataRxCompletePacket(conn, utilGetLE16(&frm.cid), packet);
     return true;
 }
 
@@ -2422,58 +2450,47 @@ static bool l2cAclDataRxProcessIfComplete(struct l2cAclConn *conn, const void *d
  * FUNCTION: l2cAclDataRx
  * USE:      Called by lower layers when ACL data arrives
  * PARAMS:   aclConnID - the connection ID
- *           data - buffer with the data
- *           len - how much data there is
+ *           packet - the incoming packet
  *           first - whethere this is first or continued packet
  * RETURN:   NONE
  * NOTES:
  */
-void l2cAclDataRx(hci_conn_t aclConnID, const void *data, uint16_t datalen, bool first)
+void l2cAclDataRx(hci_conn_t aclConnID, sg packet, bool first)
 {
     struct l2cAclConn *conn;
+    uint32_t datalen = sgLength(packet);
 
     pthread_mutex_lock(&mConnsLock);
     conn = l2cAclConnFindById(aclConnID);
     if (conn) {
-        if (!first && !conn->reassBuf) {
+        if (!first && !conn->reassSg)
             logw("Got %ub non-first fragment while no reassemble buffer. Dropping\n", datalen);
-        } else {
+        else {
             if (first) {
-                if (conn->reassBuf) {
-                    logw("Got a first packet while reassemble buffer has %ub. Dropping previous fragment\n", conn->reassLen);
-                    free(conn->reassBuf);
-                    conn->reassBuf = NULL;
+                if (conn->reassSg) {
+                    logw("Got a first packet while reassemble buffer has %ub. Dropping previous fragment\n", sgLength(conn->reassSg));
+                    sgFree(conn->reassSg);
+                    conn->reassSg = NULL;
                 }
-                if (!l2cAclDataRxProcessIfComplete(conn, data, datalen)) {
-                    conn->reassBuf = (uint8_t*)malloc(datalen);
-                    if (!conn->reassBuf)
-                        loge("Failed to alloc %ub reassembly buffer. frame dropped\n", datalen);
-                    else {
-                        memcpy(conn->reassBuf, data, datalen);
-                        conn->reassLen = datalen;
-                    }
+                if (!l2cAclDataRxProcessIfComplete(conn, packet)) {
+                    conn->reassSg = packet;
                 }
-            } else if (!conn->reassBuf)
+                packet = NULL;
+            } else if (!conn->reassSg)
                 logw("Got non-first packet when reassembly buffer empty. Dropping %ud\n", datalen);
             else {
-                uint8_t *tmp = (uint8_t*)realloc(conn->reassBuf, conn->reassLen + datalen);
-                if (!tmp) {
-                    loge("Failed to realloc %ub + %ub reassembly buffer. frame dropped\n", conn->reassLen, datalen);
-                    free(conn->reassBuf);
-                    conn->reassBuf = NULL;
-                } else {
-                    conn->reassBuf = tmp;
-                    memcpy(conn->reassBuf + conn->reassLen, data, datalen);
-                    conn->reassLen += datalen;
-                    if (l2cAclDataRxProcessIfComplete(conn, conn->reassBuf, conn->reassLen)) {
-                        free(conn->reassBuf);
-                        conn->reassBuf = NULL;
-                    }
-                }
+                sgConcat(conn->reassSg, packet);
+                packet = NULL;
+
+                if (l2cAclDataRxProcessIfComplete(conn, conn->reassSg))
+                    conn->reassSg = NULL;
             }
         }
     } else
         loge("Unable to find acl "HCI_CONN_FMT"x. Dropping packet\n", HCI_CONN_CONV(aclConnID));
+
+    if (packet)
+        sgFree(packet);
 
     pthread_mutex_unlock(&mConnsLock);
 }
@@ -2755,11 +2772,9 @@ static void* l2cSvcWorker(void* unused)
         if (status)
             break;
 
-        psm = work->i_alloc.which.psm;
-        chan = work->i_alloc.which.chan;
-
         switch (work->type) {
         case L2C_WORK_PSM_INST_ALLOC:
+            psm = work->i_alloc.which.psm;
             pthread_mutex_lock(&mSvcsLock);
             psmSvc = l2cPsmSvcFindByPsm(psm);
             if (!psmSvc) {
@@ -2778,6 +2793,7 @@ static void* l2cSvcWorker(void* unused)
             l2cPsmSvcInstAllocDone(work->reqID, psm, psmSvc->desc.serviceInstanceStateCbk, psmSvc->desc.userData, result, instance, work->i_alloc.handle);
             break;
         case L2C_WORK_PSM_CONNECTIONLESS_RX:
+            psm = work->cl_rx.psm;
             pthread_mutex_lock(&mSvcsLock);
             psmSvc = l2cPsmSvcFindByPsm(psm);
             if (!psmSvc) {
@@ -2786,14 +2802,18 @@ static void* l2cSvcWorker(void* unused)
                 if (psmSvc->beingRemoved) {
                     logi("Ignoring connectionless rx for service (psm=%d) being removed\n", psm);
                 } else {
-                    if (psmSvc->desc.serviceConnectionlessRx)
-                        psmSvc->desc.serviceConnectionlessRx(psmSvc->desc.userData, work->cl_rx.handle, work->cl_rx.data, work->cl_rx.size);
+                    if (psmSvc->desc.serviceConnectionlessRx) {
+                        psmSvc->desc.serviceConnectionlessRx(psmSvc->desc.userData, work->cl_rx.handle, work->cl_rx.payload);
+                        work->cl_rx.payload = NULL;
+                    }
                 }
-                free(work->cl_rx.data);
+                if (work->cl_rx.payload)
+                    sgFree(work->cl_rx.payload);
             }
             pthread_mutex_unlock(&mSvcsLock);
             break;
         case L2C_WORK_PSM_UNREGISTER:
+            psm = work->unreg.which.psm;
             pthread_mutex_lock(&mSvcsLock);
             psmSvc = l2cPsmSvcFindByPsm(psm);
             if (!psmSvc) {
@@ -2814,6 +2834,7 @@ static void* l2cSvcWorker(void* unused)
             pthread_mutex_unlock(&mSvcsLock);
             break;
         case L2C_WORK_FIXEDCH_INST_ALLOC:
+            chan = work->i_alloc.which.chan;
             pthread_mutex_lock(&mSvcsLock);
             fixedSvc = l2cFixedChSvcFindByChan(chan);
             if (!fixedSvc) {
@@ -2829,6 +2850,7 @@ static void* l2cSvcWorker(void* unused)
             l2cFixedChSvcInstAllocDone(work->reqID, chan, fixedSvc->desc.serviceFixedChStateCbk, fixedSvc->desc.userData, result, instance, work->i_alloc.handle);
             break;
         case L2C_WORK_FIXEDCH_UNREGISTER:
+            chan = work->unreg.which.chan;
             pthread_mutex_lock(&mSvcsLock);
             fixedSvc = l2cFixedChSvcFindByChan(chan);
             if (!fixedSvc) {
@@ -2970,7 +2992,7 @@ void l2cWorkFreeService(void *workItem)
 
     switch (work->type) {
     case L2C_WORK_PSM_CONNECTIONLESS_RX:
-        free(work->cl_rx.data);
+        sgFree(work->cl_rx.payload);
         break;
     case L2C_WORK_STATE_CBK:
         if (work->state.data)
@@ -3058,9 +3080,9 @@ static void l2cConnStructDelete(struct l2cConn *conn)
  */
 static void l2cAclConnStructDelete(struct l2cAclConn *conn)
 {
-    if (conn->reassBuf) {
-        logw("ACL conn struct delete with %ub still in reassembly buffer\n", conn->reassLen);
-        free(conn->reassBuf);
+    if (conn->reassSg) {
+        logw("ACL conn struct delete with %ub still in reassembly buffer\n", sgLength(conn->reassSg));
+        sgFree(conn->reassSg);
     }
 
     if (conn->next)
@@ -4238,8 +4260,7 @@ static struct l2cAclConn* l2cCreateAndOpenNewAclConn(const struct bt_addr* addr)
     conn->handle = uniqGetNext();
     conn->conn = L2C_CONN_IN_PROGRESS;
     conn->prev = NULL;
-    conn->reassBuf = NULL;
-    conn->reassLen = 0;
+    conn->reassSg = NULL;
     conn->sigMtu = L2C_MIN_SIG_MTU;
 
     if (!l2cSvcWorkScheduleAclLinkOpen(NULL, &conn->addr)) {
@@ -4578,8 +4599,7 @@ void l2cAclLinkUp(hci_conn_t aclConnID, const struct bt_addr* addr, bool isMaste
             if (aclConn) {
                 aclConn->handle = uniqGetNext();
                 aclConn->prev = NULL;
-                aclConn->reassBuf = NULL;
-                aclConn->reassLen = 0;
+                aclConn->reassSg = NULL;
                 aclConn->next = mAclConns;
                 aclConn->sigMtu = L2C_MIN_SIG_MTU;
                 if (mAclConns)

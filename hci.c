@@ -201,7 +201,7 @@ struct hciCbkWorkItem {
 
         struct {
             hci_conn_t                    conn;
-            uint16_t                      len;
+            sg                            packet;
             bool                          first;
         } aclDataRx;
     };
@@ -311,7 +311,7 @@ static uint8_t mInquiryState = 0;
 static bool hciBtStackUp(void);
 static bool hciScheduleConnUpNotif(hci_conn_t conn, const struct bt_addr *addr, bool isMaster, bool isEncrypted);
 static bool hciScheduleConnDownNotif(hci_conn_t conn);
-static bool hciScheduleConnDataRx(hci_conn_t conn, const void* data, uint16_t len, bool first);
+static bool hciScheduleConnDataRx(hci_conn_t conn, sg packet, bool first);
 static bool hciCmdSubmitSimpleWithStatusWithDoneCbk(uint8_t ogf, uint16_t ocf, const void* paramData, uint8_t paramLen, hciOpDoneCbk cbk, void *cbkData);
 static void hciHandleConnAclDown(uint16_t cid, uint8_t reason);
 static bool hciHandleConnAclEdrUp(uint8_t status, uint16_t id, const uint8_t *mac, bool encrypted);
@@ -518,12 +518,11 @@ static void hciCbkChipHwUp(void *cbkData, bool fw, bool up)
  * FUNCTION: hciRxSco
  * USE:      Called with a valid SCO packet
  * PARAMS:   hdr - packet header
- *           data - the thing we got
- *           len - data length
+ *           packet - the packet we got
  * RETURN:   NONE
  * NOTES:
  */
-static void hciRxSco(uint16_t hdr, const void *data, uint8_t len)
+static void hciRxSco(uint16_t hdr, sg packet)
 {
     uint16_t pb = hdr & ACL_HDR_MASK_PB;
     uint16_t bc = hdr & ACL_HDR_MASK_BC;
@@ -546,24 +545,23 @@ static void hciRxSco(uint16_t hdr, const void *data, uint8_t len)
     }
 
     //TODO: do something with the sco data
+    sgFree(packet);
 }
 
 /*
  * FUNCTION: hciRxAcl
  * USE:      Called with a valid ACL packet/fragment
  * PARAMS:   hdr - packet header
- *           data - the thing we got
- *           len - data length
+ *           packet - the packet we got
  * RETURN:   NONE
  * NOTES:
  */
-static void hciRxAcl(uint16_t hdr, const void *data, uint16_t len)
+static void hciRxAcl(uint16_t hdr, sg packet)
 {
     uint16_t pb = hdr & ACL_HDR_MASK_PB;
     uint16_t bc = hdr & ACL_HDR_MASK_BC;
     uint16_t cid = hdr & ACL_HDR_MASK_CONN_ID;
     struct hciAclConn* conn;
-
 
     if (pb == ACL_HDR_PB_FIRST_NONAUTO || pb == ACL_HDR_PB_COMPLETE) {
         logw("Invalid acl.pb flag from chp: 0x%04X. Dropped\n", pb);
@@ -572,30 +570,61 @@ static void hciRxAcl(uint16_t hdr, const void *data, uint16_t len)
 
     pthread_mutex_lock(&mConnsLock);
     conn = hciConnFindById(cid);
-    if (!conn)
+    if (!conn) {
         logi("Dropping packet for unknown acl link %d\n", cid);
-    else if (!hciScheduleConnDataRx(conn->handle, data, len, pb == ACL_HDR_PB_FIRST_AUTO))
+        sgFree(packet);
+    } else if (!hciScheduleConnDataRx(conn->handle, packet, pb == ACL_HDR_PB_FIRST_AUTO)) {
         logi("Failed to enqueue packet RX for link %d\n", cid);
+        sgFree(packet);
+    }
     pthread_mutex_unlock(&mConnsLock);
 }
 
 /*
  * FUNCTION: hciRxEvt
  * USE:      Called with a valid EVT packet
- * PARAMS:   evt - the event
+ * PARAMS:   packet - the packet we got
  * RETURN:   NONE
  * NOTES:
  */
-static void hciRxEvt(const struct hciEvtHdr *evt)
+static void hciRxEvt(sg packet)
 {
     struct hciEvtWaitState *ws = NULL, *cur = NULL;
     bool handled = false, addCredit = false;
-    uint8_t evtType = utilGetLE8(&evt->code);
-    uint8_t len = utilGetLE8(&evt->len);
+    const struct hciEvtCmdComplete *cmdComplete;
+    const struct hciEvtCmdStatus *cmdStatus;
+    const struct hciEvtLeMeta *leMeta;
+    const struct hciEvtHdr *evt;
+    uint8_t evtType, len;
+    void* sgiter;
     uint32_t i;
-    struct hciEvtLeMeta *leMeta = (struct hciEvtLeMeta*)(evt + 1);
-    struct hciEvtCmdComplete *cmdComplete = (struct hciEvtCmdComplete*)(evt + 1);
-    struct hciEvtCmdStatus *cmdStatus = (struct hciEvtCmdStatus*)(evt + 1);
+
+
+    /*
+     * The SG may or may not be contiguous on the inside. If it is not, we'll alloc a new buffer
+     * and serialize the SG into it. If it is, we can just use the SG's internal buffer. How do
+     * we check? Iterate SG of course... Why? To save a copy and a malloc() & a free()
+     */
+    sgiter = sgIterStart(packet);
+    if (sgiter && sgIterCurLen(sgiter) == sgLength(packet))
+        evt = (const struct hciEvtHdr*)sgIterCurData(sgiter);
+    else {
+        evt = malloc(sgLength(packet));
+        if (!evt) {
+            loge("Failed to alloc flat event representation\n");
+            sgFree(packet);
+        }
+        sgSerialize(packet, 0, sgLength(packet), (struct hciEvtHdr*)evt);
+        sgiter = NULL;
+        sgFree(packet);
+    }
+
+    leMeta = (struct hciEvtLeMeta*)(evt + 1);
+    cmdComplete = (struct hciEvtCmdComplete*)(evt + 1);
+    cmdStatus = (struct hciEvtCmdStatus*)(evt + 1);
+
+    evtType = utilGetLE8(&evt->code);
+    len = utilGetLE8(&evt->len);
 
     /* handle the cases of credits: command complete */
     if (evtType == HCI_EVT_Command_Complete && utilGetLE8(&cmdComplete->numCmdCredits))
@@ -699,6 +728,11 @@ static void hciRxEvt(const struct hciEvtHdr *evt)
 
     if (!handled)
         logw("Unhandled HCI event code 0x%02X with %ub of params\n", evtType, len);
+
+    if (sgiter)
+        sgFree(packet);
+    else
+        free((struct hciEvtHdr*)evt);
 }
 
 /*
@@ -706,16 +740,16 @@ static void hciRxEvt(const struct hciEvtHdr *evt)
  * USE:      Called when the chip gives us data/events
  * PARAMS:   cbkData - unused
  *           typ - type of thing we're getting
- *           data - the thing we got
- *           len - the length
+ *           packet - the packet we got
  * RETURN:   true on success, false else
  * NOTES:    we must free the "data" buffer at some point in time - we own it now
  */
-static void hciRx(void *cbkData, uint8_t typ, const void *data, uint16_t datalen)
+static void hciRx(void *cbkData, uint8_t typ, sg packet)
 {
-    struct hciAclHdr *hdrAcl = (struct hciAclHdr*)data;
-    struct hciScoHdr *hdrSco = (struct hciScoHdr*)data;
-    struct hciEvtHdr *hdrEvt = (struct hciEvtHdr*)data;
+    struct hciAclHdr hdrAcl;
+    struct hciScoHdr hdrSco;
+    struct hciEvtHdr hdrEvt;
+    uint32_t datalen = sgLength(packet);
     uint32_t len;
     uint16_t hdr;
 
@@ -726,13 +760,16 @@ static void hciRx(void *cbkData, uint8_t typ, const void *data, uint16_t datalen
             break;
         }
         datalen -= sizeof(struct hciAclHdr);
-        hdr = utilGetLE16(&hdrAcl->hdr);
-        len = utilGetLE16(&hdrAcl->len);
+        sgSerialize(packet, 0, sizeof(struct hciAclHdr), &hdrAcl);
+        hdr = utilGetLE16(&hdrAcl.hdr);
+        len = utilGetLE16(&hdrAcl.len);
         if (len != datalen) {
             loge("ACL packet claims %ub but had %ub\n", len, datalen);
             break;
         }
-        hciRxAcl(hdr, hdrAcl + 1, len);
+        sgTruncFront(packet, sizeof(struct hciAclHdr));
+        hciRxAcl(hdr, packet);
+        packet = NULL;
         break;
     case HCI_PKT_TYP_SCO:
         if (datalen < sizeof(struct hciScoHdr)) {
@@ -740,13 +777,16 @@ static void hciRx(void *cbkData, uint8_t typ, const void *data, uint16_t datalen
             break;
         }
         datalen -= sizeof(struct hciScoHdr);
-        hdr = utilGetLE16(&hdrSco->hdr);
-        len = utilGetLE8(&hdrSco->len);
+        sgSerialize(packet, 0, sizeof(struct hciScoHdr), &hdrSco);
+        hdr = utilGetLE16(&hdrSco.hdr);
+        len = utilGetLE8(&hdrSco.len);
         if (len != datalen) {
             loge("SCO packet claims %ub but had %ub\n", len, datalen);
             break;
         }
-        hciRxSco(hdr, hdrSco + 1, len);
+        sgTruncFront(packet, sizeof(struct hciScoHdr));
+        hciRxSco(hdr, packet);
+        packet = NULL;
         break;
     case HCI_PKT_TYP_EVT:
         if (datalen < sizeof(struct hciEvtHdr)) {
@@ -754,17 +794,22 @@ static void hciRx(void *cbkData, uint8_t typ, const void *data, uint16_t datalen
             break;
         }
         datalen -= sizeof(struct hciEvtHdr);
-        len = utilGetLE8(&hdrEvt->len);
+        sgSerialize(packet, 0, sizeof(struct hciEvtHdr), &hdrEvt);
+        len = utilGetLE8(&hdrEvt.len);
         if (len != datalen) {
             loge("EVT packet claims %ub but had %ub\n", len, datalen);
             break;
         }
-        hciRxEvt(hdrEvt);
+        hciRxEvt(packet);
+        packet = NULL;
         break;
     default:
         loge("Dropping unknown packet with type %d\n", typ);
         break;
     }
+
+    if (packet)
+        sgFree(packet);
 }
 
 /*
@@ -776,7 +821,13 @@ static void hciRx(void *cbkData, uint8_t typ, const void *data, uint16_t datalen
  */
 static void hciCallbackWorkDeallocator(void *workItem)
 {
-   free(workItem);
+    struct hciCbkWorkItem *w = (struct hciCbkWorkItem*)workItem;
+
+
+    if (w->cbkWorkItemType == CBK_WORK_ACL_DATA)
+        sgFree(w->aclDataRx.packet);
+
+    free(workItem);
 }
 
 /*
@@ -788,6 +839,9 @@ static void hciCallbackWorkDeallocator(void *workItem)
  */
 static void hciCmdSendWorkDeallocator(void *workItem)
 {
+    struct hciCmdSendWorkItem *w = (struct hciCmdSendWorkItem*)workItem;
+
+    sgFree(w->cmd);
     free(workItem);
 }
 
@@ -841,7 +895,7 @@ static void* hciCbkWorker(void *unused)
             l2cAclLinkEncrChange(w->leParamChange.conn, w->encrChange.nowEncrypted);
             break;
         case CBK_WORK_ACL_DATA:
-            l2cAclDataRx(w->aclDataRx.conn, (const void*)(w + 1), w->aclDataRx.len, w->aclDataRx.first);
+            l2cAclDataRx(w->aclDataRx.conn, w->aclDataRx.packet, w->aclDataRx.first);
             break;
         default:
             loge("Unknown callback work type %u\n", w->cbkWorkItemType);
@@ -1091,25 +1145,23 @@ static bool hciScheduleConnEncrChange(hci_conn_t conn, bool nowEncrypted)
  * FUNCTION: hciScheduleConnDataRx
  * USE:      Enqueue a call to the connection RX notif
  * PARAMS:   conn - the conenction
- *           data - the data
- *           len - date len
+ *           packet - the packet
  *           first - was packet marked as first?
  * RETURN:   true if enqueued, false else
  * NOTES:    data is copied
  */
-static bool hciScheduleConnDataRx(hci_conn_t conn, const void* data, uint16_t len, bool first)
+static bool hciScheduleConnDataRx(hci_conn_t conn, sg packet, bool first)
 {
     struct hciCbkWorkItem *w;
 
-    w = (struct hciCbkWorkItem*)malloc(sizeof(struct hciCbkWorkItem) + len);
+    w = (struct hciCbkWorkItem*)malloc(sizeof(struct hciCbkWorkItem));
     if (!w)
         return false;
 
     w->cbkWorkItemType = CBK_WORK_ACL_DATA;
     w->aclDataRx.conn = conn;
-    w->aclDataRx.len = len;
+    w->aclDataRx.packet = packet;
     w->aclDataRx.first = first;
-    memcpy(w + 1, data, len);
 
     if (workQueuePut(mCallbackWork, w))
         return true;
