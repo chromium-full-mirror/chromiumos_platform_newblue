@@ -207,6 +207,10 @@ uint32_t sgLength(sg s)
  */
 void sgConcat(sg front, sg back)
 {
+    if (!back->head) {
+        sgFree(back);
+    }
+
     if (front->tail)
         front->tail->next = back->head;
     else
@@ -332,7 +336,7 @@ bool sgConcatFrontCopy(sg s, const void *data, uint32_t len)
 }
 
 /*
- * FUNCTION: sgConcatFrontCopy
+ * FUNCTION: sgConcatFrontAlloced
  * USE:      Append a now-owned-by-us buffer to the front of an sg
  * PARAMS:   s - the sg
  *           data - the data
