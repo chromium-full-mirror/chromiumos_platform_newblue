@@ -236,18 +236,20 @@ void sgTruncBack(sg s, uint32_t bytes_to_delete)
 
     if (bytes_to_delete >= s->len)
         bytes_to_keep = 0;
+    else if (!bytes_to_delete)
+        return;
     else
         bytes_to_keep = s->len - bytes_to_delete;
 
     /* skip all chunks we're wholly keeping */
     s->len = bytes_to_keep;
-    while (bytes_to_keep >= item->len) {
+    while (item && bytes_to_keep >= item->len) {
         bytes_to_keep -= item->len;
         t = item;
         item = item->next;
     }
 
-    /* spilt chunk if needed */
+    /* split chunk if needed */
     if (bytes_to_keep)  {
         item->len = bytes_to_keep;
         t = item;
@@ -280,15 +282,14 @@ void sgTruncBack(sg s, uint32_t bytes_to_delete)
 void sgTruncFront(sg s, uint32_t bytes_to_delete)
 {
     struct sgitem *item = s->head, *t;
-    uint32_t bytes_to_keep;
 
     if (bytes_to_delete >= s->len)
         bytes_to_delete = s->len;
 
     /* delete all the chunks we wholly don't need */
-    s->len -= bytes_to_delete; 
-    while (bytes_to_delete >= item->len) {
-        bytes_to_keep -= item->len;
+    s->len -= bytes_to_delete;
+    while (item && bytes_to_delete >= item->len) {
+        bytes_to_delete -= item->len;
         t = item;
         item = item->next;
         sgitemFree(t);
@@ -469,7 +470,7 @@ sg sgSplit(sg s, uint32_t firstPart)
     /* if we got here, we have actual splitting we need to do... */
     ret->len = s->len - firstPart;
     s->len = firstPart;
-    while (i->len <= leftToCut) {
+    while (i && i->len <= leftToCut) {
         leftToCut -= i->len;
         p = i;
         i = i->next;
@@ -516,7 +517,7 @@ uint32_t sgSerialize(sg s, uint32_t offset, uint32_t len, void* dstBuf)
     struct sgitem *item = s->head;
     uint32_t origlen = len;
 
-    /* skip all complete citems we do not care about */
+    /* skip all complete items we do not care about */
     while (item && item->len <= offset) {
         offset -= item->len;
         item = item->next;
