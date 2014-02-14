@@ -1268,7 +1268,7 @@ static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
     if (conn->cfgRxState != L2C_CFG_STATE_INITIAL)
         loge("Unexpected internal inconsistency on conf req: expected %d saw %d\n", L2C_CFG_STATE_INITIAL, conn->cfgRxState);
 
-    /* go through every option and amkeup a reply. Note: no reply is longer than request, so this allocation works */
+    /* go through every option and make up a reply. Note: no reply is longer than request, so this allocation works */
     end = reply = (uint8_t*)malloc(len);
     if (!reply) {
         loge("Cannot allocate a conf reply\n");
