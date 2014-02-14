@@ -308,7 +308,6 @@ struct l2cSvcWork {
             void *userData;
             void *instance;
             uint8_t state;
-            void *data;
             uint32_t len;
         } state;
         struct {
@@ -556,12 +555,13 @@ static bool l2cPsmValid(psm_t psm)
  * USE:      Allocate a work item for the service worker
  * PARAMS:   type - the type of work
  *           reqID - the request ID used to signal completion
+ *           extraLen - how many bytes extra to allocate (for data past work struct)
  * RETURN:   work item or null
  * NOTES:
  */
-static struct l2cSvcWork* l2cSvcWorkAlloc(int type, void* reqID)
+static struct l2cSvcWork* l2cSvcWorkAlloc(int type, void* reqID, uint32_t extraLen)
 {
-    struct l2cSvcWork* w = (struct l2cSvcWork*)malloc(sizeof(struct l2cSvcWork));
+    struct l2cSvcWork* w = (struct l2cSvcWork*)malloc(sizeof(struct l2cSvcWork) + extraLen);
 
     if (w) {
         w->type = type;
@@ -583,7 +583,7 @@ static struct l2cSvcWork* l2cSvcWorkAlloc(int type, void* reqID)
  */
 static bool l2cSvcWorkSchedulePsmAlloc(psm_t psm, void* reqID, l2c_handle_t handle)
 {
-    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_PSM_INST_ALLOC, reqID);
+    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_PSM_INST_ALLOC, reqID, 0);
 
     if (!w)
         return false;
@@ -613,7 +613,7 @@ static bool l2cSvcWorkSchedulePsmConnectionlessRx(psm_t psm, void* reqID, l2c_ha
 {
     struct l2cSvcWork* w;
 
-    w = l2cSvcWorkAlloc(L2C_WORK_PSM_CONNECTIONLESS_RX, reqID);
+    w = l2cSvcWorkAlloc(L2C_WORK_PSM_CONNECTIONLESS_RX, reqID, 0);
     if (!w) {
         return false;
     }
@@ -642,7 +642,7 @@ static bool l2cSvcWorkSchedulePsmConnectionlessRx(psm_t psm, void* reqID, l2c_ha
  */
 static bool l2cSvcWorkScheduleFixedChAlloc(uint16_t chan, void* reqID, l2c_handle_t handle)
 {
-    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_FIXEDCH_INST_ALLOC, reqID);
+    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_FIXEDCH_INST_ALLOC, reqID, 0);
 
     if (!w)
         return false;
@@ -670,7 +670,7 @@ static bool l2cSvcWorkScheduleFixedChAlloc(uint16_t chan, void* reqID, l2c_handl
  */
 static bool l2cSvcWorkScheduleFixedChUnregister(uint16_t chan, void* reqID, void (*doneCbk)(void*), void *cbkData)
 {
-    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_FIXEDCH_UNREGISTER, reqID);
+    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_FIXEDCH_UNREGISTER, reqID, 0);
 
     if (!w)
         return false;
@@ -699,7 +699,7 @@ static bool l2cSvcWorkScheduleFixedChUnregister(uint16_t chan, void* reqID, void
  */
 static bool l2cSvcWorkSchedulePsmUnregister(psm_t psm, void* reqID, void (*doneCbk)(void*), void *cbkData)
 {
-    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_PSM_UNREGISTER, reqID);
+    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_PSM_UNREGISTER, reqID, 0);
 
     if (!w)
         return false;
@@ -727,40 +727,28 @@ static bool l2cSvcWorkSchedulePsmUnregister(psm_t psm, void* reqID, void (*doneC
  *           data - buffer a copy of which is passed to the callback
  *           len - the length of the buffer
  * RETURN:   NONE
- * NOTES:    actual call will happen in the worker thread. Buffer is copied
+ * NOTES:    actual call will happen in the worker thread. cannot supply a buffer!
  */
 static bool l2cSvcWorkScheduleStateCallDirect(void* reqID, l2cStateCbk stateCbk, void *userData, void *instance, uint8_t state, const void *data, uint32_t len)
 {
     struct l2cSvcWork* w;
-    void* copy;
 
-    copy = malloc(len);
-    if (!copy) {
-        loge("Failed to allocate service work data copy for state call!\n");
+    w = l2cSvcWorkAlloc(L2C_WORK_STATE_CBK, reqID, len);
+    if (!w)
         return false;
-    }
-
-    memcpy(copy, data, len);
-
-
-    w = l2cSvcWorkAlloc(L2C_WORK_STATE_CBK, reqID);
-    if (!w) {
-        free(copy);
-        return false;
-    }
 
     w->state.stateCbk = stateCbk;
     w->state.userData = userData;
     w->state.instance = instance;
     w->state.state = state;
-    w->state.data = copy;
     w->state.len = len;
+
+    memcpy(w + 1, data, len);
 
     if (workQueuePut(mServiceWork, w))
         return true;
 
     loge("Failed to enqueue service work for state call!\n");
-    free(copy);
     free(w);
     return false;
 }
@@ -794,7 +782,7 @@ static bool l2cSvcWorkScheduleStateCall(void* reqID, struct l2cConn* conn, uint8
  */
 static bool l2cSvcWorkScheduleConnUpdtCbk(void* reqID, l2cConnUpdateDoneCbk doneCbk, void *cbkData, bool success)
 {
-    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_CONN_UPDT_CBK, reqID);
+    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_CONN_UPDT_CBK, reqID, 0);
     if (!w)
         return false;
 
@@ -820,7 +808,7 @@ static bool l2cSvcWorkScheduleConnUpdtCbk(void* reqID, l2cConnUpdateDoneCbk done
  */
 static bool l2cSvcWorkScheduleAclLinkOpen(void* reqID, const struct bt_addr *addr)
 {
-    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_ACL_LINK_OPEN, reqID);
+    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_ACL_LINK_OPEN, reqID, 0);
     if (!w)
         return false;
 
@@ -843,7 +831,7 @@ static bool l2cSvcWorkScheduleAclLinkOpen(void* reqID, const struct bt_addr *add
  */
 static bool l2cSvcWorkScheduleAclLinkClose(void* reqID, const struct bt_addr *addr)
 {
-    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_ACL_LINK_CLOSE, reqID);
+    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_ACL_LINK_CLOSE, reqID, 0);
     if (!w)
         return false;
 
@@ -870,7 +858,7 @@ static bool l2cSvcWorkScheduleAclLinkClose(void* reqID, const struct bt_addr *ad
  */
 static bool l2cSvcWorkScheduleAclConnUpdt(void* reqID, hci_conn_t aclConnID, uint16_t minInt, uint16_t maxInt, uint16_t lat, uint16_t to)
 {
-    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_ACL_CONN_UPDT, reqID);
+    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_ACL_CONN_UPDT, reqID, 0);
     if (!w)
         return false;
 
@@ -898,7 +886,7 @@ static bool l2cSvcWorkScheduleAclConnUpdt(void* reqID, hci_conn_t aclConnID, uin
  */
 static bool l2cSvcWorkScheduleAclDemandEncr(void* reqID, hci_conn_t aclConnID)
 {
-    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_ACL_DEMAND_ENCR, reqID);
+    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_ACL_DEMAND_ENCR, reqID, 0);
     if (!w)
         return false;
 
@@ -922,7 +910,7 @@ static bool l2cSvcWorkScheduleAclDemandEncr(void* reqID, hci_conn_t aclConnID)
  */
 static bool l2cSvcWorkScheduleTryTx(void* reqID, bool useLeBuffers)
 {
-    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_TRY_HCI_TX, reqID);
+    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_TRY_HCI_TX, reqID, 0);
     if (!w)
         return false;
 
@@ -2871,9 +2859,7 @@ static void* l2cSvcWorker(void* unused)
             pthread_mutex_unlock(&mSvcsLock);
             break;
         case L2C_WORK_STATE_CBK:
-            work->state.stateCbk(work->state.userData, work->state.instance, work->state.state, work->state.data, work->state.len);
-            if (work->state.data)
-                free(work->state.data);
+            work->state.stateCbk(work->state.userData, work->state.instance, work->state.state, work + 1, work->state.len);
             break;
         case L2C_WORK_CONN_UPDT_CBK:
             work->connUpdtCbk.doneCbk(work->connUpdtCbk.cbkData, work->connUpdtCbk.success);
@@ -2994,10 +2980,6 @@ void l2cWorkFreeService(void *workItem)
     case L2C_WORK_PSM_CONNECTIONLESS_RX:
         sgFree(work->cl_rx.payload);
         break;
-    case L2C_WORK_STATE_CBK:
-        if (work->state.data)
-            free(work->state.data);
-            break;
     }
     free(work);
 }
