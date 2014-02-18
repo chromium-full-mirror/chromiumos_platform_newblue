@@ -1216,7 +1216,7 @@ static void l2cPsmSendConfig(struct l2cAclConn *aclConn, struct l2cConn *conn)
  */
 static void l2cChannelReadyForData(struct l2cAclConn *aclConn, struct l2cConn *conn)
 {
-    uint32_t mtu = conn->theirMtu;
+    uint16_t mtu = conn->theirMtu;
 
     l2cSvcWorkScheduleStateCall(conn, L2C_STATE_OPEN, &conn->handle, sizeof(l2c_handle_t));
     if (conn->psm)

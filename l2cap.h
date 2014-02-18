@@ -34,7 +34,7 @@ int l2cInit(void);
 
 /* callbacks for connections */
 #define L2C_STATE_OPEN       0 /* dataPtr points to l2c_handle_t */
-#define L2C_STATE_MTU        1 /* dataPtr points to a uint32_t mtu */
+#define L2C_STATE_MTU        1 /* dataPtr points to a uint16_t mtu */
 #define L2C_STATE_ENCR       2 /* dataPtr points nowhere, connection became encrypted */
 #define L2C_STATE_RX         3 /* dataPtr points to an sg */
 #define L2C_STATE_CLOSED     4 /* dataPtr points nowhere, or error on openining */ 
