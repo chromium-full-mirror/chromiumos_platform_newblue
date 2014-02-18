@@ -15,6 +15,7 @@
 #include "bt_vendor_lib.h"
 #include "vendorLib.h"
 #include "config.h"
+#include "timer.h"
 #include "l2cap.h"
 #include "util.h"
 #include "uniq.h"
@@ -42,6 +43,11 @@ static sem_t mInitSem;
 static pthread_t mWorkerThread;
 static int mWorkerClosePipe;
 
+static uint32_t mLpmTimeout = 0;
+static pthread_mutex_t mStateLock = PTHREAD_MUTEX_INITIALIZER;
+static uniq_t mSleepTimer = 0;
+static bool mChipAwake = false;
+
 
 /* for vendor lib callback */
 static uint16_t mCmdCompleteWaiting = 0;
@@ -55,6 +61,62 @@ typedef struct
     uint16_t          offset;
     uint16_t          layer_specific;
 } HC_BT_HDR;
+
+
+/*
+ * FUNCTION: vendorSleepTimeout
+ * USE:      Timer cbk for chip sleep
+ * PARAMS:   timer - the timer
+ *           userData - the uniqID of this request
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void vendorSleepTimeout(uniq_t timer, uniq_t userData)
+{
+    uint8_t state = BT_VND_LPM_WAKE_DEASSERT;
+
+    if (pthread_mutex_trylock(&mStateLock)) {
+        mSleepTimer = timerSet(mLpmTimeout, vendorSleepTimeout, userData); /* reset for later then */
+    } else {
+        if (mSleepTimer == userData && mChipAwake)
+            mChipAwake = false;
+        pthread_mutex_unlock(&mStateLock);
+        /* letting chip sleep now */
+        mVendorIface->op(BT_VND_OP_LPM_WAKE_SET_STATE, (void*)&state);
+    }
+}
+
+/*
+ * FUNCTION: vendorChipWake
+ * USE:      Wake chip. if needed
+ * PARAMS:   NONE
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void vendorChipWake(void)
+{
+    uint8_t state = BT_VND_LPM_WAKE_ASSERT;
+
+    if (!mLpmTimeout)
+        return;
+
+    pthread_mutex_lock(&mStateLock);
+    if (mChipAwake)
+        goto out;
+
+    if (mSleepTimer)
+        mSleepTimer = 0;
+
+    /* waking chip up now */
+    mVendorIface->op(BT_VND_OP_LPM_WAKE_SET_STATE, (void*)&state);
+
+    mSleepTimer = uniqGetNext();
+    timerSet(mLpmTimeout, vendorSleepTimeout, mSleepTimer);
+    mChipAwake = true;
+
+out:
+    pthread_mutex_unlock(&mStateLock);
+}
 
 /*
  * FUNCTION: vcbkSomeConfigDone
@@ -437,6 +499,7 @@ out:
  */
 bool vendorUp(const uint8_t *addr, vendorCbkChipUp chipUpCbk, vendorCbkRx dataRxCbk, void *chipCbkData)
 {
+    uint8_t tv8;
     int ret, tmp, fds[CH_MAX], pipeFds[2];
     static unsigned char local_addr[BT_MAC_LEN];
     static const bt_vendor_callbacks_t vendorCbks = {
@@ -471,6 +534,22 @@ bool vendorUp(const uint8_t *addr, vendorCbkChipUp chipUpCbk, vendorCbkRx dataRx
         loge("iface init failed with code %d\n", ret);
         return false;
     }
+
+    logd("vendor->op(BT_VND_OP_POWER_CTRL, off)\n");
+    tmp = BT_VND_PWR_OFF;
+    ret = mVendorIface->op(BT_VND_OP_POWER_CTRL, (void*)&tmp);
+    if (ret) {
+        loge("iface power off failed with code %d\n", ret);
+        goto out_need_close;
+    }
+
+    logd("vendor->op(BT_VND_OP_GET_LPM_IDLE_TIMEOUT)\n");
+    ret = mVendorIface->op(BT_VND_OP_GET_LPM_IDLE_TIMEOUT, (void*)&mLpmTimeout);
+    if (ret) {
+        loge("iface LPM TO get failed with code %d\n", ret);
+        goto out_need_close;
+    }
+    logi("Vendor timeout: %ums\n", (unsigned)mLpmTimeout);
 
     logd("vendor->op(BT_VND_OP_POWER_CTRL, on)\n");
     tmp = BT_VND_PWR_ON;
@@ -532,6 +611,17 @@ bool vendorUp(const uint8_t *addr, vendorCbkChipUp chipUpCbk, vendorCbkRx dataRx
     if (!mCbkResult)
         goto out_need_thread_shutdown;
 
+    logd("Setting LPM mode\n");
+    tv8 = BT_VND_LPM_ENABLE;
+    ret = mVendorIface->op(BT_VND_OP_LPM_SET_MODE, (void*)&tv8);
+    if (!ret) { /* yup .. this one returns nonzero on error */
+        loge("iface LPM config failed with code %d\n", ret);
+        goto out_need_thread_shutdown;
+    }
+    logd("Waiting for LPM init\n");
+    r_sem_wait(&mInitSem);
+    logd("LPM init done: %s\n", mCbkResult ? "OK" : "FAILED");
+
     return true;
 
 out_need_thread_shutdown:
@@ -575,6 +665,8 @@ bool vendorTx(uint8_t typ, sg data)
 {
     int fd, ret = 0;
     void *iter;
+
+    vendorChipWake();
 
     if (!sgConcatFrontCopy(data, &typ, 1))
         return false;
