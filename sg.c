@@ -596,6 +596,22 @@ void* sgIterAdvance(void *iter)
     return item->next;
 }
 
-
+/*
+ * FUNCTION: sgSerializeCutFront
+ * USE:      Serialize first ln bytes of sg into a buffer, then cut them of
+ * PARAMS:   s - the SG
+ *           buf - destination
+ *           len - num bytes to cut
+ * RETURN:   true if all went well
+ * NOTES:
+ */
+bool sgSerializeCutFront(sg s, void *buf, uint32_t len)
+{
+    if (sgLength(s) < len)
+        return false;
+    sgSerialize(s, 0, len, buf);
+    sgTruncFront(s, len);
+    return true;
+}
 
 

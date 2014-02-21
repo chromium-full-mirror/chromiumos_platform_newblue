@@ -44,6 +44,9 @@ sg sgSplit(sg s, uint32_t firstLen);
 //serialization
 uint32_t sgSerialize(sg s, uint32_t offset, uint32_t len, void* dstBuf);
 
+//combo
+bool sgSerializeCutFront(sg s, void *buf, uint32_t len);
+
 //iter start
 void* sgIterStart(sg s);               /* null means iteration is over */
 uint32_t sgIterCurLen(void *iter);     /* get "current" length */
