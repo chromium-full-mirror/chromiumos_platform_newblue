@@ -2732,6 +2732,8 @@ static void* l2cSvcWorker(void* unused)
     uint16_t chan;
     int status;
 
+    pthread_setname_np(pthread_self(), "bt_l2cap_worker");
+
     while(1) {
         void *instance = NULL;
         uint8_t result;

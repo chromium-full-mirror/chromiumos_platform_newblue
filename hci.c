@@ -857,6 +857,8 @@ static void* hciCbkWorker(void *unused)
     struct hciCbkWorkItem *w;
     int ret;
 
+    pthread_setname_np(pthread_self(), "bt_hci_callbacks");
+
     while (1) {
 
         ret = workQueueGet(mCallbackWork, (void**)&w);
@@ -1181,6 +1183,8 @@ static void* hciCmdSendWorker(void *unused)
 {
     struct hciCmdSendWorkItem *w;
     int ret, i;
+
+    pthread_setname_np(pthread_self(), "bt_hci_cmds_send");
 
     while (1) {
 

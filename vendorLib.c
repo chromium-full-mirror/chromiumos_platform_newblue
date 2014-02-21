@@ -276,6 +276,8 @@ static void* vendorWorker(void *pipeFdP)
     int pipeFd = (uintptr_t)pipeFdP;
     int i, ret;
 
+    pthread_setname_np(pthread_self(), "bt_vendor_worker");
+
     while (1) {
         struct pollfd pollfds[CH_MAX + 1] = {{0,},};
         int numfds = 0, exitPipeIdx;

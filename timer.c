@@ -62,6 +62,8 @@ static void* timersThread(void *unused)
 {
     struct timer *t, *toFire;
 
+    pthread_setname_np(pthread_self(), "bt_timers");
+
     do {
 
         pthread_mutex_lock(&mTimersLock);
