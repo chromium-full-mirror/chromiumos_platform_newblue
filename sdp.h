@@ -24,7 +24,15 @@
 #define SDP_SZ_u16                       6
 #define SDP_SZ_u32                       7
 
-#define SDP_ITEM_DESC(type, sz)          (((type << 3) & 0xF8) | (sz & 7))
+#define SDP_ITEM_DESC_TYPE_MASK          0xF8
+#define SDP_ITEM_DESC_TYPE_SHIFT         3
+#define SDP_ITEM_DESC_SIZE_MASK          0x07
+#define SDP_ITEM_DESC_SIZE_SHIFT         0
+#define SDP_ITEM_DESC(type, size)        ((((type) << SDP_ITEM_DESC_TYPE_SHIFT) & SDP_ITEM_DESC_TYPE_MASK) | \
+                                          (((size) << SDP_ITEM_DESC_SIZE_SHIFT) & SDP_ITEM_DESC_SIZE_MASK))
+#define SDP_ITEM_GET_TYPE(desc)          (((desc) & SDP_ITEM_DESC_TYPE_MASK) >> SDP_ITEM_DESC_TYPE_SHIFT)
+#define SDP_ITEM_GET_SIZE(desc)          (((desc) & SDP_ITEM_DESC_SIZE_MASK) >> SDP_ITEM_DESC_SIZE_SHIFT)
+
 
 /* useful attribute IDs */
 #define SDP_ATTR_HANDLE                  0x0000
