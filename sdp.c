@@ -274,6 +274,7 @@ bool sdpServiceDescriptorDel(uint32_t handle)
 static bool sdpSend(struct sdpInst *inst, sg s)
 {
     //TODO: this (will need worker thread & maybe some ratelimiting)
+    return false;
 }
 
 /*
@@ -393,17 +394,27 @@ static uint16_t sdpGetSearchReq(sg req, struct uuid *uuids, uint8_t *numUuidsP)
  * FUNCTION: sdpGetCont
  * USE:      Read a continuation state in our format from an SG
  * PARAMS:   req - the SG to read from
+ *           ofst - offset in the SG to read from
+ *           trunc - truncate the cont away? (only available if ofst == 0)
  *           contP - where to store the state (or 0 if none is present in a valid way)
  * RETURN:   error code to return or 0 for success
  * NOTES:
  */
-static uint16_t sdpGetCont(sg req, uniq_t *contP)
+static uint16_t sdpGetCont(sg req, uint32_t ofst, bool trunc, uniq_t *contP)
 {
     uint8_t len;
 
-    if (!sgSerializeCutFront(req, &len, 1))
+    if (ofst && trunc) {
+        loge("Cannot truncate cont not at start of req\n");
+        trunc = false;
+    }
+
+    if (sizeof(uint8_t) != sgSerialize(req, ofst++, sizeof(uint8_t), &len))
         return SDP_ERR_Invalid_Request_Syntax;
     len = utilGetBE8(&len);
+
+    if (trunc)
+        sgTruncFront(req, sizeof(uint8_t));
 
     if (!len) {
         *contP = 0;
@@ -414,8 +425,11 @@ static uint16_t sdpGetCont(sg req, uniq_t *contP)
         return SDP_ERR_Invalid_Request_Syntax;
 
     /* we use our endianness here - other side assumes cont state is opaque */
-    if (!sgSerializeCutFront(req, contP, sizeof(uniq_t)))
+    if (sizeof(uniq_t) != sgSerialize(req, ofst, sizeof(uniq_t), contP))
         return SDP_ERR_Invalid_Request_Syntax;
+
+    if (trunc)
+        sgTruncFront(req, sizeof(uniq_t));
 
     return 0;
 }
@@ -448,12 +462,12 @@ static bool sdpAppendCont(struct sdpInst *inst, sg req)
  * PARAMS:   inst - the instance
  *           uuids - the uuids we want to find
  *           numUuids - how mnay there are
- *           maxRes - do not return more than this many results
+ *           maxRes - do not return more than this many results (negative for no maximum)
  *           resP - put head of result linked list here
  * RETURN:   error to return to other size or 0 if none
  * NOTES:    call with mSvcsLock held for read
  */
-static uint16_t sdpDoSearch(struct sdpInst *inst, const struct uuid *uuids, uint8_t numUuids, uint16_t maxRes, struct sdpSearchResultNode **resP)
+static uint16_t sdpDoSearch(struct sdpInst *inst, const struct uuid *uuids, uint8_t numUuids, int32_t maxRes, struct sdpSearchResultNode **resP)
 {
     const uint16_t wantMask = (1 << numUuids) - 1;
     struct sdpSearchResultNode *res = NULL;
@@ -530,6 +544,9 @@ static uint16_t sdpDoSearch(struct sdpInst *inst, const struct uuid *uuids, uint
 
         if (haveMask == wantMask) { /* we have a match */
 
+            if (!maxRes--)
+                break;
+
             struct sdpSearchResultNode *rn = (struct sdpSearchResultNode*)malloc(sizeof(struct sdpSearchResultNode));
             if (rn) {
                 rn->next = res;
@@ -578,7 +595,7 @@ static bool sdpSSR(struct sdpInst *inst, uint16_t transact, sg req)
     if (!maxHandles)
         return sdpSendError(inst, transact, SDP_ERR_Invalid_Request_Syntax);
 
-    err = sdpGetCont(req, &cont);
+    err = sdpGetCont(req, 0, true, &cont);
     if (err)
         return sdpSendError(inst, transact, err);
 
@@ -597,7 +614,7 @@ static bool sdpSSR(struct sdpInst *inst, uint16_t transact, sg req)
 
     if (!cont) { /* new request - perform the actual search */
 
-        err = sdpDoSearch(inst, searchReq, searchReqNum, maxHandles, &searchRes);
+        err = sdpDoSearch(inst, searchReq, searchReqNum, (uint32_t)maxHandles, &searchRes);
         if (err)
             return sdpSendError(inst, transact, err);
 
@@ -670,6 +687,324 @@ out_nomem:
 }
 
 /*
+ * FUNCTION: sdpCheckContAR
+ * USE:      See if an incoming SAR or SSAR request is a continuation of a previous one
+ * PARAMS:   inst - the instance
+ *           transact - the transaction ID
+ *           req - the request
+ *           maxRetBytes - max bytes to return
+ *           retP - store return codo here
+ * RETURN:   true if cont was found and we handled it. false to treat this as a new request
+ * NOTES:
+ */
+static bool sdpCheckContAR(struct sdpInst *inst, uint16_t transact, sg req, uint16_t maxRetBytes, bool *retP)
+{
+    uint8_t buf[4];
+    uint32_t ofst = 0;
+    uniq_t cont;
+
+    /* we need to first skip the data_sequence attr_id_list */
+    if (sgLength(req) <= ofst)
+        return false;
+
+    /* read data sequence header, sanity check it, skip it */
+    sgSerialize(req, ofst++, 1, buf);
+    buf[0] = utilGetBE8(buf + 0);
+    if (SDP_ITEM_GET_TYPE(buf[0]) != SDP_TYPE_ARRAY)
+        return false;
+    switch (SDP_ITEM_GET_SIZE(buf[0])) {
+    case SDP_SZ_u8:
+        if (sgLength(req) < ofst + sizeof(uint8_t))
+            return false;
+        sgSerialize(req, ofst, sizeof(uint8_t), buf);
+        ofst += sizeof(uint8_t) + utilGetBE8(buf);
+        break;
+    case SDP_SZ_u16:
+        if (sgLength(req) < ofst + sizeof(uint16_t))
+            return false;
+        sgSerialize(req, ofst, sizeof(uint16_t), buf);
+        ofst += sizeof(uint16_t) + utilGetBE16(buf);
+        break;
+    case SDP_SZ_u32:
+        if (sgLength(req) < ofst + sizeof(uint32_t))
+            return false;
+        sgSerialize(req, ofst, sizeof(uint32_t), buf);
+        ofst += sizeof(uint32_t) + utilGetBE32(buf);
+        break;
+    default:
+        return false;
+    }
+
+    if (sgLength(req) <= ofst)
+        return false;
+
+    /* now read cont state */
+    if (sdpGetCont(req, ofst, false, &cont))
+        return false;
+
+    if (cont && cont == inst->contVal) {
+        *retP = sdpSendResultsAR(inst, transact, req, maxRetBytes);
+        return true;
+    }
+    if (inst->contVal) {
+        logw("dropping existing cont\n");
+        sgFree(inst->contResult);
+        inst->contVal = 0;
+    }
+
+    if (cont)
+        logw("Invalid cont seen - ignoring\n");
+
+    return false;
+}
+
+/*
+ * FUNCTION: sdpGetNextAttrRange
+ * USE:      Grab the next wanted attr range from the request
+ * PARAMS:   req - the request
+ *           ofstP - where to read from and store to the current offsent in the req
+ *           len - lengs of req to consider
+ *           firstP - where to store first attr id in range
+ *           lastP - where to store last attr id in range
+ * RETURN:   success
+ * NOTES:
+ */
+static bool sdpGetNextAttrRange(sg req, uint32_t *ofstP, uint32_t len, uint16_t *firstP, uint16_t *lastP)
+{
+    uint8_t buf[4];
+
+    if (*ofstP >= len)
+        return false;
+
+    sgSerialize(req, (*ofstP)++, sizeof(uint8_t), buf);
+    buf[0] = utilGetBE8(buf);
+
+    if (SDP_ITEM_GET_TYPE(buf[0]) != SDP_TYPE_UINT)
+        return false;
+
+    switch (SDP_ITEM_GET_SIZE(buf[0])) {
+    case SDP_SZ_2:
+        if (*ofstP + sizeof(uint16_t) > len)
+            return 0;
+        sgSerialize(req, *ofstP, sizeof(uint16_t), buf);
+        *ofstP += sizeof(uint16_t);
+        *firstP = *lastP = utilGetBE16(buf);
+        return true;
+    case SDP_SZ_4:
+        if (*ofstP + sizeof(uint32_t) > len)
+            return 0;
+        sgSerialize(req, *ofstP, sizeof(uint32_t), buf);
+        *ofstP += sizeof(uint32_t);
+        *firstP = utilGetBE32(buf) >> 16;
+        *lastP = utilGetBE32(buf);
+        return true;
+    default:
+        return false;
+    }
+}
+
+/*
+ * FUNCTION: sdpWrap
+ * USE:      Wrap the entire SG into an SDP "data sequence" wrapper
+ * PARAMS:   s - the sg
+ * RETURN:   success
+ * NOTES:
+ */
+static bool sdpWrap(sg s)
+{
+    uint8_t hdr[5], hlen = 0;
+    uint32_t len = sgLength(s);
+
+    if (len < 0xff) {
+        hdr[hlen++] = SDP_ITEM_DESC(SDP_TYPE_ARRAY, SDP_SZ_u8);
+        utilSetBE8(hdr + hlen, len);
+        hlen += sizeof(uint8_t);
+    } else if (len < 0xffff) {
+        hdr[hlen++] = SDP_ITEM_DESC(SDP_TYPE_ARRAY, SDP_SZ_u16);
+        utilSetBE16(hdr + hlen, len);
+        hlen += sizeof(uint16_t);
+    } else {
+        hdr[hlen++] = SDP_ITEM_DESC(SDP_TYPE_ARRAY, SDP_SZ_u32);
+        utilSetBE32(hdr + hlen, len);
+        hlen += sizeof(uint32_t);
+    }
+
+    return sgConcatFrontCopy(s, hdr, hlen);
+}
+
+/*
+ * FUNCTION: sdpDoAR
+ * USE:      Handle the "AR" part of the SAR or SSAR request
+ * PARAMS:   inst - the instance
+ *           transact - the transaction ID
+ *           req - the request
+ *           maxRetBytes - how many attr bytes max to return
+ *           res - the list of services (list to be freed by this func)
+ *           doWrap - set to wrap each service's reply into an array
+ * RETURN:   false on error
+ * NOTES:    call with mSvcsLock held for read
+ */
+static bool sdpDoAR(struct sdpInst *inst, uint16_t transact, sg req, uint16_t maxRetBytes, struct sdpSearchResultNode *res, bool doWrap)
+{
+    sg ret;
+    uint32_t attrListLen = 0;
+    uint8_t buf[4];
+
+    /* get & check collection header, find size */
+    if (!sgSerializeCutFront(req, buf, sizeof(uint8_t)))
+        goto syntax_err;
+    buf[0] = utilGetBE8(buf + 0);
+
+    if (SDP_ITEM_GET_TYPE(buf[0]) != SDP_TYPE_ARRAY)
+        goto syntax_err;
+
+    switch (SDP_ITEM_GET_SIZE(buf[0])) {
+    case SDP_SZ_u8:
+        if (!sgSerializeCutFront(req, buf, sizeof(uint8_t)))
+            goto syntax_err;
+        attrListLen = utilGetBE8(buf);
+        break;
+    case SDP_SZ_u16:
+        if (!sgSerializeCutFront(req, buf, sizeof(uint16_t)))
+            goto syntax_err;
+        attrListLen = utilGetBE16(buf);
+        break;
+    case SDP_SZ_u32:
+        if (!sgSerializeCutFront(req, buf, sizeof(uint32_t)))
+            goto syntax_err;
+        attrListLen = utilGetBE32(buf);
+        break;
+    default:
+        goto syntax_err;
+    }
+
+    if (sgLength(req) < attrListLen)
+        goto syntax_err;
+
+    ret = sgNew();
+    if (!ret)
+        goto oom_ret;
+
+    while (res) {
+        struct sdpSearchResultNode *t = res;
+        struct sdpService *ss = t->ss;
+        const uint8_t *ptr = ss->descr;
+        const uint8_t *end = ptr + ss->len;
+        bool needNewAttr = true;
+        bool needNewRange = true;
+        uint16_t first = 0, last = 0;
+        uint32_t ofst = 0;
+        uint16_t attrid = 0;
+        const void* attrPtr = NULL;
+        uint32_t attrLen = 0, hdrLen = 4 /* at least this much always */;
+
+
+        sg part = sgNew();
+
+        if (!part)
+            goto oom;
+
+        res = res->next;
+        free(t);
+
+        /* both attrs in the service description and in request are sorted - this helps us to do this in O(n) */
+
+        while (1) {
+            
+            if (needNewRange && !sdpGetNextAttrRange(req, &ofst, attrListLen, &first, &last))
+                break;
+            needNewRange = false;
+
+            if (needNewAttr) {
+
+                if (ptr >= end)
+                    break;
+
+                needNewAttr = false;
+
+                attrPtr = ptr;
+                if (SDP_ITEM_GET_TYPE(*ptr) != SDP_TYPE_UINT) {
+                    logw("attrID not uint in SDP record\n");
+                    break;
+                }
+                if (SDP_ITEM_GET_SIZE(*ptr) != SDP_SZ_2) {
+                    logw("attrID not uint16 in SDP record\n");
+                    break;
+                }
+                attrid = utilGetBE16(ptr + 1);
+                ptr += 3;
+
+                if (SDP_ITEM_GET_TYPE(*ptr) == SDP_TYPE_NIL) { /* we do not care about nils */
+                    needNewAttr = true;
+                    continue;
+                }
+                switch(SDP_ITEM_GET_SIZE(*ptr)){
+                case SDP_SZ_1:
+                    attrLen = 1;
+                    break;
+                case SDP_SZ_2:
+                    attrLen = 2;
+                    break;
+                case SDP_SZ_4:
+                    attrLen = 4;
+                    break;
+                case SDP_SZ_8:
+                    attrLen = 8;
+                    break;
+                case SDP_SZ_16:
+                    attrLen = 16;
+                    break;
+                case SDP_SZ_u8:
+                    attrLen = utilGetBE8(ptr + 1);
+                    hdrLen += sizeof(uint8_t);
+                    ptr += sizeof(uint8_t);
+                    break;
+                case SDP_SZ_u16:
+                    attrLen = utilGetBE16(ptr + 1);
+                    hdrLen += sizeof(uint16_t);
+                    ptr += sizeof(uint16_t);
+                    break;
+                case SDP_SZ_u32:
+                    attrLen = utilGetBE32(ptr + 1);
+                    hdrLen += sizeof(uint32_t);
+                    ptr += sizeof(uint32_t);
+                    break;
+                }
+                ptr += attrLen;
+            }
+
+            needNewAttr = attrid <= last;
+            needNewRange = attrid >= last;
+
+            if (attrid >= first && attrid <= last && !sgConcatBackCopy(part, attrPtr, attrLen + hdrLen))
+                logw("failed to concat %ub to AR part\n", attrLen + hdrLen);
+        }
+
+        if (sgLength(part) && (!doWrap || sdpWrap(part)))
+            sgConcat(ret, part);
+        else
+            sgFree(part);
+    }
+    inst->contVal = uniqGetNext();
+    inst->contResult = ret;
+
+    return sdpSendResultsAR(inst, transact, req, maxRetBytes);
+
+oom:
+    while (res) {
+        struct sdpSearchResultNode *t = res;
+        res = res->next;
+        free(t);
+    }
+    sgFree(ret);
+oom_ret:
+    return sdpSendError(inst, transact, SDP_ERR_Insufficient_Resources);
+
+syntax_err:
+    return sdpSendError(inst, transact, SDP_ERR_Invalid_Request_Syntax);
+}
+
+/*
  * FUNCTION: sdpSAR
  * USE:      Handle an incoming service attribute request
  * PARAMS:   inst - the instance
@@ -680,8 +1015,45 @@ out_nomem:
  */
 static bool sdpSAR(struct sdpInst *inst, uint16_t transact, sg req)
 {
+    struct sdpSearchResultNode *res;
+    struct sdpService *ss;
+    uint16_t maxRetBytes;
+    uint32_t handle;
+    bool ret;
 
+    /* get handle */
+    if (!sgSerializeCutFront(req, &handle, sizeof(handle)))
+        return sdpSendError(inst, transact, SDP_ERR_Invalid_Request_Syntax);
+    handle = utilGetBE32(&handle);
+
+    /* get the service */
+    ss = sdpServiceFindByHandle(handle);
+    if (!ss)
+        return sdpSendError(inst, transact, SDP_ERR_Invalid_Service_Record_Handle);
+
+    /* get wanted max reply len */
+    if (!sgSerializeCutFront(req, &maxRetBytes, sizeof(maxRetBytes)))
+        return sdpSendError(inst, transact, SDP_ERR_Invalid_Request_Syntax);
+    maxRetBytes = utilGetBE16(&maxRetBytes);
+
+    if (maxRetBytes < 7) /* as per spec */
+        return sdpSendError(inst, transact, SDP_ERR_Invalid_Request_Syntax);
+
+    /* check if continued request */
+    if (sdpCheckContAR(inst, transact, req, maxRetBytes, &ret))
+        return ret;
+
+    /* create a node containing it */
+    res = (struct sdpSearchResultNode*)malloc(sizeof(struct sdpSearchResultNode));
+    if (res)
+        return sdpSendError(inst, transact, SDP_ERR_Insufficient_Resources);
+    res->ss = ss;
+    res->next = NULL;
+
+    /* grab the wanted attributes */
+    return sdpDoAR(inst, transact, req, maxRetBytes, res, false);
 }
+
 /*
  * FUNCTION: sdpSSAR
  * USE:      Handle an incoming service search attribute request
@@ -692,7 +1064,38 @@ static bool sdpSAR(struct sdpInst *inst, uint16_t transact, sg req)
  */
 static bool sdpSSAR(struct sdpInst *inst, uint16_t transact, sg req)
 {
+    struct uuid searchReq[SDP_MAX_UUIDS_IN_SEARCH];
+    struct sdpSearchResultNode *searchRes;
+    uint16_t maxRetBytes;
+    uint8_t searchReqNum;
+    uint16_t err;
+    bool ret;
 
+    err = sdpGetSearchReq(req, searchReq, &searchReqNum);
+    if (err)
+        return sdpSendError(inst, transact, err);
+
+    if (!searchReqNum)
+        return sdpSendError(inst, transact, SDP_ERR_Invalid_Request_Syntax);
+
+    /* get wanted max reply len */
+    if (!sgSerializeCutFront(req, &maxRetBytes, sizeof(maxRetBytes)))
+        return sdpSendError(inst, transact, SDP_ERR_Invalid_Request_Syntax);
+    maxRetBytes = utilGetBE16(&maxRetBytes);
+
+    if (maxRetBytes < 7) /* as per spec */
+        return sdpSendError(inst, transact, SDP_ERR_Invalid_Request_Syntax);
+
+    /* check if continued request */
+    if (sdpCheckContAR(inst, transact, req, maxRetBytes, &ret))
+        return ret;
+
+    err = sdpDoSearch(inst, searchReq, searchReqNum, -1, &searchRes);
+    if (err)
+        return sdpSendError(inst, transact, err);
+
+    /* grab the wanted attributes */
+    return sdpDoAR(inst, transact, req, maxRetBytes, searchRes, true);
 }
 
 /*
