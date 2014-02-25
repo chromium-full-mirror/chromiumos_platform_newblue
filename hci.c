@@ -3809,8 +3809,8 @@ static void hciHandleConnAclDown(uint16_t cid, uint8_t reason)
             /* nothing here really */
             break;
         }
+        hciConnAclStructDel(conn);
     }
-    hciConnAclStructDel(conn);
     pthread_mutex_unlock(&mConnsLock);
 }
 
