@@ -222,6 +222,9 @@ bool sendQueueTx(struct sendQ *q, l2c_handle_t conn, sg s)
             else
                 q->head = t;
             q->tail = t;
+
+            pthread_cond_signal(&q->cond);
+            ret = true;
         }
     }
 
