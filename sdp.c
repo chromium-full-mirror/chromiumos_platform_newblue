@@ -585,6 +585,8 @@ static bool sdpSSR(struct sdpInst *inst, uint16_t transact, sg req)
     if (err)
         return sdpSendError(inst, transact, err);
 
+    logd("SSR query has %u UUIDS\n", searchReqNum);
+
     if (!searchReqNum)
         return sdpSendError(inst, transact, SDP_ERR_Invalid_Request_Syntax);
 
@@ -592,6 +594,8 @@ static bool sdpSSR(struct sdpInst *inst, uint16_t transact, sg req)
         return sdpSendError(inst, transact, SDP_ERR_Invalid_Request_Syntax);
 
     maxHandles = utilGetBE16(&maxHandles);
+
+    logd("SSR max handles: %u\n", maxHandles);
 
     if (!maxHandles)
         return sdpSendError(inst, transact, SDP_ERR_Invalid_Request_Syntax);
@@ -705,7 +709,6 @@ static bool sdpSendResultsAR(struct sdpInst *inst, uint8_t pduType, uint16_t tra
 {
     uint16_t sendBytes = sgLength(inst->contResult);
     uint8_t buf[sizeof(uint16_t)];
-    bool hasCont = false;
     struct sdpPdu pdu;
     sg s, t;
 
@@ -734,13 +737,11 @@ static bool sdpSendResultsAR(struct sdpInst *inst, uint8_t pduType, uint16_t tra
     if (!t)
         return false;
     s = inst->contResult;
-    if (sgLength(t)) {
-        hasCont = true;
-        inst->contResult = t;
-    } else {
-        inst->contResult = false;
+    if (!sgLength(t)) {
         sgFree(t);
+        t= NULL;
     }
+    inst->contResult = t;
 
     /* add the first part of the reply (length) */
     utilSetBE16(buf, sgLength(s));
@@ -968,6 +969,8 @@ static bool sdpDoAR(struct sdpInst *inst, uint8_t pduType, uint16_t transact, sg
     if (sgLength(req) < attrListLen)
         goto syntax_err;
 
+    logd("AR attr list len %ub\n", attrListLen);
+
     ret = sgNew();
     if (!ret)
         goto oom_ret;
@@ -984,7 +987,6 @@ static bool sdpDoAR(struct sdpInst *inst, uint8_t pduType, uint16_t transact, sg
         uint16_t attrid = 0;
         const void* attrPtr = NULL;
         uint32_t attrLen = 0, hdrLen = 4 /* at least this much always */;
-
 
         sg part = sgNew();
 
@@ -1028,33 +1030,38 @@ static bool sdpDoAR(struct sdpInst *inst, uint8_t pduType, uint16_t transact, sg
                 switch(SDP_ITEM_GET_SIZE(*ptr)){
                 case SDP_SZ_1:
                     attrLen = 1;
+                    ptr++;
                     break;
                 case SDP_SZ_2:
                     attrLen = 2;
+                    ptr++;
                     break;
                 case SDP_SZ_4:
                     attrLen = 4;
+                    ptr++;
                     break;
                 case SDP_SZ_8:
                     attrLen = 8;
+                    ptr++;
                     break;
                 case SDP_SZ_16:
                     attrLen = 16;
+                    ptr++;
                     break;
                 case SDP_SZ_u8:
                     attrLen = utilGetBE8(ptr + 1);
                     hdrLen += sizeof(uint8_t);
-                    ptr += sizeof(uint8_t);
+                    ptr += sizeof(uint8_t) + 1;
                     break;
                 case SDP_SZ_u16:
                     attrLen = utilGetBE16(ptr + 1);
                     hdrLen += sizeof(uint16_t);
-                    ptr += sizeof(uint16_t);
+                    ptr += sizeof(uint16_t) + 1;
                     break;
                 case SDP_SZ_u32:
                     attrLen = utilGetBE32(ptr + 1);
                     hdrLen += sizeof(uint32_t);
-                    ptr += sizeof(uint32_t);
+                    ptr += sizeof(uint32_t) + 1;
                     break;
                 }
                 ptr += attrLen;
@@ -1129,9 +1136,13 @@ static bool sdpSAR(struct sdpInst *inst, uint16_t transact, sg req)
     if (maxRetBytes < 7) /* as per spec */
         return sdpSendError(inst, transact, SDP_ERR_Invalid_Request_Syntax);
 
+    logd("SAR max reply len: %u\n", maxRetBytes);
+
     /* check if continued request */
     if (sdpCheckContAR(inst, SDP_PDU_Service_Attribute_Response, transact, req, maxRetBytes, &ret))
         return ret;
+
+    logd("SAR not cont. Proceeding with search\n");
 
     /* create a node containing it */
     res = (struct sdpSearchResultNode*)malloc(sizeof(struct sdpSearchResultNode));
@@ -1165,6 +1176,8 @@ static bool sdpSSAR(struct sdpInst *inst, uint16_t transact, sg req)
     if (err)
         return sdpSendError(inst, transact, err);
 
+    logd("SSAR query has %u UUIDS\n", searchReqNum);
+
     if (!searchReqNum)
         return sdpSendError(inst, transact, SDP_ERR_Invalid_Request_Syntax);
 
@@ -1173,12 +1186,16 @@ static bool sdpSSAR(struct sdpInst *inst, uint16_t transact, sg req)
         return sdpSendError(inst, transact, SDP_ERR_Invalid_Request_Syntax);
     maxRetBytes = utilGetBE16(&maxRetBytes);
 
+    logd("SSAR max reply len: %u\n", maxRetBytes);
+
     if (maxRetBytes < 7) /* as per spec */
         return sdpSendError(inst, transact, SDP_ERR_Invalid_Request_Syntax);
 
     /* check if continued request */
     if (sdpCheckContAR(inst, SDP_PDU_Service_Search_Attribute_Response, transact, req, maxRetBytes, &ret))
         return ret;
+
+    logd("SSAR not cont. Proceeding with search\n");
 
     err = sdpDoSearch(inst, searchReq, searchReqNum, -1, &searchRes);
     if (err)
@@ -1212,6 +1229,8 @@ static bool sdpRx(struct sdpInst *inst, sg req)
 
     if (paramLen != sgLength(req))
         return sdpSendError(inst, transact, SDP_ERR_Invalid_PDU_Size);
+
+    logd("SDP req %u trans %u with %ub of params\n", pduType, transact, paramLen);
 
     switch (pduType) {
     case SDP_PDU_Service_Search_Request:
