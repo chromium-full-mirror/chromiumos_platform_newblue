@@ -13,6 +13,17 @@
 #define HCI_PKT_TYP_SCO         0x03
 #define HCI_PKT_TYP_EVT         0x04
 
+#define HCI_PIN_MAX_LEN         16
+#define HCI_LINK_KEY_LEN        16
+#define HCI_OOB_LEN             16
+
+#define HCI_SSP_NUMERIC_INVALID 1000000UL
+#define HCI_SSP_ENTRY_STARTED   0
+#define HCI_SSP_ENTRY_DIGIT_ADD 1
+#define HCI_SSP_ENTRY_DIGIT_SUB 2
+#define HCI_SSP_ENTRY_ERASED    3
+#define HCI_SSP_ENTRY_DONE      4
+
 
 #define HCI_EIR_DATA_LEN        240
 #define HCI_RSSI_UNKNOWN        127
