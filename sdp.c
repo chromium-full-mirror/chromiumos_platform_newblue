@@ -189,6 +189,9 @@ static bool sdpServiceDescriptorAddInt(const void *svc, uint32_t len, uint32_t h
         mSvcsTail->next = ss;
     else
         mSvcsHead = ss;
+
+    mSvcsTail = ss;
+
     return true;
 }
 
@@ -475,7 +478,7 @@ static uint16_t sdpDoSearch(struct sdpInst *inst, const struct uuid *uuids, uint
     struct sdpService *ss;
     uint8_t i;
 
-    for (ss = mSvcsHead; ss; ss = ss->next) {
+    for (ss = mSvcsTail; ss; ss = ss->prev) { /* in reverse since we also create th elinked list in reverse  - they balance out */
         const uint8_t *ptr = ss->descr, *end = ptr + ss->len;
         uint16_t haveMask = 0;
         struct uuid uuid = {0,};
@@ -544,7 +547,6 @@ static uint16_t sdpDoSearch(struct sdpInst *inst, const struct uuid *uuids, uint
         }
 
         if (haveMask == wantMask) { /* we have a match */
-
             if (!maxRes--)
                 break;
 
@@ -986,7 +988,9 @@ static bool sdpDoAR(struct sdpInst *inst, uint8_t pduType, uint16_t transact, sg
         uint32_t ofst = 0;
         uint16_t attrid = 0;
         const void* attrPtr = NULL;
-        uint32_t attrLen = 0, hdrLen = 4 /* at least this much always */;
+        uint32_t attrLen = 0, hdrLen = 0;
+
+        const uint8_t *_start = ptr;
 
         sg part = sgNew();
 
@@ -1010,6 +1014,7 @@ static bool sdpDoAR(struct sdpInst *inst, uint8_t pduType, uint16_t transact, sg
                     break;
 
                 needNewAttr = false;
+                hdrLen = 4 /* at least this much always */;
 
                 attrPtr = ptr;
                 if (SDP_ITEM_GET_TYPE(*ptr) != SDP_TYPE_UINT) {
