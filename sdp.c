@@ -1289,7 +1289,7 @@ static void sdpInstState(void *userData, void *instance, uint8_t state, const vo
         break;
     case L2C_STATE_CLOSED:
         logi("SDP closed\n");
-        if (inst->contVal)
+        if (inst->contResult)
             sgFree(inst->contResult);
         sendQueueDelPackets(mSendQ, inst->conn);
         free(inst);
