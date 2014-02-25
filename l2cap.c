@@ -2329,7 +2329,6 @@ static bool l2cSendRxToChannel(struct l2cAclConn *aclConn, uint16_t chan, sg pay
             return true;
     }
 
-    sgFree(payload);
     return false;
 }
 
