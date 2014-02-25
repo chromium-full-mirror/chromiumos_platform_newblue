@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "l2cap.h"
+#include "sendQ.h"
 #include "uniq.h"
 #include "util.h"
 #include "sdp.h"
@@ -87,6 +88,7 @@ static pthread_rwlock_t mSvcsLock = PTHREAD_RWLOCK_INITIALIZER;
 static struct sdpService *mSvcsHead = NULL;
 static struct sdpService *mSvcsTail = NULL;
 static uint32_t mNextHandle = SDP_HANDLE_FIRST;
+static struct sendQ *mSendQ;
 
 
 /*
@@ -273,8 +275,7 @@ bool sdpServiceDescriptorDel(uint32_t handle)
  */
 static bool sdpSend(struct sdpInst *inst, sg s)
 {
-    //TODO: this (will need worker thread & maybe some ratelimiting)
-    return false;
+    return sendQueueTx(mSendQ, inst->conn, s);
 }
 
 /*
@@ -679,7 +680,11 @@ static bool sdpSSR(struct sdpInst *inst, uint16_t transact, sg req)
         goto out_nomem;
 
     /* send it */
-    return sdpSend(inst, rsg);
+    if (sdpSend(inst, rsg))
+        return true;
+
+    sgFree(rsg);
+    return false;
 
 out_nomem:
     sgFree(rsg);
@@ -687,9 +692,90 @@ out_nomem:
 }
 
 /*
+ * FUNCTION: sdpSendResultsAR
+ * USE:      Send a chunk of the AR response, and create & send & record a new cont value
+ * PARAMS:   inst - the instance
+ *           pduType - the PDU type to send
+ *           transact - the transaction ID
+ *           maxRetBytes - max bytes to return
+ * RETURN:   success
+ * NOTES:    inst->contVal is laready the new cont - we just package it up and send it
+ */
+static bool sdpSendResultsAR(struct sdpInst *inst, uint8_t pduType, uint16_t transact, uint16_t maxRetBytes)
+{
+    uint16_t sendBytes = sgLength(inst->contResult);
+    uint8_t buf[sizeof(uint16_t)];
+    bool hasCont = false;
+    struct sdpPdu pdu;
+    sg s, t;
+
+    /*
+     * There are a few limitations on our send size in play here. We have: the MTU, the
+     * requested max reply size, the representation limits of various "size" fields, and
+     * the amount of data we have. The repreentatin limit does not need to be checked
+     * against since the L2C MTU itself is also 16-bits long anyways and thus protects
+     * us. We will first see if we can send all the data at once. If not, we'll then
+     * decide how to segment it.
+     */
+    if (sgLength(inst->contResult) > maxRetBytes || inst->mtu > sgLength(inst->contResult) + sizeof(struct sdpPdu) + sizeof(uint16_t)/* size */ + sizeof(uint8_t)/*no-cont header */) {
+        const uint16_t maxAllowedByMtu = inst->mtu - sizeof(struct sdpPdu) - sizeof(struct sdpCont) - sizeof(uint16_t)/* size */;
+
+        /* limit to requested size */
+        if (sendBytes > maxRetBytes)
+            sendBytes = maxRetBytes;
+
+        /* limit to mtu */
+        if (sendBytes > maxAllowedByMtu)
+            sendBytes = maxAllowedByMtu;
+    }
+
+    /* grab the data to send into s */
+    t = sgSplit(inst->contResult, sendBytes);
+    if (!t)
+        return false;
+    s = inst->contResult;
+    if (sgLength(t)) {
+        hasCont = true;
+        inst->contResult = t;
+    } else {
+        inst->contResult = false;
+        sgFree(t);
+    }
+
+    /* add the first part of the reply (length) */
+    utilSetBE16(buf, sgLength(s));
+    if (!sgConcatFrontCopy(s, buf, sizeof(uint16_t)))
+        goto fail;
+
+    /* add cont */
+    if (!sdpAppendCont(inst, s))
+        goto fail;
+
+    /* append the PDU header */
+    utilSetBE8(&pdu.pduType, pduType);
+    utilSetBE16(&pdu.transactionID, transact);
+    utilSetBE16(&pdu.paramLen, sgLength(s));
+
+    if (!sgConcatFrontCopy(s, &pdu, sizeof(pdu)))
+        goto fail;
+
+    /* will free sg on failure */
+    if (sdpSend(inst, s))
+        return true;
+
+fail:
+    sgFree(s);
+    if (inst->contResult)
+        sgFree(inst->contResult);
+    inst->contResult = NULL;
+    return false;
+}
+
+/*
  * FUNCTION: sdpCheckContAR
  * USE:      See if an incoming SAR or SSAR request is a continuation of a previous one
  * PARAMS:   inst - the instance
+ *           pduType - the PDU type to send
  *           transact - the transaction ID
  *           req - the request
  *           maxRetBytes - max bytes to return
@@ -697,7 +783,7 @@ out_nomem:
  * RETURN:   true if cont was found and we handled it. false to treat this as a new request
  * NOTES:
  */
-static bool sdpCheckContAR(struct sdpInst *inst, uint16_t transact, sg req, uint16_t maxRetBytes, bool *retP)
+static bool sdpCheckContAR(struct sdpInst *inst, uint8_t pduType, uint16_t transact, sg req, uint16_t maxRetBytes, bool *retP)
 {
     uint8_t buf[4];
     uint32_t ofst = 0;
@@ -743,7 +829,7 @@ static bool sdpCheckContAR(struct sdpInst *inst, uint16_t transact, sg req, uint
         return false;
 
     if (cont && cont == inst->contVal) {
-        *retP = sdpSendResultsAR(inst, transact, req, maxRetBytes);
+        *retP = sdpSendResultsAR(inst, pduType, transact, maxRetBytes);
         return true;
     }
     if (inst->contVal) {
@@ -836,6 +922,7 @@ static bool sdpWrap(sg s)
  * FUNCTION: sdpDoAR
  * USE:      Handle the "AR" part of the SAR or SSAR request
  * PARAMS:   inst - the instance
+ *           pduType - the PDU type to send
  *           transact - the transaction ID
  *           req - the request
  *           maxRetBytes - how many attr bytes max to return
@@ -844,7 +931,7 @@ static bool sdpWrap(sg s)
  * RETURN:   false on error
  * NOTES:    call with mSvcsLock held for read
  */
-static bool sdpDoAR(struct sdpInst *inst, uint16_t transact, sg req, uint16_t maxRetBytes, struct sdpSearchResultNode *res, bool doWrap)
+static bool sdpDoAR(struct sdpInst *inst, uint8_t pduType, uint16_t transact, sg req, uint16_t maxRetBytes, struct sdpSearchResultNode *res, bool doWrap)
 {
     sg ret;
     uint32_t attrListLen = 0;
@@ -985,10 +1072,12 @@ static bool sdpDoAR(struct sdpInst *inst, uint16_t transact, sg req, uint16_t ma
         else
             sgFree(part);
     }
-    inst->contVal = uniqGetNext();
-    inst->contResult = ret;
 
-    return sdpSendResultsAR(inst, transact, req, maxRetBytes);
+    if (!sdpWrap(ret))
+        goto oom;
+
+    inst->contResult = ret;
+    return sdpSendResultsAR(inst, pduType, transact, maxRetBytes);
 
 oom:
     while (res) {
@@ -997,6 +1086,7 @@ oom:
         free(t);
     }
     sgFree(ret);
+
 oom_ret:
     return sdpSendError(inst, transact, SDP_ERR_Insufficient_Resources);
 
@@ -1040,7 +1130,7 @@ static bool sdpSAR(struct sdpInst *inst, uint16_t transact, sg req)
         return sdpSendError(inst, transact, SDP_ERR_Invalid_Request_Syntax);
 
     /* check if continued request */
-    if (sdpCheckContAR(inst, transact, req, maxRetBytes, &ret))
+    if (sdpCheckContAR(inst, SDP_PDU_Service_Attribute_Response, transact, req, maxRetBytes, &ret))
         return ret;
 
     /* create a node containing it */
@@ -1051,7 +1141,7 @@ static bool sdpSAR(struct sdpInst *inst, uint16_t transact, sg req)
     res->next = NULL;
 
     /* grab the wanted attributes */
-    return sdpDoAR(inst, transact, req, maxRetBytes, res, false);
+    return sdpDoAR(inst, SDP_PDU_Service_Attribute_Response, transact, req, maxRetBytes, res, false);
 }
 
 /*
@@ -1087,7 +1177,7 @@ static bool sdpSSAR(struct sdpInst *inst, uint16_t transact, sg req)
         return sdpSendError(inst, transact, SDP_ERR_Invalid_Request_Syntax);
 
     /* check if continued request */
-    if (sdpCheckContAR(inst, transact, req, maxRetBytes, &ret))
+    if (sdpCheckContAR(inst, SDP_PDU_Service_Search_Attribute_Response, transact, req, maxRetBytes, &ret))
         return ret;
 
     err = sdpDoSearch(inst, searchReq, searchReqNum, -1, &searchRes);
@@ -1095,7 +1185,7 @@ static bool sdpSSAR(struct sdpInst *inst, uint16_t transact, sg req)
         return sdpSendError(inst, transact, err);
 
     /* grab the wanted attributes */
-    return sdpDoAR(inst, transact, req, maxRetBytes, searchRes, true);
+    return sdpDoAR(inst, SDP_PDU_Service_Search_Attribute_Response, transact, req, maxRetBytes, searchRes, true);
 }
 
 /*
@@ -1182,6 +1272,7 @@ static void sdpInstState(void *userData, void *instance, uint8_t state, const vo
         logi("SDP closed\n");
         if (inst->contVal)
             sgFree(inst->contResult);
+        sendQueueDelPackets(mSendQ, inst->conn);
         free(inst);
         break;
     default:
@@ -1252,14 +1343,22 @@ bool sdpRegisterProfile(void)
         .mtu = 32768,
     };
 
+    mSendQ = sendQueueAlloc(1, "SDP sendQ");
+    if (!mSendQ) {
+        loge("Failed to alloc send queue\n");
+        return false;
+    }
+
     if (!sdpServiceDescriptorAddInt(sdpDescrSdp, sizeof(sdpDescrSdp), SDP_HANDLE_SELF)) {
         loge("SDP failed to register with itself!\n");
+        sendQueueFree(mSendQ);
         return false;
     }
 
     if (!l2cApiServicePsmRegister(SDP_PSM, &sdpSvc)) {
         loge("Failed to register SDP service\n");
         sdpServiceDescriptorDelInt(mSvcsHead); /* we are our only record - this is safe */
+        sendQueueFree(mSendQ);
         return false;
     }
 
