@@ -38,18 +38,6 @@
 #define HCI_PKT_TYP_SCO_NO_2_EV5                                 0x0100 /* BT 2.1+ */
 #define HCI_PKT_TYP_SCO_NO_3_EV5                                 0x0200 /* BT 2.1+ */
 
-#define HCI_DISPLAY_CAP_DISPLAY_ONLY                             0
-#define HCI_DISPLAY_CAP_DISPLAY_YES_NO                           1
-#define HCI_DISPLAY_CAP_KEYBOARD_ONLY                            2
-#define HCI_DISPLAY_CAP_NO_IO                                    3
-
-#define HCI_AUTH_REQMENT_NO_MITM_PROT_NO_BOND                    0
-#define HCI_AUTH_REQMENT_MITM_PROT_NO_BOND                       1
-#define HCI_AUTH_REQMENT_NO_MITM_PROT_DEDICATED_BOND             2
-#define HCI_AUTH_REQMENT_MITM_PROT_DEDICATED_BOND                3
-#define HCI_AUTH_REQMENT_NO_MITM_PROT_GENERAL_BOND               4
-#define HCI_AUTH_REQMENT_MITM_PROT_GENERAL_BOND                  5
-
 #define HCI_LINK_POLICY_DISABLE_ALL_LM_MODES                     0x0000
 #define HCI_LINK_POLICY_ENABLE_ROLESWITCH                        0x0001
 #define HCI_LINK_POLICY_ENABLE_HOLD_MODE                         0x0002
@@ -111,16 +99,6 @@
 #define HCI_CUR_MODE_HOLD                                        0x01
 #define HCI_CUR_MODE_SNIFF                                       0x02
 #define HCI_CUR_MODE_PARK                                        0x03
-
-#define HCI_KEY_TYPE_COMBINATION                                 0x00 /* BT 1.1+ */
-#define HCI_KEY_TYPE_LOCAL_UNIT                                  0x01 /* BT 1.1+ */
-#define HCI_KEY_TYPE_REMOTE_UNIT                                 0x02 /* BT 1.1+ */
-#define HCI_KEY_TYPE_DEBUG_COMBINATION                           0x03 /* BT 2.1+ */
-#define HCI_KEY_TYPE_UNAUTHENTICATED_COMBO_P192                  0x04 /* BT 2.1+ */
-#define HCI_KEY_TYPE_AUTHENTICATED_COMBO_P192                    0x05 /* BT 2.1+ */
-#define HCI_KEY_TYPE_CHANGED_COMBO                               0x06 /* BT 2.1+ */
-#define HCI_KEY_TYPE_UNAUTHENTICATED_COMBO_P256                  0x07 /* BT 4.1+ */
-#define HCI_KEY_TYPE_AUTHENTICATED_COMBO_P256                    0x08 /* BT 4.1+ */
 
 #define HCI_SCO_LINK_TYPE_SCO                                    0x00
 #define HCI_SCO_LINK_TYPE_ESCO                                   0x02
@@ -648,10 +626,10 @@ struct hciCmplRemoteOobDataRequestReply {
 } __packed;
 
 #define HCI_CMD_Remote_OOB_Data_Request_Negative_Reply           0x0033 /* complete */
-struct hciOobDataRequestNegativeReply {
+struct hciRemoteOobDataRequestNegativeReply {
     uint8_t mac[6];
 } __packed;
-struct hciCmplOobDataRequestNegativeReply {
+struct hciCmplRemoteOobDataRequestNegativeReply {
     uint8_t status;
     uint8_t mac[6];
 } __packed;
@@ -2620,7 +2598,7 @@ struct hciEvtLinkKeyReq {
 #define HCI_EVT_Link_Key_Notification                            0x18
 struct hciEvtLinkKeyNotif {
     uint8_t mac[6];
-    uint16_t key[16];
+    uint8_t key[16];
     uint8_t keyType; /* HCI_KEY_TYPE_ */
 } __packed;
 
@@ -2791,7 +2769,7 @@ struct hciEvtRemoteOobRequest {
 } __packed;
 
 #define HCI_EVT_Simple_Pairing_Complete                          0x36
-struct hciEvtSimplePaitingComplete {
+struct hciEvtSimplePairingComplete {
     uint8_t status;
     uint8_t mac[6];
 } __packed;

@@ -2474,34 +2474,238 @@ bool hciConnRequestReplyNo(const struct bt_addr *addr)
     return hciCmdSubmitSimpleWithStatusWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Reject_Connection_Request, &cmd, sizeof(cmd), hciCmdStatusCbk, NULL);
 }
 
+/*
+ * FUNCTION: hciSecUserCbkPinCodeReq
+ * USE:      Called externally to give us the PIN to use for a connection
+ * PARAMS:   addr - the address of peer
+ *           cbkData - data we sent to external code
+ *           pin - the pin
+ *           len - pin length 1..HCI_PIN_MAX_LEN or 0 for none
+ * RETURN:   NONE
+ * NOTES:
+ */
 static void hciSecUserCbkPinCodeReq(const struct bt_addr *addr, void *cbkData, const uint8_t *pin, uint8_t len)
 {
-    //TODO: this
+    struct hciPinCodeRequestNegativeReply cmdN;
+    struct hciPinCodeRequestReply cmdY;
+    bool ret;
+
+    if (!BT_ADDR_IS_EDR(*addr)) {
+        loge("cannot use LinkControl commands to reply to non-EDR security-related requests\n");
+        return;
+    }
+
+    if (len >= HCI_LINK_KEY_LEN)
+        len = HCI_LINK_KEY_LEN;
+
+    memcpy(cmdY.mac, addr->addr, sizeof(cmdY.mac));
+    memcpy(cmdN.mac, addr->addr, sizeof(cmdN.mac));
+    memcpy(cmdY.pinCode, pin, len);
+    utilSetLE8(&cmdY.pinCodeLen, len);
+
+    if (len)
+        ret = hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_PIN_Code_Request_Reply, &cmdY, sizeof(cmdY), hciCmdStatusCbk, NULL);
+    else
+        ret = hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_PIN_Code_Request_Negative_Reply, &cmdN, sizeof(cmdN), hciCmdStatusCbk, NULL);
+
+    if (!ret)
+        loge("Failed to reply to pin code request\n");
 }
 
+/*
+ * FUNCTION: hciSecUserCbkLinkKeyReq
+ * USE:      Called externally to give us the LinkKey to use for a connection
+ * PARAMS:   addr - the address of peer
+ *           cbkData - data we sent to external code
+ *           key - the key (HCI_LINK_KEY_LE bytes) or NULL if none
+ * RETURN:   NONE
+ * NOTES:
+ */
 static void hciSecUserCbkLinkKeyReq(const struct bt_addr *addr, void *cbkData, const uint8_t *key)
 {
-    //TODO: this
+    struct hciLinkKeyRequestNegativeReply cmdN;
+    struct hciLinkKeyRequestReply cmdY;
+    bool ret;
+
+    if (!BT_ADDR_IS_EDR(*addr)) {
+        loge("cannot use LinkControl commands to reply to non-EDR security-related requests\n");
+        return;
+    }
+
+    memcpy(cmdY.mac, addr->addr, sizeof(cmdY.mac));
+    memcpy(cmdN.mac, addr->addr, sizeof(cmdN.mac));
+
+    if (key){
+        memcpy(&cmdY.key, key, HCI_LINK_KEY_LEN);
+        ret = hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Link_Key_Request_Reply, &cmdY, sizeof(cmdY), hciCmdStatusCbk, NULL);
+    } else
+        ret = hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Link_Key_Request_Negative_Reply, &cmdN, sizeof(cmdN), hciCmdStatusCbk, NULL);
+
+    if (!ret)
+        loge("Failed to reply to link key request\n");
 }
 
-static void hciSecUserCbkSspIoCapabilityReq(const struct bt_addr *addr, void *cbkData, bool haveDisplay, bool haveKeyboard, bool haveOobData)
+/*
+ * FUNCTION: hciSecUserCbkSspIoCapabilityReq
+ * USE:      Called externally to give us our IO capabilities
+ * PARAMS:   addr - the address of peer
+ *           cbkData - data we sent to external code
+ *           cap - our capabilities (HCI_DISP_CAP_*)
+ *           haveOobData - do we have OOB data
+ *           authReq - what we want (HCI_AUTH_REQMENT_*) or HCI_AUTH_REQMENT_CANCEL_SSP
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void hciSecUserCbkSspIoCapabilityReq(const struct bt_addr *addr, void *cbkData, uint8_t cap, bool haveOobData, uint8_t authReq)
 {
-    //TODO: this
+    struct hciIoCapabilityRequestNegativeReply cmdN;
+    struct hciIoCapabilityRequestReply cmdY;
+    bool ret;
+
+    if (!BT_ADDR_IS_EDR(*addr)) {
+        loge("cannot use LinkControl commands to reply to non-EDR security-related requests\n");
+        return;
+    }
+
+    memcpy(cmdY.mac, addr->addr, sizeof(cmdY.mac));
+    memcpy(cmdN.mac, addr->addr, sizeof(cmdN.mac));
+    utilSetLE8(&cmdN.reason, 0x13); //TODO: better handing of this value
+    utilSetLE8(&cmdY.cap, cap);
+    utilSetLE8(&cmdY.oobPresent, haveOobData);
+    utilSetLE8(&cmdY.authReqments, authReq);
+
+    if (authReq != HCI_AUTH_REQMENT_CANCEL_SSP)
+        ret = hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_IO_Capability_Request_Reply, &cmdY, sizeof(cmdY), hciCmdStatusCbk, NULL);
+    else
+        ret = hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_IO_Capability_Request_Negative_Reply, &cmdN, sizeof(cmdN), hciCmdStatusCbk, NULL);
+
+    if (!ret)
+        loge("Failed to reply to IO cap request\n");
 }
 
+/*
+ * FUNCTION: hciSecUserCbkSspUserConfirmationReq
+ * USE:      Called externally to give us confrimation (or not) of number displayed
+ * PARAMS:   addr - the address of peer
+ *           cbkData - data we sent to external code
+ *           confirmed - confirmed?
+ * RETURN:   NONE
+ * NOTES:
+ */
 static void hciSecUserCbkSspUserConfirmationReq(const struct bt_addr *addr, void *cbkData, bool confirmed)
 {
-    //TODO: this
+    struct hciUserConfRequestNegativeReply cmdN;
+    struct hciUserConfRequestReply cmdY;
+    bool ret;
+
+    if (!BT_ADDR_IS_EDR(*addr)) {
+        loge("cannot use LinkControl commands to reply to non-EDR security-related requests\n");
+        return;
+    }
+
+    memcpy(cmdY.mac, addr->addr, sizeof(cmdY.mac));
+    memcpy(cmdN.mac, addr->addr, sizeof(cmdN.mac));
+
+    if (confirmed)
+        ret = hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_User_Confirmation_Request_Reply, &cmdY, sizeof(cmdY), hciCmdStatusCbk, NULL);
+    else
+        ret = hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_User_Confirmation_Request_Negative_Reply, &cmdN, sizeof(cmdN), hciCmdStatusCbk, NULL);
+
+    if (!ret)
+        loge("Failed to reply to user confirmation request\n");
 }
 
+/*
+ * FUNCTION: hciSecUserCbkSspUserPasskeyReq
+ * USE:      Called externally to give us the number user entered
+ * PARAMS:   addr - the address of peer
+ *           cbkData - data we sent to external code
+ *           numeric - what user entered or HCI_SSP_NUMERIC_INVALID if user cancelled
+ * RETURN:   NONE
+ * NOTES:
+ */
 static void hciSecUserCbkSspUserPasskeyReq(const struct bt_addr *addr, void *cbkData, uint32_t numeric)
 {
-    //TODO: this
+    struct hciUserPasskeyRequestNegativeReply cmdN;
+    struct hciUserPasskeyRequestReply cmdY;
+    bool ret;
+
+    if (!BT_ADDR_IS_EDR(*addr)) {
+        loge("cannot use LinkControl commands to reply to non-EDR security-related requests\n");
+        return;
+    }
+
+    memcpy(cmdY.mac, addr->addr, sizeof(cmdY.mac));
+    memcpy(cmdN.mac, addr->addr, sizeof(cmdN.mac));
+
+    if (numeric != HCI_SSP_NUMERIC_INVALID) {
+        utilSetLE32(&cmdY.num, numeric);
+        ret = hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_User_Passkey_Request_Reply, &cmdY, sizeof(cmdY), hciCmdStatusCbk, NULL);
+    } else
+        ret = hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_User_Passkey_Request_Negative_Reply, &cmdN, sizeof(cmdN), hciCmdStatusCbk, NULL);
+
+    if (!ret)
+        loge("Failed to reply to user passkey request\n");
 }
 
+/*
+ * FUNCTION: hciSecUserCbkSspUserPasskeyReqProgress
+ * USE:      Called externally to give us the user's progress on number entry
+ * PARAMS:   addr - the address of peer
+ *           cbkData - data we sent to external code
+ *           evt - the user event (HCI_SSP_ENTRY_*)
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void hciSecUserCbkSspUserPasskeyReqProgress(const struct bt_addr *addr, void *cbkData, uint8_t evt)
+{
+    struct hciSendKeypressNotification cmd;
+
+    if (!BT_ADDR_IS_EDR(*addr)) {
+        loge("cannot use LinkControl commands to reply to non-EDR security-related requests\n");
+        return;
+    }
+
+    memcpy(cmd.mac, addr->addr, sizeof(cmd.mac));
+    utilSetLE8(&cmd.notifType, evt);
+
+    if (!hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Send_Keypress_Notification, &cmd, sizeof(cmd), hciCmdStatusCbk, NULL))
+        loge("Failed to send user passkey progress event\n");
+}
+
+/*
+ * FUNCTION: hciSecUserCbkSspUserOobReq
+ * USE:      Called externally to give us the OOD data
+ * PARAMS:   addr - the address of peer
+ *           cbkData - data we sent to external code
+ *           C - the C value (HCI_OOB_LEN bytes) or NULL if none
+ *           R - the R value (HCI_OOB_LEN bytes) or NULL if none
+ * RETURN:   NONE
+ * NOTES:
+ */
 static void hciSecUserCbkSspUserOobReq(const struct bt_addr *addr, void *cbkData, const uint8_t *C, const uint8_t *R)
 {
-    //TODO: this
+    struct hciRemoteOobDataRequestNegativeReply cmdN;
+    struct hciRemoteOobDataRequestReply cmdY;
+    bool ret;
+
+    if (!BT_ADDR_IS_EDR(*addr)) {
+        loge("cannot use LinkControl commands to reply to non-EDR security-related requests\n");
+        return;
+    }
+
+    memcpy(cmdY.mac, addr->addr, sizeof(cmdY.mac));
+    memcpy(cmdN.mac, addr->addr, sizeof(cmdN.mac));
+
+    if (C && R) {
+        memcpy(cmdY.C, C, sizeof(cmdY.C));
+        memcpy(cmdY.R, R, sizeof(cmdY.R));
+        ret = hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Remote_OOB_Data_Request_Reply, &cmdY, sizeof(cmdY), hciCmdStatusCbk, NULL);
+    } else
+        ret = hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Remote_OOB_Data_Request_Negative_Reply, &cmdN, sizeof(cmdN), hciCmdStatusCbk, NULL);
+
+    if (!ret)
+        loge("Failed to reply to OOB data request\n");
 }
 
 /*
@@ -2514,35 +2718,98 @@ static void hciSecUserCbkSspUserOobReq(const struct bt_addr *addr, void *cbkData
  * RETURN:   false on error
  * NOTES:
  */
-static bool hciSecUserEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
+static bool hciSecUserEvtCbk(const struct hciEvtHdr *evtHdr, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
 {
     uint8_t evtType;
-    if (!evt)
+    struct bt_addr addr = {.type = BT_ADDR_TYPE_EDR};
+
+    if (!evtHdr)
         return false;
 
-    evtType = utilGetLE8(&evt->code);
+    evtType = utilGetLE8(&evtHdr->code);
     if (evtType == HCI_EVT_PIN_Code_Request) {
-        //TODO: call   stackPinCodeRequest -> hciSecUserCbkPinCodeReq
+        struct hciEvtPinCodeReq *evt = (struct hciEvtPinCodeReq*)(evtHdr + 1);
+
+        memcpy(addr.addr, evt->mac, sizeof(addr.addr));
+        if (!stackPinCodeRequest(&addr, hciSecUserCbkPinCodeReq, NULL)) {
+            logw("callback for EDR security event 0x%02X failed -> sending negative reply\n", evtType);
+            hciSecUserCbkPinCodeReq(&addr, NULL, NULL, 0);
+        }
     } else if (evtType == HCI_EVT_Link_Key_Request) {
-        //TODO: call   stackLinkKeyRequest -> hciSecUserCbkLinkKeyReq
+        struct hciEvtPinCodeReq *evt = (struct hciEvtPinCodeReq*)(evtHdr + 1);
+
+        memcpy(addr.addr, evt->mac, sizeof(addr.addr));
+        if (!stackLinkKeyRequest(&addr, hciSecUserCbkLinkKeyReq, NULL)) {
+            logw("callback for EDR security event 0x%02X failed -> sending negative reply\n", evtType);
+            hciSecUserCbkLinkKeyReq(&addr, NULL, NULL);
+        }
     } else if (evtType == HCI_EVT_Link_Key_Notification) {
-        //TODO: call   stackLinkKeyNotif -> ()
+        struct hciEvtLinkKeyNotif *evt = (struct hciEvtLinkKeyNotif*)(evtHdr + 1);
+
+        memcpy(addr.addr, evt->mac, sizeof(addr.addr));
+        if (!stackLinkKeyNotif(&addr, evt->key, utilGetLE8(&evt->keyType)))
+            logw("callback for EDR security event 0x%02X failed\n", evtType);
+
     } else if (evtType == HCI_EVT_IO_Capability_Request) {
-        //TODO: call   stackSspIoCapabilityReq -> hciSecUserCbkSspIoCapabilityReq
+        struct hciEvtIoCapRequest *evt = (struct hciEvtIoCapRequest*)(evtHdr + 1);
+
+        memcpy(addr.addr, evt->mac, sizeof(addr.addr));
+        if (!stackSspIoCapabilityReq(&addr, hciSecUserCbkSspIoCapabilityReq, NULL)) {
+            logw("callback for EDR security event 0x%02X failed -> sending negative reply\n", evtType);
+            hciSecUserCbkSspIoCapabilityReq(&addr, NULL, 0, false, HCI_AUTH_REQMENT_CANCEL_SSP);
+        }
     } else if (evtType == HCI_EVT_IO_Capability_Response) {
-        //TODO: call   stackSspIoCapabilityNotif -> ()
+        struct hciEvtIoCapResponse *evt = (struct hciEvtIoCapResponse*)(evtHdr + 1);
+
+        memcpy(addr.addr, evt->mac, sizeof(addr.addr));
+        if (!stackSspIoCapabilityNotif(&addr, utilGetLE8(&evt->ioCapability), !!utilGetLE8(&evt->oobDataPresent), utilGetLE8(&evt->authReqments)))
+            logw("callback for EDR security event 0x%02X failed\n", evtType);
+
     } else if (evtType == HCI_EVT_User_Confirmation_Request) {
-        //TODO: call   stackSspUserConfirmationReq -> hciSecUserCbkSspUserConfirmationReq
+        struct hciEvtUserConfRequest *evt = (struct hciEvtUserConfRequest*)(evtHdr + 1);
+
+        memcpy(addr.addr, evt->mac, sizeof(addr.addr));
+        if (!stackSspUserConfirmationReq(&addr, utilGetLE32(&evt->numericValue), hciSecUserCbkSspUserConfirmationReq, NULL)) {
+            logw("callback for EDR security event 0x%02X failed -> sending negative reply\n", evtType);
+            hciSecUserCbkSspUserConfirmationReq(&addr, NULL, false);
+        }
     } else if (evtType == HCI_EVT_User_Passkey_Request) {
-        //TODO: call   stackSspUserPasskeyReq -> hciSecUserCbkSspUserPasskeyReq, hciSecUserCbkSspUserPasskeyReqProgress
+        struct hciEvtUserPasskeyRequest *evt = (struct hciEvtUserPasskeyRequest*)(evtHdr + 1);
+
+        memcpy(addr.addr, evt->mac, sizeof(addr.addr));
+        if (!stackSspUserPasskeyReq(&addr, hciSecUserCbkSspUserPasskeyReq, NULL, hciSecUserCbkSspUserPasskeyReqProgress, NULL)) {
+            logw("callback for EDR security event 0x%02X failed -> sending negative reply\n", evtType);
+            hciSecUserCbkSspUserPasskeyReq(&addr, NULL, HCI_SSP_NUMERIC_INVALID);
+        }
     } else if (evtType == HCI_EVT_Remote_OOB_Data_Request) {
-        //TODO: call   stackSspUserOobReq -> hciSecUserCbkSspUserOobReq
+        struct hciEvtRemoteOobRequest *evt = (struct hciEvtRemoteOobRequest*)(evtHdr + 1);
+
+        memcpy(addr.addr, evt->mac, sizeof(addr.addr));
+        if (!stackSspUserOobReq(&addr, hciSecUserCbkSspUserOobReq, NULL)) {
+            logw("callback for EDR security event 0x%02X failed -> sending negative reply\n", evtType);
+            hciSecUserCbkSspUserOobReq(&addr, NULL, NULL, NULL);
+        }
     } else if (evtType == HCI_EVT_Simple_Pairing_Complete) {
-        //TODO: call   stackSspComplete -> ()
+        struct hciEvtSimplePairingComplete *evt = (struct hciEvtSimplePairingComplete*)(evtHdr + 1);
+
+        memcpy(addr.addr, evt->mac, sizeof(addr.addr));
+        if (!stackSspComplete(&addr, !utilGetLE8(&evt->status)))
+            logw("callback for EDR security event 0x%02X failed\n", evtType);
+
     } else if (evtType == HCI_EVT_User_Passkey_Notification) {
-        //TODO: call   stackSspUserPasskeyNotif -> ()
+        struct hciEvtUserPasskeyNotif *evt = (struct hciEvtUserPasskeyNotif*)(evtHdr + 1);
+
+        memcpy(addr.addr, evt->mac, sizeof(addr.addr));
+        if (!stackSspUserPasskeyNotif(&addr, utilGetLE32(&evt->passkey)))
+            logw("callback for EDR security event 0x%02X failed\n", evtType);
+
     } else if (evtType == HCI_EVT_Keypress_Notification) {
-        //TODO: call   stackSspRemoteEntryNotif -> ()
+        struct hciEvtKeypressNotification *evt = (struct hciEvtKeypressNotification*)(evtHdr + 1);
+
+        memcpy(addr.addr, evt->mac, sizeof(addr.addr));
+        if (!stackSspRemoteEntryNotif(&addr, utilGetLE8(&evt->notifType)))
+            logw("callback for EDR security event 0x%02X failed\n", evtType);
+
     } else
         return false;
 

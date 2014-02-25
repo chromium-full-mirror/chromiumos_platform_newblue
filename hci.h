@@ -24,9 +24,32 @@
 #define HCI_SSP_ENTRY_ERASED    3
 #define HCI_SSP_ENTRY_DONE      4
 
+#define HCI_DISP_CAP_DISP_ONLY   0
+#define HCI_DISP_CAP_DISP_YES_NO 1
+#define HCI_DISP_CAP_KBD_ONLY    2
+#define HCI_DISP_CAP_NONE        3
+
 
 #define HCI_EIR_DATA_LEN        240
 #define HCI_RSSI_UNKNOWN        127
+
+#define HCI_AUTH_REQMENT_NO_MITM_PROT_NO_BOND                    0
+#define HCI_AUTH_REQMENT_MITM_PROT_NO_BOND                       1
+#define HCI_AUTH_REQMENT_NO_MITM_PROT_DEDICATED_BOND             2
+#define HCI_AUTH_REQMENT_MITM_PROT_DEDICATED_BOND                3
+#define HCI_AUTH_REQMENT_NO_MITM_PROT_GENERAL_BOND               4
+#define HCI_AUTH_REQMENT_MITM_PROT_GENERAL_BOND                  5
+#define HCI_AUTH_REQMENT_CANCEL_SSP                              0xFF
+
+#define HCI_KEY_TYPE_COMBINATION                                 0x00 /* BT 1.1+ */
+#define HCI_KEY_TYPE_LOCAL_UNIT                                  0x01 /* BT 1.1+ */
+#define HCI_KEY_TYPE_REMOTE_UNIT                                 0x02 /* BT 1.1+ */
+#define HCI_KEY_TYPE_DEBUG_COMBINATION                           0x03 /* BT 2.1+ */
+#define HCI_KEY_TYPE_UNAUTHENTICATED_COMBO_P192                  0x04 /* BT 2.1+ */
+#define HCI_KEY_TYPE_AUTHENTICATED_COMBO_P192                    0x05 /* BT 2.1+ */
+#define HCI_KEY_TYPE_CHANGED_COMBO                               0x06 /* BT 2.1+ */
+#define HCI_KEY_TYPE_UNAUTHENTICATED_COMBO_P256                  0x07 /* BT 4.1+ */
+#define HCI_KEY_TYPE_AUTHENTICATED_COMBO_P256                    0x08 /* BT 4.1+ */
 
 #define HCI_ADV_TYPE_ADV_IND                                     0x00 /* connectable undirected */
 #define HCI_ADV_TYPE_ADV_DIRECT_IND                              0x01 /* connectable directed */
