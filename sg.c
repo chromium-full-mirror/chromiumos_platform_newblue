@@ -1,7 +1,10 @@
 #include <stdlib.h>
 #include <string.h>
+#include "log.h"
 #include "sg.h"
 
+/* uncomment to check *all* SGs for validity in all cases on input & output */
+#define SG_DEBUG
 
 struct sgitem {
     struct sgitem *next;
@@ -16,7 +19,33 @@ struct sgbuf {
     struct sgitem *tail;
 };
 
+#ifdef SG_DEBUG
+    void __attribute__((noinline)) sgVerifyFail()
+    {
+        loge("VERIFY FAIL!!!!\n");
+        abort();
+    }
 
+    void __attribute__((noinline)) sgVerify(sg s)
+    {
+        struct sgitem *c, *p = NULL;
+        uint32_t sz = 0;
+
+        for(c = s->head; c; p = c, c = c->next)
+            sz += c->len;
+
+        if (s->len != sz)
+            loge("VERIFY: %u != %u\n", sz, s->len);
+        else if (p != s->tail)
+            loge("TAIL: 0x%p last: 0x%p\n", s->tail, p);
+        else
+            return;
+
+        sgVerifyFail();
+    }
+#else
+    #define sgVerify(s)
+#endif
 
 /*
  * FUNCTION: sgitemNewWithCopy
@@ -114,6 +143,7 @@ void sgFree(sg s)
 {
     struct sgitem *item = s->head, *t;
 
+    sgVerify(s);
     while (item) {
         t = item;
         item = item->next;
@@ -145,6 +175,8 @@ sg sgNewWithCopyData(const void* data, uint32_t len)
         s->len = len;
         s->head = item;
         s->tail = item;
+
+        sgVerify(s);
         return s;
     } else if (s)
         sgFree(s);
@@ -177,6 +209,8 @@ sg sgNewWithAllocedData(void *data, uint32_t len)
         s->len = len;
         s->head = item;
         s->tail = item;
+
+        sgVerify(s);
         return s;
     } else if (s)
         sgFree(s);
@@ -195,6 +229,7 @@ sg sgNewWithAllocedData(void *data, uint32_t len)
  */
 uint32_t sgLength(sg s)
 {
+    sgVerify(s);
     return s->len;
 }
 
@@ -208,6 +243,9 @@ uint32_t sgLength(sg s)
  */
 void sgConcat(sg front, sg back)
 {
+    sgVerify(front);
+    sgVerify(back);
+
     if (!back->head) {
         sgFree(back);
     }
@@ -220,6 +258,8 @@ void sgConcat(sg front, sg back)
 
     front->len += back->len;
     free(back);
+
+    sgVerify(front);
 }
 
 /*
@@ -235,6 +275,7 @@ void sgTruncBack(sg s, uint32_t bytes_to_delete)
     struct sgitem *item = s->head, *t = NULL;
     uint32_t bytes_to_keep;
 
+    sgVerify(s);
     if (bytes_to_delete >= s->len)
         bytes_to_keep = 0;
     else if (!bytes_to_delete)
@@ -270,6 +311,7 @@ void sgTruncBack(sg s, uint32_t bytes_to_delete)
         item = item->next;
         sgitemFree(t);
     }
+    sgVerify(s);
 }
 
 /*
@@ -284,6 +326,7 @@ void sgTruncFront(sg s, uint32_t bytes_to_delete)
 {
     struct sgitem *item = s->head, *t;
 
+    sgVerify(s);
     if (bytes_to_delete >= s->len)
         bytes_to_delete = s->len;
 
@@ -305,6 +348,7 @@ void sgTruncFront(sg s, uint32_t bytes_to_delete)
         item->len -= bytes_to_delete;
         item = item->next;
     }
+    sgVerify(s);
 }
 
 /*
@@ -320,6 +364,7 @@ bool sgConcatFrontCopy(sg s, const void *data, uint32_t len)
 {
     struct sgitem *item;
 
+    sgVerify(s);
     if (!len)
         return true;
 
@@ -334,6 +379,7 @@ bool sgConcatFrontCopy(sg s, const void *data, uint32_t len)
         s->tail = item;
     s->len += len;
 
+    sgVerify(s);
     return true;
 }
 
@@ -350,6 +396,7 @@ bool sgConcatFrontAlloced(sg s, void *data, uint32_t len)
 {
     struct sgitem *item;
 
+    sgVerify(s);
     if (!len)
         return true;
 
@@ -364,6 +411,7 @@ bool sgConcatFrontAlloced(sg s, void *data, uint32_t len)
         s->tail = item;
     s->len += len;
 
+    sgVerify(s);
     return true;
 }
 
@@ -380,6 +428,7 @@ bool sgConcatBackCopy(sg s, const void *data, uint32_t len)
 {
     struct sgitem *item;
 
+    sgVerify(s);
     if (!len)
         return true;
 
@@ -395,6 +444,7 @@ bool sgConcatBackCopy(sg s, const void *data, uint32_t len)
     s->tail = item;
     s->len += len;
 
+    sgVerify(s);
     return true;
 }
 
@@ -411,6 +461,7 @@ bool sgConcatBackAlloced(sg s, void *data, uint32_t len)
 {
     struct sgitem *item;
 
+    sgVerify(s);
     if (!len)
         return true;
 
@@ -426,6 +477,7 @@ bool sgConcatBackAlloced(sg s, void *data, uint32_t len)
     s->tail = item;
     s->len += len;
 
+    sgVerify(s);
     return true;
 }
 
@@ -443,6 +495,7 @@ sg sgSplit(sg s, uint32_t firstPart)
     uint32_t leftToCut = firstPart;
     sg ret = sgNew();
 
+    sgVerify(s);
     if (!ret)
         return NULL;
 
@@ -459,12 +512,17 @@ sg sgSplit(sg s, uint32_t firstPart)
         memcpy(&tmp, s, sizeof(struct sgbuf));
         memcpy(s, ret, sizeof(struct sgbuf));
         memcpy(ret, &tmp, sizeof(struct sgbuf));
+
+        sgVerify(s);
+        sgVerify(ret);
         return ret;
     }
 
     /* first, check for stupid inputs (part 2: cut off nothing) */
     if (firstPart >= s->len) {
         /* nothing to cut off */
+        sgVerify(s);
+        sgVerify(ret);
         return ret;
     }
 
@@ -479,7 +537,6 @@ sg sgSplit(sg s, uint32_t firstPart)
 
     if (!leftToCut) { /* exact boundary. nice! */
         ret->tail = s->tail;
-
         p->next = NULL;
         s->tail = p;
 
@@ -488,18 +545,20 @@ sg sgSplit(sg s, uint32_t firstPart)
         t = sgitemNewWithCopy(sgitemGetDataPtr(i) + leftToCut, i->len - leftToCut);
         if (!t) {
             sgFree(ret);
+            sgVerify(s);
             return NULL;
         }
+        i->len = leftToCut;
 
-        i->len -= leftToCut;
-
-        ret->tail = s->tail;
+        ret->tail = s->tail == i ? t : s->tail;
         ret->head = t;
         t->next = i->next;
         i->next = NULL;
         s->tail = i;
     }
 
+    sgVerify(s);
+    sgVerify(ret);
     return ret;
 }
 
@@ -518,6 +577,7 @@ uint32_t sgSerialize(sg s, uint32_t offset, uint32_t len, void* dstBuf)
     struct sgitem *item = s->head;
     uint32_t origlen = len;
 
+    sgVerify(s);
     /* skip all complete items we do not care about */
     while (item && item->len <= offset) {
         offset -= item->len;
@@ -607,6 +667,7 @@ void* sgIterAdvance(void *iter)
  */
 bool sgSerializeCutFront(sg s, void *buf, uint32_t len)
 {
+    sgVerify(s);
     if (sgLength(s) < len)
         return false;
     sgSerialize(s, 0, len, buf);
