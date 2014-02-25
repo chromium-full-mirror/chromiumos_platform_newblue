@@ -19,6 +19,7 @@
 #include "hci_int.h"
 #include "config.h"
 #include "l2cap.h"
+#include "stack.h"
 #include "util.h"
 #include "uniq.h"
 #include "hci.h"
@@ -2473,6 +2474,81 @@ bool hciConnRequestReplyNo(const struct bt_addr *addr)
     return hciCmdSubmitSimpleWithStatusWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Reject_Connection_Request, &cmd, sizeof(cmd), hciCmdStatusCbk, NULL);
 }
 
+static void hciSecUserCbkPinCodeReq(const struct bt_addr *addr, void *cbkData, const uint8_t *pin, uint8_t len)
+{
+    //TODO: this
+}
+
+static void hciSecUserCbkLinkKeyReq(const struct bt_addr *addr, void *cbkData, const uint8_t *key)
+{
+    //TODO: this
+}
+
+static void hciSecUserCbkSspIoCapabilityReq(const struct bt_addr *addr, void *cbkData, bool haveDisplay, bool haveKeyboard, bool haveOobData)
+{
+    //TODO: this
+}
+
+static void hciSecUserCbkSspUserConfirmationReq(const struct bt_addr *addr, void *cbkData, bool confirmed)
+{
+    //TODO: this
+}
+
+static void hciSecUserCbkSspUserPasskeyReq(const struct bt_addr *addr, void *cbkData, uint32_t numeric)
+{
+    //TODO: this
+}
+
+static void hciSecUserCbkSspUserOobReq(const struct bt_addr *addr, void *cbkData, const uint8_t *C, const uint8_t *R)
+{
+    //TODO: this
+}
+
+/*
+ * FUNCTION: hciSecUserEvtCbk
+ * USE:      Called with user-interaction-related security events
+ * PARAMS:   evt - the event
+ *           cbkData - callback data
+ *           evtWaitStateID - event wait state ID (unused)
+ *           forCmdID - event commadn ID (unused)
+ * RETURN:   false on error
+ * NOTES:
+ */
+static bool hciSecUserEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
+{
+    uint8_t evtType;
+    if (!evt)
+        return false;
+
+    evtType = utilGetLE8(&evt->code);
+    if (evtType == HCI_EVT_PIN_Code_Request) {
+        //TODO: call   stackPinCodeRequest -> hciSecUserCbkPinCodeReq
+    } else if (evtType == HCI_EVT_Link_Key_Request) {
+        //TODO: call   stackLinkKeyRequest -> hciSecUserCbkLinkKeyReq
+    } else if (evtType == HCI_EVT_Link_Key_Notification) {
+        //TODO: call   stackLinkKeyNotif -> ()
+    } else if (evtType == HCI_EVT_IO_Capability_Request) {
+        //TODO: call   stackSspIoCapabilityReq -> hciSecUserCbkSspIoCapabilityReq
+    } else if (evtType == HCI_EVT_IO_Capability_Response) {
+        //TODO: call   stackSspIoCapabilityNotif -> ()
+    } else if (evtType == HCI_EVT_User_Confirmation_Request) {
+        //TODO: call   stackSspUserConfirmationReq -> hciSecUserCbkSspUserConfirmationReq
+    } else if (evtType == HCI_EVT_User_Passkey_Request) {
+        //TODO: call   stackSspUserPasskeyReq -> hciSecUserCbkSspUserPasskeyReq, hciSecUserCbkSspUserPasskeyReqProgress
+    } else if (evtType == HCI_EVT_Remote_OOB_Data_Request) {
+        //TODO: call   stackSspUserOobReq -> hciSecUserCbkSspUserOobReq
+    } else if (evtType == HCI_EVT_Simple_Pairing_Complete) {
+        //TODO: call   stackSspComplete -> ()
+    } else if (evtType == HCI_EVT_User_Passkey_Notification) {
+        //TODO: call   stackSspUserPasskeyNotif -> ()
+    } else if (evtType == HCI_EVT_Keypress_Notification) {
+        //TODO: call   stackSspRemoteEntryNotif -> ()
+    } else
+        return false;
+
+    return true;
+}
+
 /*
  * FUNCTION: hciConnEvtCbk
  * USE:      Called with connection state events
@@ -2716,7 +2792,7 @@ static bool hciInquiryEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t 
  * FUNCTION: hciSetManyEventPersistentHandlers
  * USE:      Set a few identical event handlers for variosu events
  * PARAMS:   evtTypes - event types list (ended with a 0)
- *           evtExtras - event extras array
+ *           evtExtras - event extras array (or NULL if all zeros are to be assumed)
  *           cbk - the handler
  *           cbkData - data for the handler
  * RETURN:   false on error
@@ -2734,7 +2810,7 @@ static bool hciSetManyEventPersistentHandlers(const uint8_t *evtTypes, const uin
 
     for (i = 0; evtTypes[i]; i++) {
         ewd.evtType = evtTypes[i];
-        ewd.extra = evtExtras[i];
+        ewd.extra = evtExtras ? evtExtras[i] : 0;
 
         if (!hciEvtWaitEnqueue(&ewd, 0)) {
             loge("Failed to enqueue handler %d: 0x%02X.%04X\n", i, ewd.evtType, ewd.extra);
@@ -3011,6 +3087,20 @@ static bool hciBtStackUp(void)
         if (!hciSetManyEventPersistentHandlers(connEvtTypes, connEvtExtras, hciConnEvtCbk, NULL)) {
             ret = -2;
             loge("Failed to enqueue connection state handlers\n");
+            goto out;
+        }
+    }
+
+    /* set event handlers for security events with user interaction */
+    {
+        static const uint8_t connEvtTypes[] = {HCI_EVT_PIN_Code_Request, HCI_EVT_Link_Key_Request, HCI_EVT_Link_Key_Notification, HCI_EVT_IO_Capability_Request,
+                                               HCI_EVT_IO_Capability_Response, HCI_EVT_User_Confirmation_Request, HCI_EVT_User_Passkey_Request,
+                                               HCI_EVT_Remote_OOB_Data_Request, HCI_EVT_Simple_Pairing_Complete, HCI_EVT_User_Passkey_Notification,
+                                               HCI_EVT_Keypress_Notification, 0};
+
+        if (!hciSetManyEventPersistentHandlers(connEvtTypes, NULL, hciSecUserEvtCbk, NULL)) {
+            ret = -2;
+            loge("Failed to enqueue user-interacting-security-related event handlers\n");
             goto out;
         }
     }

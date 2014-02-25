@@ -2785,7 +2785,7 @@ struct hciEvtUserPasskeyRequest {
     uint8_t mac[6];
 } __packed;
 
-#define HCI_EVT_Remote_OOB Data_Request                          0x35
+#define HCI_EVT_Remote_OOB_Data_Request                          0x35
 struct hciEvtRemoteOobRequest {
     uint8_t mac[6];
 } __packed;
