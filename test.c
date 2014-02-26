@@ -3,12 +3,13 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
-#include "sdp.h"
+#include "profiles/RFCOMM/rfcomm.h"
 #include "vendorLib.h"
 #include "l2cap.h"
 #include "hci.h"
 #include "util.h"
 #include "log.h"
+#include "sdp.h"
 #include "bt.h"
 
 struct LeDiscDev {
@@ -167,6 +168,8 @@ void logData(char* dst, const void *buf, uint8_t len)
         sprintf(dst + strlen(dst), " %02X", data[i]);
 }
 
+extern void eliza(void);
+
 int main(int argc, char** argv)
 {
     static const uint8_t mac[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
@@ -299,6 +302,7 @@ int main(int argc, char** argv)
 
     l2cInit();
     sdpRegisterProfile();
+    rfcommRegisterProfile();
 
     logi("waiting...press a key\n");
     getchar();
