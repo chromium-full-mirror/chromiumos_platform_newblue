@@ -44,6 +44,9 @@ sg sgSplit(sg s, uint32_t firstLen);
 //serialization
 uint32_t sgSerialize(sg s, uint32_t offset, uint32_t len, void* dstBuf);
 
+//swap the data in a and b
+void sgSwap(sg a, sg b);
+
 //combo
 bool sgSerializeCutFront(sg s, void *buf, uint32_t len);
 

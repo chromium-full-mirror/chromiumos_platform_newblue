@@ -502,17 +502,13 @@ sg sgSplit(sg s, uint32_t firstPart)
 
     /* first, check for stupid inputs (part 1: cut off all that we have) */
     if (!firstPart) {
-        struct sgbuf tmp;
-
         /*
          * Ah, the "cut off everything" case. We simply swap the empty sg we
-         * just created into s, and s's internal structure into ret. Dirty?
+         * just created with s, and s's internal structure into ret. Dirty?
          * Sure. Clever? Definitely!
          */
-        memcpy(&tmp, s, sizeof(struct sgbuf));
-        memcpy(s, ret, sizeof(struct sgbuf));
-        memcpy(ret, &tmp, sizeof(struct sgbuf));
 
+        sgSwap(s, ret);
         sgVerify(s);
         sgVerify(ret);
         return ret;
@@ -600,6 +596,29 @@ uint32_t sgSerialize(sg s, uint32_t offset, uint32_t len, void* dstBuf)
     }
 
     return origlen - len;
+}
+
+/*
+ * FUNCTION: sgSwap
+ * USE:      Swap the data in a a and b
+ * PARAMS:   a - an sg
+ *           b - an sg
+ * RETURN:   NONE
+ * NOTES:
+ */
+void sgSwap(sg a, sg b)
+{
+    struct sgbuf t;
+
+    sgVerify(a);
+    sgVerify(b);
+
+    memcpy(&t, a, sizeof(struct sgbuf));
+    memcpy(a, b, sizeof(struct sgbuf));
+    memcpy(b, &t, sizeof(struct sgbuf));
+
+    sgVerify(a);
+    sgVerify(b);
 }
 
 /*
