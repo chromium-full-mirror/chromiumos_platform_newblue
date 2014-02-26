@@ -3027,7 +3027,7 @@ out_service_q:
 static void l2cConnStructDelete(struct l2cConn *conn)
 {
     if (conn->next)
-        conn->next = conn->prev;
+        conn->next->prev = conn->prev;
     if (conn->prev)
         conn->prev->next = conn->next;
     else
