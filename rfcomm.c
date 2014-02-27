@@ -1,4 +1,6 @@
 #include <pthread.h>
+#include "workQueue.h"
+#include "config.h"
 #include "rfcomm.h"
 #include "sendQ.h"
 #include "l2cap.h"
@@ -67,6 +69,16 @@ struct rfcListenState {
     uint8_t                chan;
 };
 
+struct rfcSvcWork {
+    uint8_t type;
+
+    union {
+        int more_real_things_here_later;
+    };
+};
+
+
+
 
 #define RFC_CTRL_PF_MASK   0x10
 
@@ -110,6 +122,8 @@ struct rfcHdr {
 
 /* our global state */
 static struct sendQ *mSendQ = NULL;
+static struct workQueue *mWorkQ = NULL;
+static pthread_t mWorkThread;
 
 static pthread_mutex_t mInstsLock = PTHREAD_MUTEX_INITIALIZER;
 static struct rfcInst *mInsts = NULL;
@@ -594,7 +608,7 @@ err:
  *           evtF - callback to notify this caller of events
  *           cbkData - data to pass to the above callback
  *           instance - instance pointer to pass to the above callback
- * RETURN:   tru if you shoudl expect callbacks. false on immediate failure
+ * RETURN:   tru if you should  expect callbacks. false on immediate failure
  * NOTES:
  */
 bool rfcConnect(const struct bt_addr *peerAddr, uint8_t dlci, rfcSvcEvent evtF, void *cbkData, void *instance)
@@ -616,6 +630,7 @@ bool rfcConnect(const struct bt_addr *peerAddr, uint8_t dlci, rfcSvcEvent evtF, 
 int32_t rfcTx(rfc_conn_t connHandle, sg s)
 {
     struct rfcConn* conn;
+    bool gotMoreData = false;
     int32_t ret;
 
     conn = rfcFindConnByHandle(connHandle);
@@ -626,6 +641,7 @@ int32_t rfcTx(rfc_conn_t connHandle, sg s)
 
     if (sgLength(s) + sgLength(conn->txQueue) <= conn->maxQueueSz) { /* queue all */
         sgConcat(conn->txQueue, s);
+        gotMoreData = true;
         ret = RFC_TX_RET_ENTIRE_SENT;
     } else if (sgLength(conn->txQueue) < conn->maxQueueSz) { /* queue as much as we can */
 
@@ -636,11 +652,13 @@ int32_t rfcTx(rfc_conn_t connHandle, sg s)
             sgSwap(t, s); /* now t has the front, and s the remainder */
             ret = sgLength(t);
             sgConcat(conn->txQueue, t);
+            gotMoreData = true;
         }
     } else
         ret = RFC_TX_RET_STOP_SENDING;
 
-    //TODO: tell worker thread to try make progress on this instance....
+    if (gotMoreData && !rfcSchedTryTx(conn))
+        loge("Failed to schedule a TX attempt\n");
 
     pthread_mutex_unlock(&conn->inst->lock);
 
@@ -734,6 +752,55 @@ static uint8_t rfcServiceAlloc(void *userData, l2c_handle_t conn, void **instanc
 }
 
 /*
+ * FUNCTION: rfcWorkQItemFreeCbk
+ * USE:      Free an RFC work item in the WorkQ at WorkQ deletion time
+ * PARAMS:   workItem - the work item
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void rfcWorkQItemFreeCbk(void *workItem)
+{
+    struct rfcSvcWork *work = (struct rfcSvcWork*)workItem;
+
+    //TODO
+
+    free(work);
+}
+
+/*
+ * FUNCTION: rfcWorkerThread
+ * USE:      RFCOMM Worker thread
+ * PARAMS:   unused- unused
+ * RETURN:   ignored
+ * NOTES:
+ */
+static void* rfcWorkerThread(void *unused)
+{
+    struct rfcSvcWork *work;
+    int status;
+
+    pthread_setname_np(pthread_self(), "bt_rfcomm_worker");
+
+    while(1) {
+        status = workQueueGet(mWorkQ, (void**)&work);
+
+        /* The only one thing we use the work queue status for - exiting */
+        if (status)
+            break;
+
+        switch (work->type) {
+        //TODO
+        default:
+            loge("Unknown work type %d\n", work->type);
+            break;
+        }
+        free(work);
+    }
+
+    return NULL;
+}
+
+/*
  * FUNCTION: rfcRegisterProfile
  * USE:      Register RFCOMM with L2C & init it
  * PARAMS:   NONE
@@ -750,14 +817,34 @@ bool rfcRegisterProfile(void)
         .mtu = 0xFFE0, /* no real limits here */
     };
 
+    mWorkQ = workQueueAlloc(RFC_NUM_OUTSTANDING_WORK_ITEMS);
+    if (!mWorkQ)
+        goto fail_work_q;
+
+    if (pthread_create(&mWorkThread, NULL, rfcWorkerThread, NULL))
+        goto fail_worker;
+
     mSendQ = sendQueueAlloc(8, "RFCOMM sendq");
     if (!mSendQ)
-        return false;
+        goto fail_send_q;
 
-    if (l2cApiServicePsmRegister(PSM_RFCOMM, &rfcommDescr))
-        return true;
+    if (!l2cApiServicePsmRegister(PSM_RFCOMM, &rfcommDescr))
+        goto fail_l2c_register;
 
+    return true;
+
+
+fail_l2c_register:
     sendQueueFree(mSendQ);
+
+fail_send_q:
+    workQueueWakeAll(mWorkQ, 1);
+    pthread_join(mWorkThread, NULL);
+
+fail_worker:
+    workQueueFree(mWorkQ, rfcWorkQItemFreeCbk);
+
+fail_work_q:
     return false;
 }
 

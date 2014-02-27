@@ -3,6 +3,11 @@
 
 
 /*
+ * RFC layer will queue up only this many work items at a time
+ */
+#define RFC_NUM_OUTSTANDING_WORK_ITEMS      256
+
+/*
  * Default LE connection parameters
  */
 #define HCI_LE_CONN_INT_MIN                10 /* 12.5 ms */
