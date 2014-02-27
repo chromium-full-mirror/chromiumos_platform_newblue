@@ -10,10 +10,15 @@
 #include "bt.h"
 
 
+//TODO: handle case of both peer and me establishing RFCOMM at the same time...
+//TODO: audit lock sequence
 
 
-#define RFC_STATE_DISABLED      0
+
+#define RFC_STATE_INVALID       0 /* definitely not a velid state */
+#define RFC_STATE_SVC_OPENING   1 /* connection was remotely opened and now we await our side's server to respond */
 /* ... */
+#define RFC_STATE_DISC_SENT     6 /* we sent a DISC and are waiting for a confirming UA */
 #define RFC_STATE_TEARDOWN      7
 
 struct rfcInst;
@@ -26,6 +31,7 @@ struct rfcConn { /* one per RFC channel */
 
     rfcSvcEvent            evtCbk;
     void                  *evtCbkData;
+    void                  *evtCbkInst;
 
     uint32_t               maxQueueSz; /* max we'll queue for transmission */
     sg                     txQueue;
@@ -66,6 +72,7 @@ struct rfcListenState {
 
 #define RFC_BIT_EA         0x01
 #define RFC_BIT_CR         0x02
+#define RFC_DLCI_SHIFT     2 /* shifts off those two bits above */
 
 
 /* ctrl values */
@@ -146,6 +153,307 @@ static struct rfcConn* rfcFindConnByHandle(rfc_conn_t handle)
 }
 
 /*
+ * FUNCTION: rfcCreateConnStruct
+ * USE:      Create an rfcConn on a given RFCOMM instance
+ * PARAMS:   inst - the RFCOMM instance
+ *           dlci - the DLCI to use
+ *           state - the state to set for the connection initially
+ * RETURN:   the rfcConn struct or NULL on error
+ * NOTES:    call with inst->lock held
+ */
+static struct rfcConn* rfcCreateConnStruct(struct rfcInst *inst, uint8_t dlci, uint8_t state)
+{
+    struct rfcConn *c = (struct rfcConn*)calloc(1, sizeof(struct rfcConn));
+
+    if (!c)
+        return NULL;
+
+    c->txQueue = sgNew();
+    if (!c->txQueue) {
+        free(c);
+        return NULL;
+    }
+
+    c->dlci = dlci;
+    c->state = state;
+    c->prev = NULL;
+    c->inst = inst;
+    c->handle = uniqGetNext();
+
+    c->next = inst->connList;
+    inst->connList = c;
+    if (c->next)
+        c->next->prev = c;
+
+    return c;
+}
+
+/*
+ * FUNCTION: rfcDeleteConnStruct
+ * USE:      Delete an rfcConn
+ * PARAMS:   c - the rfcConn
+ * RETURN:   NONE
+ * NOTES:    call with inst->lock held
+ */
+static void rfcDeleteConnStruct(struct rfcConn* c)
+{
+    struct rfcInst *inst = c->inst;
+
+    if (c->next)
+        c->next->prev = c->prev;
+    if (c->prev)
+        c->prev->next = c->next;
+    else
+        inst->connList = c->next;
+
+    if (c->evtCbk)
+        c->evtCbk(c->evtCbkData, c->evtCbkInst, RFC_EVT_CLOSE, NULL);
+
+    sgFree(c->txQueue);
+
+    if (!inst->connList) {
+
+        //TODO: close the RFCOMM instance after a timer?
+    }
+}
+
+/*
+ * FUNCTION: rfcFindConnByDlci
+ * USE:      Find an rfcConn given its RFCOMM instance and the DLCI
+ * PARAMS:   inst - the RFCOMM instance
+ *           dlci - the DLCI in question
+ * RETURN:   the rfcConn struct or NULL if not found
+ * NOTES:    call with inst->lock held
+ */
+static struct rfcConn* rfcFindConnByDlci(struct rfcInst *inst, uint8_t dlci)
+{
+    struct rfcConn* c;
+
+    for(c = inst->connList; c && c->dlci != dlci; c = c->next);
+
+    return c;
+}
+
+/*
+ * FUNCTION: rfcSendCmd
+ * USE:      Send a command packet to the other side
+ * PARAMS:   inst - the RFCOMM instance
+ *           cmd - the command value to send
+ *           dlci - the relevant DLCI the packet came in for
+ *           setCrBit - set the C/R bit?
+ * RETURN:   false on error
+ * NOTES:    call with inst->lock held
+ */
+static bool rfcSendCmd(struct rfcInst *inst, uint8_t cmd, uint8_t dlci, bool setCrBit)
+{
+    uint8_t buf[sizeof(struct rfcHdr) + sizeof(uint8_t)/*FCS*/];
+    struct rfcHdr *hdr = (struct rfcHdr*)buf;
+    uint8_t addr = (dlci << 2) | RFC_BIT_EA;
+    sg s;
+
+    if (setCrBit)
+        addr |= RFC_BIT_CR;
+
+    utilSetLE8(&hdr->len, RFC_BIT_EA);
+    utilSetLE8(&hdr->ctrl, cmd);
+    utilSetLE8(&hdr->addr, addr);
+    utilSetLE8(hdr + 1, rfcFcs(hdr, sizeof(struct rfcHdr)));
+
+    s = sgNewWithCopyData(buf, sizeof(buf));
+    if (!s)
+        return false;
+
+    if (sendQueueTx(mSendQ, inst->conn, s))
+        return true;
+
+    sgFree(s);
+    return false;
+}
+
+/*
+ * FUNCTION: rfcSendDm
+ * USE:      Send a DM packet to the other side
+ * PARAMS:   inst - the RFCOMM instance
+ *           dlci - the relevant DLCI the packet came in for
+ * RETURN:   false on error
+ * NOTES:    call with inst->lock held
+ */
+static bool rfcSendDm(struct rfcInst *inst, uint8_t dlci)
+{
+    return rfcSendCmd(inst, RFC_CTRL_DM, dlci, !inst->initiator);
+}
+
+/*
+ * FUNCTION: rfcSendDisc
+ * USE:      Send a DISC packet to the other side
+ * PARAMS:   inst - the RFCOMM instance
+ *           dlci - the relevant DLCI the packet came in for
+ * RETURN:   false on error
+ * NOTES:    call with inst->lock held
+ */
+static bool rfcSendDisc(struct rfcInst *inst, uint8_t dlci)
+{
+    return rfcSendCmd(inst, RFC_CTRL_DISC, dlci, inst->initiator);
+}
+
+/*
+ * FUNCTION: rfcSendSabm
+ * USE:      Send a SABM packet to the other side
+ * PARAMS:   inst - the RFCOMM instance
+ *           dlci - the relevant DLCI the packet came in for
+ * RETURN:   false on error
+ * NOTES:    call with inst->lock held
+ */
+static bool rfcSendSabm(struct rfcInst *inst, uint8_t dlci)
+{
+    return rfcSendCmd(inst, RFC_CTRL_SABM, dlci, inst->initiator);
+}
+
+/*
+ * FUNCTION: rfcSendUa
+ * USE:      Send a UA packet to the other side
+ * PARAMS:   inst - the RFCOMM instance
+ *           dlci - the relevant DLCI the packet came in for
+ * RETURN:   false on error
+ * NOTES:    call with inst->lock held
+ */
+static bool rfcSendUa(struct rfcInst *inst, uint8_t dlci)
+{
+    return rfcSendCmd(inst, RFC_CTRL_UA, dlci, !inst->initiator);
+}
+
+
+/*
+ * FUNCTION: rfcRxData
+ * USE:      Handle incoming UIH (Data) packets
+ * PARAMS:   inst - the RFCOMM instance
+ *           dlci - the DLCI the packet came in for
+ *           pfBit - was the P/F bit set in the packet header
+ *           s - the incoming packet
+ * RETURN:   true if we handled this RX and sg was/will be freed by us
+ * NOTES:    call with inst->lock held
+ */
+static bool rfcRxData(struct rfcInst *inst, uint8_t dlci, bool pfBit, sg s)
+{
+    struct rfcConn *c = rfcFindConnByDlci(inst, dlci);
+
+/* handle p/F bit ... */
+
+    if (!c) {
+        logi("Got data on unconnected DLCI %u\n", dlci);
+        if (!rfcSendDm(inst, dlci))
+            loge("Failed to send DM\n");
+        return false;
+    }
+
+    if (rfcSchedEvt(inst, RFC_EVT_RX, s))
+        return true;
+
+    loge("Failed to schedule RFC RX work\n");
+    return false;
+}
+
+/*
+ * FUNCTION: rfcCloseConn
+ * USE:      Close an rfcConn
+ * PARAMS:   c - the rfcConn
+ *           toolOtherSide - set to send a DISC packet to the other side
+ * RETURN:   NONE
+ * NOTES:    call with inst->lock held
+ */
+static void rfcCloseConn(struct rfcConn *c, bool toolOtherSide)
+{
+    struct rfcInst *inst = c->inst;
+
+    //TODO: switch on connnection state
+
+
+    if (toolOtherSide) {
+        if (rfcSendDisc(inst, c->dlci)) {
+            c->state = RFC_STATE_DISC_SENT;
+            //TODO: timer
+            return;
+        }
+        loge("Failed to send DISC\n");
+    }
+
+    rfcDeleteConnStruct(c);
+}
+
+/*
+ * FUNCTION: rfcRxChClose
+ * USE:      Handle incoming DISC command and close the channel
+ * PARAMS:   inst - the RFCOMM instance
+ *           dlci - the DLCI the packet came in for
+ * RETURN:   NONE
+ * NOTES:    call with inst->lock held
+ */
+static void rfcRxChClose(struct rfcInst *inst, uint8_t dlci)
+{
+    struct rfcConn *c = rfcFindConnByDlci(inst, dlci);
+
+    if (!c) {
+        logi("Got close on unconnected DLCI %u\n", dlci);
+        if (!rfcSendDm(inst, dlci))
+            loge("Failed to send DM\n");
+    } else {
+
+        if (!rfcSendUa(inst, dlci))
+            loge("Failed to send UA\n");
+        rfcCloseConn(c, false/* do not send disc*/);
+    }
+}
+
+/*
+ * FUNCTION: rfcRxChOpen
+ * USE:      Handle incoming SABM command and open the channel
+ * PARAMS:   inst - the RFCOMM instance
+ *           dlci - the DLCI the packet came in for
+ * RETURN:   NONE
+ * NOTES:    call with inst->lock held
+ */
+static void rfcRxChOpen(struct rfcInst *inst, uint8_t dlci)
+{
+    struct rfcConn *c = rfcFindConnByDlci(inst, dlci);
+
+    if (c) {
+        logi("Got open on connected DLCI %u\n", dlci);
+        /* XXX: we will do nothing - is this a good idea? */
+
+    } else if (!inst->initiator != !(dlci & 1)){ /* Server DLCIs are odd on initiator */
+
+        logi("Attempt to connect to non-server DLCI %u\n", dlci);
+        if (!rfcSendDm(inst, dlci))
+            loge("Failed to send DM\n");
+
+    } else {
+        struct rfcListenState *ls;
+        uint8_t chan = dlci >> 1; /* convert to channel number */
+
+        pthread_mutex_lock(&mListenersLock);
+        for (ls = mListeners; ls && ls->chan != chan; ls = ls->next);
+        if (!ls) {
+            logi("Attempt to connect to non-listening DLCI %u\n", dlci);
+            if (!rfcSendDm(inst, dlci))
+                loge("Failed to send DM\n");
+        } else {
+            c = rfcCreateConnStruct(inst, dlci, RFC_STATE_SVC_OPENING);
+            if (!c) {
+                logi("Failed to alloc conn struct for DLCI %u\n", dlci);
+                if (!rfcSendDm(inst, dlci))
+                    loge("Failed to send DM\n");
+            } else if (!rfcSchedSvcAlloc(ls, c)) { //TODO: this will send a DM or a UA depending on success
+                logi("Failed to schedule SVC open for DLCI %u\n", dlci);
+                rfcDeleteConnStruct(c);
+                if (!rfcSendDm(inst, dlci))
+                    loge("Failed to send DM\n");
+            }
+        }
+        pthread_mutex_unlock(&mListenersLock);
+    }
+}
+
+/*
  * FUNCTION: rfcRx
  * USE:      Handle incoming packets
  * PARAMS:   inst - the instance allocated by rfcServiceAlloc()
@@ -217,41 +525,51 @@ static void rfcRx(struct rfcInst *inst, sg s)
             loge("RFCOMM C/R for UIH set wrong (i=%d,addr=x%02X)\n", inst->initiator, addr);
             goto err;
         }
-        if (!rfcRxData(inst, addr >> 2, pfBit, s))
-            goto err; 
+        addr >>= RFC_DLCI_SHIFT;
+        if (addr) {
+            if (!rfcRxData(inst, addr, pfBit, s)) /* data */
+                goto err;
+        } else {
+            if (!rfcRxControl(inst, pfBit, s)) /* control */
+                goto err;
+        }
     } else { /* control */
+        if (sgLength(s))
+            logw("Unexpected data in command packet: %ub. Ignored.\n", sgLength(s));
+        sgFree(s);
+        s = NULL;
+
+        if (pfBit)
+            logw("Unexpected P/F bit in command packet\n");
+
         switch (ctrl) {
         case RFC_CTRL_SABM: /* command. Expect C/R != inst->initiator */
             if (!inst->initiator == !(addr & RFC_BIT_CR)) {
                 loge("RFCOMM C/R for SABM set wrong (i=%d,addr=x%02X)\n", inst->initiator, addr);
                 goto err;
             }
-            if (!rfcRxSabm(inst, addr >> 2, pfBit, s))
-                goto err;
+            rfcRxChOpen(inst, addr >> RFC_DLCI_SHIFT);
             break;
         case RFC_CTRL_UA: /* response. Expect C/R == inst->initiator */
             if (!inst->initiator != !(addr & RFC_BIT_CR)) {
                 loge("RFCOMM C/R for UA set wrong (i=%d,addr=x%02X)\n", inst->initiator, addr);
                 goto err;
             }
-            if (!rfcRxUa(inst, addr >> 2, pfBit, s))
-                goto err;
+            rfcRxAck(inst, addr >> RFC_DLCI_SHIFT);
             break;
         case RFC_CTRL_DM: /* response. Expect C/R == inst->initiator */
             if (!inst->initiator != !(addr & RFC_BIT_CR)) {
                 loge("RFCOMM C/R for DM set wrong (i=%d,addr=x%02X)\n", inst->initiator, addr);
                 goto err;
             }
-            if (!rfcRxDm(inst, addr >> 2, pfBit, s))
-                goto err;
+            rfcRxDm(inst, addr >> RFC_DLCI_SHIFT);
             break;
         case RFC_CTRL_DISC: /* command. Expect C/R != inst->initiator */
             if (!inst->initiator == !(addr & RFC_BIT_CR)) {
                 loge("RFCOMM C/R for DISC set wrong (i=%d,addr=x%02X)\n", inst->initiator, addr);
                 goto err;
             }
-            if (!rfcRxDisc(inst, addr >> 2, pfBit, s))
-                goto err;
+            rfcRxChClose(inst, addr >> RFC_DLCI_SHIFT);
             break;
         default:
             loge("Unknown RFCOMM ctrl 0x%02X\n", ctrl);
@@ -264,7 +582,8 @@ static void rfcRx(struct rfcInst *inst, sg s)
 
 err:
     loge("RFCOMM RX processing: abandoning %ub\n", sgLength(s));
-    sgFree(s);
+    if (s)
+        sgFree(s);
 }
 
 /*
@@ -273,11 +592,12 @@ err:
  * PARAMS:   peerAddr - the address of the other device
  *           dlci - the DLCI we want to connect to
  *           evtF - callback to notify this caller of events
- *           cbkData - data to pass to the above calbacks
+ *           cbkData - data to pass to the above callback
+ *           instance - instance pointer to pass to the above callback
  * RETURN:   tru if you shoudl expect callbacks. false on immediate failure
  * NOTES:
  */
-bool rfcConnect(const struct bt_addr *peerAddr, uint8_t dlci, rfcSvcEvent evtF, void *cbkData)
+bool rfcConnect(const struct bt_addr *peerAddr, uint8_t dlci, rfcSvcEvent evtF, void *cbkData, void *instance)
 {
     //TODO
     return false;
@@ -368,6 +688,7 @@ static void rfcInstanceState(void *userData, void *instance, uint8_t state, cons
     case L2C_STATE_CLOSED:
         //TODO: tell all clients! (lock their locks before telling them, to avoid concurrency issues...
         pthread_mutex_destroy(&inst->lock);
+        sendQueueDelPackets(mSendQ, inst->conn);
         free(inst);
         logd("RFCOMM CLOSED\n");
         break;
@@ -421,7 +742,6 @@ static uint8_t rfcServiceAlloc(void *userData, l2c_handle_t conn, void **instanc
  */
 bool rfcRegisterProfile(void)
 {
-
     static const struct l2cServicePsmDescriptor rfcommDescr = {
         .userData = NULL,
         .serviceInstanceAlloc = rfcServiceAlloc,

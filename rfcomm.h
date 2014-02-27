@@ -40,7 +40,7 @@ bool rfcRegisterProfile(void);
 
 uint8_t rfcListen(uint8_t chReq, rfcSvcAlloc allocF, rfcSvcEvent evtF, void *cbkData); /* returns DLCI. input = dlci specifically or RFC_CHNUM_REQ_ANY */
 bool rfcStopListen(uint8_t ch); /* will not close any existing connections */
-bool rfcConnect(const struct bt_addr *peerAddr, uint8_t ch, rfcSvcEvent evtF, void *cbkData); /* true if you shoudl expect callback(s) */
+bool rfcConnect(const struct bt_addr *peerAddr, uint8_t ch, rfcSvcEvent evtF, void *cbkData, void *instance); /* true if you shoudl expect callback(s) */
 
 int32_t rfcTx(rfc_conn_t conn, sg s); /* ret: non-negative values is bytes sent (and sheared off the front of the SG), negatives are other codes. if entire SG is sent, it is freed! */
 
