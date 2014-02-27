@@ -7,11 +7,10 @@
 #include "sg.h"
 
 
-#define RFC_FIRST_DLCI               2           /* first valid */
-#define RFC_NUM_DLCIS                60
-#define RFC_DLCI_REQ_PREFERENCE_NONE 0x80        /*use this param to the below */
-#define RFC_DLCI_REQ_NEED_EVEN       0x81
-#define RFC_DLCI_REQ_NEED_ODD        0x82
+#define RFC_FIRST_CHAN               1           /* first valid */
+#define RFC_NUM_CHANS                30
+#define RFC_CHNUM_REQ_ANY            0x80        /* allocate one for me */
+
 
 #define PSM_RFCOMM                   0x0003
 
@@ -37,13 +36,13 @@ typedef void* (*rfcSvcAlloc)(void *userData, const struct bt_addr *peerAddr, uin
 typedef void (*rfcSvcEvent)(void *userData, void *instance, uint8_t evt, sg s);
 
 
-bool rfcommRegisterProfile(void);
+bool rfcRegisterProfile(void);
 
-uint8_t rfcommListen(uint8_t dlciReq, rfcSvcAlloc allocF, rfcSvcEvent evtF, void *cbkData); /* returns DLCI. input = dlci specifically or RFCOMM_DLCI_* */
-bool rfcommStopListen(uint8_t dlci); /* will not close any existing connections */
-bool rfcommConnect(const struct bt_addr *peerAddr, uint8_t dlci, rfcSvcEvent evtF, void *cbkData); /* true if you shoudl expect callback(s) */
+uint8_t rfcListen(uint8_t chReq, rfcSvcAlloc allocF, rfcSvcEvent evtF, void *cbkData); /* returns DLCI. input = dlci specifically or RFC_CHNUM_REQ_ANY */
+bool rfcStopListen(uint8_t ch); /* will not close any existing connections */
+bool rfcConnect(const struct bt_addr *peerAddr, uint8_t ch, rfcSvcEvent evtF, void *cbkData); /* true if you shoudl expect callback(s) */
 
-int32_t rfcommTx(rfc_conn_t conn, sg s); /* ret: non-negative values is bytes sent (and sheared off the front of the SG), negatives are other codes. if entire SG is sent, it is freed! */
+int32_t rfcTx(rfc_conn_t conn, sg s); /* ret: non-negative values is bytes sent (and sheared off the front of the SG), negatives are other codes. if entire SG is sent, it is freed! */
 
 
 #endif

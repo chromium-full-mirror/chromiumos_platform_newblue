@@ -47,6 +47,7 @@ struct rfcInst { /* one per L2C connection */
     struct bt_addr         addr;
     uint16_t               mtu;
     bool                   encr;
+    bool                   initiator; /* set if we initiated this conection *///XXX: set this on ones we initiated. all servers' DLCI values on initiator are odd, on other even
 
     struct rfcConn        *connList;
 };
@@ -57,11 +58,10 @@ struct rfcListenState {
     rfcSvcAlloc            allocCbk;
     rfcSvcEvent            evtCbk;
     void                  *cbkData;
-    uint8_t                dlci;
+    uint8_t                chan;
 };
 
 
-#define RFC_CTRL_MASK      0xEF
 #define RFC_CTRL_PF_MASK   0x10
 
 #define RFC_CTRL_SABM      0x2F
@@ -102,7 +102,7 @@ static uint8_t rfcFcs(const void *dataP, uint32_t len);
 
 
 /*
- * FUNCTION: rfcommFindConnByHandle
+ * FUNCTION: rfcFindConnByHandle
  * USE:      Find an rfcConn given its handle
  * PARAMS:   handle - the handle
  * RETURN:   the rfcConn struct or NULL if not found
@@ -111,7 +111,7 @@ static uint8_t rfcFcs(const void *dataP, uint32_t len);
  *           it! This takes the mInstsLock during its operation
  *           too, but releases it internally.
  */
-static struct rfcConn* rfcommFindConnByHandle(rfc_conn_t handle)
+static struct rfcConn* rfcFindConnByHandle(rfc_conn_t handle)
 {
     struct rfcConn *c = NULL;
     struct rfcInst *i;
@@ -130,19 +130,19 @@ static struct rfcConn* rfcommFindConnByHandle(rfc_conn_t handle)
 }
 
 /*
- * FUNCTION: rfcommRx
+ * FUNCTION: rfcRx
  * USE:      Handle incoming packets
- * PARAMS:   inst - the instance allocated by rfcommServiceAlloc()
+ * PARAMS:   inst - the instance allocated by rfcServiceAlloc()
  *           s - the incoming packet
  * RETURN:   NONE
  * NOTES:    call with inst->lock held
  */
-static void rfcommRx(struct rfcInst *inst, sg s)
+static void rfcRx(struct rfcInst *inst, sg s)
 {
     uint8_t buf[sizeof(struct rfcHdr) + sizeof(uint8_t)]; /* max length of header */
     struct rfcHdr *hdr = (struct rfcHdr*)buf;
     uint8_t t, addr, ctrl, wantedFcs, haveFcs;
-    bool longLen = false;
+    bool longLen = false, pfBit;
     uint16_t len;
 
     /* some sanity checking is in order */
@@ -163,6 +163,8 @@ static void rfcommRx(struct rfcInst *inst, sg s)
     }
     addr = utilGetLE8(&hdr->addr);
     ctrl = utilGetLE8(&hdr->ctrl);
+    pfBit = !!(ctrl & RFC_CTRL_PF_MASK);
+    ctrl &= !RFC_CTRL_PF_MASK;
 
     /* grab length as per spec */
     len = utilGetLE8(&hdr->len);
@@ -183,15 +185,39 @@ static void rfcommRx(struct rfcInst *inst, sg s)
     }
 
     /* calculate the FCS and check */
-    haveFcs = ((ctrl & RFC_CTRL_MASK) == RFC_CTRL_UIH) ? rfcFcs(hdr, sizeof(struct rfcHdr) - sizeof(uint8_t)) : rfcFcs(hdr, sizeof(struct rfcHdr) + longLen ?  sizeof(uint8_t) : 0);
+    haveFcs = (ctrl == RFC_CTRL_UIH) ? rfcFcs(hdr, sizeof(struct rfcHdr) - sizeof(uint8_t)) : rfcFcs(hdr, sizeof(struct rfcHdr) + longLen ?  sizeof(uint8_t) : 0);
     if (wantedFcs != haveFcs) {
         loge("RFCOMM FCS calcualted %02X reported 0x%02X\n", haveFcs, wantedFcs);
         goto err;
     }
 
-    
-
-
+    switch (ctrl) {
+    case RFC_CTRL_SABM:
+        if (!rfcRxSabm(addr, pfBit, s))
+            goto err;
+        break;
+    case RFC_CTRL_UA:
+        if (!rfcRxUa(addr, pfBit, s))
+            goto err;
+        break;
+    case RFC_CTRL_DM:
+        if (!rfcRxDm(addr, pfBit, s))
+            goto err;
+        break;
+    case RFC_CTRL_DISC:
+        if (!rfcRxDisc(addr, pfBit, s))
+            goto err;
+        break;
+    case RFC_CTRL_UIH:
+        if (!rfcRxUih(addr, pfBit, s))
+            goto err;
+        break;
+    default:
+        loge("Unknown RFCOMM ctrl 0x%02X\n", ctrl);
+        goto err;
+        break;
+    }
+    return;
 
 err:
     loge("RFCOMM RX processing: abandoning %ub\n", sgLength(s));
@@ -199,7 +225,7 @@ err:
 }
 
 /*
- * FUNCTION: rfcommConnect
+ * FUNCTION: rfcConnect
  * USE:      Called to connect to a remote RFCOMM DLCI
  * PARAMS:   peerAddr - the address of the other device
  *           dlci - the DLCI we want to connect to
@@ -208,14 +234,14 @@ err:
  * RETURN:   tru if you shoudl expect callbacks. false on immediate failure
  * NOTES:
  */
-bool rfcommConnect(const struct bt_addr *peerAddr, uint8_t dlci, rfcSvcEvent evtF, void *cbkData)
+bool rfcConnect(const struct bt_addr *peerAddr, uint8_t dlci, rfcSvcEvent evtF, void *cbkData)
 {
     //TODO
     return false;
 }
 
 /*
- * FUNCTION: rfcommTx
+ * FUNCTION: rfcTx
  * USE:      Called to TX data using RFCOMM
  * PARAMS:   connHandle - the connection handle
  *           s - the SG to send
@@ -224,12 +250,12 @@ bool rfcommConnect(const struct bt_addr *peerAddr, uint8_t dlci, rfcSvcEvent evt
  *           SG for you. If entire SG is sent, it will be freed and RFC_TX_RET_ENTIRE_SENT
  *           will be returned
  */
-int32_t rfcommTx(rfc_conn_t connHandle, sg s)
+int32_t rfcTx(rfc_conn_t connHandle, sg s)
 {
     struct rfcConn* conn;
     int32_t ret;
 
-    conn = rfcommFindConnByHandle(connHandle);
+    conn = rfcFindConnByHandle(connHandle);
     if (!conn)
         return RFC_TX_RET_NO_SUCH_CONN;
 
@@ -259,17 +285,17 @@ int32_t rfcommTx(rfc_conn_t connHandle, sg s)
 }
 
 /*
- * FUNCTION: rfcommInstanceState
+ * FUNCTION: rfcInstanceState
  * USE:      Handle state changes on the RFCOMM instance
  * PARAMS:   userData - passed to l2cApiServicePsmRegister, unused
- *           instance - the instance allocated by rfcommServiceAlloc()
+ *           instance - the instance allocated by rfcServiceAlloc()
  *           state - what happened?
  *           data - data pertinent to what happened
  *           len - length of said data
  * RETURN:   NONE
  * NOTES:
  */
-static void rfcommInstanceState(void *userData, void *instance, uint8_t state, const void *data, uint32_t len)
+static void rfcInstanceState(void *userData, void *instance, uint8_t state, const void *data, uint32_t len)
 {
     struct rfcInst *inst = (struct rfcInst*)instance;
 
@@ -292,7 +318,7 @@ static void rfcommInstanceState(void *userData, void *instance, uint8_t state, c
             loge("unexpected length for RX\n");
         else {
             pthread_mutex_lock(&inst->lock);
-            rfcommRx(inst, *(sg*)data);
+            rfcRx(inst, *(sg*)data);
             pthread_mutex_unlock(&inst->lock);
         }
         break;
@@ -309,7 +335,7 @@ static void rfcommInstanceState(void *userData, void *instance, uint8_t state, c
 }
 
 /*
- * FUNCTION: rfcommServiceAlloc
+ * FUNCTION: rfcServiceAlloc
  * USE:      Allocate an instance of RFCOMM
  * PARAMS:   userData - passed to l2cApiServicePsmRegister, unused
  *           conn - the connection
@@ -317,7 +343,7 @@ static void rfcommInstanceState(void *userData, void *instance, uint8_t state, c
  * RETURN:   SVC_ALLOC_*
  * NOTES:
  */
-static uint8_t rfcommServiceAlloc(void *userData, l2c_handle_t conn, void **instanceP){
+static uint8_t rfcServiceAlloc(void *userData, l2c_handle_t conn, void **instanceP){
 
     struct rfcInst *inst = calloc(1, sizeof(struct rfcInst));
 
@@ -344,19 +370,19 @@ static uint8_t rfcommServiceAlloc(void *userData, l2c_handle_t conn, void **inst
 }
 
 /*
- * FUNCTION: rfcommRegisterProfile
+ * FUNCTION: rfcRegisterProfile
  * USE:      Register RFCOMM with L2C & init it
  * PARAMS:   NONE
  * RETURN:   NONE
  * NOTES:
  */
-bool rfcommRegisterProfile(void)
+bool rfcRegisterProfile(void)
 {
 
     static const struct l2cServicePsmDescriptor rfcommDescr = {
         .userData = NULL,
-        .serviceInstanceAlloc = rfcommServiceAlloc,
-        .serviceInstanceStateCbk = rfcommInstanceState,
+        .serviceInstanceAlloc = rfcServiceAlloc,
+        .serviceInstanceStateCbk = rfcInstanceState,
         .serviceConnectionlessRx = NULL,
         .mtu = 0xFFE0, /* no real limits here */
     };
@@ -373,37 +399,35 @@ bool rfcommRegisterProfile(void)
 }
 
 /*
- * FUNCTION: rfcommDlciListenAvail
- * USE:      See if a given DLCI can be used to listen
+ * FUNCTION: rfcChanListenAvail
+ * USE:      See if a given channel can be used to listen
  * PARAMS:   dlci - the dlci
  * RETURN:   the answer
  * NOTES:    call with mListenersLock held
  */
-static bool rfcommDlciListenAvail(uint8_t dlci)
+static bool rfcChanListenAvail(uint8_t chan)
 {
     struct rfcListenState *c;
 
-    for (c = mListeners; c && c->dlci != dlci; c = c->next);
+    for (c = mListeners; c && c->chan != chan; c = c->next);
 
     return !c;
 }
 
 /*
- * FUNCTION: rfcommListen
+ * FUNCTION: rfcListen
  * USE:      Listen on a DLCI
- * PARAMS:   dlciReq - wanted DLCI or RFC_DLCI_REQ_*
+ * PARAMS:   chReq - wanted channel or RFC_CHNUM_REQ_ANY
  *           allocF - callback to alloc an instance of this service
  *           evtF - callback to notify this service of events
  *           cbkData - data to pass to the above calbacks
  * RETURN:   the allocated DLCI or 0 on error
  * NOTES:    if you request an exat DLCI and it is not available, this will fail!
  */
-uint8_t rfcommListen(uint8_t dlciReq, rfcSvcAlloc allocF, rfcSvcEvent evtF, void *cbkData) //returns DLCI. input = dlci specifically or RFCOMM_DLCI_*
+uint8_t rfcListen(uint8_t chReq, rfcSvcAlloc allocF, rfcSvcEvent evtF, void *cbkData)
 {
     struct rfcListenState *c;
-    uint8_t i, dlci = 0, dlciSearchFirst = 0, dlciSearchIncr = 0;
-
-
+    uint8_t ch = 0;
 
     /* allocate and link in the listener struct */
     c = (struct rfcListenState*)malloc(sizeof(struct rfcListenState));
@@ -417,52 +441,43 @@ uint8_t rfcommListen(uint8_t dlciReq, rfcSvcAlloc allocF, rfcSvcEvent evtF, void
     pthread_mutex_lock(&mListenersLock);
 
     /* figure out what the user wanted */
-    if (dlciReq < RFC_FIRST_DLCI + RFC_NUM_DLCIS && dlciReq >= RFC_FIRST_DLCI) {
-        if (!rfcommDlciListenAvail(dlciReq))
+    if (chReq < RFC_FIRST_CHAN + RFC_NUM_CHANS && chReq >= RFC_FIRST_CHAN) {
+        if (!rfcChanListenAvail(chReq))
             goto out;
-        dlci = dlciReq;
-    } else if (dlciReq == RFC_DLCI_REQ_PREFERENCE_NONE) {
-        dlciSearchFirst = RFC_FIRST_DLCI;
-        dlciSearchIncr = 1;
-    } else if (dlciReq == RFC_DLCI_REQ_NEED_EVEN) {
-        dlciSearchFirst = (RFC_FIRST_DLCI + 1) &~ 1; /* next even */
-        dlciSearchIncr = 2;
-    } else if (dlciReq == RFC_DLCI_REQ_PREFERENCE_NONE) {
-        dlciSearchFirst = (RFC_FIRST_DLCI &~ 1) + 1; /* next odd */
-        dlciSearchIncr = 2;
+        ch = chReq;
+    } else if (chReq == RFC_CHNUM_REQ_ANY) {
+        uint8_t i;
+        for (i = RFC_FIRST_CHAN; !ch && i < RFC_FIRST_CHAN + RFC_NUM_CHANS; i++)
+            if (rfcChanListenAvail(i))
+                ch = i;
     } else {
-        loge("Attempt to listen on stange DLCI %u\n", dlciReq);
+        loge("Attempt to listen on stange channel %u\n", chReq);
         goto out;
     }
 
-    /* search for a DLCI if needed */
-    for (i = dlciSearchFirst; !dlci && i < RFC_FIRST_DLCI + RFC_NUM_DLCIS; i += dlciSearchIncr)
-        if (rfcommDlciListenAvail(i))
-            dlci = i;
-
-    if (!dlci) /* no DLCI found */
+    if (!ch) /* no channel found */
         goto out;
 
     /* finish preparing & link in the listener struct */
-    c->dlci = dlci;
+    c->chan = ch;
     c->next = mListeners;
     mListeners = c;
 
 out:
-    if (!dlci)
+    if (!ch)
         free(c);
     pthread_mutex_unlock(&mListenersLock);
-    return dlci;
+    return ch;
 }
 
 /*
- * FUNCTION: rfcommStopListen
+ * FUNCTION: rfcStopListen
  * USE:      Stop listening on a DLCI
- * PARAMS:   dlci - the DLCI to free
+ * PARAMS:   ch - the channel to stop listening on
  * RETURN:   true if listener was found and deleted
  * NOTES:
  */
-bool rfcommStopListen(uint8_t dlci)
+bool rfcStopListen(uint8_t ch)
 {
     struct rfcListenState *c, *p = NULL;
     bool ret = false;
@@ -470,7 +485,7 @@ bool rfcommStopListen(uint8_t dlci)
     pthread_mutex_lock(&mListenersLock);
 
     /*find it */
-    for (c = mListeners; c && c->dlci != dlci; p = c, c = c->next);
+    for (c = mListeners; c && c->chan != ch; p = c, c = c->next);
 
     if (c) {
 
@@ -498,7 +513,6 @@ bool rfcommStopListen(uint8_t dlci)
  */
 static uint8_t rfcFcs(const void *dataP, uint32_t len)
 {
-
     static const uint8_t crctab[] = {
         0x00, 0x91, 0xE3, 0x72, 0x07, 0x96, 0xE4, 0x75,
         0x0E, 0x9F, 0xED, 0x7C, 0x09, 0x98, 0xEA, 0x7B,

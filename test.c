@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
-#include "profiles/RFCOMM/rfcomm.h"
+#include "rfcomm.h"
 #include "vendorLib.h"
 #include "l2cap.h"
 #include "hci.h"
@@ -302,7 +302,7 @@ int main(int argc, char** argv)
 
     l2cInit();
     sdpRegisterProfile();
-    rfcommRegisterProfile();
+    rfcRegisterProfile();
 
     logi("waiting...press a key\n");
     getchar();
