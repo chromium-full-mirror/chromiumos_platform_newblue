@@ -64,16 +64,32 @@ struct rfcListenState {
 
 #define RFC_CTRL_PF_MASK   0x10
 
-#define RFC_CTRL_SABM      0x2F
-#define RFC_CTRL_UA        0x63
-#define RFC_CTRL_DM        0x0F
-#define RFC_CTRL_DISC      0x43
-#define RFC_CTRL_UIH       0xEF
-
 #define RFC_BIT_EA         0x01
+#define RFC_BIT_CR         0x02
+
+
+/* ctrl values */
+#define RFC_CTRL_DM        0x0F /* Disconnected Mode                 */
+#define RFC_CTRL_SABM      0x2F /* Set Asynchronous Balanced Mode    */
+#define RFC_CTRL_DISC      0x43 /* Disconnect command                */
+#define RFC_CTRL_UA        0x63 /* Unnumbered Acknowledgement        */
+#define RFC_CTRL_UIH       0xEF /* Unnumbered Info With Header Check */
+
+
+/* DLCI 0 commands (C/R bit is bit 1) */
+#define RFC_CMD_NSC        0x11 /* Non Supported Command   */
+#define RFC_CMD_TEST       0x21 /* Test Command            */
+#define RFC_CMD_RLS        0x51 /* Remote Line Status      */
+#define RFC_CMD_FCOFF      0x61 /* Flow Control Off        */
+#define RFC_CMD_PN         0x81 /* Parameter Negotiation   */
+#define RFC_CMD_RPN        0x91 /* Remote Port Negotiation */
+#define RFC_CMD_FCON       0xA1 /* Flow Control On         */
+#define RFC_CMD_MSC        0xE1 /* Modem Status Command    */
+
+
 
 struct rfcHdr {
-    uint8_t                addr; //0th bit is EA (always 1 for RFCOMM), 1st bit is C/R (C/R is copied to replies, always set to 1 by whomever initially established the RFC conn, zeroed by the other)
+    uint8_t                addr;
     uint8_t                ctrl;
     uint8_t                len; /* or start of len */
 
@@ -187,36 +203,63 @@ static void rfcRx(struct rfcInst *inst, sg s)
     /* calculate the FCS and check */
     haveFcs = (ctrl == RFC_CTRL_UIH) ? rfcFcs(hdr, sizeof(struct rfcHdr) - sizeof(uint8_t)) : rfcFcs(hdr, sizeof(struct rfcHdr) + longLen ?  sizeof(uint8_t) : 0);
     if (wantedFcs != haveFcs) {
-        loge("RFCOMM FCS calcualted %02X reported 0x%02X\n", haveFcs, wantedFcs);
+        loge("RFCOMM FCS calculated %02X reported 0x%02X\n", haveFcs, wantedFcs);
         goto err;
     }
 
-    switch (ctrl) {
-    case RFC_CTRL_SABM:
-        if (!rfcRxSabm(addr, pfBit, s))
-            goto err;
-        break;
-    case RFC_CTRL_UA:
-        if (!rfcRxUa(addr, pfBit, s))
-            goto err;
-        break;
-    case RFC_CTRL_DM:
-        if (!rfcRxDm(addr, pfBit, s))
-            goto err;
-        break;
-    case RFC_CTRL_DISC:
-        if (!rfcRxDisc(addr, pfBit, s))
-            goto err;
-        break;
-    case RFC_CTRL_UIH:
-        if (!rfcRxUih(addr, pfBit, s))
-            goto err;
-        break;
-    default:
-        loge("Unknown RFCOMM ctrl 0x%02X\n", ctrl);
+    if (!(addr & RFC_BIT_EA)) {
+        loge("Packet's address is more than one byte!\n");
         goto err;
-        break;
     }
+
+    if (ctrl == RFC_CTRL_UIH) { /* data. Expect C/R != inst->initiator */
+        if (!inst->initiator == !(addr & RFC_BIT_CR)) {
+            loge("RFCOMM C/R for UIH set wrong (i=%d,addr=x%02X)\n", inst->initiator, addr);
+            goto err;
+        }
+        if (!rfcRxData(inst, addr >> 2, pfBit, s))
+            goto err; 
+    } else { /* control */
+        switch (ctrl) {
+        case RFC_CTRL_SABM: /* command. Expect C/R != inst->initiator */
+            if (!inst->initiator == !(addr & RFC_BIT_CR)) {
+                loge("RFCOMM C/R for SABM set wrong (i=%d,addr=x%02X)\n", inst->initiator, addr);
+                goto err;
+            }
+            if (!rfcRxSabm(inst, addr >> 2, pfBit, s))
+                goto err;
+            break;
+        case RFC_CTRL_UA: /* response. Expect C/R == inst->initiator */
+            if (!inst->initiator != !(addr & RFC_BIT_CR)) {
+                loge("RFCOMM C/R for UA set wrong (i=%d,addr=x%02X)\n", inst->initiator, addr);
+                goto err;
+            }
+            if (!rfcRxUa(inst, addr >> 2, pfBit, s))
+                goto err;
+            break;
+        case RFC_CTRL_DM: /* response. Expect C/R == inst->initiator */
+            if (!inst->initiator != !(addr & RFC_BIT_CR)) {
+                loge("RFCOMM C/R for DM set wrong (i=%d,addr=x%02X)\n", inst->initiator, addr);
+                goto err;
+            }
+            if (!rfcRxDm(inst, addr >> 2, pfBit, s))
+                goto err;
+            break;
+        case RFC_CTRL_DISC: /* command. Expect C/R != inst->initiator */
+            if (!inst->initiator == !(addr & RFC_BIT_CR)) {
+                loge("RFCOMM C/R for DISC set wrong (i=%d,addr=x%02X)\n", inst->initiator, addr);
+                goto err;
+            }
+            if (!rfcRxDisc(inst, addr >> 2, pfBit, s))
+                goto err;
+            break;
+        default:
+            loge("Unknown RFCOMM ctrl 0x%02X\n", ctrl);
+            goto err;
+            break;
+        }
+    }
+
     return;
 
 err:
@@ -277,7 +320,7 @@ int32_t rfcTx(rfc_conn_t connHandle, sg s)
     } else
         ret = RFC_TX_RET_STOP_SENDING;
 
-    //tell worker thread to try make progress on this instance....
+    //TODO: tell worker thread to try make progress on this instance....
 
     pthread_mutex_unlock(&conn->inst->lock);
 
