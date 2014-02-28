@@ -3,6 +3,11 @@
 
 
 /*
+ * RFC layer will give the remote side this many credits (1..7)
+ */
+#define RFC_NUM_REMOTE_CREDITS              7
+
+/*
  * RFC layer will queue up only this many work items at a time
  */
 #define RFC_NUM_OUTSTANDING_WORK_ITEMS      256
