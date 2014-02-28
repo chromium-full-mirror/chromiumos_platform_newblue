@@ -177,6 +177,21 @@ struct rfcSigMsc { /* we do not care for break signalling */
     uint8_t msc;
 } __packed;
 
+struct rfcSigRpnLong {/*if len == 8 */
+    uint8_t dlci_shl_2;
+    uint8_t baudrate;
+    uint8_t linecfg; //bits/sym, parity, stop bits
+    uint8_t flc;
+    uint8_t xOnChr;
+    uint8_t xOffChr;
+    uint16_t pmMask;
+} __packed;
+
+struct rfcSigRpnShort {/*if len == 1 */
+    uint8_t dlci_shl_2;
+} __packed;
+
+
 /* our global state */
 static struct sendQ *mSendQ = NULL;
 static struct workQueue *mWorkQ = NULL;
@@ -617,6 +632,8 @@ static bool rfcRxControl(struct rfcInst *inst, bool pfBit, sg s)
     struct rfcConn* conn;
     struct rfcSigMsc msc;
     struct rfcSigPn pn;
+    struct rfcSigRpnShort rpnS;
+    struct rfcSigRpnLong rpnL;
 
     if (!sgSerializeCutFront(s, &sig, sizeof(struct rfcSigFrm))) {
         logw("Too short a SIG frame\n");
@@ -663,13 +680,11 @@ static bool rfcRxControl(struct rfcInst *inst, bool pfBit, sg s)
         }
         break;
 
- /* case RFC_RSP_RLS: - this can never happen since we never send a TEST command */
+ /* case RFC_RSP_RLS: - this can never happen since we never send a RLS command */
 //    case RFC_CMD_FCOFF:
 //        
 //        break;
-//    case RFC_RSP_FCOFF:
-//        
-//        break;
+ /* case RFC_RSP_FCOFF: - this can never happen since we never send a FCOFF command */
     case RFC_CMD_PN:
     case RFC_RSP_PN:
         if (!sgSerializeCutFront(s, &pn, sizeof(struct rfcSigPn))) {
@@ -695,7 +710,8 @@ static bool rfcRxControl(struct rfcInst *inst, bool pfBit, sg s)
                     utilSetLE8(&pn.numCredits, 0);
                 }
                 utilSetLE16(&pn.maxFrameSz, inst->dlcis[dlci].maxFrm);
-                rfcTxControl(inst, RFC_RSP_PN, &pn, sizeof(struct rfcSigPn));
+                if (!rfcTxControl(inst, RFC_RSP_PN, &pn, sizeof(struct rfcSigPn)))
+                    logw("Failed to send SIG.PN\n");
             } else {              /* see what they said */
                 logd("Unexpected PN.R during connection\n");
             }
@@ -711,7 +727,8 @@ static bool rfcRxControl(struct rfcInst *inst, bool pfBit, sg s)
                     utilSetLE8(&pn.carrier, 0x00);
                     utilSetLE8(&pn.numCredits, 0);
                 }
-                rfcTxControl(inst, RFC_RSP_PN, &pn, sizeof(struct rfcSigPn));
+                if (!rfcTxControl(inst, RFC_RSP_PN, &pn, sizeof(struct rfcSigPn)))
+                    logw("Failed to send SIG.PN\n");
             } else {              /* see what they said */
                 if ((utilGetLE8(&pn.carrier) >> 4) == 0x0E) {
                     inst->dlcis[dlci].numInitialCreds = utilGetLE8(&pn.numCredits);
@@ -724,18 +741,51 @@ static bool rfcRxControl(struct rfcInst *inst, bool pfBit, sg s)
             logd("Max len: %ub\n", inst->dlcis[dlci].maxFrm);
         }
         break;
-//    case RFC_CMD_RPN:
-//        
-//        break;
-//    case RFC_RSP_RPN:
-//        
-//        break;
+    case RFC_CMD_RPN:
+        if (sLen == sizeof(struct rfcSigRpnShort)) {
+            if (!sgSerializeCutFront(s, &rpnS, sizeof(struct rfcSigRpnShort))) {
+                logw("Too short a SIG.RPN.1 frame\n");
+                return false;
+            }
+            /* convert to as if long request*/
+            dlci = utilGetLE8(&rpnS.dlci_shl_2) >> 2;
+            utilSetLE8(&rpnL.baudrate, 0x08); /* 230,400 bps */
+            utilSetLE8(&rpnL.linecfg, 0x30); /* 8N1 */
+            utilSetLE8(&rpnL.flc, 0); /* none */
+            utilSetLE8(&rpnL.xOnChr, 0x11); /* DC1 as usual */
+            utilSetLE8(&rpnL.xOffChr, 0x13); /* DC3 as usual */
+            utilSetLE16(&rpnL.pmMask, 0); /* no change at all */
+        } else if (sLen == sizeof(struct rfcSigRpnLong)) {
+            static const char *brs[] = {"2.4","4.8","7.2","9.6","19.2","38.4","57.6","115.2","230.4"};
+            static const char *cfgs[] = {"N1","N1.5","O1","O1.5","N1","N1.5", "E1","E1.5", "N1","N1.5", "M1","M1.5", "N1","N1.5", "S1","S1.5"};
+            if (!sgSerializeCutFront(s, &rpnL, sizeof(struct rfcSigRpnLong))) {
+                logw("Too short a SIG.RPN.8 frame\n");
+                return false;
+            }
+            dlci = utilGetLE8(&rpnS.dlci_shl_2) >> 2;
+            if (utilGetLE8(&rpnL.baudrate) < sizeof(brs) / sizeof(*brs))
+                logd("Conf[%2u].br = %sk\n", dlci, brs[utilGetLE8(&rpnL.baudrate)]);
+            else
+                logd("Conf[%2u].br = ?(%u)\n", dlci, utilGetLE8(&rpnL.baudrate));
+            logd("Conf[%2u].lc = %u%s\n", dlci, (utilGetLE8(&rpnL.linecfg) & 3) + 5, cfgs[(utilGetLE8(&rpnL.linecfg) >> 2) & 0x0F]);
+            logd("Conf[%2u].flc = 0x%02X\n", dlci, utilGetLE8(&rpnL.flc));
+            logd("Conf[%2u].xOnChr  = 0x%02X\n", dlci, utilGetLE8(&rpnL.xOnChr));
+            logd("Conf[%2u].xOffChr = 0x%02X\n", dlci, utilGetLE8(&rpnL.xOffChr));
+        } else {
+            logw("Unknown SIG.RPN len %u\n", sLen);
+            return false;
+        }
+        /* send the request right back, say we accept */
+        utilSetLE8(&rpnL.dlci_shl_2, (dlci << 2) | 0x02 | RFC_BIT_EA);
+        utilSetLE16(&rpnL.pmMask, 0x3F77); /* accept all */
+        if (!rfcTxControl(inst, RFC_RSP_RPN, &rpnL, sizeof(struct rfcSigRpnLong)))
+            logw("Failed to send SIG.RPN\n");
+        break;
+ /* case RFC_RSP_RPN: - this can never happen since we never send a RPM command */
 //    case RFC_CMD_FCON:
 //        
 //        break;
-//    case RFC_RSP_FCON:
-//        
-//        break;
+ /* case RFC_RSP_FCON: - this can never happen since we never send a FCON command */
     case RFC_CMD_MSC:
     case RFC_RSP_MSC:
         if (!sgSerializeCutFront(s, &msc, sizeof(struct rfcSigMsc))) {
