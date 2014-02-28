@@ -305,7 +305,6 @@ void sgTruncBack(sg s, uint32_t bytes_to_delete)
         s->head = NULL;
     s->tail = t;
 
-    item = item->next;
     while (item) {
         t = item;
         item = item->next;
