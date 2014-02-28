@@ -18,7 +18,8 @@ struct sendQ;
 struct sendQ* sendQueueAlloc(uint32_t maxMsgsPerConn, const char* name);
 void sendQueueFree(struct sendQ *q); //delete is async
 
-bool sendQueueTx(struct sendQ *q, l2c_handle_t conn, sg s);
+bool sendQueueTx(struct sendQ *q, l2c_handle_t conn, sg s); /* send unless error or maxMsgs limit reached */
+bool sendQueueForceTx(struct sendQ *q, l2c_handle_t conn, sg s); /* send unless eror */
 void sendQueueDelPackets(struct sendQ *q, l2c_handle_t conn);
 
 

@@ -191,15 +191,16 @@ void sendQueueFree(struct sendQ *q)
 }
 
 /*
- * FUNCTION: sendQueueTx
- * USE:      Enqueue a packet to send using the sendQ
+ * FUNCTION: sendQueueTxInt
+ * USE:      Enqueue a packet to send using the sendQ, enforce quotas if needed
  * PARAMS:   q - the SendQ
  *           conn - the L2C connection
  *           s - the SG to send
+ *           enforceQuotas - true to enforce quotas, false else
  * RETURN:   false on error
  * NOTES:
  */
-bool sendQueueTx(struct sendQ *q, l2c_handle_t conn, sg s)
+static bool sendQueueTxInt(struct sendQ *q, l2c_handle_t conn, sg s, bool enforceQuotas)
 {
     uint32_t msgsForConnAlready = 0;
     struct packet *t;
@@ -211,7 +212,7 @@ bool sendQueueTx(struct sendQ *q, l2c_handle_t conn, sg s)
         if (t->conn == conn)
             msgsForConnAlready++;
 
-    if (msgsForConnAlready < q->maxMsgsPerConn) {
+    if (!enforceQuotas || msgsForConnAlready < q->maxMsgsPerConn) {
         t = (struct packet*)calloc(1, sizeof(struct packet));
         if (t) {
 
@@ -230,6 +231,34 @@ bool sendQueueTx(struct sendQ *q, l2c_handle_t conn, sg s)
 
     pthread_mutex_unlock(&q->lock);
     return ret;
+}
+
+/*
+ * FUNCTION: sendQueueForceTx
+ * USE:      Enqueue a packet to send using the sendQ, ignore quotas
+ * PARAMS:   q - the SendQ
+ *           conn - the L2C connection
+ *           s - the SG to send
+ * RETURN:   false on error
+ * NOTES:
+ */
+bool sendQueueForceTx(struct sendQ *q, l2c_handle_t conn, sg s)
+{
+    return sendQueueTxInt(q, conn, s, false);
+}
+
+/*
+ * FUNCTION: sendQueueTx
+ * USE:      Enqueue a packet to send using the sendQ
+ * PARAMS:   q - the SendQ
+ *           conn - the L2C connection
+ *           s - the SG to send
+ * RETURN:   false on error of over limit
+ * NOTES:
+ */
+bool sendQueueTx(struct sendQ *q, l2c_handle_t conn, sg s)
+{
+    return sendQueueTxInt(q, conn, s, true);
 }
 
 /*
