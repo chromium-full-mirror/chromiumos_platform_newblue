@@ -531,6 +531,30 @@ static bool rfcWrapNoCredUIH(struct rfcInst *inst, sg s)
     return sgConcatFrontCopy(s, hdr, hdrLen) && sgConcatBackCopy(s, &fcs, sizeof(uint8_t));
 }
 
+
+/*
+ * FUNCTION: rfcTxControlSg
+ * USE:      Send a control frame to the other side (data provided as an SG)
+ * PARAMS:   inst - the RFCOMM instance
+ *           sType - the type of frame to send
+ *           data - the data SG
+ * RETURN:   true if we queued the send, false else
+ * NOTES:    call with inst->lock held
+ */
+static bool rfcTxControlSg(struct rfcInst *inst, uint8_t sType, sg data)
+{
+    struct rfcSigFrm sig;
+
+    utilSetLE8(&sig.type, sType);
+    utilSetLE8(&sig.length, (sgLength(data) << 1) | RFC_BIT_EA);
+
+    if (sgConcatFrontCopy(data, &sig, sizeof(struct rfcSigFrm)) && rfcWrapNoCredUIH(inst, data) && sendQueueForceTx(mSendQ, inst->conn, data))
+        return true;
+
+    sgFree(data);
+    return false;
+}
+
 /*
  * FUNCTION: rfcTxControl
  * USE:      Send a control frame to the other side
@@ -543,17 +567,13 @@ static bool rfcWrapNoCredUIH(struct rfcInst *inst, sg s)
  */
 static bool rfcTxControl(struct rfcInst *inst, uint8_t sType, const void *data, uint8_t len)
 {
-    struct rfcSigFrm sig;
     sg s;
 
-    utilSetLE8(&sig.type, sType);
-    utilSetLE8(&sig.length, (len << 1) | RFC_BIT_EA);
-
-    s = sgNewWithCopyData(&sig, sizeof(struct rfcSigFrm));
+    s = sgNewWithCopyData(data, len);
     if (!s)
         return false;
 
-    if (sgConcatBackCopy(s, data, len) && rfcWrapNoCredUIH(inst, s) && sendQueueForceTx(mSendQ, inst->conn, s))
+    if (rfcTxControlSg(inst, sType, s))
         return true;
 
     sgFree(s);
@@ -628,9 +648,12 @@ static bool rfcRxControl(struct rfcInst *inst, bool pfBit, sg s)
         sType = utilGetLE8(&sType);
         logw("Other side refuses our command 0x%u\n", sType);
         break;
-//    case RFC_CMD_TEST:
-//        
-//        break;
+    case RFC_CMD_TEST:
+        if (!rfcTxControlSg(inst, RFC_RSP_TEST, s)) {
+            logw("Failed to reply to SIG.TEST\n");
+            return false;
+        }
+        break;
 //    case RFC_RSP_TEST:
 //        
 //        break;
