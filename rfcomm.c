@@ -19,6 +19,7 @@
 
 #define RFC_STATE_INVALID       0 /* definitely not a velid state */
 #define RFC_STATE_SVC_OPENING   1 /* connection was remotely opened and now we await our side's server to respond */
+#define RFC_STATE_CONFIG        2 /* config time */
 /* ... */
 #define RFC_STATE_DISC_SENT     6 /* we sent a DISC and are waiting for a confirming UA */
 #define RFC_STATE_TEARDOWN      7
@@ -73,9 +74,27 @@ struct rfcSvcWork {
     uint8_t type;
 
     union {
-        int more_real_things_here_later;
+        struct {
+            rfcSvcAlloc    allocCbk;
+            void          *cbkData;
+            rfc_conn_t     conn;
+        }svcAlloc;
+        struct {
+            rfc_conn_t     conn;
+            sg             data;
+            uint8_t        evtType;
+        }evt;
+        struct {
+            rfc_conn_t     conn;
+        }tryTx;
     };
 };
+
+#define RFC_WORK_SVC_ALLOC 0
+#define RFC_WORK_CONN_EVT  1
+#define RFC_WORK_TRY_TX    2
+
+
 
 
 
@@ -164,6 +183,94 @@ static struct rfcConn* rfcFindConnByHandle(rfc_conn_t handle)
     pthread_mutex_unlock(&mInstsLock);
 
     return c;
+}
+
+/*
+ * FUNCTION: rfcNewWorkItem
+ * USE:      Allocate a new work item
+ * PARAMS:   evtType - the type to set
+ * RETURN:   true if the work was scheduled
+ * NOTES:
+ */
+static struct rfcSvcWork* rfcNewWorkItem(uint8_t evtType)
+{
+    struct rfcSvcWork* w = calloc(1, sizeof(struct rfcSvcWork));
+    if (w)
+        w->type = evtType;
+
+    return w;
+}
+
+/*
+ * FUNCTION: rfcSchedEvt
+ * USE:      Schedule a call to the event callback of a connection in the worker thread
+ * PARAMS:   conn - the connection for whom we want to TX
+ *           evt - what event happened (RFC_EVT_*)
+ *           sg - the data sg or NULL. If this func returns true, it owns sg now
+ * RETURN:   true if the work was scheduled
+ * NOTES:
+ */
+static bool rfcSchedEvt(struct rfcConn *conn, uint8_t evt, sg data)
+{
+    struct rfcSvcWork *wi = rfcNewWorkItem(RFC_WORK_CONN_EVT);
+    if (wi) {
+
+        wi->evt.conn = conn->handle;
+        wi->evt.data = data;
+        wi->evt.evtType = evt;
+
+        if (workQueuePut(mWorkQ, wi))
+            return true;
+
+        free(wi);
+    }
+    return false;
+}
+
+/*
+ * FUNCTION: rfcSchedSvcAlloc
+ * USE:      Schedule an allocation of a service in the worker thread
+ * PARAMS:   conn - the connection for whom we want to TX
+ * RETURN:   true if the work was scheduled
+ * NOTES:
+ */
+static bool rfcSchedSvcAlloc(struct rfcListenState *ls, struct rfcConn *conn)
+{
+    struct rfcSvcWork *wi = rfcNewWorkItem(RFC_WORK_SVC_ALLOC);
+    if (wi) {
+
+        wi->svcAlloc.allocCbk = ls->allocCbk;
+        wi->svcAlloc.cbkData = ls->cbkData;
+        wi->svcAlloc.conn = conn->handle;
+
+        if (workQueuePut(mWorkQ, wi))
+            return true;
+
+        free(wi);
+    }
+    return false;
+}
+
+/*
+ * FUNCTION: rfcSchedTryTx
+ * USE:      Schedule an attempt to TX in the worker thread
+ * PARAMS:   conn - the connection for whom we want to TX
+ * RETURN:   true if the work was scheduled
+ * NOTES:
+ */
+static bool rfcSchedTryTx(struct rfcConn *conn)
+{
+    struct rfcSvcWork *wi = rfcNewWorkItem(RFC_WORK_TRY_TX);
+    if (wi) {
+
+        wi->tryTx.conn = conn->handle;
+
+        if (workQueuePut(mWorkQ, wi))
+            return true;
+
+        free(wi);
+    }
+    return false;
 }
 
 /*
@@ -336,7 +443,6 @@ static bool rfcSendUa(struct rfcInst *inst, uint8_t dlci)
     return rfcSendCmd(inst, RFC_CTRL_UA, dlci, !inst->initiator);
 }
 
-
 /*
  * FUNCTION: rfcRxData
  * USE:      Handle incoming UIH (Data) packets
@@ -360,10 +466,27 @@ static bool rfcRxData(struct rfcInst *inst, uint8_t dlci, bool pfBit, sg s)
         return false;
     }
 
-    if (rfcSchedEvt(inst, RFC_EVT_RX, s))
+    if (rfcSchedEvt(c, RFC_EVT_RX, s))
         return true;
 
     loge("Failed to schedule RFC RX work\n");
+    return false;
+}
+
+/*
+ * FUNCTION: rfcRxControl
+ * USE:      Handle incoming UIH (Data) packets for DLCI 0
+ * PARAMS:   inst - the RFCOMM instance
+ *           pfBit - was the P/F bit set in the packet header
+ *           s - the incoming packet
+ * RETURN:   true if we handled this RX and sg was/will be freed by us
+ * NOTES:    call with inst->lock held
+ */
+static bool rfcRxControl(struct rfcInst *inst, bool pfBit, sg s)
+{
+
+    //TODO
+
     return false;
 }
 
@@ -392,6 +515,32 @@ static void rfcCloseConn(struct rfcConn *c, bool toolOtherSide)
     }
 
     rfcDeleteConnStruct(c);
+}
+
+/*
+ * FUNCTION: rfcRxAck
+ * USE:      Handle incoming UA response
+ * PARAMS:   inst - the RFCOMM instance
+ *           dlci - the DLCI the packet came in for
+ * RETURN:   NONE
+ * NOTES:    call with inst->lock held
+ */
+static void rfcRxAck(struct rfcInst *inst, uint8_t dlci)
+{
+    //TODO
+}
+
+/*
+ * FUNCTION: rfcRxDm
+ * USE:      Handle incoming DM response
+ * PARAMS:   inst - the RFCOMM instance
+ *           dlci - the DLCI the packet came in for
+ * RETURN:   NONE
+ * NOTES:    call with inst->lock held
+ */
+static void rfcRxDm(struct rfcInst *inst, uint8_t dlci)
+{
+    //TODO
 }
 
 /*
@@ -752,6 +901,18 @@ static uint8_t rfcServiceAlloc(void *userData, l2c_handle_t conn, void **instanc
 }
 
 /*
+ * FUNCTION: rfcTryTx
+ * USE:      Try to make forward progress on TX for a given conn
+ * PARAMS:   c - the conn
+ * RETURN:   NONE
+ * NOTES:    call with inst->lock held
+ */
+static void rfcTryTx(struct rfcConn* c)
+{
+    //TODO
+}
+
+/*
  * FUNCTION: rfcWorkQItemFreeCbk
  * USE:      Free an RFC work item in the WorkQ at WorkQ deletion time
  * PARAMS:   workItem - the work item
@@ -760,11 +921,12 @@ static uint8_t rfcServiceAlloc(void *userData, l2c_handle_t conn, void **instanc
  */
 static void rfcWorkQItemFreeCbk(void *workItem)
 {
-    struct rfcSvcWork *work = (struct rfcSvcWork*)workItem;
+    struct rfcSvcWork *wi = (struct rfcSvcWork*)workItem;
 
-    //TODO
+    if (wi->type == RFC_WORK_CONN_EVT && wi->evt.data)
+        sgFree(wi->evt.data);
 
-    free(work);
+    free(wi);
 }
 
 /*
@@ -776,25 +938,67 @@ static void rfcWorkQItemFreeCbk(void *workItem)
  */
 static void* rfcWorkerThread(void *unused)
 {
-    struct rfcSvcWork *work;
+    struct rfcSvcWork *wi;
+    struct rfcConn* c;
     int status;
 
     pthread_setname_np(pthread_self(), "bt_rfcomm_worker");
 
     while(1) {
-        status = workQueueGet(mWorkQ, (void**)&work);
+        status = workQueueGet(mWorkQ, (void**)&wi);
 
         /* The only one thing we use the work queue status for - exiting */
         if (status)
             break;
 
-        switch (work->type) {
-        //TODO
+        switch (wi->type) {
+        case RFC_WORK_SVC_ALLOC:
+            c = rfcFindConnByHandle(wi->svcAlloc.conn);
+            if (!c) {
+                logd("Saw stale svc alloc\n");
+                break;
+            }
+            if (c->state != RFC_STATE_SVC_OPENING) {
+                logw("rfc conn in bad state at svc aloc time\n");
+                c->state = RFC_STATE_TEARDOWN;
+                rfcSendDm(c->inst, c->dlci);
+                rfcCloseConn(c, false);
+            } else {
+                c->inst = wi->svcAlloc.allocCbk(wi->svcAlloc.cbkData, &c->inst->addr, c->dlci);
+                if (c->inst) {
+                    c->state = RFC_STATE_CONFIG;
+                    rfcSendUa(c->inst, c->dlci);
+                } else {
+                    c->state = RFC_STATE_TEARDOWN;
+                    rfcSendDm(c->inst, c->dlci);
+                    rfcCloseConn(c, false);
+                }
+            }
+            pthread_mutex_unlock(&c->inst->lock);
+            break;
+        case RFC_WORK_CONN_EVT:
+            c = rfcFindConnByHandle(wi->svcAlloc.conn);
+            if (!c) {
+                logd("Saw stale evt\n");
+                break;
+            }
+            c->evtCbk(c->evtCbkData, c->inst, wi->evt.evtType, wi->evt.data);
+            pthread_mutex_unlock(&c->inst->lock);
+            break;
+        case RFC_WORK_TRY_TX:
+            c = rfcFindConnByHandle(wi->svcAlloc.conn);
+            if (!c) {
+                logd("Saw stale try-tx\n");
+                break;
+            }
+            rfcTryTx(c);
+            pthread_mutex_unlock(&c->inst->lock);
+            break;
         default:
-            loge("Unknown work type %d\n", work->type);
+            loge("Unknown work type %d\n", wi->type);
             break;
         }
-        free(work);
+        free(wi);
     }
 
     return NULL;
