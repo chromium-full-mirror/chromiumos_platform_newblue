@@ -401,7 +401,7 @@ static bool rfcSendCmd(struct rfcInst *inst, uint8_t cmd, uint8_t dlci, bool set
  */
 static bool rfcSendDm(struct rfcInst *inst, uint8_t dlci)
 {
-    return rfcSendCmd(inst, RFC_CTRL_DM, dlci, !inst->initiator);
+    return rfcSendCmd(inst, RFC_CTRL_DM | RFC_CTRL_PF_MASK, dlci, !inst->initiator);
 }
 
 /*
@@ -414,7 +414,7 @@ static bool rfcSendDm(struct rfcInst *inst, uint8_t dlci)
  */
 static bool rfcSendDisc(struct rfcInst *inst, uint8_t dlci)
 {
-    return rfcSendCmd(inst, RFC_CTRL_DISC, dlci, inst->initiator);
+    return rfcSendCmd(inst, RFC_CTRL_DISC | RFC_CTRL_PF_MASK, dlci, inst->initiator);
 }
 
 /*
@@ -427,7 +427,7 @@ static bool rfcSendDisc(struct rfcInst *inst, uint8_t dlci)
  */
 static bool rfcSendSabm(struct rfcInst *inst, uint8_t dlci)
 {
-    return rfcSendCmd(inst, RFC_CTRL_SABM, dlci, inst->initiator);
+    return rfcSendCmd(inst, RFC_CTRL_SABM | RFC_CTRL_PF_MASK, dlci, inst->initiator);
 }
 
 /*
@@ -440,7 +440,7 @@ static bool rfcSendSabm(struct rfcInst *inst, uint8_t dlci)
  */
 static bool rfcSendUa(struct rfcInst *inst, uint8_t dlci)
 {
-    return rfcSendCmd(inst, RFC_CTRL_UA, dlci, !inst->initiator);
+    return rfcSendCmd(inst, RFC_CTRL_UA | RFC_CTRL_PF_MASK, dlci, !inst->initiator);
 }
 
 /*
@@ -702,13 +702,14 @@ static void rfcRx(struct rfcInst *inst, sg s)
         sgFree(s);
         s = NULL;
 
-        if (pfBit)
-            logw("Unexpected P/F bit in command packet\n");
-
         switch (ctrl) {
         case RFC_CTRL_SABM: /* command. Expect C/R != inst->initiator */
             if (!inst->initiator == !(addr & RFC_BIT_CR)) {
                 loge("RFCOMM C/R for SABM set wrong (i=%d,addr=x%02X)\n", inst->initiator, addr);
+                goto err;
+            }
+            if (!pfBit) {
+                logw("SABM w/o PF bit!\n");
                 goto err;
             }
             rfcRxChOpen(inst, addr >> RFC_DLCI_SHIFT);
@@ -716,6 +717,10 @@ static void rfcRx(struct rfcInst *inst, sg s)
         case RFC_CTRL_UA: /* response. Expect C/R == inst->initiator */
             if (!inst->initiator != !(addr & RFC_BIT_CR)) {
                 loge("RFCOMM C/R for UA set wrong (i=%d,addr=x%02X)\n", inst->initiator, addr);
+                goto err;
+            }
+            if (!pfBit) {
+                logw("UA w/o PF bit!\n");
                 goto err;
             }
             rfcRxAck(inst, addr >> RFC_DLCI_SHIFT);
@@ -730,6 +735,10 @@ static void rfcRx(struct rfcInst *inst, sg s)
         case RFC_CTRL_DISC: /* command. Expect C/R != inst->initiator */
             if (!inst->initiator == !(addr & RFC_BIT_CR)) {
                 loge("RFCOMM C/R for DISC set wrong (i=%d,addr=x%02X)\n", inst->initiator, addr);
+                goto err;
+            }
+            if (!pfBit) {
+                logw("DISC w/o PF bit!\n");
                 goto err;
             }
             rfcRxChClose(inst, addr >> RFC_DLCI_SHIFT);
