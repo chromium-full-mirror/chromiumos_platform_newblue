@@ -21,10 +21,10 @@ typedef uniq_t rfc_conn_t; /* a 0-valued connection ID is invalid and indicates 
 #define RFCCONNCNV(x) UNIQ_CONV(x)
 
 
-#define RFC_EVT_OPEN                 0 
-#define RFC_EVT_RX                   1
-#define RFC_EVT_MAY_SEND             2
-#define RFC_EVT_CLOSE                3
+#define RFC_EVT_OPEN                 0 /* data is rfc_conn_t */
+#define RFC_EVT_RX                   1 /* data is RXed data */
+#define RFC_EVT_MAY_SEND             2 /* no data */
+#define RFC_EVT_CLOSE                3 /* no data */
 
 #define RFC_TX_RET_ENTIRE_SENT       -1 /* entire SG was sent and is not freed. Do not use it */
 #define RFC_TX_RET_STOP_SENDING      -2 /* this is temporary - wait for RFC_EVT_MAY_SEND */

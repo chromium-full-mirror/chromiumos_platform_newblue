@@ -3,8 +3,8 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
-#include "rfcomm.h"
 #include "vendorLib.h"
+#include "rfcomm.h"
 #include "l2cap.h"
 #include "hci.h"
 #include "util.h"
@@ -168,7 +168,64 @@ void logData(char* dst, const void *buf, uint8_t len)
         sprintf(dst + strlen(dst), " %02X", data[i]);
 }
 
-extern void eliza(void);
+
+struct TestRfcState {
+    rfc_conn_t conn;
+    struct bt_addr addr;
+    uint8_t dlci;
+};
+
+static void* testRfcAllocF(void *userData, const struct bt_addr *peerAddr, uint8_t dlci)
+{
+    struct TestRfcState *s;
+
+    logi("RFC in from "ADDRFMT" on dlci %u\n", ADDRCONV(*peerAddr), dlci);
+
+    s = calloc(1, sizeof(struct TestRfcState));
+    if (s) {
+        memcpy(&s->addr, peerAddr, sizeof(s->addr));
+        s->dlci = dlci;
+    }
+
+    return s;
+}
+
+static void testRfcEvtF(void *userData, void *instance, uint8_t evt, sg data)
+{
+    struct TestRfcState *s = (struct TestRfcState*)instance;
+    int32_t i;
+
+    switch (evt) {
+    case RFC_EVT_OPEN:
+        if (sgLength(data) != sizeof(rfc_conn_t))
+            loge("wrong data size to rf open event\n");
+        sgSerialize(data, 0, sizeof(s->conn), &s->conn);
+        sgFree(data);
+        logi("RFC@["ADDRFMT",%u] open: "RFCCONNFMT"\n", ADDRCONV(s->addr), s->dlci, RFCCONNCNV(s->conn));
+        break;
+    case RFC_EVT_RX:
+        logi("RFC@["ADDRFMT",%u] RX %ub\n", ADDRCONV(s->addr), s->dlci, sgLength(data));
+        i = rfcTx(s->conn, data);
+        logi("reply=%d\n", i);
+        if (i != RFC_TX_RET_ENTIRE_SENT)
+            sgFree(data);
+        break;
+    case RFC_EVT_MAY_SEND:
+        if (data)
+            loge("unexpected data in may send event\n");
+        logi("RFC@["ADDRFMT",%u] may send\n", ADDRCONV(s->addr), s->dlci);
+        break;
+    case RFC_EVT_CLOSE:
+        if (data)
+            loge("unexpected data in close event\n");
+        logi("RFC@["ADDRFMT",%u] close\n", ADDRCONV(s->addr), s->dlci);
+        free(s);
+        break;
+    default:
+        loge("RFC@["ADDRFMT",%u] unknown event %u\n", ADDRCONV(s->addr), s->dlci, evt);
+        break;
+    }
+}
 
 int main(int argc, char** argv)
 {
@@ -303,6 +360,8 @@ int main(int argc, char** argv)
     l2cInit();
     sdpRegisterProfile();
     rfcRegisterProfile();
+
+    logi("RFC CHAN: %u\n", rfcListen(RFC_CHNUM_REQ_ANY, testRfcAllocF, testRfcEvtF, NULL));
 
     logi("waiting...press a key\n");
     getchar();
