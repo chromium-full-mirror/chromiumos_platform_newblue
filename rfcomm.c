@@ -651,7 +651,7 @@ static void rfcRx(struct rfcInst *inst, sg s)
     addr = utilGetLE8(&hdr->addr);
     ctrl = utilGetLE8(&hdr->ctrl);
     pfBit = !!(ctrl & RFC_CTRL_PF_MASK);
-    ctrl &= !RFC_CTRL_PF_MASK;
+    ctrl &= ~RFC_CTRL_PF_MASK;
 
     /* grab length as per spec */
     len = utilGetLE8(&hdr->len);
@@ -672,7 +672,7 @@ static void rfcRx(struct rfcInst *inst, sg s)
     }
 
     /* calculate the FCS and check */
-    haveFcs = (ctrl == RFC_CTRL_UIH) ? rfcFcs(hdr, sizeof(struct rfcHdr) - sizeof(uint8_t)) : rfcFcs(hdr, sizeof(struct rfcHdr) + longLen ?  sizeof(uint8_t) : 0);
+    haveFcs = (ctrl == RFC_CTRL_UIH) ? rfcFcs(hdr, sizeof(struct rfcHdr) - sizeof(uint8_t)) : rfcFcs(hdr, sizeof(struct rfcHdr) + (longLen ?  sizeof(uint8_t) : 0));
     if (wantedFcs != haveFcs) {
         loge("RFCOMM FCS calculated %02X reported 0x%02X\n", haveFcs, wantedFcs);
         goto err;
