@@ -128,7 +128,7 @@ struct rfcSvcWork {
 
 
 /* DLCI 0 commands (C/R bit is bit 1, E/A bit is 1) */
-#define RFC_CMD_NSC        0x11 /* Non Supported Command Rsp   */
+#define RFC_RSP_NSC        0x11 /* Non Supported Command Rsp   */
 #define RFC_RSP_TEST       0x21 /* Test Response               */
 #define RFC_CMD_TEST       0x23 /* Test Command                */
 #define RFC_RSP_RLS        0x51 /* Remote Line Status Rsp      */
@@ -620,9 +620,14 @@ static bool rfcRxControl(struct rfcInst *inst, bool pfBit, sg s)
     }
 
     switch (sType) {
-//    case RFC_CMD_NSC:
-//        
-//        break;
+    case RFC_RSP_NSC:
+        if (!sgSerializeCutFront(s, &sType, sizeof(uint8_t))) {
+            logw("Too short a SIG.NSC frame\n");
+            return false;
+        }
+        sType = utilGetLE8(&sType);
+        logw("Other side refuses our command 0x%u\n", sType);
+        break;
 //    case RFC_CMD_TEST:
 //        
 //        break;
