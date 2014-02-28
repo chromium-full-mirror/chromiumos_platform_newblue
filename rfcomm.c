@@ -640,7 +640,7 @@ static bool rfcRxControl(struct rfcInst *inst, bool pfBit, sg s)
     }
 
     switch (sType) {
-    case RFC_RSP_NSC:
+    case RFC_RSP_NSC: /* this should neve rhappen since all we send are required commands */
         if (!sgSerializeCutFront(s, &sType, sizeof(uint8_t))) {
             logw("Too short a SIG.NSC frame\n");
             return false;
@@ -654,15 +654,16 @@ static bool rfcRxControl(struct rfcInst *inst, bool pfBit, sg s)
             return false;
         }
         break;
-//    case RFC_RSP_TEST:
-//        
-//        break;
-//    case RFC_CMD_RLS:
-//        
-//        break;
-//    case RFC_RSP_RLS:
-//        
-//        break;
+ /* case RFC_RSP_TEST: - this can never happen since we never send a TEST command */
+    case RFC_CMD_RLS:
+        logd("RFCOMM RXed RLS\n");
+        if (!rfcTxControlSg(inst, RFC_RSP_RLS, s)) {
+            logw("Failed to reply to SIG.RLS\n");
+            return false;
+        }
+        break;
+
+ /* case RFC_RSP_RLS: - this can never happen since we never send a TEST command */
 //    case RFC_CMD_FCOFF:
 //        
 //        break;
