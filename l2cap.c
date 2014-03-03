@@ -759,7 +759,6 @@ static bool l2cSvcWorkScheduleStateCall(struct l2cConn* conn, uint8_t state, con
     return l2cSvcWorkScheduleStateCallDirect(conn->stateCbk, conn->userData, conn->instance, state, data, len);
 }
 
-
 /*
  * FUNCTION: l2cSvcWorkScheduleConnUpdtCbk
  * USE:      Schedule a "connection update" callback
@@ -957,7 +956,6 @@ static void l2cConnTimeout(uniq_t timerH,  uint64_t connH)
     }
     pthread_mutex_unlock(&mConnsLock);
 }
-
 
 /*
  * FUNCTION: l2cConnTimer
@@ -1796,8 +1794,6 @@ out:
     return ret;
 }
 
-
-/* external code can use this to notify other size fo athorization (only if svc alloc returned SVC_ALLOC_WAIT_FOR_AUTHORIZ). New alloc call will happen is athorization received */
 /*
  * FUNCTION: l2cApiUserAthorizNotify
  * USE:      Notify other size of successful (or not) user athorization.
@@ -2415,7 +2411,6 @@ static bool l2cAclDataRxProcessIfComplete(struct l2cAclConn *conn, sg packet)
     l2cAclDataRxCompletePacket(conn, utilGetLE16(&frm.cid), packet);
     return true;
 }
-
 
 /*
  * FUNCTION: l2cAclDataRx
@@ -3520,7 +3515,7 @@ static void l2cConnRequestClose(struct l2cAclConn* acl, struct l2cConn *conn, bo
        break;
     }
     if (tellOurSide)
-        if (!l2cSvcWorkScheduleStateCallDirect(conn->stateCbk, conn->userData, conn->instance, L2C_STATE_CLOSED, NULL, 0))
+        if (!l2cSvcWorkScheduleStateCall(conn, L2C_STATE_CLOSED, NULL, 0))
             loge("Failed to tell our side that connection is closed\n");
     if (tellOtherSide)
         if (!l2cSigSendDiscReq(acl, conn->localCh, conn->remCh))
@@ -4512,7 +4507,6 @@ static void l2cAclDownTimerStart(struct l2cAclConn *aclConn)
     if (!aclConn->teardownTimer)
         loge("Failed to set teardown timer for acl "HCI_CONN_FMT"x\n", HCI_CONN_CONV(aclConn->conn));
 }
-
 
 /*
  * FUNCTION: l2cAclDownTimerStop
