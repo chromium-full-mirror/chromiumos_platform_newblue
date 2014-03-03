@@ -1,8 +1,10 @@
 #include <pthread.h>
 #include <stdlib.h>
+#include <string.h>
 #include "workQueue.h"
 #include "config.h"
 #include "rfcomm.h"
+#include "timer.h"
 #include "sendQ.h"
 #include "l2cap.h"
 #include "types.h"
@@ -24,18 +26,26 @@
 #define RFC_MTU                 0xFF00 /* no limits */
 #define RFC_MAX_RX_FRAME        0x3FFF /* to make sure it is representable in all stacks */
 
+/* states for an rfcConn connection */
+#define RFC_CONN_ST_INVALID       0 /* definitely not a valid state */
+#define RFC_CONN_ST_WAITING       1 /* waiting for link to open */
+#define RFC_CONN_ST_SVC_OPENING   2 /* connection was remotely opened and now we await our side's server to respond */
+#define RFC_CONN_ST_PN_SENT       3 /* we sent a PN to open a channel */
+#define RFC_CONN_ST_NEED_SABM     4 /* we need to send a SABM */
+#define RFC_CONN_ST_SENT_SABM     5 /* we sent a SABM */
+#define RFC_CONN_ST_ESTABLISHED   7 /* connection is live */
+#define RFC_CONN_ST_DISC_SENT     8 /* we sent a DISC and are waiting for a confirming UA */
+#define RFC_CONN_ST_TEARDOWN      9 /* connection is being torn down */
 
-#define RFC_STATE_INVALID       0 /* definitely not a valid state */
-#define RFC_STATE_WAITING       1 /* waiting for link to open */
-#define RFC_STATE_SVC_OPENING   2 /* connection was remotely opened and now we await our side's server to respond */
-#define RFC_STATE_PN_SENT       3 /* we sent a PN to open a channel */
-#define RFC_STATE_NEED_SABM     4 /* we need to send a SABM */
-#define RFC_STATE_SENT_SABM     5 /* we sent a SABM */
-#define RFC_STATE_CONFIG        6 /* config time */
-#define RFC_STATE_ESTABLISHED   7 /* connection is live */
-/* ... */
-#define RFC_STATE_DISC_SENT     8 /* we sent a DISC and are waiting for a confirming UA */
-#define RFC_STATE_TEARDOWN      9
+/* states for an rfcInst instance */
+#define RFC_INST_ST_INVALID       0 /* definitely not a valid state */
+#define RFC_INST_ST_WAITING       1 /* we requested a connection, it is waiting to be opened */
+#define RFC_INST_ST_SABM_SENT     2 /* we sent a SABM on DLCI 0, waiting for UA */
+#define RFC_INST_ST_ESTABLISHED   3 /* we have a live link to the other side */
+#define RFC_INST_ST_DISC_SENT     4 /* we sent a DISC, waiting for UA */
+#define RFC_INST_ST_TEARDOWN      5 /* being torn down */
+
+
 
 struct rfcInst;
 
@@ -52,9 +62,9 @@ struct rfcConn { /* one per RFC channel */
 
     uint16_t               mtu;
     uint8_t                dlci;
-    uint8_t                state;
+    uint8_t                cState;   /* RFC_CONN_ST_* */
     bool                   stopFlow; /* set if other side may not TX to us */
-    bool                   stopTx; /* set so we no longer send things */
+    bool                   stopTx;   /* set so we no longer send things */
 
     uint8_t                numTxCredits; /* how many packets we can send */
     uint8_t                numRxCredits; /* how many credits we owe the other side */
@@ -68,10 +78,9 @@ struct rfcInst { /* one per L2C connection */
     pthread_mutex_t        lock;
     struct bt_addr         addr;
     uint16_t               mtu;
+    uint8_t                iState;
     bool                   encr;
     bool                   initiator; /* set if we initiated this conection *///XXX: set this on ones we initiated. all servers' DLCI values on initiator are odd, on other even
-    bool                   inited; //TODO: use/set this
-    bool                   inProgress;
     bool                   reqInFlight; /* set if there is a req inflight requiring a UA/DM reply */
 
     struct {
@@ -272,6 +281,19 @@ static struct rfcInst* rfcFindInstByAddr(const struct bt_addr *addr)
 }
 
 /*
+ * FUNCTION: rfcFindConnByDlci
+ * USE:      Find an rfcConn given its RFCOMM instance and the DLCI
+ * PARAMS:   inst - the RFCOMM instance
+ *           dlci - the DLCI in question
+ * RETURN:   the rfcConn struct or NULL if not found
+ * NOTES:    call with inst->lock held
+ */
+static struct rfcConn* rfcFindConnByDlci(struct rfcInst *inst, uint8_t dlci)
+{
+    return inst->dlcis[dlci].conn;
+}
+
+/*
  * FUNCTION: rfcNewWorkItem
  * USE:      Allocate a new work item
  * PARAMS:   evtType - the type to set
@@ -403,7 +425,7 @@ static struct rfcConn* rfcCreateConnStruct(struct rfcInst *inst, uint8_t dlci, u
     }
 
     c->dlci = dlci;
-    c->state = state;
+    c->cState = state;
     c->rfcInst = inst;
     c->handle = uniqGetNext();
     c->numTxCredits = inst->dlcis[dlci].numInitialCreds;
@@ -422,9 +444,7 @@ static struct rfcConn* rfcCreateConnStruct(struct rfcInst *inst, uint8_t dlci, u
 static void rfcDeleteConnStruct(struct rfcConn* c)
 {
     struct rfcInst *inst = c->rfcInst;
-
-    if (c->evtCbk)
-        c->evtCbk(c->evtCbkData, c->evtCbkInst, RFC_EVT_CLOSE, NULL);
+    uint8_t i, nUsed = 0;
 
     sgFree(c->txQueue);
     inst->dlcis[c->dlci].numInitialCreds = 0;
@@ -432,33 +452,24 @@ static void rfcDeleteConnStruct(struct rfcConn* c)
     inst->dlcis[c->dlci].conn = NULL;
     free(c);
 
-    //TODO: check if other connections open on this RFCOMM inst & close the RFCOMM instance after a timer if no.
+    for (i = RFC_FIRST_DLCI; i < RFC_NUM_DLCIS + RFC_FIRST_DLCI; i++)
+        if (inst->dlcis[i].conn)
+            nUsed++;
+
+    rfcInstUnusedTimerStart(inst);
 }
 
 /*
- * FUNCTION: rfcFindConnByDlci
- * USE:      Find an rfcConn given its RFCOMM instance and the DLCI
- * PARAMS:   inst - the RFCOMM instance
- *           dlci - the DLCI in question
- * RETURN:   the rfcConn struct or NULL if not found
- * NOTES:    call with inst->lock held
- */
-static struct rfcConn* rfcFindConnByDlci(struct rfcInst *inst, uint8_t dlci)
-{
-    return inst->dlcis[dlci].conn;
-}
-
-/*
- * FUNCTION: rfcSendCmd
- * USE:      Send a command packet to the other side
+ * FUNCTION: rfcCmdOrRspSend
+ * USE:      Send a command/response packet to the other side
  * PARAMS:   inst - the RFCOMM instance
  *           cmd - the command value to send
  *           dlci - the relevant DLCI the packet came in for
  *           setCrBit - set the C/R bit?
  * RETURN:   false on error
- * NOTES:    call with inst->lock held
+ * NOTES:    call with inst->lock held. This is for sending SABM/DISC/DM/UA type packets with no data
  */
-static bool rfcSendCmd(struct rfcInst *inst, uint8_t cmd, uint8_t dlci, bool setCrBit)
+static bool rfcCmdOrRspSend(struct rfcInst *inst, uint8_t cmd, uint8_t dlci, bool setCrBit)
 {
     uint8_t buf[sizeof(struct rfcHdr) + sizeof(uint8_t)/*FCS*/];
     struct rfcHdr *hdr = (struct rfcHdr*)buf;
@@ -488,20 +499,20 @@ static bool rfcSendCmd(struct rfcInst *inst, uint8_t cmd, uint8_t dlci, bool set
  * FUNCTION: rfcSendDm
  * USE:      Send a DM packet to the other side
  * PARAMS:   inst - the RFCOMM instance
- *           dlci - the relevant DLCI the packet came in for
+ *           dlci - the relevant DLCI
  * RETURN:   false on error
  * NOTES:    call with inst->lock held
  */
 static bool rfcSendDm(struct rfcInst *inst, uint8_t dlci)
 {
-    return rfcSendCmd(inst, RFC_CTRL_DM | RFC_CTRL_PF_MASK, dlci, !inst->initiator);
+    return rfcCmdOrRspSend(inst, RFC_CTRL_DM | RFC_CTRL_PF_MASK, dlci, !inst->initiator);
 }
 
 /*
  * FUNCTION: rfcSendDisc
  * USE:      Send a DISC packet to the other side
  * PARAMS:   inst - the RFCOMM instance
- *           dlci - the relevant DLCI the packet came in for
+ *           dlci - the relevant DLCI
  * RETURN:   false on error
  * NOTES:    call with inst->lock held
  */
@@ -509,8 +520,9 @@ static bool rfcSendDisc(struct rfcInst *inst, uint8_t dlci)
 {
     if (inst->reqInFlight)
         logw("ORDERING VIOLATION! Sent DISC while something was in flight\n");
+
     inst->reqInFlight = true;
-    return rfcSendCmd(inst, RFC_CTRL_DISC | RFC_CTRL_PF_MASK, dlci, inst->initiator);
+    return rfcCmdOrRspSend(inst, RFC_CTRL_DISC | RFC_CTRL_PF_MASK, dlci, inst->initiator);
 }
 
 /*
@@ -525,8 +537,9 @@ static bool rfcSendSabm(struct rfcInst *inst, uint8_t dlci)
 {
     if (inst->reqInFlight)
         logw("ORDERING VIOLATION! Sent SABM while something was in flight\n");
+
     inst->reqInFlight = true;
-    return rfcSendCmd(inst, RFC_CTRL_SABM | RFC_CTRL_PF_MASK, dlci, inst->initiator);
+    return rfcCmdOrRspSend(inst, RFC_CTRL_SABM | RFC_CTRL_PF_MASK, dlci, inst->initiator);
 }
 
 /*
@@ -539,7 +552,7 @@ static bool rfcSendSabm(struct rfcInst *inst, uint8_t dlci)
  */
 static bool rfcSendUa(struct rfcInst *inst, uint8_t dlci)
 {
-    return rfcSendCmd(inst, RFC_CTRL_UA | RFC_CTRL_PF_MASK, dlci, !inst->initiator);
+    return rfcCmdOrRspSend(inst, RFC_CTRL_UA | RFC_CTRL_PF_MASK, dlci, !inst->initiator);
 }
 
 /*
@@ -556,14 +569,27 @@ static bool rfcRxData(struct rfcInst *inst, uint8_t dlci, bool pfBit, sg s)
 {
     struct rfcConn *c = rfcFindConnByDlci(inst, dlci);
 
-/* handle p/F bit ... */
-
     if (!c) {
         logi("Got data on unconnected DLCI %u\n", dlci);
         if (!rfcSendDm(inst, dlci))
             loge("Failed to send DM\n");
         return false;
     }
+
+    if (pfBit && inst->dlcis[dlci].numInitialCreds) {
+        uint8_t creds;
+        if (!sgSerializeCutFront(s, &creds, sizeof(uint8_t))) {
+            logw("Got too short a packet for credits!\n");
+            //TODO: didconnect. tell our side too
+        }
+        creds = utilGetLE8(&creds);
+        c->numTxCredits += creds;
+        if (c->numTxCredits > inst->dlcis[dlci].numInitialCreds) {
+            logw("Too many credits now %u > %u\n", c->numTxCredits, inst->dlcis[dlci].numInitialCreds);
+            //TODO: didconnect. tell our side too
+        }
+    } else if (pfBit)
+        logw("P/F UIH RXed on non-credit-based DLCI\n");
 
     if (rfcSchedEvt(c, RFC_EVT_RX, s))
         return true;
@@ -573,18 +599,23 @@ static bool rfcRxData(struct rfcInst *inst, uint8_t dlci, bool pfBit, sg s)
 }
 
 /*
- * FUNCTION: rfcWrapNoCredUIH
+ * FUNCTION: rfcWrapUIH
  * USE:      Wrap some data into a UIH frame
- * PARAMS:   s - the SG with the data
+ * PARAMS:   inst - the RFCOMM instance
+ *           nCreds - how many credits to send
+ *           s - the SG with the data
  * RETURN:   success
  * NOTES:    call with inst->lock held
  */
-static bool rfcWrapNoCredUIH(struct rfcInst *inst, sg s)
+static bool rfcWrapUIH(struct rfcInst *inst, int nCreds, sg s)
 {
-    uint8_t buf[sizeof(struct rfcHdr) + sizeof(uint8_t)], fcs;
+    uint8_t buf[sizeof(struct rfcHdr) + 2 * sizeof(uint8_t)], fcs;
     struct rfcHdr *hdr = (struct rfcHdr*)buf;
     uint8_t hdrLen = sizeof(struct rfcHdr);
     uint16_t len = sgLength(s);
+
+    if (nCreds)
+        len++;
 
     utilSetLE8(&hdr->addr, RFC_BIT_EA | (inst->initiator ? RFC_BIT_CR : 0));
     utilSetLE8(&hdr->ctrl, RFC_CTRL_UIH);
@@ -596,11 +627,26 @@ static bool rfcWrapNoCredUIH(struct rfcInst *inst, sg s)
         utilSetLE8(hdr + 1, len >> 7);
         hdrLen++;
     }
-    utilSetLE8(&fcs, rfcFcs(hdr, sizeof(struct rfcHdr) - sizeof(uint8_t))); /* do not checksum length */
+    if (nCreds)
+        utilSetLE8(buf + hdrLen++, nCreds);
+
+    utilSetLE8(&fcs, rfcFcs(hdr, sizeof(struct rfcHdr) - sizeof(uint8_t))); /* do not checksum length/credits */
 
     return sgConcatFrontCopy(s, hdr, hdrLen) && sgConcatBackCopy(s, &fcs, sizeof(uint8_t));
 }
 
+/*
+ * FUNCTION: rfcWrapNoCredUIH
+ * USE:      Wrap some data into a UIH frame
+ * PARAMS:   inst - the RFCOMM instance
+ *           s - the SG with the data
+ * RETURN:   success
+ * NOTES:    call with inst->lock held
+ */
+static bool rfcWrapNoCredUIH(struct rfcInst *inst, sg s)
+{
+    return rfcWrapUIH(inst, 0, s);
+}
 
 /*
  * FUNCTION: rfcTxControlSg
@@ -621,7 +667,6 @@ static bool rfcTxControlSg(struct rfcInst *inst, uint8_t sType, sg data)
     if (sgConcatFrontCopy(data, &sig, sizeof(struct rfcSigFrm)) && rfcWrapNoCredUIH(inst, data) && sendQueueForceTx(mSendQ, inst->conn, data))
         return true;
 
-    sgFree(data);
     return false;
 }
 
@@ -653,7 +698,7 @@ static bool rfcTxControl(struct rfcInst *inst, uint8_t sType, const void *data, 
 /*
  * FUNCTION: rfcSendMsc
  * USE:      Send an MSC packet to the other side
- * PARAMS:   c -the connection struct
+ * PARAMS:   c - the connection struct
  *           command - send MSC command (else response)
  *           stopFlow - tell other side to not send?
  * RETURN:   true if we enqueued the TX
@@ -712,7 +757,7 @@ static bool rfcRxControl(struct rfcInst *inst, bool pfBit, sg s)
     }
 
     switch (sType) {
-    case RFC_RSP_NSC: /* this should neve rhappen since all we send are required commands */
+    case RFC_RSP_NSC: /* this should never happen since all we send are required commands */
         if (!sgSerializeCutFront(s, &sType, sizeof(uint8_t))) {
             logw("Too short a SIG.NSC frame\n");
             return false;
@@ -729,6 +774,7 @@ static bool rfcRxControl(struct rfcInst *inst, bool pfBit, sg s)
  /* case RFC_RSP_TEST: - this can never happen since we never send a TEST command */
     case RFC_CMD_RLS:
         logd("RFCOMM RXed RLS\n");
+        /* we send back same RLS data at we RXed */
         if (!rfcTxControlSg(inst, RFC_RSP_RLS, s)) {
             logw("Failed to reply to SIG.RLS\n");
             return false;
@@ -736,9 +782,11 @@ static bool rfcRxControl(struct rfcInst *inst, bool pfBit, sg s)
         break;
 
  /* case RFC_RSP_RLS: - this can never happen since we never send a RLS command */
-//    case RFC_CMD_FCOFF:
-//        
-//        break;
+    case RFC_CMD_FCOFF:
+        rfcInstFlowControl(false);
+        if (!rfcTxControl(inst, RFC_RSP_FCOFF, NULL, 0))
+            logw("Failed to send SIG.RPN\n");
+        break;
  /* case RFC_RSP_FCOFF: - this can never happen since we never send a FCOFF command */
     case RFC_CMD_PN:
     case RFC_RSP_PN:
@@ -755,7 +803,8 @@ static bool rfcRxControl(struct rfcInst *inst, bool pfBit, sg s)
             return false;
         }
 
-        if (inst->dlcis[dlci].conn) { /* fewer things allowed here */
+        conn = rfcFindConnByDlci(inst, dlci);
+        if (conn) { /* fewer things allowed here */
             if (sType == RFC_CMD_PN) {
                 if ((utilGetLE8(&pn.carrier) >> 4) == 0x0F) {
                     utilSetLE8(&pn.carrier, 0xE0);
@@ -768,7 +817,29 @@ static bool rfcRxControl(struct rfcInst *inst, bool pfBit, sg s)
                 if (!rfcTxControl(inst, RFC_RSP_PN, &pn, sizeof(struct rfcSigPn)))
                     logw("Failed to send SIG.PN\n");
             } else {              /* see what they said */
-                logd("Unexpected PN.R during connection\n");
+                if (conn->cState == RFC_CONN_ST_PN_SENT) {
+
+                    if ((utilGetLE8(&pn.carrier) >> 4) == 0x0E) {
+                        inst->dlcis[dlci].numInitialCreds = utilGetLE8(&pn.numCredits);
+                        logd("other side supports credit-based FC & gave us %u creds\n", inst->dlcis[dlci].numInitialCreds);
+                    } else {
+                       logd("Other side does not support credit-based FC\n");
+                    }
+                    inst->dlcis[dlci].maxFrm = utilGetLE16(&pn.maxFrameSz);
+                    logd("Max len: %ub\n", inst->dlcis[dlci].maxFrm);
+
+                    conn->cState = RFC_CONN_ST_NEED_SABM;
+                    if (!inst->reqInFlight) {
+                        if (!rfcSendSabm(inst, dlci)) {
+                            logw("Failed to send SABM\n");
+                            if (!rfcSchedEvt(conn, RFC_EVT_CLOSE, NULL))
+                                loge("Failed to notify of close\n");
+                            XXX: call close not this rfcDeleteConnStruct(conn);
+                        } else
+                            conn->cState = RFC_CONN_ST_SENT_SABM;
+                    }
+                } else
+                    logw("Unexpected SIG.PN.r while connected in state %u\n", conn->cState);
             }
         } else {
             if (sType == RFC_CMD_PN) { /* we accept all terms */
@@ -784,31 +855,10 @@ static bool rfcRxControl(struct rfcInst *inst, bool pfBit, sg s)
                 }
                 if (!rfcTxControl(inst, RFC_RSP_PN, &pn, sizeof(struct rfcSigPn)))
                     logw("Failed to send SIG.PN\n");
-            } else {              /* see what they said */
-                if ((utilGetLE8(&pn.carrier) >> 4) == 0x0E) {
-                    inst->dlcis[dlci].numInitialCreds = utilGetLE8(&pn.numCredits);
-                    logd("other side supports credit-based FC & gave us %u creds\n", inst->dlcis[dlci].numInitialCreds);
-                } else {
-                    logd("Other side does not support credit-based FC\n");
-                }
-            }
-            inst->dlcis[dlci].maxFrm = utilGetLE16(&pn.maxFrameSz);
-            logd("Max len: %ub\n", inst->dlcis[dlci].maxFrm);
-        }
-        conn = rfcFindConnByDlci(inst, dlci);
-        if (sType == RFC_RSP_PN && conn && conn->state == RFC_STATE_PN_SENT) {
-
-            if (inst->reqInFlight)
-                conn->state = RFC_STATE_NEED_SABM;
-            else {
-                conn->state = RFC_STATE_SENT_SABM;
-                if (!rfcSendSabm(inst, dlci)) {
-                    logw("Failed to send SABM\n");
-                    if (!rfcSchedEvt(conn, RFC_EVT_CLOSE, NULL))
-                        loge("Failed to notify of close\n");
-                    rfcDeleteConnStruct(conn);
-                }
-            }
+                inst->dlcis[dlci].maxFrm = utilGetLE16(&pn.maxFrameSz);
+                logd("Max len: %ub\n", inst->dlcis[dlci].maxFrm);
+            } else
+                logw("Unexpected SIG.PN.r while not connected\n");
         }
         break;
     case RFC_CMD_RPN:
@@ -852,9 +902,11 @@ static bool rfcRxControl(struct rfcInst *inst, bool pfBit, sg s)
             logw("Failed to send SIG.RPN\n");
         break;
  /* case RFC_RSP_RPN: - this can never happen since we never send a RPM command */
-//    case RFC_CMD_FCON:
-//        
-//        break;
+    case RFC_CMD_FCON:
+        rfcInstFlowControl(true);
+        if (!rfcTxControl(inst, RFC_RSP_FCON, NULL, 0))
+            logw("Failed to send SIG.RPN\n");
+        break;
  /* case RFC_RSP_FCON: - this can never happen since we never send a FCON command */
     case RFC_CMD_MSC:
     case RFC_RSP_MSC:
@@ -884,11 +936,11 @@ static bool rfcRxControl(struct rfcInst *inst, bool pfBit, sg s)
 
 /*
  * FUNCTION: rfcFlow
- * USE:      Close an rfcConn
+ * USE:      Stop or restart flow from other side
  * PARAMS:   conn - the connection handle
  *           stop - thep the flow or start it
  * RETURN:   NONE
- * NOTES:
+ * NOTES:    Effects may not be immediate!
  */
 bool rfcFlow(rfc_conn_t connH, bool stop)
 {
@@ -911,27 +963,62 @@ bool rfcFlow(rfc_conn_t connH, bool stop)
  * FUNCTION: rfcCloseConn
  * USE:      Close an rfcConn
  * PARAMS:   c - the rfcConn
- *           toolOtherSide - set to send a DISC packet to the other side
+ *           tellOtherSide - set to send a DISC packet to the other side
+ *           tellOurSide - send event to our client
  * RETURN:   NONE
  * NOTES:    call with inst->lock held
  */
-static void rfcCloseConn(struct rfcConn *c, bool toolOtherSide)
+static void rfcCloseConn(struct rfcConn *c, bool tellOtherSide, bool tellOurSide)
 {
     struct rfcInst *inst = c->rfcInst;
+    bool delStruct = true;
 
-    //TODO: switch on connnection state
-
-
-    if (toolOtherSide) {
-        if (rfcSendDisc(inst, c->dlci)) {
-            c->state = RFC_STATE_DISC_SENT;
-            //TODO: timer
-            return;
-        }
-        loge("Failed to send DISC\n");
+    switch (c->cState) {
+    case RFC_CONN_ST_INVALID:
+        loge("Attempt to close a connection in INVALID state\n");
+        tellOurSide = false;
+        /* fallthrough */
+    case RFC_CONN_ST_WAITING:
+    case RFC_CONN_ST_PN_SENT:
+    case RFC_CONN_ST_NEED_SABM:
+        tellOtherSide = false;
+        break;
+    case RFC_CONN_ST_SVC_OPENING:
+    case RFC_CONN_ST_SENT_SABM:
+        c->cState = RFC_CONN_ST_TEARDOWN; /* when current op finishes, it will finish this up */
+        tellOtherSide = tellOurSide = delStruct = false;//XXX: when svc alloc finished and when UA/DM for SABM is RXed handle this
+        break;
+    case RFC_CONN_ST_ESTABLISHED:
+        /* nothing more to do here */
+        break;
+    case RFC_CONN_ST_NEED_DISC:
+    case RFC_CONN_ST_SENT_DISC:
+    case RFC_CONN_ST_TEARDOWN:
+        logw("Trying to disconnect a connection in state %u\n", c->cState);
+        tellOtherSide = tellOurSide = delStruct = false;
+    default:
+        loge("Weird copnn state %u in diconnect\n", c->cState);
+        break;
     }
 
-    rfcDeleteConnStruct(c);
+    if (tellOtherSide) {
+        if (delStruct)
+            logw("Cannot del conn struct if telling other side...need to wait for reply first!\n");
+        if (inst->reqInFlight) {
+            c->cState = RFC_CONN_ST_NEED_DISC;
+        } else {
+            if (!rfcSendDisc(inst, c->dlci))
+                loge("Failed to send DISC\n");
+            c->state = RFC_CONN_ST_DISC_SENT;
+            //TODO: timer
+        }
+    }
+    if (tellOurSide) {
+        if (!rfcSchedEvt(c, RFC_EVT_CLOSE, NULL))
+            logw("Failed to tell our side of close()\n");
+    }
+    if (delStruct)
+        rfcDeleteConnStruct(c);
 }
 
 /*
@@ -956,10 +1043,10 @@ static void rfcRxAck(struct rfcInst *inst, uint8_t dlci)
         if (!conn)
             continue;
 
-        if (conn->state == RFC_STATE_SENT_SABM) {
+        if (conn->state == RFC_CONN_ST_SENT_SABM) {
 
             inst->reqInFlight = false;
-            conn->state = RFC_STATE_ESTABLISHED;
+            conn->state = RFC_CONN_ST_ESTABLISHED;
             if (!rfcSchedEvtOpen(conn))
                 loge("Failed to send open event\n");
         }
@@ -1054,14 +1141,14 @@ static void rfcRxChOpen(struct rfcInst *inst, uint8_t dlci)
             if (!rfcSendDm(inst, dlci))
                 loge("Failed to send DM\n");
         } else {
-            c = rfcCreateConnStruct(inst, dlci, RFC_STATE_SVC_OPENING);
+            c = rfcCreateConnStruct(inst, dlci, RFC_CONN_ST_SVC_OPENING);
             if (!c) {
                 logi("Failed to alloc conn struct for DLCI %u\n", dlci);
                 if (!rfcSendDm(inst, dlci))
                     loge("Failed to send DM\n");
             } else if (!rfcSchedSvcAlloc(ls, c)) { //TODO: this will send a DM or a UA depending on success
                 logi("Failed to schedule SVC open for DLCI %u\n", dlci);
-                rfcDeleteConnStruct(c);
+                XXX: call close not this rfcDeleteConnStruct(c);
                 if (!rfcSendDm(inst, dlci))
                     loge("Failed to send DM\n");
             }
@@ -1458,7 +1545,7 @@ bool rfcConnect(const struct bt_addr *peerAddr, uint8_t ch, rfcSvcEvent evtF, vo
         goto out;
     }
 
-    conn = rfcCreateConnStruct(inst, dlci, RFC_STATE_WAITING);
+    conn = rfcCreateConnStruct(inst, dlci, RFC_CONN_ST_WAITING);
     if (!conn) {
         logw("Failed to create conn struct\n");
         goto out;
@@ -1479,11 +1566,11 @@ bool rfcConnect(const struct bt_addr *peerAddr, uint8_t ch, rfcSvcEvent evtF, vo
         utilSetLE16(&pn.maxFrameSz, RFC_MAX_RX_FRAME);
 
         if (!rfcTxControl(inst, RFC_CMD_PN, &pn, sizeof(struct rfcSigPn))) {
-            rfcDeleteConnStruct(conn);
+            XXX: call close not this rfcDeleteConnStruct(conn);
             logw("Failed to send SIG.PN\n");
             goto out;
         }
-        conn->state = RFC_STATE_PN_SENT;
+        conn->state = RFC_CONN_ST_PN_SENT;
     }
     ret = true;
 
@@ -1577,18 +1664,18 @@ static void* rfcWorkerThread(void *unused)
                 logd("Saw stale svc alloc\n");
                 break;
             }
-            if (c->state != RFC_STATE_SVC_OPENING) {
+            if (c->state != RFC_CONN_ST_SVC_OPENING) {
                 logw("rfc conn in bad state at svc aloc time\n");
-                c->state = RFC_STATE_TEARDOWN;
+                c->state = RFC_CONN_ST_TEARDOWN;
                 rfcSendDm(c->rfcInst, c->dlci);
                 rfcCloseConn(c, false);
             } else {
                 c->evtCbkInst = wi->svcAlloc.allocCbk(wi->svcAlloc.cbkData, &c->rfcInst->addr, c->dlci);
                 if (c->evtCbkInst) {
-                    c->state = RFC_STATE_CONFIG;
+                    c->state = RFC_CONN_ST_CONFIG;
                     rfcSendUa(c->rfcInst, c->dlci);
                 } else {
-                    c->state = RFC_STATE_TEARDOWN;
+                    c->state = RFC_CONN_ST_TEARDOWN;
                     rfcSendDm(c->rfcInst, c->dlci);
                     rfcCloseConn(c, false);
                 }
