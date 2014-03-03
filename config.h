@@ -3,6 +3,12 @@
 
 
 /*
+ * RFC layer will wait this many ms before closing a control connectio
+ * with no data channels
+ */
+#define RFC_USE_TIMEOUT                     2000
+
+/*
  * RFC layer will give the remote side this many credits (1..7)
  */
 #define RFC_NUM_REMOTE_CREDITS              7
