@@ -262,6 +262,33 @@ bool sendQueueTx(struct sendQ *q, l2c_handle_t conn, sg s)
 }
 
 /*
+ * FUNCTION: sendQueueCanTx
+ * USE:      Says if a packet may be queneued at this point
+ * PARAMS:   q - the SendQ
+ *           conn - the L2C connection
+ * RETURN:   true if so, false else
+ * NOTES:    Note that the reply is stale even by the time it is received and should be use just as a hint
+ */
+bool sendQueueCanTx(struct sendQ *q, l2c_handle_t conn)
+{
+    uint32_t msgsForConnAlready = 0;
+    struct packet *t;
+    bool ret;
+
+    pthread_mutex_lock(&q->lock);
+
+    for (t = q->head; t; t = t->next)
+        if (t->conn == conn)
+            msgsForConnAlready++;
+
+    ret = msgsForConnAlready < q->maxMsgsPerConn;
+
+    pthread_mutex_unlock(&q->lock);
+
+    return ret;
+}
+
+/*
  * FUNCTION: sendQueueDelPackets
  * USE:      Delete all queued packets to a given connection
  * PARAMS:   q - the SendQ
