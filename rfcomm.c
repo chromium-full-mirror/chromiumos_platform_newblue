@@ -493,7 +493,12 @@ static bool rfcSchedSvcAlloc(struct rfcListenState *ls, struct rfcConn *conn)
  */
 static bool rfcSchedTryTx(struct rfcConn *conn)
 {
-    struct rfcSvcWork *wi = rfcNewWorkItem(RFC_WORK_TRY_TX);
+    struct rfcSvcWork *wi;
+
+    if (!sgLength(conn->txQueue) && !conn->numRxCredits) /* do not bother trying to TX when nothing is in the buffer and no credits are owed */
+        return true;
+
+    wi = rfcNewWorkItem(RFC_WORK_TRY_TX);
     if (wi) {
 
         wi->tryTx.conn = conn->handle;
@@ -699,6 +704,28 @@ static bool rfcRxData(struct rfcInst *inst, uint8_t dlci, bool pfBit, sg s)
 
     loge("Failed to schedule RFC RX work\n");
     return false;
+}
+
+/*
+ * FUNCTION: rfcUnwrapUIH
+ * USE:      Undo what rfcWrapUIH() did. Do not call on buffers not created by rfcWrapUIH()
+ * PARAMS:   inst - the RFCOMM instance
+ *           nCreds - how many credits to send
+ *           s - the SG with the data
+ * RETURN:   success
+ * NOTES:    call with inst->lock held
+ */
+static void rfcUnwrapUIH(struct rfcInst *inst, int nCreds, sg s)
+{
+    struct rfcHdr hdr;
+
+    sgTruncBack(s, sizeof(uint8_t)); /* delete FCS */
+    sgSerializeCutFront(s, &hdr, sizeof(struct rfcHdr));
+    if (!(utilGetLE8(&hdr.len) & RFC_BIT_EA))
+        sgTruncFront(s, sizeof(uint8_t)); /* delete second length byte */
+
+    if (nCreds)
+        sgTruncFront(s, sizeof(uint8_t)); /* delete credits byte */
 }
 
 /*
@@ -1233,7 +1260,7 @@ static void rfcRxAck(struct rfcInst *inst, uint8_t dlci)
 
     if (inst->iState == RFC_INST_ST_SABM_SENT && dlci == RFC_DLCI_CTRL) {
         inst->iState = RFC_INST_ST_ESTABLISHED;
-        rfcOpenWaitingConns(inst);///aaa
+        rfcOpenWaitingConns(inst);
     } else if (inst->iState == RFC_INST_ST_SENT_DISC && dlci == RFC_DLCI_CTRL) {
         inst->iState = RFC_INST_ST_TEARDOWN;
         l2cApiDisconnect(inst->conn);
@@ -1863,7 +1890,60 @@ out:
  */
 static void rfcTryTx(struct rfcConn* c)
 {
-    //TODO
+    struct rfcInst *inst = c->rfcInst;
+    uint32_t sendSz, maxData = inst->dlcis[c->dlci].maxFrm;
+    uint8_t attachCreds = 0;
+    sg s;
+
+    /* if we cannot send - do not bother checking anything else */
+    if (!sendQueueCanTx(mSendQ, inst->conn))
+        return;
+
+    if (!inst->dlcis[c->dlci].numInitialCreds) { /* not credit based */
+
+        if (inst->stopFlow || c->stopTx || !sgLength(c->txQueue))
+            return;
+    } else { /* credit based */
+
+        if (inst->stopFlow)
+            logw("FCOFF ignored for credit-based conn\n");
+
+        if (c->stopTx)
+            logw("MSC.FC ignored for credit-based conn\n");
+
+        if (!c->numTxCredits) {
+            maxData = 0;          /* no credits to send - we cannot send data */
+            if (!c->numRxCredits || !c->stopFlow) /* no credits to return - nothing to do */
+                return;
+            attachCreds = c->numRxCredits;
+        } else if (c->numRxCredits && !c->stopFlow) {
+            attachCreds = c->numRxCredits;
+            maxData--; /* save space for credit return */
+        }
+    }
+
+    sendSz = sgLength(c->txQueue);
+    if (sendSz > maxData)
+        sendSz = maxData;
+
+    s = sgSplit(c->txQueue, sendSz);
+    if (!s) {
+        loge("Failed to split TX buf\n");
+        return;
+    }
+    sgSwap(c->txQueue, s);
+
+    if (rfcWrapUIH(inst, c->numRxCredits, s)) {
+        if (sendQueueTx(mSendQ, inst->conn, s)) {
+            c->numRxCredits = 0;
+            return;
+        } else
+            rfcUnwrapUIH(inst, c->numRxCredits, s);
+    } else {
+        sgConcat(s, c->txQueue);
+        sgSwap(c->txQueue, s);
+    }
+    sgFree(s);
 }
 
 /*
