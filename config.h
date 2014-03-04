@@ -2,6 +2,12 @@
 #define _CONFIG_H_
 
 
+
+/*
+ * RFC layer will buffer this many bytes for connections without credit-based flow control
+ */
+#define RFC_MAX_CREDITLESS_QUEUE            1024
+
 /*
  * RFC layer will wait this many ms before closing a control connection
  * with no data channels
