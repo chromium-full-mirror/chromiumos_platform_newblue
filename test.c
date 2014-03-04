@@ -363,6 +363,9 @@ int main(int argc, char** argv)
 
     logi("RFC CHAN: %u\n", rfcListen(RFC_CHNUM_REQ_ANY, testRfcAllocF, testRfcEvtF, NULL));
 
+  //  struct bt_addr addr = {{0xf3, 0xdb, 0x56, 0xf4, 0x2c, 0x40}, BT_ADDR_TYPE_EDR};
+  //  logi("conn=%d\n", rfcConnect(&addr, 1, testRfcEvtF, NULL, testRfcAllocF(NULL, &addr, 3))); /* true if you shoudl expect callback(s) */
+
     logi("waiting...press a key\n");
     getchar();
 
