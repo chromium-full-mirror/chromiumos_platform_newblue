@@ -88,6 +88,7 @@ struct rfcInst { /* one per L2C connection */
     bool                   encr;
     bool                   initiator; /* set if we initiated this conection */
     bool                   reqInFlight; /* set if there is a req inflight requiring a UA/DM reply */
+    bool                   stopFlow; //TODO: check this before TXing *DATA*
 
     struct {
 
@@ -819,6 +820,19 @@ static bool rfcSendMsc(struct rfcConn *c, bool command, bool stopFlow)
 }
 
 /*
+ * FUNCTION: rfcInstFlowControl
+ * USE:      Handle other side's requests for flow control
+ * PARAMS:   inst - the RFCOMM instance
+ *           allowFlow - the request from the other side
+ * RETURN:   NONE
+ * NOTES:    call with inst->lock held
+ */
+static void rfcInstFlowControl(struct rfcInst *inst, bool allowFlow)
+{
+    inst->stopFlow = !allowFlow;
+}
+
+/*
  * FUNCTION: rfcRxControl
  * USE:      Handle incoming UIH (Data) packets for DLCI 0
  * PARAMS:   inst - the RFCOMM instance
@@ -885,7 +899,7 @@ static bool rfcRxControl(struct rfcInst *inst, bool pfBit, sg s)
 
  /* case RFC_RSP_RLS: - this can never happen since we never send a RLS command */
     case RFC_CMD_FCOFF:
-        rfcInstFlowControl(false);
+        rfcInstFlowControl(inst, false);
         if (!rfcTxControl(inst, RFC_RSP_FCOFF, NULL, 0))
             logw("Failed to send SIG.RPN\n");
         break;
@@ -1003,7 +1017,7 @@ static bool rfcRxControl(struct rfcInst *inst, bool pfBit, sg s)
         break;
  /* case RFC_RSP_RPN: - this can never happen since we never send a RPM command */
     case RFC_CMD_FCON:
-        rfcInstFlowControl(true);
+        rfcInstFlowControl(inst, true);
         if (!rfcTxControl(inst, RFC_RSP_FCON, NULL, 0))
             logw("Failed to send SIG.RPN\n");
         break;
@@ -1179,6 +1193,28 @@ static void rfcSendNextCmd(struct rfcInst *inst)
 }
 
 /*
+ * FUNCTION: rfcOpenWaitingConns
+ * USE:      Open all conns we've been waiting to open
+ * PARAMS:   inst - the RFCOMM instance
+ * RETURN:   NONE
+ * NOTES:    call with inst->lock held
+ */
+static void rfcOpenWaitingConns(struct rfcInst *inst)
+{
+    struct rfcConn *c;
+    uint8_t i;
+
+    for (i = RFC_FIRST_DLCI; i < RFC_FIRST_DLCI + RFC_NUM_DLCIS; i++) {
+        c = rfcFindConnByDlci(inst, i);
+        if (c && c->cState == RFC_CONN_ST_WAITING)
+            c->cState = RFC_CONN_ST_NEED_SABM;
+    }
+
+    if (!inst->reqInFlight)
+        rfcSendNextCmd(inst); /* will open waiting conns one by one */
+}
+
+/*
  * FUNCTION: rfcRxAck
  * USE:      Handle incoming UA response
  * PARAMS:   inst - the RFCOMM instance
@@ -1197,7 +1233,7 @@ static void rfcRxAck(struct rfcInst *inst, uint8_t dlci)
 
     if (inst->iState == RFC_INST_ST_SABM_SENT && dlci == RFC_DLCI_CTRL) {
         inst->iState = RFC_INST_ST_ESTABLISHED;
-        //TODO: open all conns in waiting state
+        rfcOpenWaitingConns(inst);///aaa
     } else if (inst->iState == RFC_INST_ST_SENT_DISC && dlci == RFC_DLCI_CTRL) {
         inst->iState = RFC_INST_ST_TEARDOWN;
         l2cApiDisconnect(inst->conn);
@@ -1315,9 +1351,10 @@ static void rfcRxChOpen(struct rfcInst *inst, uint8_t dlci)
     if (dlci == RFC_DLCI_CTRL) {
 
         if (inst->iState == RFC_INST_ST_SABM_WAIT) {
-            if (rfcSendUa(inst, RFC_DLCI_CTRL))
+            if (rfcSendUa(inst, RFC_DLCI_CTRL)) {
                 inst->iState = RFC_INST_ST_ESTABLISHED;
-            else {
+                rfcOpenWaitingConns(inst);
+            } else {
                 loge("Failed to send UA to SABM on DLCI 0\n");
                 inst->iState = RFC_INST_ST_TEARDOWN;
                 l2cApiDisconnect(inst->conn);
@@ -1816,33 +1853,6 @@ out:
     pthread_mutex_unlock(&mInstsLock);
     return ret;
 }
-/*
-static pthread_mutex_t mInstsLock = PTHREAD_MUTEX_INITIALIZER;
-static struct rfcInst *mInsts = NULL;
-
-
-struct rfcInst { /* one per L2C connection * /
-    struct rfcInst        *next; /* list fo all the instances * /
-    struct rfcInst        *prev;
-
-    l2c_handle_t           conn;
-    pthread_mutex_t        lock;
-    struct bt_addr         addr;
-    uint16_t               mtu;
-    bool                   encr;
-    bool                   initiator; /* set if we initiated this conection * ///XXX: set this on ones we initiated. all servers' DLCI values on initiator are odd, on other even
-    bool                   inited;
-    bool                   inProgress
-
-    struct {
-
-        uint16_t           maxFrm;
-        uint8_t            numInitialCreds;
-        struct rfcConn    *conn; /* or NULL * /
-
-    } dlcis[RFC_NUM_DLCIS + RFC_FIRST_DLCI/*makes addressing easier* /];
-};
-*/
 
 /*
  * FUNCTION: rfcTryTx
