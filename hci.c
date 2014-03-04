@@ -637,6 +637,7 @@ static void hciRxEvt(sg packet)
 
     /* handle data credits */
     if (evtType == HCI_EVT_Number_Of_Completed_Packets) {
+        bool hadLeCreds = false, hadEdrCreds = false;
         uint16_t newCreditsEdr = 0, newCreditsLe = 0;
         struct hciAclConn* conn;
         struct hciEvtNumCompletedPackets *ncp = (struct hciEvtNumCompletedPackets*)(evt + 1);
@@ -650,16 +651,23 @@ static void hciRxEvt(sg packet)
             conn = hciConnFindById(connID);
             if (!conn)
                 loge("Unknown conn 0x%04X in packets completed. Credits leaked: %d\n", connID, numPackets);
-            else if (BT_ADDR_IS_LE(conn->addr) && !mBtJointBuffers)
+            else if (BT_ADDR_IS_LE(conn->addr) && !mBtJointBuffers) {
+                hadLeCreds = true;
                 newCreditsLe += numPackets;
-            else
+            } else {
+                hadEdrCreds = true;
                 newCreditsEdr += numPackets;
+            }
         }
         pthread_mutex_unlock(&mConnsLock);
         while (newCreditsLe--)
             sem_post(&mAclPacketsLe);
         while (newCreditsEdr--)
             sem_post(&mAclPacketsEdr);
+        if (hadLeCreds)
+            l2cAclCreditAvail(true);
+        if (hadEdrCreds)
+            l2cAclCreditAvail(false);
         handled = true;
     }
 
