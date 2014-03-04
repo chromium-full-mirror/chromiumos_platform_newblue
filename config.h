@@ -9,15 +9,22 @@
 #define RFC_USE_TIMEOUT                     2000
 
 /*
- * RFC layer will wait this many ms before closing a control connectio
- * due to response to a command timeout
+ * RFC layer will wait this many ms before closing a control connection
+ * due to response to a command timeout. Yes, this value is obscenely
+ * high, but the spec mandates it be on the order of tens of seconds
  */
-#define RFC_CMD_TIMEOUT                     100
+#define RFC_CMD_TIMEOUT                     20000
 
 /*
  * RFC layer will give the remote side this many credits (1..7)
  */
 #define RFC_NUM_REMOTE_CREDITS              7
+
+/*
+ * RFC layer will send a credit packet if we already have thsi many
+ * of the other side's credits. 1 .. RFC_NUM_REMOTE_CREDITS
+ */
+#define RFC_THRESH_HELD_CREDITS             5
 
 /*
  * RFC layer will queue up only this many work items at a time

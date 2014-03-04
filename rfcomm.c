@@ -14,6 +14,7 @@
 #include "sg.h"
 #include "bt.h"
 
+#define logx logd
 
 //TODO: handle case of both peer and me establishing RFCOMM at the same time...
 //TODO: audit lock sequence
@@ -114,6 +115,7 @@ struct rfcSvcWork {
     union {
         struct {
             rfcSvcAlloc    allocCbk;
+            rfcSvcEvent    evtCbk;
             void          *cbkData;
             rfc_conn_t     conn;
         }svcAlloc;
@@ -122,15 +124,11 @@ struct rfcSvcWork {
             sg             data;
             uint8_t        evtType;
         }evt;
-        struct {
-            rfc_conn_t     conn;
-        }tryTx;
     };
 };
 
 #define RFC_WORK_SVC_ALLOC 0
 #define RFC_WORK_CONN_EVT  1
-#define RFC_WORK_TRY_TX    2
 
 
 
@@ -241,6 +239,24 @@ static void rfcInstCloseTimerStart(struct rfcInst *inst, uint32_t timelen);
 static bool rfcSendDm(struct rfcInst *inst, uint8_t dlci);
 static bool rfcSendDisc(struct rfcInst *inst, uint8_t dlci);
 static bool rfcSendSabm(struct rfcInst *inst, uint8_t dlci);
+static void rfcTryTx(struct rfcConn* c);
+
+
+static void rfcShow(const char *lbl, sg s)
+{
+    uint8_t b;
+    uint32_t i;
+
+    fprintf(stderr, "rfcomm *D* %s (%u):", lbl, sgLength(s));
+    for (i = 0; i < sgLength(s); i++) {
+        if (!sgSerialize(s, i, 1, &b)) loge("failed to serialize ofst %u\n", i);
+        if (i & 0x0F) fprintf(stderr, " ");
+        else fprintf(stderr, "\nrfcomm %03X: ", i);
+        fprintf(stderr, "%02X", b);
+    }
+    fprintf(stderr, "\n");
+}
+
 
 /*
  * FUNCTION: rfcFindConnByHandle
@@ -317,6 +333,8 @@ static void rfcInstCloseTimerCbk(uniq_t which,  uint64_t cbkData)
     struct rfcInst *i;
     bool closeItNow = true;
 
+    logx("**** timer fired\n");
+
     pthread_mutex_lock(&mInstsLock);
     for (i = mInsts; i && i->closeTimer != which; i = i->next);
     if (i) {
@@ -378,6 +396,8 @@ static void rfcInstCloseTimerStart(struct rfcInst *inst, uint32_t timelen)
     if (inst->closeTimer)
         timerCancel(inst->closeTimer);
 
+    logx("**** timer set for %ums\n", timelen);
+
     inst->closeTimer = timerSet(timelen, rfcInstCloseTimerCbk, 0);
     /* if that fails, there isn't much we can do anyways - but it is not fate, so leave it be */
 }
@@ -393,6 +413,8 @@ static void rfcInstCloseTimerStop(struct rfcInst *inst)
 {
     if (inst->closeTimer)
         timerCancel(inst->closeTimer);
+
+    logx("**** timer cleared\n");
 
     inst->closeTimer = 0;
 }
@@ -473,35 +495,9 @@ static bool rfcSchedSvcAlloc(struct rfcListenState *ls, struct rfcConn *conn)
     if (wi) {
 
         wi->svcAlloc.allocCbk = ls->allocCbk;
+        wi->svcAlloc.evtCbk = ls->evtCbk;
         wi->svcAlloc.cbkData = ls->cbkData;
         wi->svcAlloc.conn = conn->handle;
-
-        if (workQueuePut(mWorkQ, wi))
-            return true;
-
-        free(wi);
-    }
-    return false;
-}
-
-/*
- * FUNCTION: rfcSchedTryTx
- * USE:      Schedule an attempt to TX in the worker thread
- * PARAMS:   conn - the connection for whom we want to TX
- * RETURN:   true if the work was scheduled
- * NOTES:
- */
-static bool rfcSchedTryTx(struct rfcConn *conn)
-{
-    struct rfcSvcWork *wi;
-
-    if (!sgLength(conn->txQueue) && !conn->numRxCredits) /* do not bother trying to TX when nothing is in the buffer and no credits are owed */
-        return true;
-
-    wi = rfcNewWorkItem(RFC_WORK_TRY_TX);
-    if (wi) {
-
-        wi->tryTx.conn = conn->handle;
 
         if (workQueuePut(mWorkQ, wi))
             return true;
@@ -598,6 +594,7 @@ static bool rfcCmdOrRspSend(struct rfcInst *inst, uint8_t cmd, uint8_t dlci, boo
     if (!s)
         return false;
 
+    rfcShow("TX.c", s);
     if (sendQueueForceTx(mSendQ, inst->conn, s))
         return true;
 
@@ -615,6 +612,8 @@ static bool rfcCmdOrRspSend(struct rfcInst *inst, uint8_t cmd, uint8_t dlci, boo
  */
 static bool rfcSendDm(struct rfcInst *inst, uint8_t dlci)
 {
+    logx("TX DM %u\n", dlci);
+
     return rfcCmdOrRspSend(inst, RFC_CTRL_DM | RFC_CTRL_PF_MASK, dlci, !inst->initiator);
 }
 
@@ -628,6 +627,8 @@ static bool rfcSendDm(struct rfcInst *inst, uint8_t dlci)
  */
 static bool rfcSendDisc(struct rfcInst *inst, uint8_t dlci)
 {
+    logx("TX DISC %u\n", dlci);
+
     if (inst->reqInFlight)
         logw("ORDERING VIOLATION! Sent DISC while something was in flight\n");
 
@@ -646,6 +647,8 @@ static bool rfcSendDisc(struct rfcInst *inst, uint8_t dlci)
  */
 static bool rfcSendSabm(struct rfcInst *inst, uint8_t dlci)
 {
+    logx("TX SABM %u\n", dlci);
+
     if (inst->reqInFlight)
         logw("ORDERING VIOLATION! Sent SABM while something was in flight\n");
 
@@ -664,6 +667,8 @@ static bool rfcSendSabm(struct rfcInst *inst, uint8_t dlci)
  */
 static bool rfcSendUa(struct rfcInst *inst, uint8_t dlci)
 {
+    logx("TX UA %u\n", dlci);
+
     return rfcCmdOrRspSend(inst, RFC_CTRL_UA | RFC_CTRL_PF_MASK, dlci, !inst->initiator);
 }
 
@@ -701,6 +706,9 @@ static bool rfcRxData(struct rfcInst *inst, uint8_t dlci, bool pfBit, sg s)
 
     if (rfcSchedEvt(c, RFC_EVT_RX, s))
         return true;
+
+    if (c->numRxCredits >= RFC_THRESH_HELD_CREDITS)
+        rfcTryTx(c); /* among other things sends back credits */
 
     loge("Failed to schedule RFC RX work\n");
     return false;
@@ -748,7 +756,7 @@ static bool rfcWrapUIH(struct rfcInst *inst, int nCreds, sg s)
         len++;
 
     utilSetLE8(&hdr->addr, RFC_BIT_EA | (inst->initiator ? RFC_BIT_CR : 0));
-    utilSetLE8(&hdr->ctrl, RFC_CTRL_UIH);
+    utilSetLE8(&hdr->ctrl, RFC_CTRL_UIH | (nCreds ? RFC_CTRL_PF_MASK : 0));
 
     if (len <= 0x7F)
         utilSetLE8(&hdr->len, (len << 1) | RFC_BIT_EA);
@@ -794,8 +802,12 @@ static bool rfcTxControlSg(struct rfcInst *inst, uint8_t sType, sg data)
     utilSetLE8(&sig.type, sType);
     utilSetLE8(&sig.length, (sgLength(data) << 1) | RFC_BIT_EA);
 
-    if (sgConcatFrontCopy(data, &sig, sizeof(struct rfcSigFrm)) && rfcWrapNoCredUIH(inst, data) && sendQueueForceTx(mSendQ, inst->conn, data))
-        return true;
+    
+    if (sgConcatFrontCopy(data, &sig, sizeof(struct rfcSigFrm)) && rfcWrapNoCredUIH(inst, data)) {
+        rfcShow("TX.c", data);
+        if (sendQueueForceTx(mSendQ, inst->conn, data))
+            return true;
+    }
 
     return false;
 }
@@ -972,12 +984,13 @@ static bool rfcRxControl(struct rfcInst *inst, bool pfBit, sg s)
                     logd("Max len: %ub\n", inst->dlcis[dlci].maxFrm);
 
                     conn->cState = RFC_CONN_ST_NEED_SABM;
-                    if (!inst->reqInFlight) {
+                    if (!inst->reqInFlight) {logx("AAA");
                         if (!rfcSendSabm(inst, dlci)) {
                             logw("Failed to send SABM\n");
                             rfcCloseConn(conn, false, true);
                         } else
                             conn->cState = RFC_CONN_ST_SENT_SABM;
+                        logx("cstate = %u\n", conn->cState);
                     }
                 } else
                     logw("Unexpected SIG.PN.r while connected in state %u\n", conn->cState);
@@ -1139,8 +1152,9 @@ static void rfcCloseConn(struct rfcConn *c, bool tellOtherSide, bool tellOurSide
     case RFC_CONN_ST_TEARDOWN:
         logw("Trying to disconnect a connection in state %u\n", c->cState);
         tellOtherSide = tellOurSide = delStruct = false;
+        break;
     default:
-        loge("Weird conn state %u in diconnect\n", c->cState);
+        loge("Weird conn state %u in disconnect\n", c->cState);
         break;
     }
 
@@ -1185,7 +1199,6 @@ static void rfcSendNextCmd(struct rfcInst *inst)
             inst->iState = RFC_INST_ST_TEARDOWN;
             l2cApiDisconnect(inst->conn);
         } else {
-            rfcInstCloseTimerStart(inst, RFC_CMD_TIMEOUT);
             inst->iState = RFC_INST_ST_SENT_DISC;
         }
     } else {
@@ -1195,8 +1208,8 @@ static void rfcSendNextCmd(struct rfcInst *inst)
             c = rfcFindConnByDlci(inst, i);
             if (!c)
                 continue;
-
-            if (c->cState == RFC_CONN_ST_NEED_SABM) {
+            logx("cstate = %u\n", c->cState);
+            if (c->cState == RFC_CONN_ST_NEED_SABM) {logx("BBB");
                 if (rfcSendSabm(inst, i)) {
                     c->cState = RFC_CONN_ST_SENT_SABM;
                     break;
@@ -1220,6 +1233,29 @@ static void rfcSendNextCmd(struct rfcInst *inst)
 }
 
 /*
+ * FUNCTION: rfcConnSendPn
+ * USE:      Send a proper PN CMD for purposes of opening a connection
+ * PARAMS:   conn - the conn struct
+ * RETURN:   false on error
+ * NOTES:    call with inst->lock held
+ */
+static bool rfcConnSendPn(struct rfcConn *conn)
+{
+    struct rfcInst *inst = conn->rfcInst;
+    struct rfcSigPn pn;
+
+    utilSetLE8(&pn.dlci, conn->dlci);
+    utilSetLE8(&pn.carrier, 0xF0);
+    utilSetLE8(&pn.priority, 2);
+    utilSetLE8(&pn.zero1, 0);
+    utilSetLE8(&pn.zero2, 0);
+    utilSetLE8(&pn.numCredits, RFC_NUM_REMOTE_CREDITS);
+    utilSetLE16(&pn.maxFrameSz, RFC_MAX_RX_FRAME);
+
+    return rfcTxControl(inst, RFC_CMD_PN, &pn, sizeof(struct rfcSigPn));
+}
+
+/*
  * FUNCTION: rfcOpenWaitingConns
  * USE:      Open all conns we've been waiting to open
  * PARAMS:   inst - the RFCOMM instance
@@ -1233,8 +1269,15 @@ static void rfcOpenWaitingConns(struct rfcInst *inst)
 
     for (i = RFC_FIRST_DLCI; i < RFC_FIRST_DLCI + RFC_NUM_DLCIS; i++) {
         c = rfcFindConnByDlci(inst, i);
-        if (c && c->cState == RFC_CONN_ST_WAITING)
-            c->cState = RFC_CONN_ST_NEED_SABM;
+        if(c) logx("Found conn for dlci %u(%u) in state %u\n", i, c->dlci, c->cState);
+        if (c && c->cState == RFC_CONN_ST_WAITING) {
+            if (rfcConnSendPn(c))
+                c->cState = RFC_CONN_ST_PN_SENT;
+            else {
+                loge("Failed to send PN for pending connection\n");
+                rfcCloseConn(c, false, true);
+            }
+        }
     }
 
     if (!inst->reqInFlight)
@@ -1242,32 +1285,40 @@ static void rfcOpenWaitingConns(struct rfcInst *inst)
 }
 
 /*
- * FUNCTION: rfcRxAck
+ * FUNCTION: rfcRxUa
  * USE:      Handle incoming UA response
  * PARAMS:   inst - the RFCOMM instance
  *           dlci - the DLCI the packet came in for
  * RETURN:   NONE
  * NOTES:    call with inst->lock held
  */
-static void rfcRxAck(struct rfcInst *inst, uint8_t dlci)
+static void rfcRxUa(struct rfcInst *inst, uint8_t dlci)
 {
     bool sendNextInflight = false;
     struct rfcConn *c;
     uint8_t i;
 
+    logx("RX UA %u\n", dlci);
+
     if (!inst->reqInFlight)
         logw("ORDERING VIOLATION! Got UA while nothing was in flight\n");
 
+    logx("GOT UA in state %u\n", inst->iState);
+
     if (inst->iState == RFC_INST_ST_SABM_SENT && dlci == RFC_DLCI_CTRL) {
         inst->iState = RFC_INST_ST_ESTABLISHED;
+        rfcInstCloseTimerStop(inst);
+        logx("opening conns\n");
         rfcOpenWaitingConns(inst);
     } else if (inst->iState == RFC_INST_ST_SENT_DISC && dlci == RFC_DLCI_CTRL) {
         inst->iState = RFC_INST_ST_TEARDOWN;
+        rfcInstCloseTimerStop(inst);
         l2cApiDisconnect(inst->conn);
     } else if (dlci == RFC_DLCI_CTRL) {
         logw("Weird UA on DLCI 0 in state %u\n", inst->iState);
     } else {
         c = rfcFindConnByDlci(inst, dlci);
+        if (c) logx("DLCI %u got UA in state %u\n", dlci, c->cState);
         if (!c)
             logd("Got UA on a non-connected DLCI %u\n", dlci);
         else {
@@ -1283,19 +1334,28 @@ static void rfcRxAck(struct rfcInst *inst, uint8_t dlci)
             case RFC_CONN_ST_TEARDOWN:
             default:
                 logw("Got unexpected UA for conn in state %u\n", c->cState);
+                rfcCloseConn(c, true, true);
                 break;
             case RFC_CONN_ST_SENT_SABM:
-                c->cState = RFC_INST_ST_ESTABLISHED;
+                rfcInstCloseTimerStop(inst);
+                c->cState = RFC_CONN_ST_ESTABLISHED;
+                if (!rfcSendMsc(c, true, false)) { /* must send this */
+                    loge("Failed to send MSC.C\n");
+                    rfcCloseConn(c, true, true);
+                }
+                rfcSchedEvtOpen(c);
                 inst->reqInFlight = false;
                 sendNextInflight = true;
                 break;
             case RFC_CONN_ST_SENT_DISC:
-                c->cState = RFC_INST_ST_TEARDOWN;
+                rfcInstCloseTimerStop(inst);
+                c->cState = RFC_CONN_ST_TEARDOWN;
                 inst->reqInFlight = false;
                 sendNextInflight = true;
                 rfcDeleteConnStruct(c);
                 break;
             }
+            logx("cstate %u\n", c->cState);
         }
     }
 
@@ -1315,6 +1375,8 @@ static void rfcRxDm(struct rfcInst *inst, uint8_t dlci)
 {
     struct rfcConn *c;
     bool sendNextInflight = false;
+
+    logx("RX DM %u\n", dlci);
 
     if (dlci == RFC_DLCI_CTRL) { /* in this case all else is irrelevant! */
         logi("Got DM on DLCI 0\n");
@@ -1341,18 +1403,25 @@ static void rfcRxDm(struct rfcInst *inst, uint8_t dlci)
 }
 
 /*
- * FUNCTION: rfcRxChClose
+ * FUNCTION: rfcRxDisc
  * USE:      Handle incoming DISC command and close the channel
  * PARAMS:   inst - the RFCOMM instance
  *           dlci - the DLCI the packet came in for
  * RETURN:   NONE
  * NOTES:    call with inst->lock held
  */
-static void rfcRxChClose(struct rfcInst *inst, uint8_t dlci)
+static void rfcRxDisc(struct rfcInst *inst, uint8_t dlci)
 {
     struct rfcConn *c = rfcFindConnByDlci(inst, dlci);
 
-    if (!c) {
+    logx("RX DISC %u\n", dlci);
+
+    if (dlci == RFC_DLCI_CTRL) {
+        logd("Got DISC on DLCI 0\n");
+        rfcSendUa(inst, RFC_DLCI_CTRL);
+        inst->iState = RFC_INST_ST_TEARDOWN;
+        l2cApiDisconnect(inst->conn);
+    } else if (!c) {
         logi("Got close on unconnected DLCI %u\n", dlci);
         if (!rfcSendDm(inst, dlci))
             loge("Failed to send DM\n");
@@ -1364,16 +1433,18 @@ static void rfcRxChClose(struct rfcInst *inst, uint8_t dlci)
 }
 
 /*
- * FUNCTION: rfcRxChOpen
+ * FUNCTION: rfcRxSabm
  * USE:      Handle incoming SABM command and open the channel
  * PARAMS:   inst - the RFCOMM instance
  *           dlci - the DLCI the packet came in for
  * RETURN:   NONE
  * NOTES:    call with inst->lock held
  */
-static void rfcRxChOpen(struct rfcInst *inst, uint8_t dlci)
+static void rfcRxSabm(struct rfcInst *inst, uint8_t dlci)
 {
     struct rfcConn *c;
+
+    logx("RX SABM %u\n", dlci);
 
     if (dlci == RFC_DLCI_CTRL) {
 
@@ -1444,6 +1515,8 @@ static void rfcRx(struct rfcInst *inst, sg s)
     uint8_t t, addr, ctrl, wantedFcs, haveFcs;
     bool longLen = false, pfBit;
     uint16_t len;
+
+    rfcShow("RX", s);
 
     /* some sanity checking is in order */
     if (!sgLength(s)) {
@@ -1525,7 +1598,7 @@ static void rfcRx(struct rfcInst *inst, sg s)
                 logw("SABM w/o PF bit!\n");
                 goto err;
             }
-            rfcRxChOpen(inst, addr >> RFC_DLCI_SHIFT);
+            rfcRxSabm(inst, addr >> RFC_DLCI_SHIFT);
             break;
         case RFC_CTRL_UA: /* response. Expect C/R == inst->initiator */
             if (!inst->initiator != !(addr & RFC_BIT_CR)) {
@@ -1536,7 +1609,7 @@ static void rfcRx(struct rfcInst *inst, sg s)
                 logw("UA w/o PF bit!\n");
                 goto err;
             }
-            rfcRxAck(inst, addr >> RFC_DLCI_SHIFT);
+            rfcRxUa(inst, addr >> RFC_DLCI_SHIFT);
             break;
         case RFC_CTRL_DM: /* response. Expect C/R == inst->initiator */
             if (!inst->initiator != !(addr & RFC_BIT_CR)) {
@@ -1554,7 +1627,7 @@ static void rfcRx(struct rfcInst *inst, sg s)
                 logw("DISC w/o PF bit!\n");
                 goto err;
             }
-            rfcRxChClose(inst, addr >> RFC_DLCI_SHIFT);
+            rfcRxDisc(inst, addr >> RFC_DLCI_SHIFT);
             break;
         default:
             loge("Unknown RFCOMM ctrl 0x%02X\n", ctrl);
@@ -1670,8 +1743,8 @@ int32_t rfcTx(rfc_conn_t connHandle, sg s)
     } else
         ret = RFC_TX_RET_STOP_SENDING;
 
-    if (gotMoreData && !rfcSchedTryTx(conn))
-        loge("Failed to schedule a TX attempt\n");
+    if (gotMoreData)
+        rfcTryTx(conn);
 
     pthread_mutex_unlock(&conn->rfcInst->lock);
 
@@ -1800,7 +1873,6 @@ out:
     return ret;
 }
 
-
 /*
  * FUNCTION: rfcConnect
  * USE:      Called to connect to a remote RFCOMM DLCI
@@ -1856,18 +1928,8 @@ bool rfcConnect(const struct bt_addr *peerAddr, uint8_t ch, rfcSvcEvent evtF, vo
     conn->evtCbkData = cbkData;
     conn->evtCbkInst = instance;
 
-    if (inst->iState == RFC_INST_ST_ESTABLISHED) { /* we can only do more if a connection alreay exists */ //XXX: if they establish and we send UA to abm we need to then open our conns too
-        struct rfcSigPn pn;
-
-        utilSetLE8(&pn.dlci, dlci);
-        utilSetLE8(&pn.carrier, 0xF0);
-        utilSetLE8(&pn.priority, 2);
-        utilSetLE8(&pn.zero1, 0);
-        utilSetLE8(&pn.zero2, 0);
-        utilSetLE8(&pn.numCredits, RFC_NUM_REMOTE_CREDITS);
-        utilSetLE16(&pn.maxFrameSz, RFC_MAX_RX_FRAME);
-
-        if (!rfcTxControl(inst, RFC_CMD_PN, &pn, sizeof(struct rfcSigPn))) {
+    if (inst->iState == RFC_INST_ST_ESTABLISHED){
+        if (!rfcConnSendPn(conn)) {/* we can only do more if a connection alreay exists */
             logw("Failed to send SIG.PN\n");
             rfcCloseConn(conn, false, true);
             goto out;
@@ -1934,6 +1996,7 @@ static void rfcTryTx(struct rfcConn* c)
     sgSwap(c->txQueue, s);
 
     if (rfcWrapUIH(inst, c->numRxCredits, s)) {
+        rfcShow("TD.d", s);
         if (sendQueueTx(mSendQ, inst->conn, s)) {
             c->numRxCredits = 0;
             return;
@@ -2007,9 +2070,16 @@ static void* rfcWorkerThread(void *unused)
                 c->evtCbkInst = wi->svcAlloc.allocCbk(wi->svcAlloc.cbkData, &c->rfcInst->addr, c->dlci);
                 if (c->evtCbkInst) {
                     c->cState = RFC_CONN_ST_ESTABLISHED;
+                    c->evtCbk = wi->svcAlloc.evtCbk;
+                    c->evtCbkData = wi->svcAlloc.cbkData;
+                    rfcSchedEvtOpen(c);
                     if (!rfcSendUa(c->rfcInst, c->dlci)) {
                         loge("Failed to send ua\n");
                         rfcCloseConn(c, false, true);
+                    }
+                    if (!rfcSendMsc(c, true, false)) { /* must send this */
+                        loge("Failed to send MSC.C\n");
+                        rfcCloseConn(c, true, true);
                     }
                 } else {
                     c->cState = RFC_CONN_ST_SVC_OPENED;
@@ -2019,21 +2089,12 @@ static void* rfcWorkerThread(void *unused)
             pthread_mutex_unlock(&inst->lock);
             break;
         case RFC_WORK_CONN_EVT:
-            c = rfcFindConnByHandle(wi->svcAlloc.conn);
+            c = rfcFindConnByHandle(wi->evt.conn);
             if (!c) {
                 logd("Saw stale evt\n");
                 break;
             }
-            c->evtCbk(c->evtCbkData, c->rfcInst, wi->evt.evtType, wi->evt.data);
-            pthread_mutex_unlock(&c->rfcInst->lock);
-            break;
-        case RFC_WORK_TRY_TX:
-            c = rfcFindConnByHandle(wi->svcAlloc.conn);
-            if (!c) {
-                logd("Saw stale try-tx\n");
-                break;
-            }
-            rfcTryTx(c);
+            c->evtCbk(c->evtCbkData, c->evtCbkInst, wi->evt.evtType, wi->evt.data);
             pthread_mutex_unlock(&c->rfcInst->lock);
             break;
         default:
