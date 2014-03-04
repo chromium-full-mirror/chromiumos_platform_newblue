@@ -150,7 +150,7 @@ void multiNotifNotify(struct multiNotifList *nl, const void *notifData)
                     notifListFindAndDestroy(&notifTodo, iter->handle);
                 if (iter->cbk)
                     iter->cbk(iter->cbkData, NULL, iter->handle);
-            } else { /* aqddition */
+            } else { /* addition */
                 t = iter->next;
                 iter->next = notifTodo;
                 notifTodo = iter;
@@ -163,6 +163,8 @@ void multiNotifNotify(struct multiNotifList *nl, const void *notifData)
             break;
         pthread_mutex_unlock(&nl->structLock);
     }
+
+    nl->items = notifDone;
 
     pthread_mutex_unlock(&nl->bcastLock);
     pthread_mutex_unlock(&nl->structLock);
