@@ -3902,6 +3902,7 @@ static void l2cTryMakeSendProgress(bool forLeBuffers, bool needLock)
         if (!sendConn) { /* nothing to send anymore */
             if (needLock)
                 pthread_mutex_unlock(&mConnsLock);
+            multiNotifNotify(mWriteNotif, NULL);
             break;
         }
 
@@ -3909,7 +3910,7 @@ static void l2cTryMakeSendProgress(bool forLeBuffers, bool needLock)
             remainSg = sgSplit(sendSg, chipBufSz);
             if (!remainSg) {
                 loge("Failed to split TX sg\n");
-                ///TOD: this?
+                ///TODO: this?
             }
         } else
             remainSg = NULL;
