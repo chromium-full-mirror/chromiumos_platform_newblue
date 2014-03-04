@@ -248,6 +248,7 @@ void sgConcat(sg front, sg back)
 
     if (!back->head) {
         sgFree(back);
+        return;
     }
 
     if (front->tail)
