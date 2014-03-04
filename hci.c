@@ -7,8 +7,6 @@
 //todo: The LE_Create_Connection_Cancel command is used to cancel the LE_Create_Connection command. This command shall only be issued after the LE_Create_Connection command has been issued, a Command Status event has been received for the LE Create Connection command and before the LE Connection Complete event
 
 
-#include <semaphore.h>
-#include <pthread.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +22,7 @@
 #include "uniq.h"
 #include "hci.h"
 #include "log.h"
+#include "mt.h"
 
 
 #define MAX_FTR_PAGES         4 /* we'll not get any more than this */

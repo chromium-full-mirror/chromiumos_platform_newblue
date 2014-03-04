@@ -1,4 +1,3 @@
-#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include "workQueue.h"
@@ -13,6 +12,9 @@
 #include "log.h"
 #include "sg.h"
 #include "bt.h"
+#include "mt.h"
+
+
 
 
 //TODO: handle case of both peer and me establishing RFCOMM at the same time...

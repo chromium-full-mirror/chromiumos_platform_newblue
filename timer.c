@@ -1,5 +1,3 @@
-#include <semaphore.h>
-#include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -8,6 +6,7 @@
 #include "util.h"
 #include "uniq.h"
 #include "log.h"
+#include "mt.h"
 
 
 

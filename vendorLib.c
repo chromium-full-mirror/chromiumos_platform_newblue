@@ -1,10 +1,3 @@
-//todo: BT_VND_OP_SCO_CFG
-//todo: BT_VND_OP_GET_LPM_IDLE_TIMEOUT
-//todo: BT_VND_OP_LPM_SET_MODE
-//todo: BT_VND_OP_LPM_WAKE_SET_STATE
-
-#include <semaphore.h>
-#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -21,6 +14,8 @@
 #include "uniq.h"
 #include "hci.h"
 #include "log.h"
+#include "sg.h"
+#include "mt.h"
 
 #define BT_VENDOR_LIB_NAME       "libbt-vendor.so"
 #define BT_VENDOR_INFACE_STRUCT  "BLUETOOTH_VENDOR_LIB_INTERFACE"

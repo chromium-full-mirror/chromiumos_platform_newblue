@@ -1,7 +1,6 @@
 //todo: check all lengths followed, all log levels correct
 //todo: hci QoS is same as L2CAP QoS, so we can probably support L2CAP QoS via HCI QoS easily
 
-#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
@@ -15,6 +14,7 @@
 #include "uniq.h"
 #include "log.h"
 #include "hci.h"
+#include "mt.h"
 
 
 /* constants from spec */

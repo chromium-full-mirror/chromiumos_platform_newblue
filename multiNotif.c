@@ -1,9 +1,8 @@
-#include <semaphore.h>
-#include <pthread.h>
 #include <stdlib.h>
 #include "multiNotif.h"
 #include "util.h"
 #include "log.h"
+#include "mt.h"
 
 
 struct multiNotifItem {

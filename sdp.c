@@ -1,4 +1,3 @@
-#include <pthread.h>
 #include <string.h>
 #include <stdlib.h>
 #include "l2cap.h"
@@ -8,6 +7,7 @@
 #include "sdp.h"
 #include "log.h"
 #include "sg.h"
+#include "mt.h"
 
 #define SDP_SDP_SERVER_UUID       0x1000
 

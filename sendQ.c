@@ -1,7 +1,7 @@
-#include <pthread.h>
 #include "l2cap.h"
 #include "sendQ.h"
 #include "log.h"
+#include "mt.h"
 
 struct packet {
      struct packet *next;

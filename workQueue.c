@@ -1,6 +1,6 @@
-#include <pthread.h>
 #include <stdlib.h>
 #include "workQueue.h"
+#include "mt.h"
 
 struct workQueue {
     int posR, posW, size;

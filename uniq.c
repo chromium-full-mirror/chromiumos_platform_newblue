@@ -1,7 +1,7 @@
-#include <pthread.h>
 #include <stdlib.h>
 #include "uniq.h"
 #include "log.h"
+#include "mt.h"
 
 static pthread_mutex_t mUniqLock = PTHREAD_MUTEX_INITIALIZER;
 static uniq_t mUniq = UNIQ_MARKER + 1;

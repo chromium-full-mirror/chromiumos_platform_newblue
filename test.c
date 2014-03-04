@@ -1,4 +1,3 @@
-#include <semaphore.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -11,6 +10,7 @@
 #include "log.h"
 #include "sdp.h"
 #include "bt.h"
+#include "mt.h"
 
 struct LeDiscDev {
     struct LeDiscDev  *next;
