@@ -4016,11 +4016,13 @@ void l2cAclCreditAvail(bool le)
  * FUNCTION: l2cDataSendOnAclLink
  * USE:      Request a send on an ACL link of data with a header
  * PARAMS:   aclConn - the link
+ *           hdr - header to prepend IFF accepted for TX
+ *           hdrLen - size fo said header
  *           data - the data to send
  * RETURN:   L2C_TX_*
  * NOTES:    call with mConnsLock held
  */
-static uint8_t l2cDataSendOnAclLink(struct l2cAclConn *aclConn, sg data)
+static uint8_t l2cDataSendOnAclLink(struct l2cAclConn *aclConn, const void *hdr, uint32_t hdrLen, sg data)
 {
     uint8_t ret = L2C_TX_ACCEPTED;
     sg *queueBufP;
@@ -4044,11 +4046,16 @@ static uint8_t l2cDataSendOnAclLink(struct l2cAclConn *aclConn, sg data)
     if (*queueBufP)
         ret = L2C_TX_TRY_LATER;
     else {
-        *queueBufP = data;
-        *queueFirstP = true;
-        *queueConnP = aclConn->conn;
-        if (!l2cSvcWorkScheduleTryTx(useLeBuffers))
-            loge("Failed to schedule TX attempt\n");
+        if (!sgConcatFrontCopy(data, hdr, hdrLen)) {
+            loge("Failed to prepend L2C header\n");
+            ret = L2C_TX_ERROR;
+        } else {
+            *queueBufP = data;
+            *queueFirstP = true;
+            *queueConnP = aclConn->conn;
+            if (!l2cSvcWorkScheduleTryTx(useLeBuffers))
+                loge("Failed to schedule TX attempt\n");
+        }
     }
     return ret;
 }
@@ -4103,11 +4110,7 @@ uint8_t l2cApiDataTx(l2c_handle_t handle, sg data)
         utilSetLE16(&frm.len, sgLength(data));
         utilSetLE16(&frm.cid, conn->remCh);
 
-        if (!sgConcatFrontCopy(data, &frm, sizeof(frm))) {
-            logw("Failed to prepend l2c channel header\n");
-            ret = L2C_TX_ERROR;
-        } else
-            ret = l2cDataSendOnAclLink(aclConn, data);
+        ret = l2cDataSendOnAclLink(aclConn, &frm, sizeof(frm), data);
     }
     pthread_mutex_unlock(&mConnsLock);
 
@@ -4153,11 +4156,7 @@ uint8_t l2cApiConnectionlessDataTx(const struct bt_addr *addr, psm_t psm, sg dat
         utilSetLE16(&frm->cid, L2C_CH_CONNECTIONLESS);
         utilSetLE16(frm + 1, psm);
 
-        if (!sgConcatFrontCopy(data, hdr, sizeof(hdr))) {
-            logw("Failed to prepend l2c connectionless header\n");
-            ret = L2C_TX_ERROR;
-        } else
-            ret = l2cDataSendOnAclLink(aclConn, data);
+        ret = l2cDataSendOnAclLink(aclConn, hdr, sizeof(hdr), data);
     }
     pthread_mutex_unlock(&mConnsLock);
 
