@@ -24,7 +24,7 @@ struct workQueue* workQueueAlloc(int numSlots)
     struct workQueue* q;
 
     numSlots++; /* one always unused */
-    q = malloc(sizeof(struct workQueue*) + sizeof(void* [numSlots]));
+    q = malloc(sizeof(struct workQueue) + sizeof(void* [numSlots]));
 
     if (q) {
 
