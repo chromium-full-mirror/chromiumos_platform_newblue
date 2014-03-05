@@ -1995,6 +1995,7 @@ static void rfcTryTx(struct rfcConn* c)
     if (rfcWrapUIH(inst, c->dlci, c->numRxCredits, s)) {
         rfcShow("TD.d", s);
         if (sendQueueTx(mSendQ, inst->conn, s)) {
+            c->numTxCredits--;
             c->numRxCredits = 0;
             return;
         } else
