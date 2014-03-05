@@ -204,11 +204,13 @@ static void testRfcEvtF(void *userData, void *instance, uint8_t evt, sg data)
         logi("RFC@["ADDRFMT",%u] open: "RFCCONNFMT"\n", ADDRCONV(s->addr), s->dlci, RFCCONNCNV(s->conn));
         break;
     case RFC_EVT_RX:
-        logi("RFC@["ADDRFMT",%u] RX %ub\n", ADDRCONV(s->addr), s->dlci, sgLength(data));
+  //      logi("RFC@["ADDRFMT",%u] RX %ub\n", ADDRCONV(s->addr), s->dlci, sgLength(data));
         i = rfcTx(s->conn, data);
-        logi("reply=%d\n", i);
-        if (i != RFC_TX_RET_ENTIRE_SENT)
+  //      logi("reply=%d\n", i);
+        if (i != RFC_TX_RET_ENTIRE_SENT) {
+            loge("TX failed - will not retry\n");
             sgFree(data);
+        }
         break;
     case RFC_EVT_MAY_SEND:
         if (data)
@@ -232,9 +234,14 @@ int main(int argc, char** argv)
     static const uint8_t mac[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
     const bool vTrue = true;
     const bool vFalse = false;
+    bool logAll = false;
     unsigned i;
     sem_t sem;
     uniq_t h;
+
+#ifdef TEST_DEBUG
+    logAll = true;
+#endif
 
     fprintf(stderr, "NewBlue test\n");
     logi("LOG UP\n");
@@ -244,7 +251,7 @@ int main(int argc, char** argv)
         return -1;
     }
 
-    if (!hciUp(mac, true)) {
+    if (!hciUp(mac, logAll)) {
         loge("HCI up fail\n");
         return -1;
     }
