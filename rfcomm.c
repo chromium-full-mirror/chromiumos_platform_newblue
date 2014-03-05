@@ -2126,7 +2126,7 @@ bool rfcRegisterProfile(void)
     if (pthread_create(&mWorkThread, NULL, rfcWorkerThread, NULL))
         goto fail_worker;
 
-    mSendQ = sendQueueAlloc(8, "RFCOMM sendq");
+    mSendQ = sendQueueAlloc(8);
     if (!mSendQ)
         goto fail_send_q;
 

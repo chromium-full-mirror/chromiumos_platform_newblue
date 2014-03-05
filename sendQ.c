@@ -11,55 +11,29 @@ struct packet {
 
 struct sendQ {
     pthread_mutex_t lock;
-    pthread_cond_t  cond;
-    pthread_t       worker;
     uniq_t          l2cNotifH;
 
     struct packet  *head;
     struct packet  *tail;
     uint32_t        maxMsgsPerConn;
-    bool            pleaseDie;
-    char            name[];
 };
 
 
 
 /*
- * FUNCTION: sendQueueWorker
- * USE:      The worker thread for the SendQ
- * PARAMS:   the Q - the SendQ object
- * RETURN:   always NULL
- * NOTES:    Runs until stopped. On request to stop cleans up.
+ * FUNCTION: sendQueueTryTx
+ * USE:      Try to send for ther queue
+ * PARAMS:   the q - the SendQ object
+ * RETURN:   NONE
+ * NOTES:    call with q->lock taken
  */
-static void* sendQueueWorker(void *theQ)
+static void sendQueueTryTx(struct sendQ *q)
 {
-    struct sendQ *q = (struct sendQ*)theQ;
     bool trySend = true;
     struct packet *t;
     uint8_t ret;
 
-    pthread_mutex_lock(&q->lock);
-
-    /* some init */
-    pthread_setname_np(pthread_self(), q->name);
-
-    /* our loop */
-    while (1) {
-        bool freeHead = true;
-
-        /* die if needed */
-        if (q->pleaseDie)
-            break;
-
-        /* wait, if needed */
-        if (!trySend)
-            pthread_cond_wait(&q->cond, &q->lock);
-        trySend = true;
-
-        if (!q->head) {
-            trySend = false;
-            continue;
-        }
+    while (q->head) {
 
         /* try a send */
         ret = l2cApiDataTx(q->head->conn, q->head->s);
@@ -72,39 +46,20 @@ static void* sendQueueWorker(void *theQ)
         case L2C_TX_NO_CONN:
             sgFree(q->head->s);
             break;
-        case  L2C_TX_TRY_LATER:
-            freeHead = false;
-            trySend = false; /* wait next time */
-            break; 
+        case L2C_TX_TRY_LATER:
+            return;
         }
 
-        if (freeHead) {
-            if (q->tail == q->head) {
-                free(q->head);
-                q->tail = NULL;
-                q->head = NULL;
-                trySend = false;
-            } else {
-                t = q->head;
-                q->head = q->head->next;
-                free(t);
-            }
+        if (q->tail == q->head) {
+            free(q->head);
+            q->tail = NULL;
+            q->head = NULL;
+        } else {
+            t = q->head;
+            q->head = q->head->next;
+            free(t);
         }
     }
-
-    /* some cleanup */
-    l2cApiUnegisterWriteBufNotif(q->l2cNotifH);
-    while (q->head) {
-        t = q->head;
-        q->head = q->head->next;
-        sgFree(t->s);
-        free(t);
-    }
-    pthread_cond_destroy(&q->cond);
-    pthread_mutex_unlock(&q->lock);
-    pthread_mutex_destroy(&q->lock);
-
-    return NULL;
 }
 
 /*
@@ -119,53 +74,40 @@ static void* sendQueueWorker(void *theQ)
 static void sendQueueL2cBufNotif(void *cbkData, const void *notifData, uniq_t handle)
 {
     struct sendQ *q = (struct sendQ*)cbkData;
-    pthread_cond_signal(&q->cond);
+
+    if (pthread_mutex_trylock(&q->lock))
+        return;
+    sendQueueTryTx(q);
+    pthread_mutex_unlock(&q->lock);
 }
 
 /*
  * FUNCTION: sendQueueAlloc
  * USE:      Create a sendQ
  * PARAMS:   maxMsgsPerConn - max messages to allow per connection
- *           name - the name (for debugging & thread naming)
  * RETURN:   the SendQ object or NULL on error
  * NOTES:
  */
-struct sendQ* sendQueueAlloc(uint32_t maxMsgsPerConn, const char* name)
+struct sendQ* sendQueueAlloc(uint32_t maxMsgsPerConn)
 {
-    struct sendQ *q = (struct sendQ*)calloc(1, sizeof(struct sendQ) + strlen(name) + 1);
-    char *nameCopy;
+    struct sendQ *q = (struct sendQ*)calloc(1, sizeof(struct sendQ));
 
     if (!q)
         goto fail_oom;
 
-    strcpy(q->name, name);
     q->maxMsgsPerConn = maxMsgsPerConn;
 
     if (pthread_mutex_init(&q->lock, NULL))
         goto fail_mutex;
 
-    if (pthread_cond_init(&q->cond, NULL))
-        goto fail_cond;
-
     q->l2cNotifH = l2cApiRegisterWriteBufNotif(sendQueueL2cBufNotif, q);
     if (!q->l2cNotifH)
         goto fail_notif_reg;
 
-    if (pthread_create(&q->worker, NULL, sendQueueWorker, q))
-        goto fail_thread;
-
-    pthread_detach(q->worker);
-
     return q;
 
 
-fail_thread:
-   l2cApiUnegisterWriteBufNotif(q->l2cNotifH);
-
 fail_notif_reg:
-    pthread_cond_destroy(&q->cond);
-
-fail_cond:
     pthread_mutex_destroy(&q->lock);
 
 fail_mutex:
@@ -184,10 +126,17 @@ fail_oom:
  */
 void sendQueueFree(struct sendQ *q)
 {
+    struct packet *p;
+
     pthread_mutex_lock(&q->lock);
-    q->pleaseDie = true;
-    pthread_cond_signal(&q->cond);
-    pthread_mutex_unlock(&q->lock);
+    while (q->head) {
+        p = q->head;
+        q->head = q->head->next;
+        sgFree(p->s);
+        free(p);
+    }
+    pthread_mutex_destroy(&q->lock);
+    free(q);
 }
 
 /*
@@ -224,11 +173,11 @@ static bool sendQueueTxInt(struct sendQ *q, l2c_handle_t conn, sg s, bool enforc
                 q->head = t;
             q->tail = t;
 
-            pthread_cond_signal(&q->cond);
             ret = true;
         }
     }
 
+    sendQueueTryTx(q);
     pthread_mutex_unlock(&q->lock);
     return ret;
 }
@@ -283,6 +232,7 @@ bool sendQueueCanTx(struct sendQ *q, l2c_handle_t conn)
 
     ret = msgsForConnAlready < q->maxMsgsPerConn;
 
+    sendQueueTryTx(q);
     pthread_mutex_unlock(&q->lock);
 
     return ret;
@@ -327,6 +277,7 @@ void sendQueueDelPackets(struct sendQ *q, l2c_handle_t conn)
         }
     }
 
+    sendQueueTryTx(q);
     pthread_mutex_unlock(&q->lock);
 }
 

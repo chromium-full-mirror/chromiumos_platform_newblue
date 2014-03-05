@@ -3941,9 +3941,6 @@ static void l2cTryMakeSendProgress(bool forLeBuffers, bool needLock)
                 *qBufP = NULL;
                 *qFirstP = true;
             }
-
-            /* tell everyone we may have buffer space */
-            multiNotifNotify(mWriteNotif, NULL);
         }
 
         if (ret == HCI_TX_SEND_ERROR && remainSg) {

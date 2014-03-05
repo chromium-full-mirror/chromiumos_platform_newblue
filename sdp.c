@@ -1367,7 +1367,7 @@ bool sdpRegisterProfile(void)
         .mtu = 32768,
     };
 
-    mSendQ = sendQueueAlloc(1, "SDP sendQ");
+    mSendQ = sendQueueAlloc(1);
     if (!mSendQ) {
         loge("Failed to alloc send queue\n");
         return false;
