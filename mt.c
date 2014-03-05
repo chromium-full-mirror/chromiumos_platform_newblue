@@ -172,6 +172,11 @@ static struct mtObject* mt_evt_mutex_seen(const char *file, int line, const char
 {
     struct mtObject *mm;
 
+    if(!pthread_mutex_trylock(&mLock)) {
+        loge("not locked!\n");
+        abort();
+    }
+
     mm = mt_find_object(m);
     if (!mm) {
         mm = (struct mtObject*)calloc(1, sizeof(struct mtObject));
@@ -191,6 +196,12 @@ static struct mtObject* mt_evt_mutex_seen(const char *file, int line, const char
 static struct mtObject* mt_evt_thread_seen(const char *file, int line, const char *name, unsigned tid, void *th)
 {
     struct mtObject *mm;
+
+    if(!pthread_mutex_trylock(&mLock)) {
+        loge("not locked!\n");
+        abort();
+    }
+
 
     mm = mt_find_object(th);
     if (!mm) {
@@ -376,7 +387,6 @@ int mt_pthread_mutex_destroy(const char *file, int line, const char *name, pthre
     else
         mObjects = mm->next;
     free(mm);
-
     pthread_mutex_unlock(&mLock);
 
     return ret;
