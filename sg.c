@@ -3,8 +3,7 @@
 #include "log.h"
 #include "sg.h"
 
-/* uncomment to check *all* SGs for validity in all cases on input & output */
-#define SG_DEBUG
+
 
 struct sgitem {
     struct sgitem *next;

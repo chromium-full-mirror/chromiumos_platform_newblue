@@ -247,6 +247,7 @@ static void rfcTryTx(struct rfcConn* c);
 
 static void rfcShow(const char *lbl, sg s)
 {
+#ifdef RFC_DEBUG
     uint8_t b;
     uint32_t i;
 
@@ -258,6 +259,7 @@ static void rfcShow(const char *lbl, sg s)
         fprintf(stderr, "%02X", b);
     }
     fprintf(stderr, "\n");
+#endif
 }
 
 
