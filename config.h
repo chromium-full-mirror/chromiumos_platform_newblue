@@ -4,6 +4,11 @@
 
 
 /*
+ * Android API layer will queue up only this many work items at a time
+ */
+#define AAPI_NUM_OUTSTANDING_WORK_ITEMS     256
+
+/*
  * RFC layer will buffer this many bytes for connections without credit-based flow control
  */
 #define RFC_MAX_CREDITLESS_QUEUE            1024

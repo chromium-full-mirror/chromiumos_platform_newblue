@@ -7,24 +7,80 @@
 #include <hardware/bt_rc.h>
 #include <hardware/bt_hh.h>
 #include <hardware/bt_hl.h>
+#include <pthread.h>
 #include <stdlib.h>
+#include "workQueue.h"
 #include "android.h"
+#include "config.h"
 #include "log.h"
 
-static bt_callbacks_t mBtCbks;
 
 
 
-#define BT_PROFILE_HANDSFREE_ID "handsfree"
-#define BT_PROFILE_ADVANCED_AUDIO_ID "a2dp"
-#define BT_PROFILE_HEALTH_ID "health"
-#define BT_PROFILE_SOCKETS_ID "socket"
-#define BT_PROFILE_HIDHOST_ID "hidhost"
-#define BT_PROFILE_PAN_ID "pan"
-#define BT_PROFILE_GATT_ID "gatt"
-#define BT_PROFILE_AV_RC_ID "avrcp"
+
+struct aapiWorkItem {
+    uint8_t type;
+    union {
+        struct {
+            bt_state_t state;
+        } state;
+        struct properties {
+            bt_status_t status;
+            bt_bdaddr_t bd_addr;
+            int num_properties;
+            bt_property_t properties[];
+        } properties;
+        struct {
+            bt_bdaddr_t remote_bd_addr;
+            bt_bdname_t bd_name;
+            uint32_t cod;
+        } pinReq;
+        struct {
+            bt_bdaddr_t remote_bd_addr;
+            bt_bdname_t bd_name;
+            uint32_t cod;
+            bt_ssp_variant_t pairing_variant;
+            uint32_t pass_key;
+        } sspReq;
+        struct {
+            bt_status_t status;
+            bt_bdaddr_t remote_bd_addr;
+            uint32_t state;
+        } stateCbk;
+        struct {
+            uint16_t opcode;
+            uint8_t len;
+            uint8_t buf[];
+        } hciEvt;
+        struct {
+            bt_status_t status;
+            uint16_t num_packets;
+        } leTestEvt;
+    };
+};
+
+#define WT_ADAPTER_STATE_CHG    0
+#define WT_ADAPTER_PROPS        1
+#define WT_REMOTE_PROPS         2
+#define WT_DEV_DISCOVERED       3
+#define WT_DISC_STATE_CHG       4
+#define WT_PIN_REQ              5
+#define WT_SSP_REQ              6
+#define WT_BOND_STATE_CHG       7
+#define WT_ACL_STATE_CHG        8
+#define WT_DUT_EVT              9
+#define WT_LE_TEST_EVT          10
 
 
+
+
+
+
+
+
+/* our state */
+static pthread_t mWorker;
+static struct workQueue *mWorkQ;
 
 
 /*
@@ -393,6 +449,87 @@ static const void* btGetProfileIface(const char *profile_id)
 }
 
 /*
+ * FUNCTION: btWorker
+ * USE:      BT worker thread for callbacks to java
+ * PARAMS:   callbacks - the callbacks to the higher layer
+ * RETURN:   unused
+ * NOTES:
+ */
+static void* btWorker(void *callbacks)
+{
+    bt_callbacks_t *cbks = (bt_callbacks_t*)callbacks;
+    struct aapiWorkItem *wi;
+    int status;
+
+    pthread_setname_np(pthread_self(), "aapi_worker");
+    cbks->thread_evt_cb(ASSOCIATE_JVM);
+
+    while(1) {
+
+        status = workQueueGet(mWorkQ, (void**)&wi);
+
+        if (status)
+            break;
+
+        switch (wi->type) {
+        case WT_ADAPTER_STATE_CHG:
+            cbks->adapter_state_changed_cb(wi->state.state);
+            break;
+        case WT_ADAPTER_PROPS:
+            cbks->adapter_properties_cb(wi->properties.status, wi->properties.num_properties, wi->properties.properties);
+            break;
+        case WT_REMOTE_PROPS:
+            cbks->remote_device_properties_cb(wi->properties.status, &wi->properties.bd_addr, wi->properties.num_properties, wi->properties.properties);
+            break;
+        case WT_DEV_DISCOVERED:
+            cbks->device_found_cb(wi->properties.num_properties, wi->properties.properties);
+            break;
+        case WT_DISC_STATE_CHG:
+            cbks->discovery_state_changed_cb(wi->state.state);
+            break;
+        case WT_PIN_REQ:
+            cbks->pin_request_cb(&wi->pinReq.remote_bd_addr, &wi->pinReq.bd_name, wi->pinReq.cod);
+            break;
+        case WT_SSP_REQ:
+            cbks->ssp_request_cb(&wi->sspReq.remote_bd_addr,&wi->sspReq.bd_name, wi->sspReq.cod, wi->sspReq.pairing_variant, wi->sspReq.pass_key);
+            break;
+        case WT_BOND_STATE_CHG:
+            cbks->bond_state_changed_cb(wi->stateCbk.status, &wi->stateCbk.remote_bd_addr, wi->stateCbk.state);
+            break;
+        case WT_ACL_STATE_CHG:
+            cbks->acl_state_changed_cb(wi->stateCbk.status, &wi->stateCbk.remote_bd_addr, wi->stateCbk.state);
+            break;
+        case WT_DUT_EVT:
+            cbks->dut_mode_recv_cb(wi->hciEvt.opcode, wi->hciEvt.buf, wi->hciEvt.len);
+            break;
+        case WT_LE_TEST_EVT:
+            cbks->le_test_mode_cb(wi->leTestEvt.status, wi->leTestEvt.num_packets);
+            break;
+        default:
+            logw("unknown work item type %u\n", wi->type);
+            break;
+        }
+        free(wi);
+    }
+
+    cbks->thread_evt_cb(DISASSOCIATE_JVM);
+    logd("aapi thread exiting\n");
+    return NULL;
+}
+
+/*
+ * FUNCTION: btWorkQueueFreeItem
+ * USE:      Delete work items from the workQ on workQ deletion
+ * PARAMS:   wi - the work item to free
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void btWorkQueueFreeItem(void *wi)
+{
+    free(wi);
+}
+
+/*
  * FUNCTION: btInit
  * USE:      Init the stack (but not the chip), get callbacks
  * PARAMS:   callbacks - the callbacks to our user
@@ -401,7 +538,19 @@ static const void* btGetProfileIface(const char *profile_id)
  */
 static int btInit(bt_callbacks_t* callbacks)
 {
-    memcpy(&mBtCbks, callbacks, sizeof(mBtCbks));
+    static bt_callbacks_t cbks;
+
+    memcpy(&cbks, callbacks, sizeof(cbks));
+
+    mWorkQ = workQueueAlloc(AAPI_NUM_OUTSTANDING_WORK_ITEMS);
+    if (!mWorkQ)
+        return BT_STATUS_NOMEM;
+
+    if (pthread_create(&mWorker, NULL, btWorker, &cbks)) {
+        workQueueFree(mWorkQ, btWorkQueueFreeItem);
+        return BT_STATUS_FAIL;
+    }
+
     return 0;
 }
 
@@ -414,7 +563,9 @@ static int btInit(bt_callbacks_t* callbacks)
  */
 static void btCleanup(void)
 {
-    /* nothing here */
+    workQueueWakeAll(mWorkQ, 1);
+    pthread_join(mWorker, NULL);
+    workQueueFree(mWorkQ, btWorkQueueFreeItem);
 }
 
 /*
