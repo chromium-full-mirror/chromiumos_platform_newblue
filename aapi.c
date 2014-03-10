@@ -1,16 +1,9 @@
 #include <hardware/bluetooth.h>
-#include <hardware/bt_gatt.h>
-#include <hardware/bt_sock.h>
-#include <hardware/bt_pan.h>
-#include <hardware/bt_av.h>
-#include <hardware/bt_hf.h>
-#include <hardware/bt_rc.h>
-#include <hardware/bt_hh.h>
-#include <hardware/bt_hl.h>
 #include <pthread.h>
 #include <stdlib.h>
+#include "aapiSocket.h"
 #include "workQueue.h"
-#include "android.h"
+#include "aapi.h"
 #include "config.h"
 #include "log.h"
 
@@ -377,42 +370,6 @@ static int btDisable(void)
 }
 
 /*
- * FUNCTION: btSockListen
- * USE:      Listen for connections from a peer on a socket
- * PARAMS:   type - tocket type
- *           service_name - service name to advertise
- *           service_uuid - service uuid to advertise
- *           channel - channel number
- *           sock_fd - store socket's FD here
- *           flags - other relevant flags
- * RETURN:   bt_status_t
- * NOTES:
- */
-static bt_status_t btSockListen(btsock_type_t type, const char* service_name, const uint8_t* service_uuid, int channel, int* sock_fd, int flags)
-{
-    //TODO
-    return 0;
-}
-
-/*
- * FUNCTION: btSockConnect
- * USE:      Try to connect to a peer's matching listening socket
- * PARAMS:   bd_addr - peer address
- *           type - tocket type
- *           uuid - service uuid
- *           channel - channel number
- *           sock_fd - store socket's FD here
- *           flags - other relevant flags
- * RETURN:   bt_status_t
- * NOTES:
- */
-static bt_status_t btSockConnect(const bt_bdaddr_t *bd_addr, btsock_type_t type, const uint8_t* uuid, int channel, int* sock_fd, int flags)
-{
-    //TODO
-    return 0;
-}
-
-/*
  * FUNCTION: btGetProfileIface
  * USE:      Get a pointer to a particular profile's interface
  * PARAMS:   profile_id - the profile
@@ -421,16 +378,10 @@ static bt_status_t btSockConnect(const bt_bdaddr_t *bd_addr, btsock_type_t type,
  */
 static const void* btGetProfileIface(const char *profile_id)
 {
-    static const btsock_interface_t pSockets = {
-        .size = sizeof(btsock_interface_t),
-        .listen = btSockListen,
-        .connect = btSockConnect,
-    };
-
 //    if (!strcmp(profile_id, BT_PROFILE_HANDSFREE_ID))
 //        return &pHandsfree;
     if (!strcmp(profile_id, BT_PROFILE_SOCKETS_ID))
-        return &pSockets;
+        return aapiGetProfileIfaceSockets();
 //    if (!strcmp(profile_id, BT_PROFILE_PAN_ID))
 //        return &pPan;
 //    if (!strcmp(profile_id, BT_PROFILE_ADVANCED_AUDIO_ID))
