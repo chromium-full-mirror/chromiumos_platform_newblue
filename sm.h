@@ -4,10 +4,9 @@
 #include "types.h"
 
 
-#define SM_ENCRYPT_DATA_LEN      16
+#define SM_BLOCK_LEN      16
 
 
-void smEncrypt(uint8_t* dst, const uint8_t *src, const uint8_t *key);
 
 
 

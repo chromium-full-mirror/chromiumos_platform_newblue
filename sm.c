@@ -3,6 +3,8 @@
 #include "sm.h"
 
 
+/* fwd decls */
+static void smEncrypt(uint8_t* dst, const uint8_t *src, const uint8_t *key);
 
 
 
@@ -12,24 +14,165 @@
 
 
 
+/*
+ * FUNCTION: smCmacDo
+ * USE:      Perform the CMAC calculation
+ * PARAMS:   dst - where the store the result
+ *           macLen - how long of a digest do we want (in bytes)
+ *           msg - the message to digest
+ *           len - length of said message (in bytes)
+ *           k - th ekey to use
+ *           k1 - subkey 1 (from smCmacPrepare)
+ *           k2 - subkey 2 (from smCmacPrepare)
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void smCmacDo(uint8_t *dst, uint8_t macLen, const uint8_t *msg, uint32_t len, const uint8_t *k, const uint8_t *k1, const uint8_t *k2)
+{
+    uint32_t i, nblocks = len ? (len + SM_BLOCK_LEN - 1) / SM_BLOCK_LEN : 1;
+    uint8_t tmp1[SM_BLOCK_LEN] = {0,}, tmp2[SM_BLOCK_LEN], j, *in = tmp1, *out = tmp2, *swap;
 
+    for (i = 0; i < nblocks; i++) {
+        for(j = 0; j < len && j < SM_BLOCK_LEN; j++)
+            in[j] ^= *msg++;
+        len -= j;
+        if (!len) {
+            if (j == SM_BLOCK_LEN) {
+                for(j = 0; j < SM_BLOCK_LEN; j++)
+                    in[j] ^= *k1++;
+            } else {
+                in[j] ^= 0x80;
+                for(j = 0; j < SM_BLOCK_LEN; j++)
+                    in[j] ^= *k2++;
+            }
+        }
+        smEncrypt(out, in, k);
+        swap = in;
+        in = out;
+        out = swap;
+    }
+    while (macLen--)
+        *dst++ = *in++;
+}
 
+/*
+ * FUNCTION: smCmacPrepare
+ * USE:      Perform the pre-calculation of K1 & K2 for the CMAC
+ * PARAMS:   k1 - where to store k1
+ *           k2 - where to store k2
+ *           k - the k input value
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void smCmacPrepare(uint8_t *k1, uint8_t *k2, const uint8_t *k)
+{
+    uint8_t tmp[SM_BLOCK_LEN] = {0,}, *out = k1, i, j;
 
+    smEncrypt(k1, tmp, k);
+    for (i = 0; i < 2; i++) {
+        bool shiftOut;
+        shiftOut = !!(k1[0] & 0x80);
+        for (j = 0; j < 15; j++)
+            out[j] = (k1[j] << 1) | (k1[j + 1] >> 7);
+        out[15] = k1[15] << 1;
+        if (shiftOut)
+            out[15] ^= 0x87;
+        out = k2;
+    }
+}
 
+/*
+ * FUNCTION: smCalcKey
+ * USE:      Perform the calculation of a key
+ * PARAMS:   out - store the result here
+ *           k - the k value as per spec
+ *           p1 - the p1 value as per spec
+ *           p2 - the p2 calue as per spec
+ * RETURN:   NONE
+ * NOTES:    The SM docs call this the s1() function
+ */
+static void smCalcKey(uint8_t *out, const uint8_t *k, const uint8_t *r1, const uint8_t *r2)
+{
+    uint8_t t[SM_BLOCK_LEN];
+    uint8_t i;
 
+    for (i = 0; i < 8; i++) {
+        t[i + 0] = r1[i + 8];
+        t[i + 8] = r2[i + 8];
+    }
+    smEncrypt(out, t, k);
+}
 
+/*
+ * FUNCTION: smCalcConfVal
+ * USE:      Perform the calculation of the confirmation value
+ * PARAMS:   out - store the result here
+ *           k - the k value as per spec
+ *           r - the r value as per spec
+ *           pres - the pres value as per spec, only bottom 56 bit used
+ *           preq - the pres value as per spec, only bottom 56 bit used
+ *           iat - the iat value as per spec
+ *           ia - the ia value as per spec, only bottom 48 bits used
+ *           rat - the rat value as per spec
+ *           ra - the ra value as per spec, only bottom 48 bits used
+ * RETURN:   NONE
+ * NOTES:    The SM docs call this the c1() function
+ */
+static void smCalcConfVal(uint8_t* out, const uint8_t *k, const uint8_t *r, uint64_t pres, uint64_t preq, bool iat, uint64_t ia, bool rat, uint64_t ra)
+{
+    uint8_t p1[SM_BLOCK_LEN];
+    uint8_t p2[SM_BLOCK_LEN] = {0,};
+    uint8_t i;
 
+    /* create p1 */
+    for (i = 0; i < 7; i++) {
+        p1[6 - i] = pres;
+        p1[13 - i] = preq;
+        pres >>= 8;
+        preq >>= 8;
+    }
+    p1[14] = rat ? 1 : 0;
+    p1[15] = iat ? 1 : 0;
 
+    /* create p2 */
+    for (i = 0; i < 6; i++) {
+        p2[9 - i] = ia;
+        p2[15 - i] = ra;
+        ia >>= 8;
+        ra >>= 8;
+    }
 
+    /* p1 ^= r */
+    for (i = 0; i < SM_BLOCK_LEN; i++)
+        p1[i] ^= r[i];
 
+    /* out = e(k, p1) */
+    smEncrypt(out, p1, k);
 
+    /* p2 ^= out */
+    for (i = 0; i < SM_BLOCK_LEN; i++)
+        p2[i] ^= out[i];
 
+    /* out = e(k, p2) */
+    smEncrypt(out, p2, k);
+}
 
+/*
+ * FUNCTION: smAddressHash
+ * USE:      Perform 24bit->24bit hash for address resolution
+ * PARAMS:   r - the 24 bits to hash
+ *           key - the key
+ * RETURN:   the 24-bit hash
+ * NOTES:    The SM docs call this the ah() function
+ */
+static uint32_t smAddressHash(uint32_t r, const uint8_t *key)
+{
+    uint8_t in[SM_BLOCK_LEN] = {0,}, out[SM_BLOCK_LEN];
 
-
-
-
-
+    utilSetBE24(in + 13, r);
+    smEncrypt(out, in, key);
+    return utilGetBE24(out + 13);
+}
 
 /* a simple AES-128 implementation - we use it rarely enough that even an unoptimal version will do */
 
@@ -95,7 +238,7 @@ static uint8_t smEncryptMul(uint8_t vin, uint8_t by)
 
 static void smEncryptMixColumns(uint8_t *state)
 {
-    uint8_t i, j, k, ret[16];
+    uint8_t i, j, k, ret[SM_BLOCK_LEN];
     static const uint8_t matrix[] = {2,3,1,1,1,2,3,1,1,1,2,3,3,1,1,2};
 
     for (i = 0; i < 4; i++) {
@@ -106,7 +249,7 @@ static void smEncryptMixColumns(uint8_t *state)
         }
     }
 
-    for (i = 0; i <16; i++)
+    for (i = 0; i <SM_BLOCK_LEN; i++)
         state[i] = ret[i];
 }
 
@@ -149,7 +292,7 @@ static void smEncryptExpandKey(uint8_t *expanded, const uint8_t *key)
 }
 
 /*
- * FUNCTION: l2smEncrypt
+ * FUNCTION: smEncrypt
  * USE:      Perform an AES-128 encryption
  * PARAMS:   dst - palce to store result (SM_ENCRYPT_DATA_LEN bytes)
  *           src - the plaintext (SM_ENCRYPT_DATA_LEN bytes)
@@ -157,10 +300,10 @@ static void smEncryptExpandKey(uint8_t *expanded, const uint8_t *key)
  * RETURN:   NONE
  * NOTES:
  */
-void smEncrypt(uint8_t* dst, const uint8_t *src, const uint8_t *key)
+static void smEncrypt(uint8_t* dst, const uint8_t *src, const uint8_t *key)
 {
-    uint8_t expandedKey[176] = "aduihqd78q23hd78hqw78dhas8dha78dh8w7qgrw78qr c";
-    uint8_t state[16] = "23423dasdasdasd";
+    uint8_t expandedKey[176];
+    uint8_t state[SM_BLOCK_LEN];
     uint8_t i, j;
 
     for(i = 0; i < 4; i++)
@@ -173,13 +316,13 @@ void smEncrypt(uint8_t* dst, const uint8_t *src, const uint8_t *key)
     smEncryptAddRoundKey(state, expandedKey + 0);
 
     for (i = 1; i < 10; i++) {
-        smEncryptSubBytes(state, 16);
+        smEncryptSubBytes(state, SM_BLOCK_LEN);
         smEncryptShiftRows(state);
         smEncryptMixColumns(state);
         smEncryptAddRoundKey(state, expandedKey + i * 4);
     }
 
-    smEncryptSubBytes(state, 16);
+    smEncryptSubBytes(state, SM_BLOCK_LEN);
     smEncryptShiftRows(state);
     smEncryptAddRoundKey(state, expandedKey + i * 4);
 
