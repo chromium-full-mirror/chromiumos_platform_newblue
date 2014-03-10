@@ -12,7 +12,10 @@ typedef void (*vendorCbkChipUp)(void* cbkData, bool fw, bool up);
 typedef void (*vendorCbkRx)(void* cbkData, uint8_t typ, sg data);
 
 /* open the lib itself - done once ever */
-bool vendorOpen(bool logAll);
+bool vendorOpen(void);
+
+/* enable/disable logging */
+void vendorLogEnable(bool on);
 
 /* bring up the chip*/
 bool vendorUp(const uint8_t *addr, vendorCbkChipUp chipUpCbk, vendorCbkRx dataRxCbk, void *chipCbkData);

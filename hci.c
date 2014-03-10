@@ -1239,17 +1239,16 @@ success:
  * FUNCTION: hciUp
  * USE:      Bring up HCI (comms to bt chip)
  * PARAMS:   addr - the BT addr
- *           logAll - log all traffic?
  * RETURN:   true on success, false else
  * NOTES:    may take a while
  */
-bool hciUp(const uint8_t *addr, bool logAll)
+bool hciUp(const uint8_t *addr)
 {
     int ret;
 
 
     logd("Vendor open\n");
-    if (!vendorOpen(logAll)) {
+    if (!vendorOpen()) {
         loge("Failed to open vendor lib\n");
         goto out_lib_open;
     }

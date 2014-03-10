@@ -422,6 +422,18 @@ static void* vendorWorker(void *pipeFdP)
 }
 
 /*
+ * FUNCTION: vendorLogEnable
+ * USE:      Enable/disable logging
+ * PARAMS:   on - enable logging?
+ * RETURN:   NONE
+ * NOTES:
+ */
+void vendorLogEnable(bool on)
+{
+    mLog = on;
+}
+
+/*
  * FUNCTION: vendorOpen
  * USE:      Open the vendor library
  * PARAMS:   NONE
@@ -429,7 +441,7 @@ static void* vendorWorker(void *pipeFdP)
  * NOTES:    Only needs to be done once.
  *           Keep it open from then on.
  */
-bool vendorOpen(bool logAll)
+bool vendorOpen(void)
 {
     if (mVendorLibHandle) {
         loge("Vendor lib handle not null at open time\n");
@@ -442,7 +454,6 @@ bool vendorOpen(bool logAll)
     mFdAclOut = -1;
     mCmdCompleteWaiting = 0;
 
-    mLog = logAll;
 
     mVendorLibHandle = dlopen(BT_VENDOR_LIB_NAME, 0);
     if (!mVendorLibHandle) {

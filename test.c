@@ -234,14 +234,10 @@ int main(int argc, char** argv)
     static const uint8_t mac[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
     const bool vTrue = true;
     const bool vFalse = false;
-    bool logAll = false;
     unsigned i;
     sem_t sem;
     uniq_t h;
 
-#ifdef TEST_DEBUG
-    logAll = true;
-#endif
 
     fprintf(stderr, "NewBlue test\n");
     logi("LOG UP\n");
@@ -251,7 +247,11 @@ int main(int argc, char** argv)
         return -1;
     }
 
-    if (!hciUp(mac, logAll)) {
+#ifdef TEST_DEBUG
+    vendorLogEnable(true);
+#endif
+
+    if (!hciUp(mac)) {
         loge("HCI up fail\n");
         return -1;
     }
