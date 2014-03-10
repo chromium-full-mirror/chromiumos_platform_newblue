@@ -15,7 +15,7 @@ struct aapiWorkItem {
     uint8_t type;
     union {
         struct {
-            bt_state_t state;
+            bool on;
         } state;
         struct properties {
             bt_status_t status;
@@ -424,7 +424,7 @@ static void* btWorker(void *callbacks)
 
         switch (wi->type) {
         case WT_ADAPTER_STATE_CHG:
-            cbks->adapter_state_changed_cb(wi->state.state);
+            cbks->adapter_state_changed_cb(wi->state.on ? BT_STATE_ON : BT_STATE_OFF);
             break;
         case WT_ADAPTER_PROPS:
             cbks->adapter_properties_cb(wi->properties.status, wi->properties.num_properties, wi->properties.properties);
@@ -436,7 +436,7 @@ static void* btWorker(void *callbacks)
             cbks->device_found_cb(wi->properties.num_properties, wi->properties.properties);
             break;
         case WT_DISC_STATE_CHG:
-            cbks->discovery_state_changed_cb(wi->state.state);
+            cbks->discovery_state_changed_cb(wi->state.on ? BT_DISCOVERY_STARTED : BT_DISCOVERY_STOPPED);
             break;
         case WT_PIN_REQ:
             cbks->pin_request_cb(&wi->pinReq.remote_bd_addr, &wi->pinReq.bd_name, wi->pinReq.cod);
@@ -611,3 +611,278 @@ extern hw_module_t HAL_MODULE_INFO_SYM = {
     .author = "dmitrygr@",
     .methods = &mBtMethods,
 };
+
+
+/*
+ * FUNCTION: aapiWorkItemAlloc
+ * USE:      Allocate a work item
+ * PARAMS:   type - work item type
+ *           extraSz - how many extra bytes to allocate
+ * RETURN:   the pointer on success, else NULL
+ * NOTES:    will print an error msg on error
+ */
+static struct aapiWorkItem* aapiWorkItemAlloc(uint8_t type, uint32_t extraSz)
+{
+    struct aapiWorkItem *wi = calloc(1, sizeof(struct aapiWorkItem) + extraSz);
+    if (wi)
+        wi->type = type;
+    else
+        loge("Failed to allocate work item type %u (+%ub)\n", type, extraSz);
+
+    return wi;
+}
+
+/*
+ * FUNCTION: aapiWorkItemEnqueue
+ * USE:      Enqueue a work item
+ * PARAMS:   wi - the work item
+ * RETURN:   NONE
+ * NOTES:    either enqueues or frees it. an error msg will be printed if needed
+ */
+static void aapiWorkItemEnqueue(struct aapiWorkItem *wi)
+{
+    if (workQueuePut(mWorkQ, wi))
+        return;
+    loge("Failed to enqueue work item type %u\n", wi->type);
+    btWorkQueueFreeItem(wi);
+}
+
+/*
+ * FUNCTION: aapiAdapterStateChanged
+ * USE:      Notify android about BT adapter going up or coming down
+ * PARAMS:   on - up or down?
+ * RETURN:   NONE
+ * NOTES:
+ */
+void aapiAdapterStateChanged(bool on)
+{
+    struct aapiWorkItem* wi = aapiWorkItemAlloc(WT_ADAPTER_STATE_CHG, 0);
+
+    if (!wi)
+        return;
+
+    wi->state.on = on;
+    aapiWorkItemEnqueue(wi);
+}
+
+/*
+ * FUNCTION: aapiAdapterProperties
+ * USE:      Notify android about BT adapter properties
+ * PARAMS:   status - the status to send
+ *           num_properties - how many properties we're sending
+ *           properties - the properties to send (a copy is made)
+ * RETURN:   NONE
+ * NOTES:
+ */
+void aapiAdapterProperties(bt_status_t status, int num_properties, const bt_property_t *properties)
+{
+    uint32_t extraSz = sizeof(bt_property_t[num_properties]);
+    struct aapiWorkItem* wi = aapiWorkItemAlloc(WT_ADAPTER_PROPS, extraSz);
+
+    if (!wi)
+        return;
+
+    wi->properties.status = status;
+    wi->properties.num_properties = num_properties;
+    memcpy(wi->properties.properties, properties, extraSz);
+    aapiWorkItemEnqueue(wi);
+}
+
+/*
+ * FUNCTION: aapiRemoteDevProperties
+ * USE:      Notify android about remote device properties
+ * PARAMS:   status - the status to send
+ *           bd_addr - address of said device
+ *           num_properties - how many properties we're sending
+ *           properties - the properties to send (a copy is made)
+ * RETURN:   NONE
+ * NOTES:
+ */
+void aapiRemoteDevProperties(bt_status_t status, const bt_bdaddr_t *bd_addr, int num_properties, const bt_property_t *properties)
+{
+    uint32_t extraSz = sizeof(bt_property_t[num_properties]);
+    struct aapiWorkItem* wi = aapiWorkItemAlloc(WT_REMOTE_PROPS, extraSz);
+
+    if (!wi)
+        return;
+
+    wi->properties.status = status;
+    wi->properties.num_properties = num_properties;
+    memcpy(&wi->properties.bd_addr, bd_addr, sizeof(wi->properties.bd_addr));
+    memcpy(wi->properties.properties, properties, extraSz);
+    aapiWorkItemEnqueue(wi);
+}
+
+/*
+ * FUNCTION: aapiDevDiscoveredCbk
+ * USE:      Notify android about a discovered device
+ * PARAMS:   num_properties - how many properties we're sending
+ *           properties - the properties to send (a copy is made)
+ * RETURN:   NONE
+ * NOTES:
+ */
+void aapiDevDiscoveredCbk(int num_properties, const bt_property_t *properties)
+{
+    uint32_t extraSz = sizeof(bt_property_t[num_properties]);
+    struct aapiWorkItem* wi = aapiWorkItemAlloc(WT_DEV_DISCOVERED, extraSz);
+
+    if (!wi)
+        return;
+
+    wi->properties.num_properties = num_properties;
+    memcpy(wi->properties.properties, properties, extraSz);
+    aapiWorkItemEnqueue(wi);
+}
+
+/*
+ * FUNCTION: aapiDiscoveryStateChanged
+ * USE:      Notify android about BT adapter starting or stopping discovery
+ * PARAMS:   on - start or stop?
+ * RETURN:   NONE
+ * NOTES:
+ */
+void aapiDiscoveryStateChanged(bool on)
+{
+    struct aapiWorkItem* wi = aapiWorkItemAlloc(WT_DISC_STATE_CHG, 0);
+
+    if (!wi)
+        return;
+
+    wi->state.on = on;
+    aapiWorkItemEnqueue(wi);
+}
+
+/*
+ * FUNCTION: aapiPinReqCbk
+ * USE:      Notify android about a need for PIN entry UI
+ * PARAMS:   remote_bd_addr - remote device address (a copy is made)
+ *           bd_name - remote device name (a copy is made)
+ *           devCls - remote device class
+ * RETURN:   NONE
+ * NOTES:
+ */
+void aapiPinReqCbk(const bt_bdaddr_t *remote_bd_addr, const bt_bdname_t *bd_name, uint32_t devCls)
+{
+    struct aapiWorkItem* wi = aapiWorkItemAlloc(WT_PIN_REQ, 0);
+
+    if (!wi)
+        return;
+
+    wi->pinReq.cod = devCls;
+    memcpy(&wi->pinReq.remote_bd_addr, remote_bd_addr, sizeof(wi->pinReq.remote_bd_addr));
+    memcpy(&wi->pinReq.bd_name, bd_name, sizeof(wi->pinReq.bd_name));
+    aapiWorkItemEnqueue(wi);
+}
+
+/*
+ * FUNCTION: aapiSspReqCbk
+ * USE:      Notify android about a need for SSP pairing UI
+ * PARAMS:   remote_bd_addr - remote device address (a copy is made)
+ *           bd_name - remote device name (a copy is made)
+ *           devCls - remote device class
+ *           pairing_variant - pairing typ requested
+ *           pass_key - the passkey to display, if relevant
+ * RETURN:   NONE
+ * NOTES:
+ */
+void aapiSspReqCbk(const bt_bdaddr_t *remote_bd_addr, const bt_bdname_t *bd_name, uint32_t devCls, bt_ssp_variant_t pairing_variant, uint32_t pass_key)
+{
+    struct aapiWorkItem* wi = aapiWorkItemAlloc(WT_SSP_REQ, 0);
+
+    if (!wi)
+        return;
+
+    wi->sspReq.cod = devCls;
+    wi->sspReq.pairing_variant = pairing_variant;
+    wi->sspReq.pass_key = pass_key;
+    memcpy(&wi->sspReq.remote_bd_addr, remote_bd_addr, sizeof(wi->sspReq.remote_bd_addr));
+    memcpy(&wi->sspReq.bd_name, bd_name, sizeof(wi->sspReq.bd_name));
+    aapiWorkItemEnqueue(wi);
+}
+
+/*
+ * FUNCTION: aapiBondStateChangedCbk
+ * USE:      Notify android about bonding changes
+ * PARAMS:   status - the atatus
+ *           remote_bd_addr - remote device address (a copy is made)
+ *           state - what happened to the bond
+ * RETURN:   NONE
+ * NOTES:
+ */
+void aapiBondStateChangedCbk(bt_status_t status, const bt_bdaddr_t *remote_bd_addr, bt_bond_state_t state)
+{
+    struct aapiWorkItem* wi = aapiWorkItemAlloc(WT_BOND_STATE_CHG, 0);
+
+    if (!wi)
+        return;
+
+    wi->stateCbk.status = status;
+    wi->stateCbk.state = state;
+    memcpy(&wi->stateCbk.remote_bd_addr, remote_bd_addr, sizeof(wi->stateCbk.remote_bd_addr));
+    aapiWorkItemEnqueue(wi);
+}
+
+/*
+ * FUNCTION: aapiAclStateChanged
+ * USE:      Notify android about an ACL link being established
+ * PARAMS:   status - the atatus
+ *           remote_bd_addr - remote device address (a copy is made)
+ *           state - what happened to the bond
+ * RETURN:   NONE
+ * NOTES:
+ */
+void aapiAclStateChanged(bt_status_t status, const bt_bdaddr_t *remote_bd_addr, bt_acl_state_t state)
+{
+    struct aapiWorkItem* wi = aapiWorkItemAlloc(WT_ACL_STATE_CHG, 0);
+
+    if (!wi)
+        return;
+
+    wi->stateCbk.status = status;
+    wi->stateCbk.state = state;
+    memcpy(&wi->stateCbk.remote_bd_addr, remote_bd_addr, sizeof(wi->stateCbk.remote_bd_addr));
+    aapiWorkItemEnqueue(wi);
+}
+
+/*
+ * FUNCTION: aapiDutModeEventCbk
+ * USE:      Notify android about an event in response to a DUT-mode command
+ * PARAMS:   opcode - the command opcode
+ *           buf - the reply buffer (a copy is made)
+ *           len - length of said buffer
+ * RETURN:   NONE
+ * NOTES:
+ */
+void aapiDutModeEventCbk(uint16_t opcode, const uint8_t *buf, uint8_t len)
+{
+    struct aapiWorkItem* wi = aapiWorkItemAlloc(WT_DUT_EVT, len);
+
+    if (!wi)
+        return;
+
+    wi->hciEvt.opcode = opcode;
+    wi->hciEvt.len = len;
+    memcpy(&wi->hciEvt.buf, buf, len);
+    aapiWorkItemEnqueue(wi);
+}
+
+/*
+ * FUNCTION: aapiLeTestModeEventCbk
+ * USE:      Notify android about an event in response to a LE test mode commands
+ * PARAMS:   status - result of command
+ *           num_packets - num_packets field from command complete event, if command was "end test"
+ * RETURN:   NONE
+ * NOTES:
+ */
+void aapiLeTestModeEventCbk(bt_status_t status, uint16_t num_packets)
+{
+    struct aapiWorkItem* wi = aapiWorkItemAlloc(WT_LE_TEST_EVT, 0);
+
+    if (!wi)
+        return;
+
+    wi->leTestEvt.status = status;
+    wi->leTestEvt.num_packets = num_packets;
+    aapiWorkItemEnqueue(wi);
+}
+
