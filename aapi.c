@@ -3,8 +3,10 @@
 #include <stdlib.h>
 #include "aapiSocket.h"
 #include "workQueue.h"
-#include "aapi.h"
 #include "config.h"
+#include "l2cap.h"
+#include "aapi.h"
+#include "hci.h"
 #include "log.h"
 
 
@@ -352,8 +354,30 @@ static int aapiGetAdapterProperties(void)
  */
 static int aapiEnable(void)
 {
-    //TODO
-    return 0;
+    uint8_t addr[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
+    int ret;
+
+    logd("AAPI: enable\n");
+    if (!hciUp(addr)) {
+        loge("HCI up failed\n");
+        goto fail_hci;
+    }
+
+    ret = l2cInit();
+    if (ret) {
+        loge("L2C up failed\n");
+        goto fail_l2c;
+    }
+
+    /* more anble here if needed */
+
+    return BT_STATUS_SUCCESS;
+
+fail_l2c:
+    hciDown();
+
+fail_hci:
+    return BT_STATUS_FAIL;
 }
 
 /*
@@ -365,7 +389,10 @@ static int aapiEnable(void)
  */
 static int aapiDisable(void)
 {
-    //TODO
+    logd("AAPI: disable\n");
+
+    l2cDeinit();
+    hciDown();
     return 0;
 }
 
