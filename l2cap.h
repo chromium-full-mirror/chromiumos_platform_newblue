@@ -21,6 +21,7 @@ typedef uniq_t l2c_handle_t; /* a 0-valued handle is invalid and indicates error
 
 /* call this to perform one-time init of l2cap */
 int l2cInit(void);
+void l2cDeinit(void);
 
 
 #define L2C_TX_ACCEPTED      0 /* data will be sent if connection remains - done */

@@ -4725,7 +4725,7 @@ static void l2cAclLinkDownInt(struct l2cAclConn *aclConn, bool tellOtherSide)
  * FUNCTION: l2cAclLinkDown
  * USE:      Called when a new ACL link goes down
  * PARAMS:   aclConn - the conection ID
- * RETURN:   NONE
+ * RETURN:   NONEI
  * NOTES:
  */
 void l2cAclLinkDown(hci_conn_t aclConnID)
@@ -4765,7 +4765,21 @@ void l2cAclLinkEncrChange(hci_conn_t aclConnID, bool isEncrypted)
     pthread_mutex_unlock(&mConnsLock);
 }
 
+/*
+ * FUNCTION: l2cDeinit
+ * USE:      Unilaterally (and quickly) close l2cap
+ * PARAMS:   NONE
+ * RETURN:   NONE
+ * NOTES:    the other side never gets to know what hit it
+ */
+void l2cDeinit(void)
+{
+    pthread_mutex_lock(&mConnsLock);
+    while (mAclConns)
+        l2cAclLinkDownInt(mAclConns, false);
 
+    pthread_mutex_unlock(&mConnsLock);
+}
 
 
 

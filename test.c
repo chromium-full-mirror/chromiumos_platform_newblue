@@ -378,6 +378,7 @@ int main(int argc, char** argv)
 
 
     logi("bringing down\n");
+    l2cDeinit();
     hciDown();
 
     logi("done\n");
