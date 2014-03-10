@@ -77,20 +77,20 @@ static struct workQueue *mWorkQ;
 
 
 /*
- * FUNCTION: btHciLogEnable
+ * FUNCTION: aapiHciLogEnable
  * USE:      Enable/disable HCI logging
  * PARAMS:   enable - on or off?
  * RETURN:   bt_status_t
  * NOTES:
  */
-static int btHciLogEnable(uint8_t enable)
+static int aapiHciLogEnable(uint8_t enable)
 {
     //TODO
     return 0;
 }
 
 /*
- * FUNCTION: btLeTestMode
+ * FUNCTION: aapiLeTestMode
  * USE:      Send an LE test command
  * PARAMS:   opcode - the opcode
  *           buf - the command params
@@ -99,14 +99,14 @@ static int btHciLogEnable(uint8_t enable)
  * NOTES:    LE_Receiver_Test, LE_Transmitter_Test, LE_Test_End commands only
  *           Does not require DUT mode enabled (?)
  */
-static int btLeTestMode(uint16_t opcode, uint8_t *buf, uint8_t len)
+static int aapiLeTestMode(uint16_t opcode, uint8_t *buf, uint8_t len)
 {
     //TODO
     return 0;
 }
 
 /*
- * FUNCTION: btDutSend
+ * FUNCTION: aapiDutSend
  * USE:      Send any command to the controller
  * PARAMS:   opcode - the opcode
  *           buf - the command params
@@ -114,27 +114,27 @@ static int btLeTestMode(uint16_t opcode, uint8_t *buf, uint8_t len)
  * RETURN:   bt_status_t
  * NOTES:    intended only for vendor test commands, only valid after DUT mode enabled by .dut_mode_configure
  */
-static int btDutSend(uint16_t opcode, uint8_t *buf, uint8_t len)
+static int aapiDutSend(uint16_t opcode, uint8_t *buf, uint8_t len)
 {
     //TODO
     return 0;
 }
 
 /*
- * FUNCTION: btDutEnable
+ * FUNCTION: aapiDutEnable
  * USE:      Enable/disable DUT mode (used for debugging/testing)
  * PARAMS:   enable - on or off?
  * RETURN:   bt_status_t
  * NOTES:
  */
-static int btDutEnable(uint8_t enable)
+static int aapiDutEnable(uint8_t enable)
 {
     //TODO
     return 0;
 }
 
 /*
- * FUNCTION: btSspReply
+ * FUNCTION: aapiSspReply
  * USE:      SSP pairing
  * PARAMS:   bd_addr - the peer adress
  *           variant- pairing type being used
@@ -143,7 +143,7 @@ static int btDutEnable(uint8_t enable)
  * RETURN:   bt_status_t
  * NOTES:
  */
-static int btSspReply(const bt_bdaddr_t *bd_addr, bt_ssp_variant_t variant, uint8_t accept, uint32_t passkey)
+static int aapiSspReply(const bt_bdaddr_t *bd_addr, bt_ssp_variant_t variant, uint8_t accept, uint32_t passkey)
 {
     /** BT SSP Reply - Just Works, Numeric Comparison and Passkey
      * passkey shall be zero for BT_SSP_VARIANT_PASSKEY_COMPARISON &
@@ -155,7 +155,7 @@ static int btSspReply(const bt_bdaddr_t *bd_addr, bt_ssp_variant_t variant, uint
 }
 
 /*
- * FUNCTION: btPinReply
+ * FUNCTION: aapiPinReply
  * USE:      Legacy pairing
  * PARAMS:   bd_addr - the peer adress
  *           accept - pairing was cancelled by user
@@ -164,7 +164,7 @@ static int btSspReply(const bt_bdaddr_t *bd_addr, bt_ssp_variant_t variant, uint
  * RETURN:   bt_status_t
  * NOTES:
  */
-static int btPinReply(const bt_bdaddr_t *bd_addr, uint8_t accept, uint8_t pin_len, bt_pin_code_t *pin_code)
+static int aapiPinReply(const bt_bdaddr_t *bd_addr, uint8_t accept, uint8_t pin_len, bt_pin_code_t *pin_code)
 {
     /** If accept==FALSE, then pin_len and pin_code shall be 0x0 */
     //TODO
@@ -172,211 +172,211 @@ static int btPinReply(const bt_bdaddr_t *bd_addr, uint8_t accept, uint8_t pin_le
 }
 
 /*
- * FUNCTION: btBondCreate
+ * FUNCTION: aapiBondCreate
  * USE:      Start a pairing process
  * PARAMS:   bd_addr - the peer adress
  * RETURN:   bt_status_t
  * NOTES:
  */
-static int btBondCreate(const bt_bdaddr_t *bd_addr)
+static int aapiBondCreate(const bt_bdaddr_t *bd_addr)
 {
     //TODO
     return 0;
 }
 
 /*
- * FUNCTION: btBondRemove
+ * FUNCTION: aapiBondRemove
  * USE:      Delete pairing info
  * PARAMS:   bd_addr - the peer adress
  * RETURN:   bt_status_t
  * NOTES:
  */
-static int btBondRemove(const bt_bdaddr_t *bd_addr)
+static int aapiBondRemove(const bt_bdaddr_t *bd_addr)
 {
     //TODO
     return 0;
 }
 
 /*
- * FUNCTION: btBondCancel
+ * FUNCTION: aapiBondCancel
  * USE:      Cancel a pairing process
  * PARAMS:   bd_addr - the peer adress
  * RETURN:   bt_status_t
  * NOTES:
  */
-static int btBondCancel(const bt_bdaddr_t *bd_addr)
+static int aapiBondCancel(const bt_bdaddr_t *bd_addr)
 {
     //TODO
     return 0;
 }
 
 /*
- * FUNCTION: btDiscoveryStart
+ * FUNCTION: aapiDiscoveryStart
  * USE:      Start a discovery
  * PARAMS:   NONE
  * RETURN:   bt_status_t
  * NOTES:
  */
-static int btDiscoveryStart(void)
+static int aapiDiscoveryStart(void)
 {
     //TODO
     return 0;
 }
 
 /*
- * FUNCTION: btDiscoveryStop
+ * FUNCTION: aapiDiscoveryStop
  * USE:      Cancel an ongoing discovery
  * PARAMS:   NONE
  * RETURN:   bt_status_t
  * NOTES:
  */
-static int btDiscoveryStop(void)
+static int aapiDiscoveryStop(void)
 {
     //TODO
     return 0;
 }
 
 /*
- * FUNCTION: btGetRemoteServices
+ * FUNCTION: aapiGetRemoteServices
  * USE:      Find serives at the peer
  * PARAMS:   remote_addr - the device
  * RETURN:   bt_status_t
  * NOTES:
  */
-static int btGetRemoteServices(bt_bdaddr_t *remote_addr)
+static int aapiGetRemoteServices(bt_bdaddr_t *remote_addr)
 {
     //TODO
     return 0;
 }
 
 /*
- * FUNCTION: btGetRemoteServiceRecord
+ * FUNCTION: aapiGetRemoteServiceRecord
  * USE:      Find and retrieve a service record from a peer
  * PARAMS:   remote_addr - the device
  *           uuid - the UUID to search for
  * RETURN:   bt_status_t
  * NOTES:
  */
-static int btGetRemoteServiceRecord(bt_bdaddr_t *remote_addr, bt_uuid_t *uuid)
+static int aapiGetRemoteServiceRecord(bt_bdaddr_t *remote_addr, bt_uuid_t *uuid)
 {
     //TODO
     return 0;
 }
 
 /*
- * FUNCTION: btGetRemoteDevProperties
+ * FUNCTION: aapiGetRemoteDevProperties
  * USE:      Get all of a remote device's properties
  * PARAMS:   remote_addr - the device
  * RETURN:   bt_status_t
  * NOTES:
  */
-static int btGetRemoteDevProperties(bt_bdaddr_t *remote_addr)
+static int aapiGetRemoteDevProperties(bt_bdaddr_t *remote_addr)
 {
     //TODO
     return 0;
 }
 
 /*
- * FUNCTION: btGetRemoteDevProperty
+ * FUNCTION: aapiGetRemoteDevProperty
  * USE:      Get a remote device's property
  * PARAMS:   remote_addr - the device
  *           type - the property to get
  * RETURN:   bt_status_t
  * NOTES:
  */
-static int btGetRemoteDevProperty(bt_bdaddr_t *remote_addr, bt_property_type_t type)
+static int aapiGetRemoteDevProperty(bt_bdaddr_t *remote_addr, bt_property_type_t type)
 {
     //TODO
     return 0;
 }
 
 /*
- * FUNCTION: btSetRemoteDevProperty
+ * FUNCTION: aapiSetRemoteDevProperty
  * USE:      Set a remote device's property
  * PARAMS:   remote_addr - the device
  *           property - the property to set
  * RETURN:   bt_status_t
  * NOTES:
  */
-static int btSetRemoteDevProperty(bt_bdaddr_t *remote_addr, const bt_property_t *property)
+static int aapiSetRemoteDevProperty(bt_bdaddr_t *remote_addr, const bt_property_t *property)
 {
     //TODO
     return 0;
 }
 
 /*
- * FUNCTION: btSetAdapterProperty
+ * FUNCTION: aapiSetAdapterProperty
  * USE:      Set a Bluetooth Adapter property
  * PARAMS:   property - the property to set
  * RETURN:   bt_status_t
  * NOTES:
  */
-static int btSetAdapterProperty(const bt_property_t *property)
+static int aapiSetAdapterProperty(const bt_property_t *property)
 {
     //TODO
     return 0;
 }
 
 /*
- * FUNCTION: btGetAdapterProperty
+ * FUNCTION: aapiGetAdapterProperty
  * USE:      Get a Bluetooth Adapter property
  * PARAMS:   type - the property to get
  * RETURN:   bt_status_t
  * NOTES:
  */
-static int btGetAdapterProperty(bt_property_type_t type)
+static int aapiGetAdapterProperty(bt_property_type_t type)
 {
     //TODO
     return 0;
 }
 
 /*
- * FUNCTION: btGetAdapterProperties
+ * FUNCTION: aapiGetAdapterProperties
  * USE:      Get all Bluetooth Adapter properties at init
  * PARAMS:   NONE
  * RETURN:   bt_status_t
  * NOTES:
  */
-static int btGetAdapterProperties(void)
+static int aapiGetAdapterProperties(void)
 {
     //TODO
     return 0;
 }
 
 /*
- * FUNCTION: btEnable
+ * FUNCTION: aapiEnable
  * USE:      Enable BT
  * PARAMS:   NONE
  * RETURN:   bt_status_t
  * NOTES:
  */
-static int btEnable(void)
+static int aapiEnable(void)
 {
     //TODO
     return 0;
 }
 
 /*
- * FUNCTION: btDisable
+ * FUNCTION: aapiDisable
  * USE:      Disable BT
  * PARAMS:   NONE
  * RETURN:   bt_status_t
  * NOTES:
  */
-static int btDisable(void)
+static int aapiDisable(void)
 {
     //TODO
     return 0;
 }
 
 /*
- * FUNCTION: btGetProfileIface
+ * FUNCTION: aapiGetProfileIface
  * USE:      Get a pointer to a particular profile's interface
  * PARAMS:   profile_id - the profile
  * RETURN:   bt_status_t
  * NOTES:
  */
-static const void* btGetProfileIface(const char *profile_id)
+static const void* aapiGetProfileIface(const char *profile_id)
 {
 //    if (!strcmp(profile_id, BT_PROFILE_HANDSFREE_ID))
 //        return &pHandsfree;
@@ -400,7 +400,7 @@ static const void* btGetProfileIface(const char *profile_id)
 }
 
 /*
- * FUNCTION: btWorker
+ * FUNCTION: aapiWorker
  * USE:      BT worker thread for callbacks to java
  * PARAMS:   callbacks - the callbacks to the higher layer
  * RETURN:   unused
@@ -469,7 +469,7 @@ static void* btWorker(void *callbacks)
 }
 
 /*
- * FUNCTION: btWorkQueueFreeItem
+ * FUNCTION: aapiWorkQueueFreeItem
  * USE:      Delete work items from the workQ on workQ deletion
  * PARAMS:   wi - the work item to free
  * RETURN:   NONE
@@ -481,13 +481,13 @@ static void btWorkQueueFreeItem(void *wi)
 }
 
 /*
- * FUNCTION: btInit
+ * FUNCTION: aapiInit
  * USE:      Init the stack (but not the chip), get callbacks
  * PARAMS:   callbacks - the callbacks to our user
  * RETURN:   bt_status_t
  * NOTES:    only stack-level init here (aka none)
  */
-static int btInit(bt_callbacks_t* callbacks)
+static int aapiInit(bt_callbacks_t* callbacks)
 {
     static bt_callbacks_t cbks;
 
@@ -506,13 +506,13 @@ static int btInit(bt_callbacks_t* callbacks)
 }
 
 /*
- * FUNCTION: btCleanup
+ * FUNCTION: aapiCleanup
  * USE:      Cleanup the stack and prepare for unloading
  * PARAMS:   NONE
  * RETURN:   NONE
  * NOTES:
  */
-static void btCleanup(void)
+static void aapiCleanup(void)
 {
     workQueueWakeAll(mWorkQ, 1);
     pthread_join(mWorker, NULL);
@@ -520,53 +520,53 @@ static void btCleanup(void)
 }
 
 /*
- * FUNCTION: btGetBtIface
+ * FUNCTION: aapiGetBtIface
  * USE:      Return the bt_interface_t struct full of ways to call us
  * PARAMS:   NONE
  * RETURN:   the bt_interface_t struct
  * NOTES:    no init here
  */
-static const bt_interface_t* btGetBtIface(void)
+static const bt_interface_t* aapiGetBtIface(void)
 {
     static const bt_interface_t iface = {
         .size = sizeof(bt_interface_t),
-        .init = btInit,
-        .cleanup = btCleanup,
-        .enable = btEnable,
-        .disable = btDisable,
-        .get_adapter_properties = btGetAdapterProperties,
-        .get_adapter_property = btGetAdapterProperty,
-        .set_adapter_property = btSetAdapterProperty,
-        .get_remote_device_properties = btGetRemoteDevProperties,
-        .get_remote_device_property = btGetRemoteDevProperty,
-        .set_remote_device_property = btSetRemoteDevProperty,
-        .get_remote_service_record = btGetRemoteServiceRecord,
-        .get_remote_services = btGetRemoteServices,
-        .start_discovery = btDiscoveryStart,
-        .cancel_discovery = btDiscoveryStop,
-        .create_bond = btBondCreate,
-        .remove_bond = btBondRemove,
-        .cancel_bond = btBondCancel,
-        .pin_reply = btPinReply,
-        .ssp_reply = btSspReply,
-        .get_profile_interface = btGetProfileIface,
-        .dut_mode_configure = btDutEnable,
-        .dut_mode_send = btDutSend,
-        .le_test_mode = btLeTestMode,
-        .config_hci_snoop_log = btHciLogEnable,
+        .init = aapiInit,
+        .cleanup = aapiCleanup,
+        .enable = aapiEnable,
+        .disable = aapiDisable,
+        .get_adapter_properties = aapiGetAdapterProperties,
+        .get_adapter_property = aapiGetAdapterProperty,
+        .set_adapter_property = aapiSetAdapterProperty,
+        .get_remote_device_properties = aapiGetRemoteDevProperties,
+        .get_remote_device_property = aapiGetRemoteDevProperty,
+        .set_remote_device_property = aapiSetRemoteDevProperty,
+        .get_remote_service_record = aapiGetRemoteServiceRecord,
+        .get_remote_services = aapiGetRemoteServices,
+        .start_discovery = aapiDiscoveryStart,
+        .cancel_discovery = aapiDiscoveryStop,
+        .create_bond = aapiBondCreate,
+        .remove_bond = aapiBondRemove,
+        .cancel_bond = aapiBondCancel,
+        .pin_reply = aapiPinReply,
+        .ssp_reply = aapiSspReply,
+        .get_profile_interface = aapiGetProfileIface,
+        .dut_mode_configure = aapiDutEnable,
+        .dut_mode_send = aapiDutSend,
+        .le_test_mode = aapiLeTestMode,
+        .config_hci_snoop_log = aapiHciLogEnable,
     };
 
     return &iface;
 }
 
 /*
- * FUNCTION: btClose
+ * FUNCTION: aapiClose
  * USE:      Module close function
  * PARAMS:   device - our bluetooth_device_t
  * RETURN:   0 on success
  * NOTES:    only module-level cleanup here (aka: none)
  */
-static int btClose(struct hw_device_t* device)
+static int aapiClose(struct hw_device_t* device)
 {
     bluetooth_device_t *btd = (bluetooth_device_t*)device;
 
@@ -575,7 +575,7 @@ static int btClose(struct hw_device_t* device)
 }
 
 /*
- * FUNCTION: btOpen
+ * FUNCTION: aapiOpen
  * USE:      Module open function
  * PARAMS:   module - the module object
  *           name - the module name
@@ -583,15 +583,15 @@ static int btClose(struct hw_device_t* device)
  * RETURN:   0 on success
  * NOTES:    only module-level init here (aka none)
  */
-static int btOpen(const struct hw_module_t* module, char const* name, struct hw_device_t** abstractionP)
+static int aapiOpen(const struct hw_module_t* module, char const* name, struct hw_device_t** abstractionP)
 {
     bluetooth_device_t *btd = (bluetooth_device_t*)calloc(1, sizeof(bluetooth_device_t));
 
     btd->common.tag = HARDWARE_DEVICE_TAG;
     btd->common.version = 0;
     btd->common.module = (struct hw_module_t*)module; /* casting const away is bad, but sadly such is our API */
-    btd->common.close = btClose;
-    btd->get_bluetooth_interface = btGetBtIface;
+    btd->common.close = aapiClose;
+    btd->get_bluetooth_interface = aapiGetBtIface;
 
     *abstractionP = (struct hw_device_t*)btd;
 
@@ -599,8 +599,8 @@ static int btOpen(const struct hw_module_t* module, char const* name, struct hw_
 }
 
 /* these are needed for android module loader to open us */
-static struct hw_module_methods_t mBtMethods = {
-    .open = btOpen,
+static struct hw_module_methods_t mAapiMethods = {
+    .open = aapiOpen,
 };
 extern hw_module_t HAL_MODULE_INFO_SYM = {
     .tag = HARDWARE_MODULE_TAG,
@@ -609,7 +609,7 @@ extern hw_module_t HAL_MODULE_INFO_SYM = {
     .id = BT_HARDWARE_MODULE_ID,
     .name = "NewBlue stack",
     .author = "dmitrygr@",
-    .methods = &mBtMethods,
+    .methods = &mAapiMethods,
 };
 
 
