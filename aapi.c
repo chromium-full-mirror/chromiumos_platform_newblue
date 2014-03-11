@@ -2,6 +2,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include "aapiSocket.h"
+#include "aapiGatt.h"
 #include "workQueue.h"
 #include "rfcomm.h"
 #include "config.h"
@@ -643,8 +644,8 @@ static const void* aapiGetProfileIface(const char *profile_id)
 //        return &pHidHost;
 //    if (!strcmp(profile_id, BT_PROFILE_HEALTH_ID))
 //        return &pHealth;
-//    if (!strcmp(profile_id, BT_PROFILE_GATT_ID))
-//        return &pGatt;
+    if (!strcmp(profile_id, BT_PROFILE_GATT_ID))
+        return aapiGetProfileIfaceGatt();
 //    if (!strcmp(profile_id, BT_PROFILE_AV_RC_ID))
 //        return &pAvrcp;
 
