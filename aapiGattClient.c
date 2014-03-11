@@ -24,7 +24,7 @@ void *aapiGattClientGetProfileIface(void)
 bt_status_t aapiGattClientInit(const btgatt_client_callbacks_t *cbks)
 {
     //TODO
-    return BT_STATUS_FAIL;
+    return BT_STATUS_SUCCESS;
 }
 
 /*
