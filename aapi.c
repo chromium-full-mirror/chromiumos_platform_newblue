@@ -14,7 +14,8 @@
 #include "bt.h"
 
 
-
+/* a device will never hove more than this many properties */
+#define BT_MAX_PROPS    32
 
 
 struct aapiWorkItem {
@@ -344,63 +345,64 @@ static int aapiSetRemoteDevProperty(bt_bdaddr_t *remote_addr, const bt_property_
  */
 static int aapiGetSomeAdapterProperties(bt_status_t statToSend, const bt_property_type_t *typeP)
 {
-    unsigned i;
-    static const bt_uuid_t uuids[] = {{{0}}};
-    static const bt_property_t props[] = {
-        {
-            BT_PROPERTY_BDNAME,
-            sizeof(mLocalName),
-            &mLocalName, /* TODO: contrary to spec, this shoudl really be the strlen... */
-        },
-        {
-            BT_PROPERTY_BDADDR,
-            sizeof(mLocalMac),
-            &mLocalMac,
-        },
-        {
-            BT_PROPERTY_UUIDS,
-            sizeof(uuids),
-            &uuids,
-        },
-        {
-            BT_PROPERTY_CLASS_OF_DEVICE,
-            sizeof(mDevCls),
-            &mDevCls,
-        },
-        {
-            BT_PROPERTY_TYPE_OF_DEVICE,
-            sizeof(mDevType),
-            &mDevType,
-        },
-        /* BT_PROPERTY_SERVICE_RECORD here */
-        {
-            BT_PROPERTY_ADAPTER_SCAN_MODE,
-            sizeof(mScanMode),
-            &mScanMode,
-        },
-        {
-            BT_PROPERTY_ADAPTER_BONDED_DEVICES,
-            0,   /* TODO: this */
-            NULL,
-        },
-        {
-            BT_PROPERTY_ADAPTER_DISCOVERY_TIMEOUT,
-            sizeof(mDiscoveryTimeout),
-            &mDiscoveryTimeout,
-        },
-    };
+    static bt_uuid_t uuids[] = {{{0}}}; /* TODO */
+    static bt_bdaddr_t bondedDevs = {{0,}}; /* TODO */
+    bt_property_t props[BT_MAX_PROPS];
+    unsigned numProps = 0, numUuids = 0, numBondedDevs = 0;
 
-    if (typeP) {
-        for (i = 0; i < sizeof(props) / sizeof(*props); i++) {
-            if (props[i].type == *typeP) {
-                aapiAdapterProperties(statToSend, 1, props + i);
-                return BT_STATUS_SUCCESS;
-            }
-        }
-        return BT_STATUS_FAIL;
+    if (!typeP || *typeP == BT_PROPERTY_BDNAME) {
+        props[numProps].type = BT_PROPERTY_BDNAME;
+        props[numProps].len = strnlen((const char*)mLocalName.name, sizeof(mLocalName.name));
+        props[numProps].val = &mLocalName;
+        numProps++;
     }
 
-    aapiAdapterProperties(statToSend, sizeof(props) / sizeof(*props), props);
+    if (!typeP || *typeP == BT_PROPERTY_BDADDR) {
+        props[numProps].type = BT_PROPERTY_BDADDR;
+        props[numProps].len = sizeof(mLocalMac);
+        props[numProps].val = &mLocalMac;
+        numProps++;
+    }
+
+    if (!typeP || *typeP == BT_PROPERTY_UUIDS) {
+        props[numProps].type = BT_PROPERTY_UUIDS;
+        props[numProps].len = sizeof(bt_uuid_t[numUuids]);
+        props[numProps].val = &uuids;
+        numProps++;
+    }
+
+    if (!typeP || *typeP == BT_PROPERTY_CLASS_OF_DEVICE) {
+        props[numProps].type = BT_PROPERTY_CLASS_OF_DEVICE;
+        props[numProps].len = sizeof(mDevType);
+        props[numProps].val = &mDevType;
+        numProps++;
+    }
+
+    /* TODO: BT_PROPERTY_SERVICE_RECORD here ? */
+
+    if (!typeP || *typeP == BT_PROPERTY_ADAPTER_SCAN_MODE) {
+        props[numProps].type = BT_PROPERTY_ADAPTER_SCAN_MODE;
+        props[numProps].len = sizeof(mScanMode);
+        props[numProps].val = &mScanMode;
+        numProps++;
+    }
+
+    if (!typeP || *typeP == BT_PROPERTY_ADAPTER_BONDED_DEVICES) {
+        props[numProps].type = BT_PROPERTY_ADAPTER_BONDED_DEVICES;
+        props[numProps].len = sizeof(bt_bdaddr_t[numBondedDevs]);
+        props[numProps].val = &bondedDevs;
+        numProps++;
+    }
+
+    if (!typeP || *typeP == BT_PROPERTY_ADAPTER_DISCOVERY_TIMEOUT) {
+        props[numProps].type = BT_PROPERTY_ADAPTER_DISCOVERY_TIMEOUT;
+        props[numProps].len = sizeof(mDiscoveryTimeout);
+        props[numProps].val = &mDiscoveryTimeout;
+        numProps++;
+    }
+
+
+    aapiAdapterProperties(statToSend, numProps, props);
     return BT_STATUS_SUCCESS;
 }
 
