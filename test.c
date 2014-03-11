@@ -4,6 +4,7 @@
 #include <string.h>
 #include "vendorLib.h"
 #include "rfcomm.h"
+#include "timer.h"
 #include "l2cap.h"
 #include "hci.h"
 #include "util.h"
@@ -251,6 +252,7 @@ int main(int argc, char** argv)
     vendorLogEnable(true);
 #endif
 
+    timersInit();
     if (!hciUp(mac)) {
         loge("HCI up fail\n");
         return -1;
@@ -380,6 +382,7 @@ int main(int argc, char** argv)
     logi("bringing down\n");
     l2cDeinit();
     hciDown();
+    timersDeinit();
 
     logi("done\n");
 

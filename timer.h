@@ -16,6 +16,8 @@ bool timerCancel(uniq_t timer);
 /* make sure that all cancelled timers before now have either fired or run */
 void timerSync(void);
 
+bool timersInit(void);
+void timersDeinit(void);
 
 #endif
 

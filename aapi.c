@@ -6,6 +6,7 @@
 #include "workQueue.h"
 #include "rfcomm.h"
 #include "config.h"
+#include "timer.h"
 #include "l2cap.h"
 #include "aapi.h"
 #include "hci.h"
@@ -555,6 +556,12 @@ static int aapiEnable(void)
     int ret;
 
     logd("AAPI: enable\n");
+
+    if (!timersInit()) {
+        loge("timers failed\n");
+        goto fail_timers;
+    }
+
     if (!hciUp(mLocalMac.address)) {
         loge("HCI up failed\n");
         goto fail_hci;
@@ -607,6 +614,9 @@ fail_l2c:
     hciDown();
 
 fail_hci:
+    timersDeinit();
+
+fail_timers:
     return BT_STATUS_FAIL;
 }
 
@@ -623,6 +633,7 @@ static int aapiDisable(void)
 
     l2cDeinit();
     hciDown();
+    timersDeinit();
     return 0;
 }
 

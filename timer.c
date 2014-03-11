@@ -23,6 +23,7 @@ static pthread_cond_t mTimersCond = PTHREAD_COND_INITIALIZER;
 static pthread_t mTimersThread = 0;
 static struct timer *mTimers = NULL;
 static clockid_t mClock;
+static bool mDie = false;
 
 /*
  * FUNCTION: timerCurTime
@@ -95,6 +96,9 @@ static void* timersThread(void *unused)
             else
                 pthread_cond_wait(&mTimersCond, &mTimersLock);
 
+            if (mDie)
+                goto out;
+
         } while(1);
 
         pthread_mutex_unlock(&mTimersLock);
@@ -107,17 +111,26 @@ static void* timersThread(void *unused)
         }
 
     } while(1);
+
+out:
+    while (mTimers) {
+        t = mTimers;
+        mTimers = mTimers->next;
+        free(t);
+    }
+    pthread_mutex_unlock(&mTimersLock);
+
     return unused;
 }
 
 /*
- * FUNCTION: timersActualInit
- * USE:      Perform actual one-time init of timer code
+ * FUNCTION: timersInit
+ * USE:      Perform one-time init of timer code
  * PARAMS:   NONE
- * RETURN:   NONE
- * NOTES:    Guaranteed to be called exactly once
+ * RETURN:   success
+ * NOTES:
  */
-static void timersActualInit(void)
+bool timersInit(void)
 {
     struct timespec dummy;
     int ret;
@@ -135,25 +148,27 @@ static void timersActualInit(void)
     }
 
     /* get going on the worker thread */
+    mDie = false;
     ret = pthread_create(&mTimersThread, NULL, timersThread, NULL);
-    if (ret)
+    if (ret) {
         loge("Timer thread creatin error: %d\n", ret);
+        return false;
+    }
+    return true;
 }
 
 /*
- * FUNCTION: timersInit
- * USE:      Perform one-time init of timer code
+ * FUNCTION: timersDeinit
+ * USE:      Perform deinit of timers
  * PARAMS:   NONE
  * RETURN:   NONE
- * NOTES:    Uses pthread_once to call timersActualInit() exactly once.
- *           Do not add any more code to this function due to
- *           thread-safety reasons.
+ * NOTES:
  */
-static void timersInit(void)
+void timersDeinit(void)
 {
-    static pthread_once_t mOnceInit = PTHREAD_ONCE_INIT;
-
-    pthread_once(&mOnceInit, timersActualInit); 
+    mDie = true;
+    pthread_cond_signal(&mTimersCond);
+    pthread_join(mTimersThread, NULL);
 }
 
 /*
@@ -171,8 +186,6 @@ uniq_t timerSet(uint64_t msec, timerCbk cbk, uint64_t cbkData)
     bool wake = false;
     uniq_t ret = 0;
 
-    /* mandatory one-time init */
-    timersInit();
 
     /* prepare the struct */
     t = (struct timer*)malloc(sizeof(struct timer));
@@ -222,7 +235,6 @@ bool timerCancel(uniq_t timer)
 {
     struct timer *t, *p = NULL;
 
-    timersInit();
 
     pthread_mutex_lock(&mTimersLock);
 
