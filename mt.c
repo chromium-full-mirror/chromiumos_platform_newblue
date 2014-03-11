@@ -66,7 +66,27 @@ bool r_write(int fd, const void *data, size_t count)
     return true;
 }
 
+bool r_read(int fd, void *data, size_t count)
+{
+    size_t countOriginal = count;
+    uint8_t *buf = (uint8_t*)data;
+    int ret;
 
+    while (count) {
+
+        ret = read(fd, buf, count);
+        if (ret > 0) {
+            buf += ret;
+            count -= ret;
+            continue;
+        }
+        if (ret == -1 && errno == EINTR)
+            continue;
+
+        return false;
+    }
+    return true;
+}
 
 /* the debug things */
 

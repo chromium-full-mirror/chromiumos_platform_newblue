@@ -26,6 +26,7 @@
 int r_sem_wait(sem_t* sem);
 int r_sem_trywait(sem_t* sem);
 bool r_write(int fd, const void *data, size_t count); /* true if all writen, else false */
+bool r_read(int fd, void *data, size_t count); /* true if all writen, else false */
 
 #ifdef MT_DEBUG
 # undef pthread_mutex_lock
