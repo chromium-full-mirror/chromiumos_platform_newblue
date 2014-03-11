@@ -4,6 +4,13 @@
 
 
 /*
+ * AAPI will try to queue this much per socket before shutting off flow
+ * Due to latencies in shutting off slow, the real amount queued could be
+ * more.
+ */
+#define AAPI_RFC_MAX_BUF                    16384
+
+/*
  * Android API layer will queue up only this many work items at a time
  */
 #define AAPI_NUM_OUTSTANDING_WORK_ITEMS     256
