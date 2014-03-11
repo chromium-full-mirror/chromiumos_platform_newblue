@@ -8,6 +8,7 @@
 #include "aapi.h"
 #include "hci.h"
 #include "log.h"
+#include "bt.h"
 
 
 
@@ -77,6 +78,14 @@ struct aapiWorkItem {
 static pthread_t mWorker;
 static struct workQueue *mWorkQ;
 
+/* properties java can get/set */
+//TODO: mutex around these!
+static bt_bdaddr_t mLocalMac = {{0x11, 0x22, 0x33, 0x44, 0x55, 0x66}};
+static bt_bdname_t mLocalName = {{"NewBlue.test\0"}};
+static uint32_t mDevCls = 0x20C; /* smartphone */
+static bt_scan_mode_t mScanMode = BT_SCAN_MODE_NONE;
+static bt_device_type_t mDevType = BT_DEVICE_DEVTYPE_DUAL;
+static uint32_t mDiscoveryTimeout = 60 ;/* in seconds */
 
 /*
  * FUNCTION: aapiHciLogEnable
@@ -87,6 +96,7 @@ static struct workQueue *mWorkQ;
  */
 static int aapiHciLogEnable(uint8_t enable)
 {
+    logd("AAPI: hci log enable(%u)\n", enable);
     //TODO
     return 0;
 }
@@ -103,6 +113,7 @@ static int aapiHciLogEnable(uint8_t enable)
  */
 static int aapiLeTestMode(uint16_t opcode, uint8_t *buf, uint8_t len)
 {
+    logd("AAPI: le test mode (0x%04X, %ub)\n", opcode, len);
     //TODO
     return 0;
 }
@@ -118,6 +129,7 @@ static int aapiLeTestMode(uint16_t opcode, uint8_t *buf, uint8_t len)
  */
 static int aapiDutSend(uint16_t opcode, uint8_t *buf, uint8_t len)
 {
+    logd("AAPI: DUT send (0x%04X, %ub)\n", opcode, len);
     //TODO
     return 0;
 }
@@ -131,6 +143,7 @@ static int aapiDutSend(uint16_t opcode, uint8_t *buf, uint8_t len)
  */
 static int aapiDutEnable(uint8_t enable)
 {
+    logd("AAPI: dut enable(%u)\n", enable);
     //TODO
     return 0;
 }
@@ -152,6 +165,7 @@ static int aapiSspReply(const bt_bdaddr_t *bd_addr, bt_ssp_variant_t variant, ui
      * BT_SSP_VARIANT_CONSENT
      * For BT_SSP_VARIANT_PASSKEY_ENTRY, if accept==FALSE, then passkey
      * shall be zero */
+    logd("AAPI: ssp reply\n");
     //TODO
     return 0;
 }
@@ -169,6 +183,7 @@ static int aapiSspReply(const bt_bdaddr_t *bd_addr, bt_ssp_variant_t variant, ui
 static int aapiPinReply(const bt_bdaddr_t *bd_addr, uint8_t accept, uint8_t pin_len, bt_pin_code_t *pin_code)
 {
     /** If accept==FALSE, then pin_len and pin_code shall be 0x0 */
+    logd("AAPI: pin reply(%ub)\n", pin_len);
     //TODO
     return 0;
 }
@@ -182,6 +197,7 @@ static int aapiPinReply(const bt_bdaddr_t *bd_addr, uint8_t accept, uint8_t pin_
  */
 static int aapiBondCreate(const bt_bdaddr_t *bd_addr)
 {
+    logd("AAPI: bond create\n");
     //TODO
     return 0;
 }
@@ -195,6 +211,7 @@ static int aapiBondCreate(const bt_bdaddr_t *bd_addr)
  */
 static int aapiBondRemove(const bt_bdaddr_t *bd_addr)
 {
+    logd("AAPI: bond remove\n");
     //TODO
     return 0;
 }
@@ -208,6 +225,7 @@ static int aapiBondRemove(const bt_bdaddr_t *bd_addr)
  */
 static int aapiBondCancel(const bt_bdaddr_t *bd_addr)
 {
+    logd("AAPI: bond cancel\n");
     //TODO
     return 0;
 }
@@ -221,6 +239,7 @@ static int aapiBondCancel(const bt_bdaddr_t *bd_addr)
  */
 static int aapiDiscoveryStart(void)
 {
+    logd("AAPI: discovery start\n");
     //TODO
     return 0;
 }
@@ -234,6 +253,7 @@ static int aapiDiscoveryStart(void)
  */
 static int aapiDiscoveryStop(void)
 {
+    logd("AAPI: discovery stop\n");
     //TODO
     return 0;
 }
@@ -247,6 +267,7 @@ static int aapiDiscoveryStop(void)
  */
 static int aapiGetRemoteServices(bt_bdaddr_t *remote_addr)
 {
+    logd("AAPI: get remote services\n");
     //TODO
     return 0;
 }
@@ -261,6 +282,7 @@ static int aapiGetRemoteServices(bt_bdaddr_t *remote_addr)
  */
 static int aapiGetRemoteServiceRecord(bt_bdaddr_t *remote_addr, bt_uuid_t *uuid)
 {
+    logd("AAPI: get remote service record\n");
     //TODO
     return 0;
 }
@@ -274,6 +296,7 @@ static int aapiGetRemoteServiceRecord(bt_bdaddr_t *remote_addr, bt_uuid_t *uuid)
  */
 static int aapiGetRemoteDevProperties(bt_bdaddr_t *remote_addr)
 {
+    logd("AAPI: get remote dev properties\n");
     //TODO
     return 0;
 }
@@ -288,6 +311,7 @@ static int aapiGetRemoteDevProperties(bt_bdaddr_t *remote_addr)
  */
 static int aapiGetRemoteDevProperty(bt_bdaddr_t *remote_addr, bt_property_type_t type)
 {
+    logd("AAPI: get remote dev prop\n");
     //TODO
     return 0;
 }
@@ -302,21 +326,79 @@ static int aapiGetRemoteDevProperty(bt_bdaddr_t *remote_addr, bt_property_type_t
  */
 static int aapiSetRemoteDevProperty(bt_bdaddr_t *remote_addr, const bt_property_t *property)
 {
+    logd("AAPI: set remote dev prop\n");
     //TODO
     return 0;
 }
 
 /*
- * FUNCTION: aapiSetAdapterProperty
- * USE:      Set a Bluetooth Adapter property
- * PARAMS:   property - the property to set
+ * FUNCTION: aapiGetSomeAdapterProperties
+ * USE:      Get all or one of Bluetooth Adapter properties
+ * PARAMS:   statToSend - what status value to send
+ *           typeP - points to prop typ ewe want, or NULL for all
  * RETURN:   bt_status_t
  * NOTES:
  */
-static int aapiSetAdapterProperty(const bt_property_t *property)
+static int aapiGetSomeAdapterProperties(bt_status_t statToSend, const bt_property_type_t *typeP)
 {
-    //TODO
-    return 0;
+    unsigned i;
+    static const bt_uuid_t uuids[] = {{{0}}};
+    static const bt_property_t props[] = {
+        {
+            BT_PROPERTY_BDNAME,
+            sizeof(mLocalName),
+            &mLocalName,
+        },
+        {
+            BT_PROPERTY_BDADDR,
+            sizeof(mLocalMac),
+            &mLocalMac,
+        },
+        {
+            BT_PROPERTY_UUIDS,
+            sizeof(uuids),
+            &uuids,
+        },
+        {
+            BT_PROPERTY_CLASS_OF_DEVICE,
+            sizeof(mDevCls),
+            &mDevCls,
+        },
+        {
+            BT_PROPERTY_TYPE_OF_DEVICE,
+            sizeof(mDevType),
+            &mDevType,
+        },
+        /* BT_PROPERTY_SERVICE_RECORD here */
+        {
+            BT_PROPERTY_ADAPTER_SCAN_MODE,
+            sizeof(mScanMode),
+            &mScanMode,
+        },
+        {
+            BT_PROPERTY_ADAPTER_BONDED_DEVICES,
+            0,   /* TODO: this */
+            NULL,
+        },
+        {
+            BT_PROPERTY_ADAPTER_DISCOVERY_TIMEOUT,
+            sizeof(mDiscoveryTimeout),
+            &mDiscoveryTimeout,
+        },
+    };
+
+    if (typeP) {
+        for (i = 0; i < sizeof(props) / sizeof(*props); i++) {
+            if (props[i].type == *typeP) {
+                aapiAdapterProperties(statToSend, 1, props + i);
+                return BT_STATUS_SUCCESS;
+            }
+        }
+        return BT_STATUS_FAIL;
+    }
+
+    aapiAdapterProperties(statToSend, sizeof(props) / sizeof(*props), props);
+    return BT_STATUS_SUCCESS;
 }
 
 /*
@@ -328,8 +410,8 @@ static int aapiSetAdapterProperty(const bt_property_t *property)
  */
 static int aapiGetAdapterProperty(bt_property_type_t type)
 {
-    //TODO
-    return 0;
+    logd("AAPI: get adapter property(%u)\n", type);
+    return aapiGetSomeAdapterProperties(BT_STATUS_SUCCESS, &type);
 }
 
 /*
@@ -341,8 +423,119 @@ static int aapiGetAdapterProperty(bt_property_type_t type)
  */
 static int aapiGetAdapterProperties(void)
 {
-    //TODO
-    return 0;
+    logd("AAPI: get adapter properties\n");
+    return aapiGetSomeAdapterProperties(BT_STATUS_SUCCESS, NULL);
+}
+
+/*
+ * FUNCTION: aapiSetPropOpDoneCbk
+ * USE:      Done calback for "set property" calls to hci
+ * PARAMS:   cbkData - in our case the property we tried to set
+ *           status - the status from the chip (0 = good, else bad)
+ * RETURN:   NONE
+ * NOTES:    calls back to java with success and new property value
+ */
+static void aapiSetPropOpDoneCbk(void *cbkData, uint8_t status)
+{
+    bt_property_type_t prop = (bt_property_type_t)cbkData;
+
+    logd("Prop %u set with status %u\n", prop, status);
+    aapiGetSomeAdapterProperties(status ? BT_STATUS_FAIL : BT_STATUS_SUCCESS, &prop);
+}
+
+/*
+ * FUNCTION: aapiSetAdapterProperty
+ * USE:      Set a Bluetooth Adapter property
+ * PARAMS:   property - the property to set
+ * RETURN:   bt_status_t
+ * NOTES:
+ */
+static int aapiSetAdapterProperty(const bt_property_t *property)
+{
+    uint32_t len;
+    logd("AAPI: set adapter prop (%u)\n", property->type);
+
+    switch (property->type) {
+    case BT_PROPERTY_BDNAME:
+        memset(&mLocalName, 0, sizeof(mLocalName));
+        len = property->len;
+        if (len > sizeof(mLocalName)) {
+            len = sizeof(mLocalName);
+            logw("Name truncated\n");
+        }
+        memcpy(&mLocalName, property->val, len);
+        if (hciSetLocalName((const char*)mLocalName.name, aapiSetPropOpDoneCbk, (void*)BT_PROPERTY_BDNAME))
+            break;
+        loge("Set name up failed\n");
+        return BT_STATUS_FAIL;
+    case BT_PROPERTY_ADAPTER_SCAN_MODE:
+        if (property->len != sizeof(mScanMode)) {
+            loge("refusing set scan mode with strange len (%u != %u)\n", property->len, sizeof(mScanMode));
+            return BT_STATUS_FAIL;
+        }
+        memcpy(&mScanMode, property->val, sizeof(mScanMode));
+        bool discoverable = mScanMode == BT_SCAN_MODE_CONNECTABLE_DISCOVERABLE;
+        bool connectible = mScanMode != BT_SCAN_MODE_NONE;
+        if (hciSetDiscoverableConnectable(&discoverable, &connectible, aapiSetPropOpDoneCbk, (void*)BT_PROPERTY_ADAPTER_SCAN_MODE))
+            break;
+        loge("Set discoverable/connectible up failed\n");
+        return BT_STATUS_FAIL;
+
+    case BT_PROPERTY_ADAPTER_DISCOVERY_TIMEOUT:
+        if (property->len != sizeof(mDiscoveryTimeout)) {
+            loge("refusing set discovery timeout with strange len (%u != %u)\n", property->len, sizeof(mDiscoveryTimeout));
+            return BT_STATUS_FAIL;
+        }
+        memcpy(&mDiscoveryTimeout, property->val, sizeof(mDiscoveryTimeout));
+        return aapiGetSomeAdapterProperties(BT_STATUS_SUCCESS, &property->type);
+
+    default:
+        loge("Refusing to set unknown local property %u\n", property->type);
+        return BT_STATUS_FAIL;
+    }
+
+    return BT_STATUS_SUCCESS;
+}
+
+/*
+ * FUNCTION: aapiEnableOpDoneCbk
+ * USE:      Done calback for a step in the init process
+ * PARAMS:   cbkData - in our case the step number
+ *           status - the status from the chip (0 = good, else bad)
+ * RETURN:   NONE
+ * NOTES:    calls next step or calls java to say we're done (success or fail is conveyed too)
+ */
+static void aapiEnableOpDoneCbk(void *cbkData, uint8_t status)
+{
+    unsigned step = (unsigned)cbkData;
+
+    if (status) {
+        loge("Enable failed on step %u with status %u\n", step, status);
+        aapiAdapterStateChanged(false);
+    }
+
+    switch (step) {
+    case 0:
+        if (hciSetDeviceClass(mDevCls, aapiEnableOpDoneCbk, (void*)(step + 1)))
+            return;
+        break;
+    case 1:;
+        bool discoverable = mScanMode == BT_SCAN_MODE_CONNECTABLE_DISCOVERABLE;
+        bool connectible = mScanMode != BT_SCAN_MODE_NONE;
+        if (hciSetDiscoverableConnectable(&discoverable, &connectible, aapiEnableOpDoneCbk, (void*)(step + 1)))
+            return;
+        break;
+    case 2:
+        aapiAdapterStateChanged(true);
+        return;
+    default:
+        loge("Unknown init step %u\n", step);
+        aapiAdapterStateChanged(false);
+        return;
+    }
+
+    loge("Error after step %u\n", step);
+    aapiAdapterStateChanged(false);
 }
 
 /*
@@ -354,13 +547,23 @@ static int aapiGetAdapterProperties(void)
  */
 static int aapiEnable(void)
 {
-    uint8_t addr[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
     int ret;
 
     logd("AAPI: enable\n");
-    if (!hciUp(addr)) {
+    if (!hciUp(mLocalMac.address)) {
         loge("HCI up failed\n");
         goto fail_hci;
+    }
+
+    if (hciInfoAclBufSizeEdr(NULL, NULL) &&  hciInfoAclBufSizeLe(NULL, NULL))
+        mDevType = BT_DEVICE_DEVTYPE_DUAL;
+    else if (hciInfoAclBufSizeLe(NULL, NULL))
+        mDevType = BT_DEVICE_DEVTYPE_BLE;
+    else if (hciInfoAclBufSizeEdr(NULL, NULL))
+        mDevType = BT_DEVICE_DEVTYPE_BREDR;
+    else {
+        mDevType = 0;
+        loge("device type indeterminate\n");
     }
 
     ret = l2cInit();
@@ -369,9 +572,18 @@ static int aapiEnable(void)
         goto fail_l2c;
     }
 
-    /* more anble here if needed */
+    if (!hciSetLocalName((const char*)mLocalName.name, aapiEnableOpDoneCbk, (void*)0)) {
+        loge("Set name up failed\n");
+        goto fail_name;
+    }
+
+    /* more enable here if needed */
+    aapiAdapterStateChanged(true);
 
     return BT_STATUS_SUCCESS;
+
+fail_name:
+    l2cDeinit();
 
 fail_l2c:
     hciDown();
@@ -449,6 +661,7 @@ static void* btWorker(void *callbacks)
         if (status)
             break;
 
+        logd("callback type %u\n", wi->type);
         switch (wi->type) {
         case WT_ADAPTER_STATE_CHG:
             cbks->adapter_state_changed_cb(wi->state.on ? BT_STATE_ON : BT_STATE_OFF);
@@ -693,6 +906,45 @@ void aapiAdapterStateChanged(bool on)
 }
 
 /*
+ * FUNCTION: aapiWorkItemAllocWithProperties
+ * USE:      allocate a work item with a deep copy of all properties
+ * PARAMS:   type - the work item type
+ *           num_properties - how many properties we're sending
+ *           properties - the properties to send (a copy is made)
+ * RETURN:   the work item or NULL on error
+ * NOTES:
+ */
+static struct aapiWorkItem* aapiWorkItemAllocWithProperties(uint8_t type, int num_properties, const bt_property_t *properties)
+{
+    struct aapiWorkItem* wi;
+    uint32_t len = 0;
+    bt_property_t *dstProps;
+    uint8_t *dstDatas;
+    int i;
+
+    for (i = 0; i < num_properties; i++)
+        len += sizeof(bt_property_t) + properties[i].len;
+
+    wi = aapiWorkItemAlloc(WT_ADAPTER_PROPS, len);
+    if (!wi)
+        return NULL;
+
+    dstProps = wi->properties.properties;
+    dstDatas = (uint8_t*)(dstProps + num_properties);
+
+    for (i = 0; i < num_properties; i++) {
+        dstProps[i].type = properties[i].type;
+        dstProps[i].len = properties[i].len;
+        dstProps[i].val = dstDatas;
+        memcpy(dstDatas, properties[i].val, properties[i].len);
+        dstDatas += properties[i].len;
+    }
+
+    wi->properties.num_properties = num_properties;
+    return wi;
+}
+
+/*
  * FUNCTION: aapiAdapterProperties
  * USE:      Notify android about BT adapter properties
  * PARAMS:   status - the status to send
@@ -703,15 +955,12 @@ void aapiAdapterStateChanged(bool on)
  */
 void aapiAdapterProperties(bt_status_t status, int num_properties, const bt_property_t *properties)
 {
-    uint32_t extraSz = sizeof(bt_property_t[num_properties]);
-    struct aapiWorkItem* wi = aapiWorkItemAlloc(WT_ADAPTER_PROPS, extraSz);
+    struct aapiWorkItem* wi = aapiWorkItemAllocWithProperties(WT_ADAPTER_PROPS, num_properties, properties);
 
     if (!wi)
         return;
 
     wi->properties.status = status;
-    wi->properties.num_properties = num_properties;
-    memcpy(wi->properties.properties, properties, extraSz);
     aapiWorkItemEnqueue(wi);
 }
 
@@ -727,16 +976,13 @@ void aapiAdapterProperties(bt_status_t status, int num_properties, const bt_prop
  */
 void aapiRemoteDevProperties(bt_status_t status, const bt_bdaddr_t *bd_addr, int num_properties, const bt_property_t *properties)
 {
-    uint32_t extraSz = sizeof(bt_property_t[num_properties]);
-    struct aapiWorkItem* wi = aapiWorkItemAlloc(WT_REMOTE_PROPS, extraSz);
+    struct aapiWorkItem* wi = aapiWorkItemAllocWithProperties(WT_REMOTE_PROPS, num_properties, properties);
 
     if (!wi)
         return;
 
     wi->properties.status = status;
-    wi->properties.num_properties = num_properties;
     memcpy(&wi->properties.bd_addr, bd_addr, sizeof(wi->properties.bd_addr));
-    memcpy(wi->properties.properties, properties, extraSz);
     aapiWorkItemEnqueue(wi);
 }
 
@@ -750,14 +996,11 @@ void aapiRemoteDevProperties(bt_status_t status, const bt_bdaddr_t *bd_addr, int
  */
 void aapiDevDiscoveredCbk(int num_properties, const bt_property_t *properties)
 {
-    uint32_t extraSz = sizeof(bt_property_t[num_properties]);
-    struct aapiWorkItem* wi = aapiWorkItemAlloc(WT_DEV_DISCOVERED, extraSz);
+    struct aapiWorkItem* wi = aapiWorkItemAllocWithProperties(WT_DEV_DISCOVERED, num_properties, properties);
 
     if (!wi)
         return;
 
-    wi->properties.num_properties = num_properties;
-    memcpy(wi->properties.properties, properties, extraSz);
     aapiWorkItemEnqueue(wi);
 }
 
