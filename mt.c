@@ -44,6 +44,29 @@ int r_sem_trywait(sem_t* sem)
     return ret;
 }
 
+bool r_write(int fd, const void *data, size_t count)
+{
+    size_t countOriginal = count;
+    const uint8_t *buf = (const uint8_t*)data;
+    int ret;
+
+    while (count) {
+
+        ret = write(fd, buf, count);
+        if (ret > 0) {
+            buf += ret;
+            count -= ret;
+            continue;
+        }
+        if (ret == -1 && errno == EINTR)
+            continue;
+
+        return false;
+    }
+    return true;
+}
+
+
 
 /* the debug things */
 
