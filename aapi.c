@@ -3,11 +3,13 @@
 #include <stdlib.h>
 #include "aapiSocket.h"
 #include "workQueue.h"
+#include "rfcomm.h"
 #include "config.h"
 #include "l2cap.h"
 #include "aapi.h"
 #include "hci.h"
 #include "log.h"
+#include "sdp.h"
 #include "bt.h"
 
 
@@ -83,7 +85,7 @@ static struct workQueue *mWorkQ;
 static bt_bdaddr_t mLocalMac = {{0x11, 0x22, 0x33, 0x44, 0x55, 0x66}};
 static bt_bdname_t mLocalName = {{"NewBlue.test\0"}};
 static uint32_t mDevCls = 0x20C; /* smartphone */
-static bt_scan_mode_t mScanMode = BT_SCAN_MODE_NONE;
+static bt_scan_mode_t mScanMode = BT_SCAN_MODE_CONNECTABLE_DISCOVERABLE;//TODO: default should be BT_SCAN_MODE_NONE, actually!
 static bt_device_type_t mDevType = BT_DEVICE_DEVTYPE_DUAL;
 static uint32_t mDiscoveryTimeout = 60 ;/* in seconds */
 
@@ -572,6 +574,16 @@ static int aapiEnable(void)
         goto fail_l2c;
     }
 
+    if (!sdpRegisterProfile()) {
+        loge("SDP up failed\n");
+        goto fail_sdp;
+    }
+
+    if (!rfcRegisterProfile()) {
+        loge("RFC up failed\n");
+        goto fail_rfc;
+    }
+
     if (!hciSetLocalName((const char*)mLocalName.name, aapiEnableOpDoneCbk, (void*)0)) {
         loge("Set name up failed\n");
         goto fail_name;
@@ -583,6 +595,8 @@ static int aapiEnable(void)
     return BT_STATUS_SUCCESS;
 
 fail_name:
+fail_rfc:
+fail_sdp:
     l2cDeinit();
 
 fail_l2c:
