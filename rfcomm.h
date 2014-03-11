@@ -38,9 +38,11 @@ typedef void (*rfcSvcEvent)(void *userData, void *instance, uint8_t evt, sg s);
 
 bool rfcRegisterProfile(void);
 
-uint8_t rfcListen(uint8_t chReq, rfcSvcAlloc allocF, rfcSvcEvent evtF, void *cbkData); /* returns DLCI. input = dlci specifically or RFC_CHNUM_REQ_ANY */
+uint8_t rfcListen(uint8_t chReq, rfcSvcAlloc allocF, rfcSvcEvent evtF, void *cbkData); /* returns DLCI. input = dlci specifically or RFC_CHNUM_REQ_ANY, ret 0 is fail */
 bool rfcStopListen(uint8_t ch); /* will not close any existing connections */
 bool rfcConnect(const struct bt_addr *peerAddr, uint8_t ch, rfcSvcEvent evtF, void *cbkData, void *instance); /* true if you shoudl expect callback(s) */
+
+void rfcClose(rfc_conn_t conn);
 
 int32_t rfcTx(rfc_conn_t conn, sg s); /* ret: non-negative values is bytes sent (and sheared off the front of the SG), negatives are other codes. if entire SG is sent, it is freed! */
 bool rfcFlow(rfc_conn_t conn, bool stop); /* throttles other side - EFFECT IS NOT IMMEDIATE */

@@ -2254,6 +2254,25 @@ bool rfcStopListen(uint8_t ch)
     return ret;
 }
 
+/*
+ * FUNCTION: rfcClose
+ * USE:      Request a close an RFC connection
+ * PARAMS:   connH - the connection handle
+ * RETURN:   NONE
+ * NOTES:    callback will be called with "close" when done
+ */
+void rfcClose(rfc_conn_t connH)
+{
+    struct rfcConn *c = rfcFindConnByHandle(connH);
+    struct rfcInst *inst;
+
+    if (!c)
+        return;
+
+    inst = c->rfcInst;
+    rfcCloseConn(c, true, true);
+    pthread_mutex_unlock(&inst->lock);
+}
 
 /*
  * FUNCTION: rfcFcs
