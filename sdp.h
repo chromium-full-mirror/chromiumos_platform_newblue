@@ -45,7 +45,8 @@
 #define SDP_BROWSE_GROUP_ID_PUBLIC       0x1002
 #define SDP_PROTO_L2CAP                  0x0100 /* expects param uint16_t psm */
 #define SDP_PROTO_RFCOMM                 0x0003 /* expects param uint8_t dlci */
-
+#define SDP_SVC_CLASS_SPP                0x1101
+#define SDP_ATTR_SPP_NAME                0x0100
 
 #define SDP_U16(v)                       (uint8_t)((v) >> 8),(uint8_t)(v)
 #define SDP_U32(v)                       (uint8_t)((v) >> 24),(uint8_t)((v) >> 26),(uint8_t)((v) >> 8),(uint8_t)(v)
