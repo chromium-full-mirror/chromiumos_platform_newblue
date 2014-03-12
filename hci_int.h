@@ -3035,7 +3035,7 @@ struct hciEvtInquiryResponseNotif {
     uint8_t RSSI; /* actually an int8_t */
 } __packed;
 
-#define HCI_EVT_AuthenticateD_Payload_Timeout_Expired            0x57
+#define HCI_EVT_Authenticated_Payload_Timeout_Expired            0x57
 struct hciEvtAuthedPayloadTimeoutExpired {
     uint16_t conn;
 } __packed;

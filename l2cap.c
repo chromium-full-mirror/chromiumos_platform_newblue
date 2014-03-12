@@ -10,6 +10,7 @@
 #include "config.h"
 #include "l2cap.h"
 #include "timer.h"
+#include "aapi.h"
 #include "util.h"
 #include "uniq.h"
 #include "log.h"
@@ -4539,6 +4540,7 @@ void l2cAclLinkUp(hci_conn_t aclConnID, const struct bt_addr* addr, bool isMaste
     if (l2cAclConnFindById(aclConnID))
         loge("Duplicate ID up (acl "HCI_CONN_FMT"x)\n", HCI_CONN_CONV(aclConnID));
     else {
+        aapiAclStateChanged(0, addr, true);
         aclConn = l2cAclConnFindByAddr(addr);
         if (aclConn) {
             if (aclConn->conn == L2C_CONN_IN_PROGRESS) {
@@ -4735,6 +4737,7 @@ void l2cAclLinkDown(hci_conn_t aclConnID)
     pthread_mutex_lock(&mConnsLock);
     aclConn = l2cAclConnFindById(aclConnID);
     if (aclConn) {
+        aapiAclStateChanged(0, &aclConn->addr, false);
         logd("Link acl "HCI_CONN_FMT"x actually down. Handling\n", HCI_CONN_CONV(aclConn->conn));
         l2cAclLinkDownInt(aclConn, false);
     } else

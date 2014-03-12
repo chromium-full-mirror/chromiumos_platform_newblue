@@ -1,4 +1,3 @@
-#include <hardware/bluetooth.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include "aapiSocket.h"
@@ -1054,13 +1053,13 @@ void aapiDiscoveryStateChanged(bool on)
 /*
  * FUNCTION: aapiPinReqCbk
  * USE:      Notify android about a need for PIN entry UI
- * PARAMS:   remote_bd_addr - remote device address (a copy is made)
+ * PARAMS:   peer - remote device address (a copy is made)
  *           bd_name - remote device name (a copy is made)
  *           devCls - remote device class
  * RETURN:   NONE
  * NOTES:
  */
-void aapiPinReqCbk(const bt_bdaddr_t *remote_bd_addr, const bt_bdname_t *bd_name, uint32_t devCls)
+void aapiPinReqCbk(const struct bt_addr *peer, const bt_bdname_t *bd_name, uint32_t devCls)
 {
     struct aapiWorkItem* wi = aapiWorkItemAlloc(WT_PIN_REQ, 0);
 
@@ -1068,7 +1067,7 @@ void aapiPinReqCbk(const bt_bdaddr_t *remote_bd_addr, const bt_bdname_t *bd_name
         return;
 
     wi->pinReq.cod = devCls;
-    memcpy(&wi->pinReq.remote_bd_addr, remote_bd_addr, sizeof(wi->pinReq.remote_bd_addr));
+    memcpy(&wi->pinReq.remote_bd_addr.address, peer->addr, sizeof(wi->pinReq.remote_bd_addr.address));
     memcpy(&wi->pinReq.bd_name, bd_name, sizeof(wi->pinReq.bd_name));
     aapiWorkItemEnqueue(wi);
 }
@@ -1076,7 +1075,7 @@ void aapiPinReqCbk(const bt_bdaddr_t *remote_bd_addr, const bt_bdname_t *bd_name
 /*
  * FUNCTION: aapiSspReqCbk
  * USE:      Notify android about a need for SSP pairing UI
- * PARAMS:   remote_bd_addr - remote device address (a copy is made)
+ * PARAMS:   peer - remote device address (a copy is made)
  *           bd_name - remote device name (a copy is made)
  *           devCls - remote device class
  *           pairing_variant - pairing typ requested
@@ -1084,7 +1083,7 @@ void aapiPinReqCbk(const bt_bdaddr_t *remote_bd_addr, const bt_bdname_t *bd_name
  * RETURN:   NONE
  * NOTES:
  */
-void aapiSspReqCbk(const bt_bdaddr_t *remote_bd_addr, const bt_bdname_t *bd_name, uint32_t devCls, bt_ssp_variant_t pairing_variant, uint32_t pass_key)
+void aapiSspReqCbk(const struct bt_addr *peer, const bt_bdname_t *bd_name, uint32_t devCls, bt_ssp_variant_t pairing_variant, uint32_t pass_key)
 {
     struct aapiWorkItem* wi = aapiWorkItemAlloc(WT_SSP_REQ, 0);
 
@@ -1094,7 +1093,7 @@ void aapiSspReqCbk(const bt_bdaddr_t *remote_bd_addr, const bt_bdname_t *bd_name
     wi->sspReq.cod = devCls;
     wi->sspReq.pairing_variant = pairing_variant;
     wi->sspReq.pass_key = pass_key;
-    memcpy(&wi->sspReq.remote_bd_addr, remote_bd_addr, sizeof(wi->sspReq.remote_bd_addr));
+    memcpy(&wi->sspReq.remote_bd_addr.address, peer->addr, sizeof(wi->sspReq.remote_bd_addr.address));
     memcpy(&wi->sspReq.bd_name, bd_name, sizeof(wi->sspReq.bd_name));
     aapiWorkItemEnqueue(wi);
 }
@@ -1103,12 +1102,12 @@ void aapiSspReqCbk(const bt_bdaddr_t *remote_bd_addr, const bt_bdname_t *bd_name
  * FUNCTION: aapiBondStateChangedCbk
  * USE:      Notify android about bonding changes
  * PARAMS:   status - the atatus
- *           remote_bd_addr - remote device address (a copy is made)
+ *           peer - remote device address (a copy is made)
  *           state - what happened to the bond
  * RETURN:   NONE
  * NOTES:
  */
-void aapiBondStateChangedCbk(bt_status_t status, const bt_bdaddr_t *remote_bd_addr, bt_bond_state_t state)
+void aapiBondStateChangedCbk(bt_status_t status, const struct bt_addr *peer, bt_bond_state_t state)
 {
     struct aapiWorkItem* wi = aapiWorkItemAlloc(WT_BOND_STATE_CHG, 0);
 
@@ -1117,7 +1116,7 @@ void aapiBondStateChangedCbk(bt_status_t status, const bt_bdaddr_t *remote_bd_ad
 
     wi->stateCbk.status = status;
     wi->stateCbk.state = state;
-    memcpy(&wi->stateCbk.remote_bd_addr, remote_bd_addr, sizeof(wi->stateCbk.remote_bd_addr));
+    memcpy(&wi->stateCbk.remote_bd_addr.address, peer->addr, sizeof(wi->stateCbk.remote_bd_addr.address));
     aapiWorkItemEnqueue(wi);
 }
 
@@ -1125,12 +1124,12 @@ void aapiBondStateChangedCbk(bt_status_t status, const bt_bdaddr_t *remote_bd_ad
  * FUNCTION: aapiAclStateChanged
  * USE:      Notify android about an ACL link being established
  * PARAMS:   status - the atatus
- *           remote_bd_addr - remote device address (a copy is made)
- *           state - what happened to the bond
+ *           peer - remote device address (a copy is made)
+ *           up - was link brought up or did it come down
  * RETURN:   NONE
  * NOTES:
  */
-void aapiAclStateChanged(bt_status_t status, const bt_bdaddr_t *remote_bd_addr, bt_acl_state_t state)
+void aapiAclStateChanged(bt_status_t status, const struct bt_addr *peer, bool up)
 {
     struct aapiWorkItem* wi = aapiWorkItemAlloc(WT_ACL_STATE_CHG, 0);
 
@@ -1138,8 +1137,8 @@ void aapiAclStateChanged(bt_status_t status, const bt_bdaddr_t *remote_bd_addr, 
         return;
 
     wi->stateCbk.status = status;
-    wi->stateCbk.state = state;
-    memcpy(&wi->stateCbk.remote_bd_addr, remote_bd_addr, sizeof(wi->stateCbk.remote_bd_addr));
+    wi->stateCbk.state = up ? BT_ACL_STATE_CONNECTED : BT_ACL_STATE_DISCONNECTED;
+    memcpy(&wi->stateCbk.remote_bd_addr.address, peer->addr, sizeof(wi->stateCbk.remote_bd_addr.address));
     aapiWorkItemEnqueue(wi);
 }
 
