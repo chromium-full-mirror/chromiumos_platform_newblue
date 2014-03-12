@@ -1341,11 +1341,24 @@ void hciDown(void)
         mEvtWaitHead->cbk(NULL, mEvtWaitHead->cbkData, mEvtWaitHead->evtWaitStateID, mEvtWaitHead->forCmdID);
         hciEvtWaitDequeueInt(mEvtWaitHead);
     }
+    while (mConns) {
+        struct hciAclConn *t = mConns;
+        mConns = mConns->next;
+        free(t);
+    }
     pthread_mutex_unlock(&mCmdWaitLock);
 
-
-
     //more deinit here
+    pthread_mutex_lock(&mDiscoveryStateLock);
+    mDiscoverEdrHandle = 0;
+    mDiscoverLeHandle = 0;
+    while (mDiscoverNames) {
+        struct hciDiscoverNameState *t = mDiscoverNames;
+        mDiscoverNames = mDiscoverNames->next;
+        free(t);
+    }
+    pthread_mutex_unlock(&mDiscoveryStateLock);
+
     workQueueWakeAll(mCallbackWork, 1);
     workQueueWakeAll(mCmdsSendWork, 1);
     sem_post(&mCmdSendSem); /* wakes up cmdSend worker if it is waiting on a cmd credit */
@@ -3479,6 +3492,13 @@ bool hciDiscoverEdrStop(uniq_t handle)
         handle = 0;
     else
         mDiscoverEdrHandle = uniqGetNext(); /* not us so nobdy can re-cancel. not zero so nobody can start another scan */
+
+    while (mDiscoverNames) {
+        struct hciDiscoverNameState *t = mDiscoverNames;
+        mDiscoverNames = mDiscoverNames->next;
+        free(t);
+    }
+
     pthread_mutex_unlock(&mDiscoveryStateLock);
 
     hciInquiryCancelSync();
