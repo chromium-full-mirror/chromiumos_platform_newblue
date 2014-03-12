@@ -459,15 +459,15 @@ static struct workQueue *mServiceWork = NULL;
 static pthread_mutex_t mSvcsLock = PTHREAD_MUTEX_INITIALIZER;
 static struct l2cPsmSvc *mPsmSvcs = NULL;
 static struct l2cFixedChSvc *mFixedSvcs = NULL;
-static psm_t nextPsm = 0x1001;
+static psm_t mNextPsm;
 
 static pthread_mutex_t mConnsLock = PTHREAD_MUTEX_INITIALIZER;
 static struct l2cAclConn *mAclConns = NULL;
 static struct l2cConn *mConns = NULL;
 static sg mQueueBufLe = NULL;
 static sg mQueueBufEdr = NULL;
-static bool mQueueFirstLe = true;
-static bool mQueueFirstEdr = true;
+static bool mQueueFirstLe;
+static bool mQueueFirstEdr;
 static hci_conn_t mQueueConnLe = 0;
 static hci_conn_t mQueueConnEdr = 0;
 static struct l2cSigPduSendItem *sigSendHeadEdr = NULL;
@@ -2975,6 +2975,13 @@ int l2cInit(void)
     int i, ret;
 
 
+    mNextPsm = 0x1001;
+
+    mQueueFirstLe = true;
+    mQueueFirstEdr = true;
+    mQueueConnLe = 0;
+    mQueueConnEdr = 0;
+
     mServiceWork = workQueueAlloc(L2C_SVC_NUM_OUTSTANDING_REQS);
     if (!mServiceWork){
         loge("Failed to allocate service workqueue\n");
@@ -3012,6 +3019,59 @@ out_service_thread:
 out_service_q:
     return ret;
 }
+
+/*
+ * FUNCTION: l2cDeinit
+ * USE:      Unilaterally (and quickly) close l2cap
+ * PARAMS:   NONE
+ * RETURN:   NONE
+ * NOTES:    the other side never gets to know what hit it
+ */
+void l2cDeinit(void)
+{
+    pthread_mutex_lock(&mConnsLock);
+    while (mAclConns)
+        l2cAclLinkDownInt(mAclConns, false);
+    if (mConns)
+        logw("Connections list not empty even when all acl links closed\n");
+    mConns = NULL;
+    pthread_mutex_unlock(&mConnsLock);
+    while (mPsmSvcs)
+        l2cApiServicePsmUnregister(mPsmSvcs->psm, NULL, NULL);
+    while (mFixedSvcs)
+        l2cApiServiceFixedChUnregister(mFixedSvcs->chan, NULL, NULL);
+
+    if (mQueueBufLe)
+        sgFree(mQueueBufLe);
+
+    if (mQueueBufEdr)
+        sgFree(mQueueBufEdr);
+
+    mQueueBufLe = NULL;
+    mQueueBufEdr = NULL;
+
+    while (sigSendHeadEdr) {
+        sigSendTailEdr = sigSendHeadEdr;
+        sigSendHeadEdr = sigSendHeadEdr->next;
+        sgFree(sigSendTailEdr->pdu);
+        free(sigSendTailEdr);
+    }
+    sigSendTailEdr = NULL;
+
+    while (sigSendHeadLe) {
+        sigSendTailLe = sigSendHeadEdr;
+        sigSendHeadLe = sigSendHeadLe->next;
+        sgFree(sigSendTailLe->pdu);
+        free(sigSendTailLe);
+    }
+    sigSendTailLe = NULL;
+
+    multiNotifDestroy(mWriteNotif);
+    workQueueWakeAll(mServiceWork, 1);
+    pthread_join(mSvcWorker, NULL);
+    workQueueFree(mServiceWork, l2cWorkFreeService);
+}
+
 
 /*
  * FUNCTION: l2cConnStructDelete
@@ -3570,19 +3630,19 @@ psm_t l2cApiServicePsmRegister(psm_t psm, const struct l2cServicePsmDescriptor *
         if (l2cPsmSvcFindByPsm(psm))
             psm = 0;
     } else {     /* find a free one */
-        psm_t orig_next_psm = nextPsm;
+        psm_t orig_next_psm = mNextPsm;
 
         do {
-            uint64_t nextPsm_t = nextPsm + 2; /* only odds allowed */
-            psm = nextPsm;
+            uint64_t mNextPsm_t = mNextPsm + 2; /* only odds allowed */
+            psm = mNextPsm;
 
             /* calculate the next potential valid PSM */
-            nextPsm += 2;
-            if (nextPsm_t & 0x0100) /* no low bit on high byte alowed */
-                nextPsm_t += 0x100;
-            if (nextPsm_t < 0x1000 || nextPsm_t > 0xFFFF) /* enforce max and min */
-                nextPsm_t = 0x1001;
-            nextPsm = nextPsm_t;
+            mNextPsm += 2;
+            if (mNextPsm_t & 0x0100) /* no low bit on high byte alowed */
+                mNextPsm_t += 0x100;
+            if (mNextPsm_t < 0x1000 || mNextPsm_t > 0xFFFF) /* enforce max and min */
+                mNextPsm_t = 0x1001;
+            mNextPsm = mNextPsm_t;
 
             /* check if existing PSM is taken */
             if (l2cPsmSvcFindByPsm(psm))
@@ -3590,7 +3650,7 @@ psm_t l2cApiServicePsmRegister(psm_t psm, const struct l2cServicePsmDescriptor *
             else
                 break;
 
-        } while(nextPsm != orig_next_psm);
+        } while(mNextPsm != orig_next_psm);
     }
 
     if (psm) { /* we have one that we can use */
@@ -3629,10 +3689,14 @@ bool l2cApiServicePsmUnregister(psm_t psm, void (*doneCbk)(void*), void* cbkData
     do {
          anythingDone = false;
          conn = mConns;
-         if (conn->psm == psm && !conn->weOpened) {
+         while (conn){
+             if (conn->psm == psm && !conn->weOpened) {
 
-             l2cConnRequestClose(NULL, conn, true);
-             anythingDone = true;
+                 l2cConnRequestClose(NULL, conn, true);
+                 anythingDone = true;
+                 break;
+             }
+             conn = conn->next;
          }
 
     } while(anythingDone);
@@ -4767,22 +4831,4 @@ void l2cAclLinkEncrChange(hci_conn_t aclConnID, bool isEncrypted)
         logd("Link acl "HCI_CONN_FMT"x not found. Encr change ignored.\n", HCI_CONN_CONV(aclConnID));
     pthread_mutex_unlock(&mConnsLock);
 }
-
-/*
- * FUNCTION: l2cDeinit
- * USE:      Unilaterally (and quickly) close l2cap
- * PARAMS:   NONE
- * RETURN:   NONE
- * NOTES:    the other side never gets to know what hit it
- */
-void l2cDeinit(void)
-{
-    pthread_mutex_lock(&mConnsLock);
-    while (mAclConns)
-        l2cAclLinkDownInt(mAclConns, false);
-
-    pthread_mutex_unlock(&mConnsLock);
-}
-
-
 
