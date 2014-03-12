@@ -13,10 +13,10 @@ LOCAL_SRC_FILES += aapi.c aapiSocket.c aapiGatt.c aapiGattClient.c aapiGattServe
 LOCAL_MODULE_PATH := $(TARGET_OUT_SHARED_LIBRARIES)/hw
 LOCAL_SHARED_LIBRARIES += liblog
 include $(BUILD_SHARED_LIBRARY)
-#end
-#for executable
+
+##for executable
 #LOCAL_SRC_FILES += test.c
 #LOCAL_MODULE := new_blue_test
 #LOCAL_CFLAGS += -DEXECUTABLE
 #include $(BUILD_EXECUTABLE)
-#endif
+

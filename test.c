@@ -6,8 +6,9 @@
 #include "rfcomm.h"
 #include "timer.h"
 #include "l2cap.h"
-#include "hci.h"
+#include "aapi.h"
 #include "util.h"
+#include "hci.h"
 #include "log.h"
 #include "sdp.h"
 #include "bt.h"
@@ -390,4 +391,70 @@ int main(int argc, char** argv)
 }
 
 
+
+
+
+
+
+
+
+
+
+
+void aapiAdapterStateChanged(bool on)
+{
+    logd("aapiAdapterStateChanged(%d)\n", on);
+}
+
+
+void aapiAdapterProperties(bt_status_t status, int num_properties, const bt_property_t *properties)
+{
+    logd("aapiAdapterProperties(...)\n");
+}
+
+void aapiRemoteDevProperties(bt_status_t status, const bt_bdaddr_t *bd_addr, int num_properties, const bt_property_t *properties)
+{
+    logd("aapiRemoteDevProperties(...)\n");
+}
+
+void aapiDevDiscoveredCbk(int num_properties, const bt_property_t *properties)
+{
+    logd("aapiDevDiscoveredCbk(...)\n");
+}
+
+void aapiDiscoveryStateChanged(bool on)
+{
+    logd("aapiDiscoveryStateChanged(%d)\n", on);
+}
+
+
+void aapiPinReqCbk(const struct bt_addr *peer, const bt_bdname_t *bd_name, uint32_t devCls)
+{
+    logd("aapiPinReqCbk(...)\n");
+}
+
+void aapiSspReqCbk(const struct bt_addr *peer, const bt_bdname_t *bd_name, uint32_t devCls, bt_ssp_variant_t pairing_variant, uint32_t pass_key)
+{
+    logd("aapiSspReqCbk(...)\n");
+}
+
+void aapiBondStateChangedCbk(bt_status_t status, const struct bt_addr *peer, bt_bond_state_t state)
+{
+    logd("aapiBondStateChangedCbk(...)\n");
+}
+
+void aapiAclStateChanged(bt_status_t status, const struct bt_addr *peer, bool up)
+{
+    logd("aapiAclStateChanged(..., %d)\n", up);
+}
+
+void aapiDutModeEventCbk(uint16_t opcode, const uint8_t *buf, uint8_t len)
+{
+    logd("aapiDutModeEventCbk(...)\n");
+}
+
+void aapiLeTestModeEventCbk(bt_status_t status, uint16_t num_packets)
+{
+    logd("aapiLeTestModeEventCbk(...)\n");
+}
 
