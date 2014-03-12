@@ -143,5 +143,13 @@ bool hciConnRequestReplyYes(const struct bt_addr *addr, bool becomeMaster);
 bool hciConnRequestReplyNo(const struct bt_addr *addr);
 
 
+/* ssp & pin things */
+void hciSecUserCbkPinCodeReq(const struct bt_addr *addr, const uint8_t *pin, uint8_t len);
+void hciSecUserCbkSspUserPasskeyReq(const struct bt_addr *addr, uint32_t numeric);
+void hciSecUserCbkSspUserPasskeyReqProgress(const struct bt_addr *addr, uint8_t evt); //HCI_SSP_ENTRY_*
+void hciSecUserCbkSspUserOobReq(const struct bt_addr *addr, const uint8_t *C, const uint8_t *R); //for OOB pairing (unused for now)
+void hciSecUserCbkSspIoCapabilityReq(const struct bt_addr *addr, uint8_t cap, bool haveOobData, uint8_t authReq); // unused for now
+void hciSecUserCbkSspUserConfirmationReq(const struct bt_addr *addr, bool confirmed);
+
 #endif
 

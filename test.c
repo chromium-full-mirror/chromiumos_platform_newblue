@@ -430,15 +430,28 @@ void aapiDiscoveryStateChanged(bool on)
 
 void aapiPinReqCbk(const struct bt_addr *peer, const bt_bdname_t *bd_name, uint32_t devCls)
 {
+    const uint8_t pin[4] = {'1','2','3','4'};
+
     logd("aapiPinReqCbk(...)\n");
+    logd("pin is '1234'\n");
+    hciSecUserCbkPinCodeReq(peer, pin, sizeof(pin));
 }
 
 void aapiSspReqCbk(const struct bt_addr *peer, const bt_bdname_t *bd_name, uint32_t devCls, bt_ssp_variant_t pairing_variant, uint32_t pass_key)
 {
     logd("aapiSspReqCbk(...)\n");
+    if (pairing_variant == BT_SSP_VARIANT_PASSKEY_ENTRY) {
+        logd("entering all zeroes since we do not support number entry for SSP\n");
+        hciSecUserCbkSspUserPasskeyReq(peer, 0);
+    } else if (pairing_variant == BT_SSP_VARIANT_PASSKEY_CONFIRMATION) {
+        logd("confirming display of '%06u'\n", pass_key);
+        hciSecUserCbkSspUserConfirmationReq(peer, true);
+    } else if (pairing_variant == BT_SSP_VARIANT_PASSKEY_NOTIFICATION) {
+        logd("Numeric: '%06u'\n", pass_key);
+    }
 }
 
-void aapiBondStateChangedCbk(bt_status_t status, const struct bt_addr *peer, bt_bond_state_t state)
+void aapiBondStateChangedCbk(const struct bt_addr *peer, uint8_t state)
 {
     logd("aapiBondStateChangedCbk(...)\n");
 }

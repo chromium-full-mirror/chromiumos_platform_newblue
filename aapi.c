@@ -164,13 +164,24 @@ static int aapiDutEnable(uint8_t enable)
  */
 static int aapiSspReply(const bt_bdaddr_t *bd_addr, bt_ssp_variant_t variant, uint8_t accept, uint32_t passkey)
 {
-    /** BT SSP Reply - Just Works, Numeric Comparison and Passkey
-     * passkey shall be zero for BT_SSP_VARIANT_PASSKEY_COMPARISON &
-     * BT_SSP_VARIANT_CONSENT
-     * For BT_SSP_VARIANT_PASSKEY_ENTRY, if accept==FALSE, then passkey
-     * shall be zero */
+    struct bt_addr addr;
     logd("AAPI: ssp reply\n");
-    //TODO
+
+    memcpy(addr.addr, bd_addr->address, sizeof(addr.addr));
+    addr.type = BT_ADDR_TYPE_EDR; /* XXX: this is a bug in android's api, but we must live with it (for now) */
+
+    switch (variant) {
+    case BT_SSP_VARIANT_PASSKEY_CONFIRMATION:
+        hciSecUserCbkSspUserConfirmationReq(&addr, accept);
+        break;
+    case BT_SSP_VARIANT_PASSKEY_ENTRY:
+        hciSecUserCbkSspUserPasskeyReq(&addr, accept ? passkey : HCI_SSP_NUMERIC_INVALID);
+        break;
+    case BT_SSP_VARIANT_CONSENT:
+    case BT_SSP_VARIANT_PASSKEY_NOTIFICATION:
+        logw("unexpected pair type %u\n", variant);
+        break;
+    }
     return 0;
 }
 
@@ -186,9 +197,13 @@ static int aapiSspReply(const bt_bdaddr_t *bd_addr, bt_ssp_variant_t variant, ui
  */
 static int aapiPinReply(const bt_bdaddr_t *bd_addr, uint8_t accept, uint8_t pin_len, bt_pin_code_t *pin_code)
 {
-    /** If accept==FALSE, then pin_len and pin_code shall be 0x0 */
+    struct bt_addr addr;
     logd("AAPI: pin reply(%ub)\n", pin_len);
-    //TODO
+ 
+    memcpy(addr.addr, bd_addr->address, sizeof(addr.addr));
+    addr.type = BT_ADDR_TYPE_EDR; /* XXX: this is a bug in android's api, but we must live with it (for now) */
+
+    hciSecUserCbkPinCodeReq(&addr, accept ? pin_code->pin : NULL, accept ? pin_len : 0);
     return 0;
 }
 
@@ -1068,7 +1083,8 @@ void aapiPinReqCbk(const struct bt_addr *peer, const bt_bdname_t *bd_name, uint3
 
     wi->pinReq.cod = devCls;
     memcpy(&wi->pinReq.remote_bd_addr.address, peer->addr, sizeof(wi->pinReq.remote_bd_addr.address));
-    memcpy(&wi->pinReq.bd_name, bd_name, sizeof(wi->pinReq.bd_name));
+    if (bd_name)
+        memcpy(&wi->pinReq.bd_name, bd_name, sizeof(wi->pinReq.bd_name));
     aapiWorkItemEnqueue(wi);
 }
 
@@ -1094,28 +1110,41 @@ void aapiSspReqCbk(const struct bt_addr *peer, const bt_bdname_t *bd_name, uint3
     wi->sspReq.pairing_variant = pairing_variant;
     wi->sspReq.pass_key = pass_key;
     memcpy(&wi->sspReq.remote_bd_addr.address, peer->addr, sizeof(wi->sspReq.remote_bd_addr.address));
-    memcpy(&wi->sspReq.bd_name, bd_name, sizeof(wi->sspReq.bd_name));
+    if (bd_name)
+        memcpy(&wi->sspReq.bd_name, bd_name, sizeof(wi->sspReq.bd_name));
     aapiWorkItemEnqueue(wi);
 }
 
 /*
  * FUNCTION: aapiBondStateChangedCbk
  * USE:      Notify android about bonding changes
- * PARAMS:   status - the atatus
- *           peer - remote device address (a copy is made)
- *           state - what happened to the bond
+ * PARAMS:   peer - remote device address (a copy is made)
+ *           state - AAPI_BOND_STATE_*
  * RETURN:   NONE
  * NOTES:
  */
-void aapiBondStateChangedCbk(bt_status_t status, const struct bt_addr *peer, bt_bond_state_t state)
+void aapiBondStateChangedCbk(const struct bt_addr *peer, uint8_t state)
 {
     struct aapiWorkItem* wi = aapiWorkItemAlloc(WT_BOND_STATE_CHG, 0);
 
     if (!wi)
         return;
 
-    wi->stateCbk.status = status;
-    wi->stateCbk.state = state;
+    switch (state) {
+    case AAPI_BOND_STATE_FAILED:
+        wi->stateCbk.status = AAPI_BOND_STATE_FAILED;
+        wi->stateCbk.state = BT_BOND_STATE_NONE;
+        break;
+    case AAPI_BOND_STATE_INPROGRESS:
+        wi->stateCbk.status = AAPI_BOND_STATE_SUCCESS;
+        wi->stateCbk.state = BT_BOND_STATE_BONDING;
+        break;
+    case AAPI_BOND_STATE_SUCCESS:
+        wi->stateCbk.status = AAPI_BOND_STATE_SUCCESS;
+        wi->stateCbk.state = BT_BOND_STATE_BONDED;
+        break;
+    }
+
     memcpy(&wi->stateCbk.remote_bd_addr.address, peer->addr, sizeof(wi->stateCbk.remote_bd_addr.address));
     aapiWorkItemEnqueue(wi);
 }

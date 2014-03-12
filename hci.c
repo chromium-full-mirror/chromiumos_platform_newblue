@@ -18,6 +18,7 @@
 #include "config.h"
 #include "l2cap.h"
 #include "stack.h"
+#include "aapi.h"
 #include "util.h"
 #include "uniq.h"
 #include "hci.h"
@@ -2497,13 +2498,12 @@ bool hciConnRequestReplyNo(const struct bt_addr *addr)
  * FUNCTION: hciSecUserCbkPinCodeReq
  * USE:      Called externally to give us the PIN to use for a connection
  * PARAMS:   addr - the address of peer
- *           cbkData - data we sent to external code
  *           pin - the pin
  *           len - pin length 1..HCI_PIN_MAX_LEN or 0 for none
  * RETURN:   NONE
  * NOTES:
  */
-static void hciSecUserCbkPinCodeReq(const struct bt_addr *addr, void *cbkData, const uint8_t *pin, uint8_t len)
+void hciSecUserCbkPinCodeReq(const struct bt_addr *addr, const uint8_t *pin, uint8_t len)
 {
     struct hciPinCodeRequestNegativeReply cmdN;
     struct hciPinCodeRequestReply cmdY;
@@ -2568,14 +2568,13 @@ static void hciSecUserCbkLinkKeyReq(const struct bt_addr *addr, void *cbkData, c
  * FUNCTION: hciSecUserCbkSspIoCapabilityReq
  * USE:      Called externally to give us our IO capabilities
  * PARAMS:   addr - the address of peer
- *           cbkData - data we sent to external code
  *           cap - our capabilities (HCI_DISP_CAP_*)
  *           haveOobData - do we have OOB data
  *           authReq - what we want (HCI_AUTH_REQMENT_*) or HCI_AUTH_REQMENT_CANCEL_SSP
  * RETURN:   NONE
  * NOTES:
  */
-static void hciSecUserCbkSspIoCapabilityReq(const struct bt_addr *addr, void *cbkData, uint8_t cap, bool haveOobData, uint8_t authReq)
+void hciSecUserCbkSspIoCapabilityReq(const struct bt_addr *addr, uint8_t cap, bool haveOobData, uint8_t authReq)
 {
     struct hciIoCapabilityRequestNegativeReply cmdN;
     struct hciIoCapabilityRequestReply cmdY;
@@ -2606,12 +2605,11 @@ static void hciSecUserCbkSspIoCapabilityReq(const struct bt_addr *addr, void *cb
  * FUNCTION: hciSecUserCbkSspUserConfirmationReq
  * USE:      Called externally to give us confrimation (or not) of number displayed
  * PARAMS:   addr - the address of peer
- *           cbkData - data we sent to external code
  *           confirmed - confirmed?
  * RETURN:   NONE
  * NOTES:
  */
-static void hciSecUserCbkSspUserConfirmationReq(const struct bt_addr *addr, void *cbkData, bool confirmed)
+void hciSecUserCbkSspUserConfirmationReq(const struct bt_addr *addr, bool confirmed)
 {
     struct hciUserConfRequestNegativeReply cmdN;
     struct hciUserConfRequestReply cmdY;
@@ -2638,12 +2636,11 @@ static void hciSecUserCbkSspUserConfirmationReq(const struct bt_addr *addr, void
  * FUNCTION: hciSecUserCbkSspUserPasskeyReq
  * USE:      Called externally to give us the number user entered
  * PARAMS:   addr - the address of peer
- *           cbkData - data we sent to external code
  *           numeric - what user entered or HCI_SSP_NUMERIC_INVALID if user cancelled
  * RETURN:   NONE
  * NOTES:
  */
-static void hciSecUserCbkSspUserPasskeyReq(const struct bt_addr *addr, void *cbkData, uint32_t numeric)
+void hciSecUserCbkSspUserPasskeyReq(const struct bt_addr *addr, uint32_t numeric)
 {
     struct hciUserPasskeyRequestNegativeReply cmdN;
     struct hciUserPasskeyRequestReply cmdY;
@@ -2671,12 +2668,11 @@ static void hciSecUserCbkSspUserPasskeyReq(const struct bt_addr *addr, void *cbk
  * FUNCTION: hciSecUserCbkSspUserPasskeyReqProgress
  * USE:      Called externally to give us the user's progress on number entry
  * PARAMS:   addr - the address of peer
- *           cbkData - data we sent to external code
  *           evt - the user event (HCI_SSP_ENTRY_*)
  * RETURN:   NONE
  * NOTES:
  */
-static void hciSecUserCbkSspUserPasskeyReqProgress(const struct bt_addr *addr, void *cbkData, uint8_t evt)
+void hciSecUserCbkSspUserPasskeyReqProgress(const struct bt_addr *addr, uint8_t evt)
 {
     struct hciSendKeypressNotification cmd;
 
@@ -2702,7 +2698,7 @@ static void hciSecUserCbkSspUserPasskeyReqProgress(const struct bt_addr *addr, v
  * RETURN:   NONE
  * NOTES:
  */
-static void hciSecUserCbkSspUserOobReq(const struct bt_addr *addr, void *cbkData, const uint8_t *C, const uint8_t *R)
+void hciSecUserCbkSspUserOobReq(const struct bt_addr *addr, const uint8_t *C, const uint8_t *R)
 {
     struct hciRemoteOobDataRequestNegativeReply cmdN;
     struct hciRemoteOobDataRequestReply cmdY;
@@ -2750,10 +2746,8 @@ static bool hciSecUserEvtCbk(const struct hciEvtHdr *evtHdr, void *cbkData, uniq
         struct hciEvtPinCodeReq *evt = (struct hciEvtPinCodeReq*)(evtHdr + 1);
 
         memcpy(addr.addr, evt->mac, sizeof(addr.addr));
-        if (!stackPinCodeRequest(&addr, hciSecUserCbkPinCodeReq, NULL)) {
-            logw("callback for EDR security event 0x%02X failed -> sending negative reply\n", evtType);
-            hciSecUserCbkPinCodeReq(&addr, NULL, NULL, 0);
-        }
+        aapiBondStateChangedCbk(&addr, AAPI_BOND_STATE_INPROGRESS);
+        aapiPinReqCbk(&addr, NULL /* TODO: name */, 0 /* TODO :devCls*/);
     } else if (evtType == HCI_EVT_Link_Key_Request) {
         struct hciEvtPinCodeReq *evt = (struct hciEvtPinCodeReq*)(evtHdr + 1);
 
@@ -2773,61 +2767,50 @@ static bool hciSecUserEvtCbk(const struct hciEvtHdr *evtHdr, void *cbkData, uniq
         struct hciEvtIoCapRequest *evt = (struct hciEvtIoCapRequest*)(evtHdr + 1);
 
         memcpy(addr.addr, evt->mac, sizeof(addr.addr));
-        if (!stackSspIoCapabilityReq(&addr, hciSecUserCbkSspIoCapabilityReq, NULL)) {
-            logw("callback for EDR security event 0x%02X failed -> sending negative reply\n", evtType);
-            hciSecUserCbkSspIoCapabilityReq(&addr, NULL, 0, false, HCI_AUTH_REQMENT_CANCEL_SSP);
-        }
+        aapiBondStateChangedCbk(&addr, AAPI_BOND_STATE_INPROGRESS);
+        /* we just reply inline here, though we really should do something cleverer */
+        hciSecUserCbkSspIoCapabilityReq(&addr, HCI_DISP_CAP_DISP_YES_NO, false, HCI_AUTH_REQMENT_MITM_PROT_GENERAL_BOND);
     } else if (evtType == HCI_EVT_IO_Capability_Response) {
         struct hciEvtIoCapResponse *evt = (struct hciEvtIoCapResponse*)(evtHdr + 1);
 
         memcpy(addr.addr, evt->mac, sizeof(addr.addr));
-        if (!stackSspIoCapabilityNotif(&addr, utilGetLE8(&evt->ioCapability), !!utilGetLE8(&evt->oobDataPresent), utilGetLE8(&evt->authReqments)))
-            logw("callback for EDR security event 0x%02X failed\n", evtType);
+        logd("Remote dev capabilities: %u oob %u authReq %u\n", utilGetLE8(&evt->ioCapability), !!utilGetLE8(&evt->oobDataPresent), utilGetLE8(&evt->authReqments));
 
     } else if (evtType == HCI_EVT_User_Confirmation_Request) {
         struct hciEvtUserConfRequest *evt = (struct hciEvtUserConfRequest*)(evtHdr + 1);
 
         memcpy(addr.addr, evt->mac, sizeof(addr.addr));
-        if (!stackSspUserConfirmationReq(&addr, utilGetLE32(&evt->numericValue), hciSecUserCbkSspUserConfirmationReq, NULL)) {
-            logw("callback for EDR security event 0x%02X failed -> sending negative reply\n", evtType);
-            hciSecUserCbkSspUserConfirmationReq(&addr, NULL, false);
-        }
+        aapiSspReqCbk(&addr, NULL /* TODO: name */, 0 /* TODO :devCls*/, BT_SSP_VARIANT_PASSKEY_CONFIRMATION, utilGetLE32(&evt->numericValue));
+
     } else if (evtType == HCI_EVT_User_Passkey_Request) {
         struct hciEvtUserPasskeyRequest *evt = (struct hciEvtUserPasskeyRequest*)(evtHdr + 1);
 
         memcpy(addr.addr, evt->mac, sizeof(addr.addr));
-        if (!stackSspUserPasskeyReq(&addr, hciSecUserCbkSspUserPasskeyReq, NULL, hciSecUserCbkSspUserPasskeyReqProgress, NULL)) {
-            logw("callback for EDR security event 0x%02X failed -> sending negative reply\n", evtType);
-            hciSecUserCbkSspUserPasskeyReq(&addr, NULL, HCI_SSP_NUMERIC_INVALID);
-        }
+        aapiSspReqCbk(&addr, NULL /* TODO: name */, 0 /* TODO :devCls*/, BT_SSP_VARIANT_PASSKEY_ENTRY, 0);
     } else if (evtType == HCI_EVT_Remote_OOB_Data_Request) {
         struct hciEvtRemoteOobRequest *evt = (struct hciEvtRemoteOobRequest*)(evtHdr + 1);
 
         memcpy(addr.addr, evt->mac, sizeof(addr.addr));
-        if (!stackSspUserOobReq(&addr, hciSecUserCbkSspUserOobReq, NULL)) {
-            logw("callback for EDR security event 0x%02X failed -> sending negative reply\n", evtType);
-            hciSecUserCbkSspUserOobReq(&addr, NULL, NULL, NULL);
-        }
+        logd("Denying OOB request for SSP\n");
+        hciSecUserCbkSspUserOobReq(&addr, NULL, NULL);
+
     } else if (evtType == HCI_EVT_Simple_Pairing_Complete) {
         struct hciEvtSimplePairingComplete *evt = (struct hciEvtSimplePairingComplete*)(evtHdr + 1);
 
         memcpy(addr.addr, evt->mac, sizeof(addr.addr));
-        if (!stackSspComplete(&addr, !utilGetLE8(&evt->status)))
-            logw("callback for EDR security event 0x%02X failed\n", evtType);
+        aapiBondStateChangedCbk(&addr, utilGetLE8(&evt->status) ? AAPI_BOND_STATE_FAILED : AAPI_BOND_STATE_SUCCESS);
 
     } else if (evtType == HCI_EVT_User_Passkey_Notification) {
         struct hciEvtUserPasskeyNotif *evt = (struct hciEvtUserPasskeyNotif*)(evtHdr + 1);
 
         memcpy(addr.addr, evt->mac, sizeof(addr.addr));
-        if (!stackSspUserPasskeyNotif(&addr, utilGetLE32(&evt->passkey)))
-            logw("callback for EDR security event 0x%02X failed\n", evtType);
+        aapiSspReqCbk(&addr, NULL /* TODO: name */, 0 /* TODO :devCls*/, BT_SSP_VARIANT_PASSKEY_NOTIFICATION, utilGetLE32(&evt->passkey));
 
     } else if (evtType == HCI_EVT_Keypress_Notification) {
         struct hciEvtKeypressNotification *evt = (struct hciEvtKeypressNotification*)(evtHdr + 1);
 
         memcpy(addr.addr, evt->mac, sizeof(addr.addr));
-        if (!stackSspRemoteEntryNotif(&addr, utilGetLE8(&evt->notifType)))
-            logw("callback for EDR security event 0x%02X failed\n", evtType);
+        logi("Dropping remote SSP passkey key entry event %u\n", utilGetLE8(&evt->notifType));
 
     } else
         return false;
