@@ -86,7 +86,7 @@ static struct workQueue *mWorkQ;
 //TODO: mutex around these!
 static bt_bdaddr_t mLocalMac = {{0x11, 0x22, 0x33, 0x44, 0x55, 0x66}};
 static bt_bdname_t mLocalName = {{"NewBlue.test\0"}};
-static uint32_t mDevCls = 0x20C; /* smartphone */
+static uint32_t mDevCls = 0xCC0704; //wristwatch (0x20C is smartphone)
 static bt_scan_mode_t mScanMode = BT_SCAN_MODE_NONE;
 static bt_device_type_t mDevType = BT_DEVICE_DEVTYPE_DUAL;
 static uint32_t mDiscoveryTimeout = 60 ;/* in seconds */
@@ -388,6 +388,13 @@ static int aapiGetSomeAdapterProperties(bt_status_t statToSend, const bt_propert
 
     if (!typeP || *typeP == BT_PROPERTY_CLASS_OF_DEVICE) {
         props[numProps].type = BT_PROPERTY_CLASS_OF_DEVICE;
+        props[numProps].len = sizeof(mDevCls);
+        props[numProps].val = &mDevCls;
+        numProps++;
+    }
+
+    if (!typeP || *typeP == BT_PROPERTY_TYPE_OF_DEVICE) {
+        props[numProps].type = BT_PROPERTY_TYPE_OF_DEVICE;
         props[numProps].len = sizeof(mDevType);
         props[numProps].val = &mDevType;
         numProps++;
@@ -534,6 +541,7 @@ static void aapiEnableOpDoneCbk(void *cbkData, uint8_t status)
         aapiAdapterStateChanged(false);
     }
 
+    logd("aapi init step %u done\n", step);
     switch (step) {
     case 0:
         if (hciSetDeviceClass(mDevCls, aapiEnableOpDoneCbk, (void*)(step + 1)))
