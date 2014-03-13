@@ -278,6 +278,23 @@ bool sdpServiceDescriptorDel(uint32_t handle)
  */
 static bool sdpSend(struct sdpInst *inst, sg s)
 {
+#ifdef SDP_DBG
+    char line[128] = "SDP TX <ZLP>";
+    uint32_t i;
+    uint8_t v;
+
+    for(i = 0; i < sgLength(s); i++) {
+        sgSerialize(s, i, 1, &v);
+        if (i & 15)
+            sprintf(line + strlen(line), " %02X", v);
+        else {
+            if (i)
+                logd(line);
+            sprintf(line, "SDP TX [%03X] %02X", i, v);
+        }
+    }
+    logd(line);
+#endif
     return sendQueueTx(mSendQ, inst->conn, s);
 }
 
@@ -1173,7 +1190,7 @@ static bool sdpSSAR(struct sdpInst *inst, uint16_t transact, sg req)
     struct uuid searchReq[SDP_MAX_UUIDS_IN_SEARCH];
     struct sdpSearchResultNode *searchRes;
     uint16_t maxRetBytes;
-    uint8_t searchReqNum;
+    uint8_t i, searchReqNum;
     uint16_t err;
     bool ret;
 
@@ -1182,6 +1199,8 @@ static bool sdpSSAR(struct sdpInst *inst, uint16_t transact, sg req)
         return sdpSendError(inst, transact, err);
 
     logd("SSAR query has %u UUIDS\n", searchReqNum);
+    for (i = 0; i < searchReqNum; i++)
+        logd("SSAR uuid[%u] = "FMT64"x"FMT64"x\n", i, CNV64(searchReq[i].hi), CNV64(searchReq[i].lo));
 
     if (!searchReqNum)
         return sdpSendError(inst, transact, SDP_ERR_Invalid_Request_Syntax);
@@ -1224,6 +1243,24 @@ static bool sdpRx(struct sdpInst *inst, sg req)
     struct sdpPdu reqPdu;
     uint8_t pduType;
     uint16_t transact, paramLen;
+
+#ifdef SDP_DBG
+    char line[128] = "SDP RX <ZLP>";
+    uint32_t i;
+    uint8_t v;
+
+    for(i = 0; i < sgLength(req); i++) {
+        sgSerialize(req, i, 1, &v);
+        if (i & 15)
+            sprintf(line + strlen(line), " %02X", v);
+        else {
+            if (i)
+                logd(line);
+            sprintf(line, "SDP RX [%03X] %02X", i, v);
+        }
+    }
+    logd(line);
+#endif
 
     if (!sgSerializeCutFront(req, &reqPdu, sizeof(reqPdu)))
         return sdpSendError(inst, 0, SDP_ERR_Invalid_PDU_Size);
