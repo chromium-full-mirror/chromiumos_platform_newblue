@@ -53,7 +53,8 @@
 
 
 /* init the profile */
-bool sdpRegisterProfile(void);
+bool sdpInit(void);
+void sdpDeinit(void);
 
 
 /* add or delete services - we assume descriptors are in valid format (attrs in rising order, etc) */

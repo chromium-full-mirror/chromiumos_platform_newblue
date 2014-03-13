@@ -368,8 +368,8 @@ int main(int argc, char** argv)
     }
 
     l2cInit();
-    sdpRegisterProfile();
-    rfcRegisterProfile();
+    sdpInit();
+    rfcInit();
 
     logi("RFC CHAN: %u\n", rfcListen(RFC_CHNUM_REQ_ANY, testRfcAllocF, testRfcEvtF, NULL));
 
@@ -381,6 +381,8 @@ int main(int argc, char** argv)
 
 
     logi("bringing down\n");
+    rfcDeinit();
+    sdpDeinit();
     l2cDeinit();
     hciDown();
     timersDeinit();

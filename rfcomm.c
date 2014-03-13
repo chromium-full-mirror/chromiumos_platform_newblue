@@ -2103,13 +2103,13 @@ static void* rfcWorkerThread(void *unused)
 }
 
 /*
- * FUNCTION: rfcRegisterProfile
+ * FUNCTION: rfcInit
  * USE:      Register RFCOMM with L2C & init it
  * PARAMS:   NONE
- * RETURN:   NONE
+ * RETURN:   success
  * NOTES:
  */
-bool rfcRegisterProfile(void)
+bool rfcInit(void)
 {
     static const struct l2cServicePsmDescriptor rfcommDescr = {
         .userData = NULL,
@@ -2149,6 +2149,24 @@ fail_worker:
 fail_work_q:
     return false;
 }
+
+
+/*
+ * FUNCTION: rfcDeinit
+ * USE:      Cleanup RFC
+ * PARAMS:   NONE
+ * RETURN:   NONE
+ * NOTES:
+ */
+void rfcDeinit(void)
+{
+    l2cApiServicePsmUnregister(PSM_RFCOMM, NULL, NULL);
+    sendQueueFree(mSendQ);
+    workQueueWakeAll(mWorkQ, 1);
+    pthread_join(mWorkThread, NULL);
+    workQueueFree(mWorkQ, rfcWorkQItemFreeCbk);
+}
+
 
 /*
  * FUNCTION: rfcChanListenAvail

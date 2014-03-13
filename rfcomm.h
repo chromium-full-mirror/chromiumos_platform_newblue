@@ -36,7 +36,8 @@ typedef void* (*rfcSvcAlloc)(void *userData, const struct bt_addr *peerAddr, uin
 typedef void (*rfcSvcEvent)(void *userData, void *instance, uint8_t evt, sg s);
 
 
-bool rfcRegisterProfile(void);
+bool rfcInit(void);
+void rfcDeinit(void);
 
 uint8_t rfcListen(uint8_t chReq, rfcSvcAlloc allocF, rfcSvcEvent evtF, void *cbkData); /* returns DLCI. input = dlci specifically or RFC_CHNUM_REQ_ANY, ret 0 is fail */
 bool rfcStopListen(uint8_t ch); /* will not close any existing connections */

@@ -87,7 +87,7 @@ static const struct uuid sdpBaseUuid = {0x0000000000001000ULL, 0x800000805F9B34F
 static pthread_rwlock_t mSvcsLock = PTHREAD_RWLOCK_INITIALIZER;
 static struct sdpService *mSvcsHead = NULL;
 static struct sdpService *mSvcsTail = NULL;
-static uint32_t mNextHandle = SDP_HANDLE_FIRST;
+static uint32_t mNextHandle;
 static struct sendQ *mSendQ;
 
 
@@ -1364,13 +1364,13 @@ static uint8_t sdpInstAlloc(void *userData, l2c_handle_t handle, void **instance
 }
 
 /*
- * FUNCTION: sdpRegisterProfile
+ * FUNCTION: sdpInit
  * USE:      Called to init SDP and register it with L2CAP
  * PARAMS:   NONE
  * RETURN:   success
  * NOTES:
  */
-bool sdpRegisterProfile(void)
+bool sdpInit(void)
 {
     static const uint8_t sdpDescrSdp[] = {
         //service class ID list
@@ -1404,6 +1404,8 @@ bool sdpRegisterProfile(void)
         .mtu = 32768,
     };
 
+    mNextHandle = SDP_HANDLE_FIRST;
+
     mSendQ = sendQueueAlloc(1);
     if (!mSendQ) {
         loge("Failed to alloc send queue\n");
@@ -1424,5 +1426,24 @@ bool sdpRegisterProfile(void)
     }
 
     return true;
+}
+
+/*
+ * FUNCTION: sdpDeinit
+ * USE:      Clean up SDP
+ * PARAMS:   NONE
+ * RETURN:   success
+ * NOTES:
+ */
+void sdpDeinit(void)
+{
+    l2cApiServicePsmUnregister(SDP_PSM, NULL, NULL);
+    pthread_rwlock_wrlock(&mSvcsLock);
+    while (mSvcsHead) {
+        mSvcsTail = mSvcsHead;
+        mSvcsHead = mSvcsHead->next;
+        free(mSvcsTail);
+    }
+    pthread_rwlock_unlock(&mSvcsLock);
 }
 

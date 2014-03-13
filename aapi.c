@@ -606,12 +606,12 @@ static int aapiEnable(void)
         goto fail_l2c;
     }
 
-    if (!sdpRegisterProfile()) {
+    if (!sdpInit()) {
         loge("SDP up failed\n");
         goto fail_sdp;
     }
 
-    if (!rfcRegisterProfile()) {
+    if (!rfcInit()) {
         loge("RFC up failed\n");
         goto fail_rfc;
     }
@@ -628,7 +628,11 @@ static int aapiEnable(void)
     return BT_STATUS_SUCCESS;
 
 fail_name:
+    rfcDeinit();
+
 fail_rfc:
+    sdpDeinit();
+
 fail_sdp:
     l2cDeinit();
 
