@@ -521,7 +521,7 @@ static bt_status_t aapiSockListen(btsock_type_t type, const char* serviceName, c
         return BT_STATUS_FAIL;
     }
     sock->rfc.dlci = ch;
-    logd("DLCI %u opened for listening with name '%s'\n", ch, serviceName);
+    logd("RFC ch %u opened for listening with name '%s'\n", ch, serviceName);
 
     sock->rfc.sdpHandle = aapiSockAddSdpRecord(serviceUuid, ch, serviceName);
     if (sock->rfc.sdpHandle) {
