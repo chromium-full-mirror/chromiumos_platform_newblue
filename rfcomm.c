@@ -2087,7 +2087,7 @@ static void* rfcWorkerThread(void *unused)
                         rfcCloseConn(c, true, true);
                     }
                 } else {
-                    logd("rfc conn refused for dlci %u\n", dlci);
+                    logd("rfc conn refused for dlci %u\n", c->dlci >> 1);
                     c->cState = RFC_CONN_ST_SVC_OPENED;
                     rfcCloseConn(c, true, false);
                 }
