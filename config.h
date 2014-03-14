@@ -129,6 +129,11 @@
  */
 #define L2C_L2CAP_CONFIG_TIMEOUT           2000
 
+/*
+ * How many seconds till we decide the chip is dead
+ */
+#define BT_COMMAND_TIMEOUT                 10
+
 
 
 #endif

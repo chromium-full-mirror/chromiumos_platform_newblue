@@ -1191,13 +1191,19 @@ static bool hciScheduleConnDataRx(hci_conn_t conn, sg packet, bool first)
 static void* hciCmdSendWorker(void *unused)
 {
     struct hciCmdSendWorkItem *w;
+    struct timespec ts;
     int ret, i;
 
     pthread_setname_np(pthread_self(), "bt_hci_cmds_send");
 
     while (1) {
 
-        r_sem_wait(&mCmdSendSem);
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_sec += BT_COMMAND_TIMEOUT;
+        if (r_sem_timedwait(&mCmdSendSem, &ts)) {
+            loge("CHIP DEAD!\n");
+            abort();
+        }
         ret = workQueueGet(mCmdsSendWork, (void**)&w);
         if (ret)
             break;
