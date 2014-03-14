@@ -12,6 +12,7 @@
 #include "log.h"
 #include "sdp.h"
 #include "bt.h"
+#include "mt.h"
 
 
 /* a device will never hove more than this many properties */
@@ -81,6 +82,8 @@ struct aapiWorkItem {
 /* our state */
 static pthread_t mWorker;
 static struct workQueue *mWorkQ;
+static pthread_mutex_t mStateLock = PTHREAD_MUTEX_INITIALIZER;
+static bool mStackUp = false;
 
 /* properties java can get/set */
 //TODO: mutex around these!
@@ -90,6 +93,25 @@ static uint32_t mDevCls = 0xCC0704; //wristwatch (0x20C is smartphone)
 static bt_scan_mode_t mScanMode = BT_SCAN_MODE_NONE;
 static bt_device_type_t mDevType = BT_DEVICE_DEVTYPE_DUAL;
 static uint32_t mDiscoveryTimeout = 60 ;/* in seconds */
+
+
+/*
+ * FUNCTION: aapiIsStackUp
+ * USE:      Find out if stack is up
+ * PARAMS:   none
+ * RETURN:   the answer
+ * NOTES:
+ */
+bool aapiIsStackUp(void)
+{
+    bool up;
+
+    pthread_mutex_lock(&mStateLock);
+    up = mStackUp;
+    pthread_mutex_unlock(&mStateLock);
+    logd("aapiIsStackUp()->%s\n", up ? "true" : "false");
+    return up;
+}
 
 /*
  * FUNCTION: aapiHciLogEnable
@@ -578,6 +600,11 @@ static int aapiEnable(void)
     int ret;
 
     logd("AAPI: enable\n");
+    pthread_mutex_lock(&mStateLock);
+    if (mStackUp) {
+        loge("stack requested to coem up while already up\n");
+        goto fail_up;
+    }
 
     if (!timersInit()) {
         loge("timers failed\n");
@@ -625,6 +652,11 @@ static int aapiEnable(void)
     aapiAdapterStateChanged(true);
     aapiGetAdapterProperties(); /* contrary to api, this must be here */
 
+    mStackUp = true;
+    aapiSocketNotifStackState(true);
+    aapiGattNotifStackState(true);
+    pthread_mutex_unlock(&mStateLock);
+
     return BT_STATUS_SUCCESS;
 
 fail_name:
@@ -643,6 +675,11 @@ fail_hci:
     timersDeinit();
 
 fail_timers:
+fail_up:
+    mStackUp = false;
+    aapiSocketNotifStackState(false);
+    aapiGattNotifStackState(false);
+    pthread_mutex_unlock(&mStateLock);
     return BT_STATUS_FAIL;
 }
 
@@ -656,10 +693,20 @@ fail_timers:
 static int aapiDisable(void)
 {
     logd("AAPI: disable\n");
-
-    l2cDeinit();
-    hciDown();
-    timersDeinit();
+    pthread_mutex_lock(&mStateLock);
+    if (!mStackUp)
+        loge("Cannot turn stack off while off\n");
+    else {
+        mStackUp = false;
+        l2cDeinit();
+        rfcDeinit();
+        sdpDeinit();
+        hciDown();
+        timersDeinit();
+    }
+    aapiSocketNotifStackState(false);
+    aapiGattNotifStackState(false);
+    pthread_mutex_unlock(&mStateLock);
     return 0;
 }
 

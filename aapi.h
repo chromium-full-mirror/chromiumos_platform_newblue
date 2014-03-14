@@ -23,6 +23,8 @@ void aapiLeTestModeEventCbk(bt_status_t status, uint16_t num_packets);
 
 
 
+bool aapiIsStackUp(void);
+
 
 #endif
 

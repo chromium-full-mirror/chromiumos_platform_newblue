@@ -63,3 +63,15 @@ void *aapiGetProfileIfaceGatt(void)
 
     return &gatt;
 }
+
+/*
+ * FUNCTION: aapiGattNotifStackState
+ * USE:      Stack uses this to tell us of stack up/down state changes
+ * PARAMS:   up - true if stack is now up, false else
+ * RETURN:   NONE
+ * NOTES:
+ */
+void aapiGattNotifStackState(bool up)
+{
+    //TODO
+}

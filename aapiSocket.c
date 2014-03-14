@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <hardware/bluetooth.h>
 #include <hardware/bt_sock.h>
 #include <sys/socket.h>
@@ -9,6 +10,7 @@
 #include "aapiSocket.h"
 #include "rfcomm.h"
 #include "config.h"
+#include "aapi.h"
 #include "hci.h"
 #include "sdp.h"
 #include "log.h"
@@ -54,11 +56,14 @@ static struct aapiSock *mSocks = NULL;
 static pthread_mutex_t mSocksLock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t mWorker;
 static int mWorkerPipe = -1;
+static bool mSocksUp;
+static bool mSocksWantUp;
 
 
 /* fwd decls */
 static uint32_t aapiSockAddSdpRecord(const uint8_t* serviceUuid, uint8_t rfcommCh, const char* name);
 static void aapiSockFree(struct aapiSock* sock);
+static void aapiSockWorkerMsgSend(uint8_t msg, void *aux);
 
 
 
@@ -108,6 +113,9 @@ static void *aapiSockWorker(void *pipe)
 
             r_read(fds[0].fd, &msg, sizeof(msg));
             r_read(fds[0].fd, &sock, sizeof(sock));
+            logd("msg %u with p %p\n", msg, sock);
+            if(sock)
+                logd("sock %p has atate %u and fd %u with sdp handle 0x%08x\n", sock, sock->rfc.state, sock->fd, sock->rfc.sdpHandle);
             switch (msg) {
             case WORKER_MSG_SOCK_ADD:
                 if (arrNum == arrSz) {
@@ -125,8 +133,9 @@ static void *aapiSockWorker(void *pipe)
                     }
                     arrSz = newArrSz;
                 }
+                socks[arrNum] = sock;
                 fds[arrNum].fd = sock->fd;
-                fds[arrNum].events = 0;
+                fds[arrNum].events = POLLERR | POLLNVAL | POLLHUP | POLLRDHUP;
                 arrNum++;
                 break;
             case WORKER_MSG_FD_CAN_RX:
@@ -151,6 +160,8 @@ static void *aapiSockWorker(void *pipe)
                     memcpy(fds + i, fds + arrNum - 1, sizeof(struct pollfd));
                     socks[i] = socks[arrNum - 1];
                     arrNum--;
+                    if (sock->rfc.state == RFC_SOCK_STATE_LISTENING)
+                        sdpServiceDescriptorDel(sock->rfc.sdpHandle);
                     aapiSockFree(sock);
                 }
                 break;
@@ -167,13 +178,9 @@ static void *aapiSockWorker(void *pipe)
             uint32_t done;
             void *iter;
 
-            if (fds[i].revents & (POLLERR | POLLNVAL | POLLHUP)) {
-                logd("socket closed by java\n");
-                aapiSockFree(socks[i]);
-                memcpy(fds + i, fds + arrNum - 1, sizeof(struct pollfd));
-                socks[i] = socks[arrNum - 1];
-                arrNum--;
-                i--;
+            if (fds[i].revents & (POLLERR | POLLNVAL | POLLHUP | POLLRDHUP)) {
+                logd("fd %d (sock %d) in state %u failed with error %d -> deleting\n", fds[i].fd, i, socks[i]->rfc.state, fds[i].revents);
+                aapiSockWorkerMsgSend(WORKER_MSG_SOCK_DEL, socks[i]);
                 continue;
             }
 
@@ -213,6 +220,13 @@ static void *aapiSockWorker(void *pipe)
         }
     }
 
+    for (i = 1; i < arrNum; i++) {
+        if (socks[i]->rfc.state == RFC_SOCK_STATE_LISTENING)
+            sdpServiceDescriptorDel(socks[i]->rfc.sdpHandle);
+        aapiSockFree(socks[i]);
+    }
+    close((int)pipe);    
+
     free(fds);
     free(socks);
     return NULL;
@@ -235,8 +249,26 @@ static void aapiSockDoInit(void)
     if (pthread_create(&mWorker, NULL, aapiSockWorker, (void*)pipes[0])) {
         close(pipes[0]);
         close(pipes[1]);
+        return;
     }
     mWorkerPipe = pipes[1];
+    mSocksUp = true;
+    mSocksWantUp = false;
+}
+
+/*
+ * FUNCTION: aapiSockDoDeinit
+ * USE:      Deinit aapi.sock
+ * PARAMS:   NONE
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void aapiSockDoDeinit(void)
+{
+    aapiSockWorkerMsgSend(WORKER_MSG_QUIT, NULL);
+    pthread_join(mWorker, NULL);
+    close(mWorkerPipe);
+    mSocksUp = false;
 }
 
 /*
@@ -348,7 +380,8 @@ static void aapiSockFree(struct aapiSock* sock)
         sock->prev->next = sock->next;
     else
         mSocks = sock->next;
-    sock->next->prev = sock->prev;
+    if (sock->next)
+        sock->next->prev = sock->prev;
     switch (sock->type) {
     case BTSOCK_RFCOMM:
         sgFree(sock->rfc.bufTx);
@@ -494,46 +527,62 @@ static void aapiSockRfcListenEvt(void *userData, void *instance, uint8_t evt, sg
  */
 static bt_status_t aapiSockListen(btsock_type_t type, const char* serviceName, const uint8_t* serviceUuid, int channel, int* sockFdP, int flags)
 {
+    bt_status_t ret = BT_STATUS_FAIL;
     struct aapiSock* sock;
     uint8_t ch;
+
+
+    pthread_mutex_lock(&mSocksLock);
+    if (!mSocksUp) {
+        pthread_mutex_unlock(&mSocksLock);
+        logw("Refusing sock open when socks not up\n");
+        goto out;
+    }
+    pthread_mutex_unlock(&mSocksLock);
 
     logd("AAPI.sock: listen(%u,'%s',%d,%u)\n", type, serviceName, channel, flags);
 
     if (type != BTSOCK_RFCOMM) {
         logw("Refusing non-RFCOMM sockets for now\n");
-        return BT_STATUS_FAIL;
+        goto out;
     }
 
     if (channel == -1) /* magic number! */
         ch = RFC_CHNUM_REQ_ANY;
     else if (channel < RFC_FIRST_CHAN || channel >= RFC_NUM_CHANS + RFC_FIRST_CHAN) {
         logw("Refusing RFCOMM listen on invalid channel %d\n", channel);
-        return BT_STATUS_FAIL;
+        goto out;
     } else ch = channel;
 
     sock = aapiSockAllocRfc(ch, RFC_SOCK_STATE_LISTENING); /* yes, "ch" might be RFC_CHNUM_REQ_ANY here. this is actually ok */
     if (!sock)
-        return BT_STATUS_FAIL;
+        goto out;
 
     ch = rfcListen(ch, aapiSockRfcListenAlloc, aapiSockRfcListenEvt, sock);
     if (!ch) {
         aapiSockFree(sock);
-        return BT_STATUS_FAIL;
+        goto out;
     }
     sock->rfc.dlci = ch;
     logd("RFC ch %u opened for listening with name '%s'\n", ch, serviceName);
 
     sock->rfc.sdpHandle = aapiSockAddSdpRecord(serviceUuid, ch, serviceName);
+    logd("sock %p has atate %u and fd %u with sdp handle 0x%08x\n", sock, sock->rfc.state, sock->fd, sock->rfc.sdpHandle);
+
     if (sock->rfc.sdpHandle) {
         *sockFdP = sock->java_fd;
         sock->java_fd = -1;
-        return BT_STATUS_SUCCESS;
+        aapiSockWorkerMsgSend(WORKER_MSG_SOCK_ADD, sock);
+        ret = BT_STATUS_SUCCESS;
+        goto out;
     }
 
     logw("Failed to add SDP handle for that listening socket. Closing\n");
     rfcStopListen(ch);
     aapiSockFree(sock);
-    return BT_STATUS_FAIL;
+
+out:
+    return ret;
 }
 
 /*
@@ -550,54 +599,36 @@ static bt_status_t aapiSockListen(btsock_type_t type, const char* serviceName, c
  */
 static bt_status_t aapiSockConnect(const bt_bdaddr_t *bd_addr, btsock_type_t type, const uint8_t* uuid, int channel, int* sockFdP, int flags)
 {
+    bt_status_t ret = BT_STATUS_FAIL;
+
     logd("AAPI.sock: connect(%02X:%02X:%02X:%02X:%02X:%02X,%u,%d,%u)\n",
          bd_addr->address[5], bd_addr->address[4], bd_addr->address[3], bd_addr->address[2], bd_addr->address[1], bd_addr->address[0],
          type, channel, flags);
 
+    pthread_mutex_lock(&mSocksLock);
+    if (!mSocksUp) {
+        pthread_mutex_unlock(&mSocksLock);
+        logw("Refusing sock open when socks not up\n");
+        goto out;
+    }
+    pthread_mutex_unlock(&mSocksLock);
+
     if (type != BTSOCK_RFCOMM) {
         logw("Refusing non-RFCOMM sockets for now\n");
-        return BT_STATUS_FAIL;
+        goto out;
     }
 
     if (channel != -1 && (channel < RFC_FIRST_CHAN || channel >= RFC_NUM_CHANS + RFC_FIRST_CHAN)) {
         logw("Refusing RFCOMM connect on invalid channel %d\n", channel);
-        return BT_STATUS_FAIL;
+        goto out;
     }
 
     //TODO
 
-    return BT_STATUS_FAIL;
+out:
+    return ret;
 }
 
-/*
- * FUNCTION: aapiGetProfileIfaceSockets
- * USE:      Try to connect to a peer's matching listening socket
- * PARAMS:   bd_addr - peer address
- *           type - socket type
- *           uuid - service uuid
- *           channel - channel number
- *           sockFdP - store socket's FD here
- *           flags - other relevant flags
- * RETURN:   bt_status_t
- * NOTES:
- */
-const void* aapiGetProfileIfaceSockets(void)
-{
-    static const btsock_interface_t sockIface = {
-        .size = sizeof(btsock_interface_t),
-        .listen = aapiSockListen,
-        .connect = aapiSockConnect,
-    };
-    static pthread_once_t init = PTHREAD_ONCE_INIT;
-    pthread_once(&init, aapiSockDoInit);
-
-    if (mWorkerPipe == -1) {
-        loge("Failed to init aapi.sock\n");
-        return NULL;
-    }
-
-    return &sockIface;
-}
 
 /*
  * FUNCTION: aapiSockAddSdpRecord
@@ -676,5 +707,68 @@ static uint32_t aapiSockAddSdpRecord(const uint8_t* serviceUuid, uint8_t rfcommC
     free(record);
     return 0;
 }
+
+
+
+/*
+ * FUNCTION: aapiGetProfileIfaceSockets
+ * USE:      Try to connect to a peer's matching listening socket
+ * PARAMS:   bd_addr - peer address
+ *           type - socket type
+ *           uuid - service uuid
+ *           channel - channel number
+ *           sockFdP - store socket's FD here
+ *           flags - other relevant flags
+ * RETURN:   bt_status_t
+ * NOTES:
+ */
+const void* aapiGetProfileIfaceSockets(void)
+{
+    static const btsock_interface_t sockIface = {
+        .size = sizeof(btsock_interface_t),
+        .listen = aapiSockListen,
+        .connect = aapiSockConnect,
+    };
+
+    pthread_mutex_lock(&mSocksLock);
+    if (mSocksUp)
+        logd("socks up again\n");
+    else if (!aapiIsStackUp())
+        mSocksWantUp = true;
+    else
+        aapiSockDoInit();
+
+    pthread_mutex_unlock(&mSocksLock);
+
+    return &sockIface;
+}
+
+/*
+ * FUNCTION: aapiSocketNotifStackState
+ * USE:      Stack uses this to tell us of stack up/down state changes
+ * PARAMS:   up - true if stack is now up, false else
+ * RETURN:   NONE
+ * NOTES:
+ */
+void aapiSocketNotifStackState(bool up)
+{
+    pthread_mutex_lock(&mSocksLock);
+    if (up && !mSocksUp && mSocksWantUp) {
+        logd("socks coming up now\n");
+        aapiSockDoInit();
+    } else if (!up) {
+        if(mSocksUp)
+            aapiSockDoDeinit();
+        mSocksWantUp = false;
+    }
+    pthread_mutex_unlock(&mSocksLock);
+}
+
+
+
+
+
+
+
 
 
