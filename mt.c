@@ -38,8 +38,21 @@ int r_sem_trywait(sem_t* sem)
             break;
     }
 
+    return ret;
+}
+
+int r_sem_timedwait(sem_t* sem, const struct timespec *abs_timeout)
+{
+    int ret;
+
+    while(1) {
+        ret = sem_timedwait(sem, abs_timeout);
+        if (ret != -1 || errno != EINTR)
+            break;
+    }
+
     if (ret && errno != EAGAIN)
-        loge("sem_trywait failed with ret %d and errono %d!\n", ret, errno);
+        loge("sem_timedwait failed with ret %d and errono %d!\n", ret, errno);
 
     return ret;
 }
