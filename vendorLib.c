@@ -43,6 +43,8 @@ static pthread_mutex_t mStateLock = PTHREAD_MUTEX_INITIALIZER;
 static uniq_t mSleepTimer = 0;
 static bool mChipAwake = false;
 
+static pthread_mutex_t mTxLock = PTHREAD_MUTEX_INITIALIZER;
+
 
 /* for vendor lib callback */
 static uint16_t mCmdCompleteWaiting = 0;
@@ -156,7 +158,7 @@ static void* vcbkAlloc(int size)
  * PARAMS:   buffer
  * RETURN:   NONE
  * NOTES:    yes, this is weird. but the spec says so
- */ 
+ */
 static void vcbkDealloc(void *p_buf)
 {
     free(p_buf);
@@ -170,7 +172,7 @@ static void vcbkDealloc(void *p_buf)
  *           p_cback - the callback to call when reply arrives
  * RETURN:   nonzero on success
  * NOTES:    We do nto implement it since the spec is unclear and nobody uses this
- */ 
+ */
 static uint8_t vcbkXmit(uint16_t opcode, void *p_buf, tINT_CMD_CBACK p_cback)
 {
     HC_BT_HDR *h = (HC_BT_HDR*)p_buf;
@@ -196,66 +198,6 @@ static uint8_t vcbkXmit(uint16_t opcode, void *p_buf, tINT_CMD_CBACK p_cback)
 
     loge("vendorTx() failed for vendor lib cmd\n");
     sgFree(cmdSg);
-    return 0;
-}
-
-/*
- * FUNCTION: rread
- * USE:      Read while handing EINTR
- * PARAMS:   fd - the fd
- *           buf - where to read to
- *           sz - the size
- * RETURN:   0 is all ok, else error
- * NOTES:
- */
-static int rread(int fd, void *buf, uint32_t sz)
-{
-    uint8_t *dst = (uint8_t*)buf;
-    int ret;
-
-    while (sz) {
-
-        ret = read(fd, dst, sz);
-        if (ret < 0) {
-            if (errno == EINTR)
-                continue;
-            return errno ? errno : -1;
-        } else if (!ret)
-            logw("Read returned 0 unexpectedly\n");
-        dst += ret;
-        sz -= ret;
-    }
-
-    return 0;
-}
-
-/*
- * FUNCTION: rwrite
- * USE:      Write while handing EINTR
- * PARAMS:   fd - the fd
- *           buf - where to write from
- *           sz - the size
- * RETURN:   0 is all ok, else error
- * NOTES:
- */
-static int rwrite(int fd, const void *buf, uint32_t sz)
-{
-    const uint8_t *dst = (const uint8_t*)buf;
-    int ret;
-
-    while (sz) {
-
-        ret = write(fd, dst, sz);
-        if (ret < 0) {
-            if (errno == EINTR)
-                continue;
-            return errno ? errno : -1;
-        } else if (!ret)
-            logw("Write returned 0 unexpectedly\n");
-        dst += ret;
-        sz -= ret;
-    }
-
     return 0;
 }
 
@@ -323,31 +265,27 @@ static void* vendorWorker(void *pipeFdP)
                 continue;
 
             /* read the packet */
-            ret = rread(pollfds[i].fd, buf, 1);
-            if (ret) {
+            if (!r_read(pollfds[i].fd, buf, 1)) {
                 loge("Failed to read packet type: %d\n", ret);
                 continue;
             }
             switch (buf[0]) {
             case HCI_PKT_TYP_ACL:
-                ret = rread(pollfds[i].fd, buf + 1, hdrSz = 4);
-                if (ret) {
+                if (!r_read(pollfds[i].fd, buf + 1, hdrSz = 4)) {
                     loge("Failed to read ACL hdr: %d\n", ret);
                     continue;
                 }
                 sz = utilGetLE16(buf + 3);
                 break;
             case HCI_PKT_TYP_SCO:
-                ret = rread(pollfds[i].fd, buf + 1, hdrSz = 3);
-                if (ret) {
+                if (!r_read(pollfds[i].fd, buf + 1, hdrSz = 3)) {
                     loge("Failed to read SCO hdr: %d\n", ret);
                     continue;
                 }
                 sz = utilGetLE8(buf + 3);
                 break;
             case HCI_PKT_TYP_EVT:
-                ret = rread(pollfds[i].fd, buf + 1, hdrSz = 2);
-                if (ret) {
+                if (!r_read(pollfds[i].fd, buf + 1, hdrSz = 2)) {
                     loge("Failed to read EVT hdr: %d\n", ret);
                     continue;
                 }
@@ -362,13 +300,12 @@ static void* vendorWorker(void *pipeFdP)
                 loge("Failed to alloc %u bytes for packet\n", sz + hdrSz);
                 /* read it anyways to avoid desync */
                 while(sz--)
-                    rread(pollfds[i].fd, buf, 1);
+                    r_read(pollfds[i].fd, buf, 1);
                 continue;
             }
             memcpy(packet, buf + 1, hdrSz);
             sz += hdrSz;
-            ret = rread(pollfds[i].fd, packet + hdrSz, sz - hdrSz);
-            if (ret) {
+            if (!r_read(pollfds[i].fd, packet + hdrSz, sz - hdrSz)) {
                 loge("Failed to read packet remainder of a %ub packet\n", sz);
                 free(packet);
                 continue;
@@ -678,9 +615,11 @@ out_need_close:
  */
 bool vendorTx(uint8_t typ, sg data)
 {
-    int fd, ret = 0;
+    bool ret = false;
     void *iter;
+    int fd;
 
+    pthread_mutex_lock(&mTxLock);
     vendorChipWake();
 
     if (mLog) {
@@ -701,9 +640,10 @@ bool vendorTx(uint8_t typ, sg data)
         logd(line);
     }
 
-    if (!sgConcatFrontCopy(data, &typ, 1))
-        return false;
-
+    if (!sgConcatFrontCopy(data, &typ, 1)) {
+        loge("TX type concat fail\n");
+        goto out;
+    }
 
     switch (typ) {
     case HCI_PKT_TYP_CMD:
@@ -717,20 +657,23 @@ bool vendorTx(uint8_t typ, sg data)
         break;
     default:
         loge("Unknown packet send type: %d\n", typ);
-        return false;
+        goto out;
     }
 
     /* quite elegant, don't you find? */
     for (iter = sgIterStart(data); iter; iter = sgIterAdvance(iter)) {
-        ret = rwrite(fd, sgIterCurData(iter), sgIterCurLen(iter));
-        if (ret) {
-            loge("Write failed for data %d: %d\n", fd, ret);
-            return false;
+        if (!r_write(fd, sgIterCurData(iter), sgIterCurLen(iter))) {
+            loge("Write failed for data %d: %d\n", fd, errno);
+            goto out;
         }
     }
 
     sgFree(data);
-    return true;   
+    ret = true;
+
+out:
+    pthread_mutex_unlock(&mTxLock);
+    return ret;
 }
 
 
