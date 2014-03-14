@@ -1150,7 +1150,8 @@ static void rfcCloseConn(struct rfcConn *c, bool tellOtherSide, bool tellOurSide
     case RFC_CONN_ST_ESTABLISHED:
         useDM = false;
     case RFC_CONN_ST_SVC_OPENED:
-        /* nothing more to do here */
+        if (tellOtherSide)
+            delStruct = false;
         break;
     case RFC_CONN_ST_NEED_DISC:
     case RFC_CONN_ST_SENT_DISC:
