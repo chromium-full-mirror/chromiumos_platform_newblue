@@ -23,7 +23,7 @@ bool stackLinkKeyNotif(const struct bt_addr *addr, const uint8_t *key, uint8_t k
     logd("New link key: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
          key[0], key[1], key[2], key[3], key[4], key[5], key[6], key[7], key[8], key[9], key[10], key[11], key[12], key[13], key[14], key[15]);
 
-    memcpy(mKey, key, sizeof(key));
+    memcpy(mKey, key, sizeof(mKey));
     haveKey = true;
 
     return true;
