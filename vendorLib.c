@@ -21,7 +21,7 @@
 #define BT_VENDOR_INFACE_STRUCT  "BLUETOOTH_VENDOR_LIB_INTERFACE"
 
 
-static bool mLog = false;
+static bool mLog = true;
 
 
 /* our state w.r.t. vendor lib */
@@ -375,12 +375,19 @@ static void* vendorWorker(void *pipeFdP)
             }
 
             if (mLog) {
-                char x[128];
-                unsigned i;
-                sprintf(x,"RX (%4u): %02X", sz, buf[0]);
-                for(i = 0; i < 32 && i < sz; i++) sprintf(x + strlen(x), " %02X", ((uint8_t*)packet)[i]);
-                if (i < sz) strcat(x, " ...");
-                logd("%s\n", x);
+                char line[128] = "vRX <ZLP>";
+                uint32_t i;
+
+                for(i = 0; i < sz; i++) {
+                    if (i & 15)
+                        sprintf(line + strlen(line), " %02X", packet[i]);
+                    else {
+                        if (i)
+                            logd(line);
+                        sprintf(line, "vRX (%d) [%03X] %02X", buf[0], i, packet[i]);
+                    }
+                }
+                logd(line);
             }
 
             /* vendor lib code has first dibs on valid command complete packets */
@@ -680,16 +687,21 @@ bool vendorTx(uint8_t typ, sg data)
         return false;
 
     if (mLog) {
-       char x[128];
-       unsigned i;
-       sprintf(x,"TX (%4u):", sgLength(data));
-       for(i = 0; i < 33 && i < sgLength(data); i++) { /* this is not even remotely a good idea, speedwise */
-           uint8_t byte;
-           sgSerialize(data, i, 1, &byte);
-           sprintf(x + strlen(x), " %02X", byte);
-       }
-       if (i < sgLength(data)) strcat(x, " ...");
-       logd("%s\n", x);
+        char line[128] = "vTX <ZLP>";
+        uint32_t i;
+        uint8_t v;
+
+        for(i = 0; i < sgLength(data); i++) {
+            sgSerialize(data, i, 1, &v);
+            if (i & 15)
+                sprintf(line + strlen(line), " %02X", v);
+            else {
+                if (i)
+                    logd(line);
+                sprintf(line, "vTX (%d) [%03X] %02X", typ, i, v);
+            }
+        }
+        logd(line);
     }
 
     switch (typ) {
