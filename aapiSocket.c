@@ -358,7 +358,7 @@ static struct aapiSock* aapiSockAlloc(btsock_type_t type, int sockType)
  * PARAMS:   chNum - the chNum to save in the sock
  *           state - the state to put it into
  * RETURN:   sock struct or NULL on error
- * NOTES:
+ * NOTES:    call with mSocksLock held
  */
 static struct aapiSock* aapiSockAllocRfc(uint8_t chNum, uint8_t state)
 {
@@ -374,7 +374,6 @@ static struct aapiSock* aapiSockAllocRfc(uint8_t chNum, uint8_t state)
         return NULL;
     }
 
-    pthread_mutex_lock(&mSocksLock);
     sock = aapiSockAlloc(BTSOCK_RFCOMM, SOCK_STREAM);
     if (sock) {
         sock->rfc.chNum = chNum;
@@ -385,7 +384,6 @@ static struct aapiSock* aapiSockAllocRfc(uint8_t chNum, uint8_t state)
         sgFree(bufTx);
         sgFree(bufRx);
     }
-    pthread_mutex_unlock(&mSocksLock);
 
     return sock;
 }
@@ -501,23 +499,27 @@ static void* aapiSockRfcListenAlloc(void *userData, const struct bt_addr *peerAd
 {
     /* we have no way to ask user to accept or not, so we accept for the user, and sort it out later */
     struct aapiSock *srvSock = (struct aapiSock*)userData;
-    struct aapiSock *newSock = aapiSockAllocRfc(chNum, RFC_SOCK_STATE_AUTOACCEPTING);
+    struct aapiSock *newSock;
+
+    pthread_mutex_lock(&mSocksLock);
+    newSock = aapiSockAllocRfc(chNum, RFC_SOCK_STATE_AUTOACCEPTING);
+
+    if (!newSock)
+        goto out;
 
     logd("aapi sock alloc ch %u\n", chNum);
     srvSock->rfc.chNum = chNum; /* in case we get here before aapiSockListen() finishes */
 
-    if (!newSock)
-        return NULL;
-
     memcpy(&newSock->peer, peerAddr, sizeof(newSock->peer));
-    if (aapiSockNotifyOfConnReq(srvSock, newSock))
-        return newSock;
+    if (!aapiSockNotifyOfConnReq(srvSock, newSock)) {
+        loge("Failed to notify of new connection\n");
+        aapiSockFree(newSock);
+        newSock = NULL;
+    }
 
-/*
-   XXX: TODO: lots to do here. since this channel number is now used, we need to alloc a new one, change sdp record and re-start listening...
-*/
-    aapiSockFree(newSock);
-    return NULL;
+out:
+    pthread_mutex_unlock(&mSocksLock);
+    return newSock;
 }
 
 /*
@@ -577,32 +579,46 @@ static void aapiSockRfcListenEvt(void *userData, void *instance, uint8_t evt, sg
 static bt_status_t aapiSockListen(btsock_type_t type, const char* serviceName, const uint8_t* serviceUuid, int channel, int* sockFdP, int flags)
 {
     bt_status_t ret = BT_STATUS_FAIL;
-    struct appiSockListener *sl;
+    struct appiSockListener *sl = NULL, *p;
     struct aapiSock* sock;
     uint8_t ch;
 
 
     pthread_mutex_lock(&mSocksLock);
     if (!mSocksUp) {
-        pthread_mutex_unlock(&mSocksLock);
         logw("Refusing sock listen when socks not up\n");
         goto out;
     }
 
-    for (sl = mListeners; sl && memcmp(sl->uuid, serviceUuid, sizeof(sl->uuid)); sl = sl->next);
+    //XXX: HACK, was: for (p = NULL, sl = mListeners; sl && memcmp(sl->uuid, serviceUuid, sizeof(sl->uuid)); p = sl, sl = sl->next);
     if (sl) {
-        pthread_mutex_unlock(&mSocksLock);
-        logw("Refusing sock listen when identical listener exists\n");
-        goto out_fake;// XXX: was "goto out"
+        logw("Sock listen when identical listener exists -> deleting old\n");
+        for (sock = mSocks; sock; sock = sock->next) {
+            if (sock->rfc.state != RFC_SOCK_STATE_LISTENING)
+                continue;
+            if (sock->rfc.sdpHandle == sl->sdpHandle)
+                break;
+        }
+        if (sock) {
+            logd("Previous identical socket found\n");
+            aapiSockWorkerMsgSend(WORKER_MSG_SOCK_DEL, sock);
+        } else {
+            logw("Failed to find previous listening socket. SDP likely to be leaked->auto-freeing\n");
+            sdpServiceDescriptorDel(sl->sdpHandle);
+            if (p)
+                p->next = sl->next;
+            else
+                mListeners = sl->next;
+            free(sl);
+        }
     }
     sl = malloc(sizeof(struct appiSockListener));
-    if (sl) {
+    if (sl)
         memcpy(sl->uuid, serviceUuid, sizeof(sl->uuid));
-        sl->next = mListeners;
-        mListeners = sl;
+    else {
+        loge("Failed to alloc a listener record\n");
+        goto out;
     }
-    pthread_mutex_unlock(&mSocksLock);
-out_fake: //XXX: fake
 
     logd("AAPI.sock: listen(%u,'%s',%d,%u)\n", type, serviceName, channel, flags);
 
@@ -624,9 +640,10 @@ out_fake: //XXX: fake
 
     ch = rfcListen(ch, aapiSockRfcListenAlloc, aapiSockRfcListenEvt, sock);
     if (!ch) {
-        aapiSockFree(sock);
-        goto out;
+        logw("Failed to RFC listen\n");
+        goto out_sockfree;
     }
+
     sock->rfc.chNum = ch;
     logd("RFC ch %u opened for listening with name '%s'\n", ch, serviceName);
 
@@ -634,42 +651,35 @@ out_fake: //XXX: fake
     channel = ch; /* send the channel ID to java */
     if (!sgConcatBackCopy(sock->rfc.bufRx, &channel ,sizeof(channel))) {
         loge("Failed to enqueue channel number for java\n");
-        rfcStopListen(ch);
-        aapiSockFree(sock);
-        goto out;
+        goto out_stoplisten;
     }
 
     sock->rfc.sdpHandle = aapiSockAddSdpRecord(serviceUuid, ch, serviceName);
     logd("sock %p has atate %u and fd %u with sdp handle 0x%08x\n", sock, sock->rfc.state, sock->fd, sock->rfc.sdpHandle);
-
-    pthread_mutex_lock(&mSocksLock);
-    if (sock->rfc.sdpHandle)
-        sl->sdpHandle = sock->rfc.sdpHandle;
-    else {
-        struct appiSockListener *p = NULL;
-        for (p = mListeners; p && p->next != sl; p = p->next);
-        if (p)
-            p->next = sl->next;
-        else
-            mListeners = sl->next;
-        free(sl);
-    }
-    pthread_mutex_unlock(&mSocksLock);
-
-    if (sock->rfc.sdpHandle) {
-        *sockFdP = sock->java_fd;
-        sock->java_fd = -1;
-        aapiSockWorkerMsgSend(WORKER_MSG_SOCK_ADD, sock);
-        aapiSockWorkerMsgSend(WORKER_MSG_FD_CAN_RX, sock);
-        ret = BT_STATUS_SUCCESS;
-        goto out;
+    if (!sock->rfc.sdpHandle) {
+        loge("Failed to add SDP record\n");
+        goto out_stoplisten;
     }
 
-    logw("Failed to add SDP handle for that listening socket. Closing\n");
+
+    sl->sdpHandle = sock->rfc.sdpHandle;
+    sl->next = mListeners;
+    mListeners = sl;
+    
+    *sockFdP = sock->java_fd;
+    sock->java_fd = -1;
+    aapiSockWorkerMsgSend(WORKER_MSG_SOCK_ADD, sock);
+    aapiSockWorkerMsgSend(WORKER_MSG_FD_CAN_RX, sock);
+    ret = BT_STATUS_SUCCESS;
+    goto out;
+
+out_stoplisten:
     rfcStopListen(ch);
-    aapiSockFree(sock);
 
+out_sockfree:
+    aapiSockFree(sock);
 out:
+    pthread_mutex_unlock(&mSocksLock);
     return ret;
 }
 
