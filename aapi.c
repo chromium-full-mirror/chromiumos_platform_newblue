@@ -698,9 +698,9 @@ static int aapiDisable(void)
         loge("Cannot turn stack off while off\n");
     else {
         mStackUp = false;
-        l2cDeinit();
         rfcDeinit();
         sdpDeinit();
+        l2cDeinit();
         hciDown();
         timersDeinit();
     }
