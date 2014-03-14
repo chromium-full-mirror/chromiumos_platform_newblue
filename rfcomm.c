@@ -703,7 +703,7 @@ static bool rfcRxData(struct rfcInst *inst, uint8_t dlci, bool pfBit, sg s)
 
     if (sgLength(s)) {
         c->numRxCredits++;
-
+        rfcShow("RX.d", s);
         if (rfcSchedEvt(c, RFC_EVT_RX, s))
             ret = true;
         else
@@ -2000,8 +2000,9 @@ static void rfcTryTx(struct rfcConn* c)
     }
     sgSwap(c->txQueue, s);
 
+    rfcShow("TX.d", s);
     if (rfcWrapUIH(inst, c->dlci, c->numRxCredits, s)) {
-        rfcShow("TD.d", s);
+        rfcShow("TX.rd", s);
         if (sendQueueTx(mSendQ, inst->conn, s)) {
             if (sendSz)
                 c->numTxCredits--;
