@@ -1065,6 +1065,8 @@ static void l2cHandleConnReq(struct l2cAclConn *aclConn, uint8_t ident, psm_t ps
     enqueued = l2cSvcWorkSchedulePsmAlloc(psm, conn->handle);
     if (enqueued) {
         conn->next = mConns;
+        if (mConns)
+            mConns->prev = conn;
         mConns = conn;
     } else {
         free(conn);
@@ -4384,6 +4386,8 @@ bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr* addr, uint16_t m
         l2cConnTimer(conn, L2C_L2CAP_OPEN_TIMEOUT);
     }
     conn->next = mConns;
+    if (mConns)
+        mConns->prev = conn;
     mConns = conn;
     ret = true;
 
@@ -4466,6 +4470,8 @@ bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr* addr, l2
     }
 
     conn->next = mConns;
+    if (mConns)
+        mConns->prev = conn;
     mConns = conn;
     ret = true;
 
