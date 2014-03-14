@@ -1,4 +1,3 @@
-#define _GNU_SOURCE
 #include <hardware/bluetooth.h>
 #include <hardware/bt_sock.h>
 #include <sys/socket.h>
@@ -142,7 +141,7 @@ static void *aapiSockWorker(void *pipe)
                 }
                 socks[arrNum] = sock;
                 fds[arrNum].fd = sock->fd;
-                fds[arrNum].events = POLLERR | POLLNVAL | POLLHUP | POLLRDHUP;
+                fds[arrNum].events = POLLERR | POLLNVAL | POLLHUP;
                 arrNum++;
                 break;
             case WORKER_MSG_FD_CAN_RX:
@@ -183,7 +182,7 @@ static void *aapiSockWorker(void *pipe)
             uint32_t done;
             void *iter;
 
-            if (fds[i].revents & (POLLERR | POLLNVAL | POLLHUP | POLLRDHUP)) {
+            if (fds[i].revents & (POLLERR | POLLNVAL | POLLHUP)) {
                 logd("fd %d (sock %d) in state %u failed with error %d -> deleting\n", fds[i].fd, i, socks[i]->rfc.state, fds[i].revents);
                 aapiSockWorkerMsgSend(WORKER_MSG_SOCK_DEL, socks[i]);
                 continue;
@@ -601,6 +600,15 @@ static bt_status_t aapiSockListen(btsock_type_t type, const char* serviceName, c
     sock->rfc.chNum = ch;
     logd("RFC ch %u opened for listening with name '%s'\n", ch, serviceName);
 
+    /* XXX: this makes me feel dirty all over, but sadly andriod api demands this be sent as an int and in native byte order... */
+    channel = ch; /* send the channel ID to java */
+    if (!sgConcatBackCopy(sock->rfc.bufRx, &channel ,sizeof(channel))) {
+        loge("Failed to enqueue channel number for java\n");
+        rfcStopListen(ch);
+        aapiSockFree(sock);
+        goto out;
+    }
+
     sock->rfc.sdpHandle = aapiSockAddSdpRecord(serviceUuid, ch, serviceName);
     logd("sock %p has atate %u and fd %u with sdp handle 0x%08x\n", sock, sock->rfc.state, sock->fd, sock->rfc.sdpHandle);
 
@@ -622,6 +630,7 @@ static bt_status_t aapiSockListen(btsock_type_t type, const char* serviceName, c
         *sockFdP = sock->java_fd;
         sock->java_fd = -1;
         aapiSockWorkerMsgSend(WORKER_MSG_SOCK_ADD, sock);
+        aapiSockWorkerMsgSend(WORKER_MSG_FD_CAN_RX, sock);
         ret = BT_STATUS_SUCCESS;
         goto out;
     }
