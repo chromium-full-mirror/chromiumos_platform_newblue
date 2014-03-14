@@ -487,7 +487,7 @@ static void* aapiSockRfcListenAlloc(void *userData, const struct bt_addr *peerAd
     struct aapiSock *srvSock = (struct aapiSock*)userData;
     struct aapiSock *newSock = aapiSockAllocRfc(chNum, RFC_SOCK_STATE_AUTOACCEPTING);
 
-
+    logd("aapi sock alloc ch %u\n", chNum);
     srvSock->rfc.chNum = chNum; /* in case we get here before aapiSockListen() finishes */
 
     if (!newSock)
@@ -497,6 +497,9 @@ static void* aapiSockRfcListenAlloc(void *userData, const struct bt_addr *peerAd
     if (aapiSockNotifyOfConnReq(srvSock, newSock))
         return newSock;
 
+/*
+   XXX: TODO: lots to do here. since this channel number is now used, we need to alloc a new one, change sdp record and re-start listening...
+*/
     aapiSockFree(newSock);
     return NULL;
 }
@@ -514,7 +517,9 @@ static void* aapiSockRfcListenAlloc(void *userData, const struct bt_addr *peerAd
 static void aapiSockRfcListenEvt(void *userData, void *instance, uint8_t evt, sg s)
 {
     struct aapiSock *sock = (struct aapiSock*)instance;
-    
+
+    logd("aapi sock evt %u ch %u\n", evt, sock->rfc.chNum);
+
     switch (evt) {
     case RFC_EVT_OPEN:
         if (sock->rfc.state != RFC_SOCK_STATE_AUTOACCEPTING)
@@ -567,11 +572,12 @@ static bt_status_t aapiSockListen(btsock_type_t type, const char* serviceName, c
         logw("Refusing sock listen when socks not up\n");
         goto out;
     }
+
     for (sl = mListeners; sl && memcmp(sl->uuid, serviceUuid, sizeof(sl->uuid)); sl = sl->next);
     if (sl) {
         pthread_mutex_unlock(&mSocksLock);
         logw("Refusing sock listen when identical listener exists\n");
-        goto out;
+        goto out_fake;// XXX: was "goto out"
     }
     sl = malloc(sizeof(struct appiSockListener));
     if (sl) {
@@ -580,6 +586,7 @@ static bt_status_t aapiSockListen(btsock_type_t type, const char* serviceName, c
         mListeners = sl;
     }
     pthread_mutex_unlock(&mSocksLock);
+out_fake: //XXX: fake
 
     logd("AAPI.sock: listen(%u,'%s',%d,%u)\n", type, serviceName, channel, flags);
 
