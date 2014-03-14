@@ -199,18 +199,34 @@ static void *aapiSockWorker(void *pipe)
                 continue;
 
             if (fds[i].revents & POLLIN) { /* java has sent us data */
+                int32_t txRet;
                 while(1) {
                     ssize_t now;
 
                     if (sgLength(socks[i]->rfc.bufTx) >= AAPI_RFC_MAX_BUF) {
-                        break;
                         fds[i].events &=~ POLLIN; /* no buffer space - stop reading */
+                        logd("TX throttled in socks api\n");
+                        break;
                     }
                     now = read(fds[i].fd, rdbuf, sizeof(rdbuf));
                     if (now <= 0)
                         break;
                     if (!sgConcatBackCopy(socks[i]->rfc.bufTx, rdbuf, now))
                         loge("Failed to concat read data. TX data will be lost\n");
+                }
+                txRet = rfcTx(socks[i]->rfc.conn, socks[i]->rfc.bufTx);
+                if (txRet == RFC_TX_RET_ENTIRE_SENT) {
+                    socks[i]->rfc.bufTx = sgNew();
+                    if (!socks[i]->rfc.bufTx) {
+                        loge("Failed to alloc new TX sg for conn. Closing\n");
+                        aapiSockWorkerMsgSend(WORKER_MSG_SOCK_DEL, socks[i]);
+                    }
+                } else if (txRet == RFC_TX_RET_STOP_SENDING) {
+                    fds[i].events &=~ POLLIN; /* no buffer space - stop reading */
+                    logd("TX throttled in rfc\n");
+                } else if (txRet == RFC_TX_RET_NO_SUCH_CONN || txRet == RFC_TX_RET_ERROR) {
+                    loge("Rfc sock error %d. Closing\n", txRet);
+                    aapiSockWorkerMsgSend(WORKER_MSG_SOCK_DEL, socks[i]);
                 }
             }
             if (fds[i].revents & POLLOUT) { /* java is ready for data */
