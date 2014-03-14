@@ -248,17 +248,21 @@ static void rfcTryTx(struct rfcConn* c);
 static void rfcShow(const char *lbl, sg s)
 {
 #ifdef RFC_DEBUG
-    uint8_t b;
-    uint32_t i;
+        char line[128] = "rfcomm *D* <ZLP>";
+        uint32_t i;
+        uint8_t v;
 
-    fprintf(stderr, "rfcomm *D* %s (%u):", lbl, sgLength(s));
-    for (i = 0; i < sgLength(s); i++) {
-        if (!sgSerialize(s, i, 1, &b)) loge("failed to serialize ofst %u\n", i);
-        if (i & 0x0F) fprintf(stderr, " ");
-        else fprintf(stderr, "\nrfcomm %03X: ", i);
-        fprintf(stderr, "%02X", b);
-    }
-    fprintf(stderr, "\n");
+        for(i = 0; i < sgLength(s); i++) {
+            sgSerialize(s, i, 1, &v);
+            if (i & 15)
+                sprintf(line + strlen(line), " %02X", v);
+            else {
+                if (i)
+                    logd(line);
+                sprintf(line, "rfcomm *D* [%03X] %02X", i, v);
+            }
+        }
+        logd(line);
 #endif
 }
 
@@ -1126,7 +1130,7 @@ bool rfcFlow(rfc_conn_t connH, bool stop)
 static void rfcCloseConn(struct rfcConn *c, bool tellOtherSide, bool tellOurSide)
 {
     struct rfcInst *inst = c->rfcInst;
-    bool delStruct = true, useDM = false;
+    bool delStruct = true, useDM = true;
 
     switch (c->cState) {
     case RFC_CONN_ST_INVALID:
@@ -1144,7 +1148,7 @@ static void rfcCloseConn(struct rfcConn *c, bool tellOtherSide, bool tellOurSide
         tellOtherSide = tellOurSide = delStruct = false;
         break;
     case RFC_CONN_ST_ESTABLISHED:
-        useDM = true;
+        useDM = false;
     case RFC_CONN_ST_SVC_OPENED:
         /* nothing more to do here */
         break;
@@ -2066,9 +2070,9 @@ static void* rfcWorkerThread(void *unused)
             }
             else if (c->cState != RFC_CONN_ST_SVC_OPENING) {
                 logw("rfc conn in bad state at svc aloc time\n");
-                rfcCloseConn(c, false, true);
+                rfcCloseConn(c, true, true);
             } else {
-                c->evtCbkInst = wi->svcAlloc.allocCbk(wi->svcAlloc.cbkData, &c->rfcInst->addr, c->dlci);
+                c->evtCbkInst = wi->svcAlloc.allocCbk(wi->svcAlloc.cbkData, &c->rfcInst->addr, c->dlci >> 1);
                 if (c->evtCbkInst) {
                     c->cState = RFC_CONN_ST_ESTABLISHED;
                     c->evtCbk = wi->svcAlloc.evtCbk;
@@ -2083,8 +2087,9 @@ static void* rfcWorkerThread(void *unused)
                         rfcCloseConn(c, true, true);
                     }
                 } else {
+                    logd("rfc conn refused for dlci %u\n", dlci);
                     c->cState = RFC_CONN_ST_SVC_OPENED;
-                    rfcCloseConn(c, false, true);
+                    rfcCloseConn(c, true, false);
                 }
             }
             pthread_mutex_unlock(&inst->lock);
