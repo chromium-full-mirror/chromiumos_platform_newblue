@@ -264,7 +264,6 @@ bool sdpServiceDescriptorDel(uint32_t handle)
         ret = true;
     }
     pthread_rwlock_unlock(&mSvcsLock);
-
     return ret;
 }
 
@@ -1444,6 +1443,7 @@ void sdpDeinit(void)
         mSvcsHead = mSvcsHead->next;
         free(mSvcsTail);
     }
+    mSvcsTail = NULL;
     pthread_rwlock_unlock(&mSvcsLock);
 }
 
