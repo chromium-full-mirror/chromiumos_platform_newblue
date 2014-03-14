@@ -32,14 +32,14 @@ typedef uniq_t rfc_conn_t; /* a 0-valued connection ID is invalid and indicates 
 #define RFC_TX_RET_ERROR             -4 /* this is permanent - do not retry */
 
 
-typedef void* (*rfcSvcAlloc)(void *userData, const struct bt_addr *peerAddr, uint8_t dlci);
+typedef void* (*rfcSvcAlloc)(void *userData, const struct bt_addr *peerAddr, uint8_t chNum);
 typedef void (*rfcSvcEvent)(void *userData, void *instance, uint8_t evt, sg s);
 
 
 bool rfcInit(void);
 void rfcDeinit(void);
 
-uint8_t rfcListen(uint8_t chReq, rfcSvcAlloc allocF, rfcSvcEvent evtF, void *cbkData); /* returns DLCI. input = dlci specifically or RFC_CHNUM_REQ_ANY, ret 0 is fail */
+uint8_t rfcListen(uint8_t chReq, rfcSvcAlloc allocF, rfcSvcEvent evtF, void *cbkData); /* returns channel. input = dlci specifically or RFC_CHNUM_REQ_ANY, ret 0 is fail */
 bool rfcStopListen(uint8_t ch); /* will not close any existing connections */
 bool rfcConnect(const struct bt_addr *peerAddr, uint8_t ch, rfcSvcEvent evtF, void *cbkData, void *instance); /* true if you shoudl expect callback(s) */
 

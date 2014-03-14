@@ -31,7 +31,7 @@ struct aapiSock {
                 uint32_t sdpHandle;
             };
             uint8_t state;
-            uint8_t dlci;
+            uint8_t chNum;
             sg bufRx;
             sg bufTx;
         } rfc;
@@ -333,12 +333,12 @@ static struct aapiSock* aapiSockAlloc(btsock_type_t type, int sockType)
 /*
  * FUNCTION: aapiSockAllocRfc
  * USE:      Create an RFC sock struct and link it into the list
- * PARAMS:   dlci - the dlci to save in the sock
+ * PARAMS:   chNum - the chNum to save in the sock
  *           state - the state to put it into
  * RETURN:   sock struct or NULL on error
  * NOTES:
  */
-static struct aapiSock* aapiSockAllocRfc(uint8_t dlci, uint8_t state)
+static struct aapiSock* aapiSockAllocRfc(uint8_t chNum, uint8_t state)
 {
     struct aapiSock *sock = NULL;
     sg bufTx = sgNew();
@@ -355,7 +355,7 @@ static struct aapiSock* aapiSockAllocRfc(uint8_t dlci, uint8_t state)
     pthread_mutex_lock(&mSocksLock);
     sock = aapiSockAlloc(BTSOCK_RFCOMM, SOCK_STREAM);
     if (sock) {
-        sock->rfc.dlci = dlci;
+        sock->rfc.chNum = chNum;
         sock->rfc.state = state;
         sock->rfc.bufTx = bufTx;
         sock->rfc.bufRx = bufRx;
@@ -406,6 +406,7 @@ static void aapiSockFree(struct aapiSock* sock)
                     mListeners = sl->next;
                 free(sl);
             }
+            rfcStopListen(sock->rfc.chNum);
             sdpServiceDescriptorDel(sl->sdpHandle);
         } else if (sock->rfc.conn)
             rfcClose(sock->rfc.conn);
@@ -420,7 +421,7 @@ static void aapiSockFree(struct aapiSock* sock)
 
 static bool aapiSockNotifyOfConnReq(struct aapiSock *srvSock, struct aapiSock *newSock)
 {
-    sock_connect_signal_t sig = {.size = sizeof(sock_connect_signal_t), .channel = srvSock->rfc.dlci, .status = 0, };
+    sock_connect_signal_t sig = {.size = sizeof(sock_connect_signal_t), .channel = srvSock->rfc.chNum, .status = 0, };
     uint8_t *sigBuf  = (uint8_t*)&sig;
     char cmsgBuf[CMSG_SPACE(1)];
     int ret, len = sizeof(sig);
@@ -470,18 +471,18 @@ static bool aapiSockNotifyOfConnReq(struct aapiSock *srvSock, struct aapiSock *n
  * USE:      Called when a remote device tries to connect to our listening RFC socket
  * PARAMS:   userData - our socket
  *           peerAddr - the peer address
- *           dlci - the dlci 
+ *           chNum - the chNum 
  * RETURN:   bt_status_t
  * NOTES:
  */
-static void* aapiSockRfcListenAlloc(void *userData, const struct bt_addr *peerAddr, uint8_t dlci)
+static void* aapiSockRfcListenAlloc(void *userData, const struct bt_addr *peerAddr, uint8_t chNum)
 {
     /* we have no way to ask user to accept or not, so we accept for the user, and sort it out later */
     struct aapiSock *srvSock = (struct aapiSock*)userData;
-    struct aapiSock *newSock = aapiSockAllocRfc(dlci, RFC_SOCK_STATE_AUTOACCEPTING);
+    struct aapiSock *newSock = aapiSockAllocRfc(chNum, RFC_SOCK_STATE_AUTOACCEPTING);
 
 
-    srvSock->rfc.dlci = dlci; /* in case we get here before aapiSockListen() finishes */
+    srvSock->rfc.chNum = chNum; /* in case we get here before aapiSockListen() finishes */
 
     if (!newSock)
         return NULL;
@@ -528,7 +529,7 @@ static void aapiSockRfcListenEvt(void *userData, void *instance, uint8_t evt, sg
         aapiSockWorkerMsgSend(WORKER_MSG_FD_CAN_TX, sock);
         break;
     case RFC_EVT_CLOSE:
-        logd("Connection to "ADDRFMT"[%u] closed\n", ADDRCONV(sock->peer), sock->rfc.dlci);
+        logd("Connection to "ADDRFMT"[%u] closed\n", ADDRCONV(sock->peer), sock->rfc.chNum);
         sock->rfc.conn = 0;
         aapiSockWorkerMsgSend(WORKER_MSG_SOCK_DEL, sock);
     }
@@ -597,7 +598,7 @@ static bt_status_t aapiSockListen(btsock_type_t type, const char* serviceName, c
         aapiSockFree(sock);
         goto out;
     }
-    sock->rfc.dlci = ch;
+    sock->rfc.chNum = ch;
     logd("RFC ch %u opened for listening with name '%s'\n", ch, serviceName);
 
     sock->rfc.sdpHandle = aapiSockAddSdpRecord(serviceUuid, ch, serviceName);
