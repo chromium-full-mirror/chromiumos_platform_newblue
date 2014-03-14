@@ -88,13 +88,13 @@ static void *aapiSockWorker(void *pipe)
     bool quit = false;
     uint8_t rdbuf[4096]; /* we read from java using this */
 
-    fds = malloc(sizeof(struct pollfd[arrSz]));
+    fds = malloc(sizeof(struct pollfd) * arrSz);
     if (!fds) {
         loge("Failed to alloc fds\n");
         return NULL;
     }
 
-    socks = malloc(sizeof(struct aapiSock*[arrSz]));
+    socks = malloc(sizeof(struct aapiSock*) * arrSz);
     if (!socks) {
         loge("Failed to alloc socks\n");
         free(fds);
@@ -109,9 +109,15 @@ static void *aapiSockWorker(void *pipe)
         for (i = 0; i < arrNum; i++)
             fds[i].revents = 0;
 
+        for (i = 0; i < arrNum; i++)
+            logd(" in.fds[%d] = {%3d, 0x%04x, 0x%04x}\n", i, fds[i].fd, fds[i].events, fds[i].revents);
+
         do {
             ret = poll(fds, arrNum, -1);
         } while (ret == -1 && errno == EINTR);
+
+        for (i = 0; i < arrNum; i++)
+            logd("out.fds[%d] = {%3d, 0x%04x, 0x%04x}\n", i, fds[i].fd, fds[i].events, fds[i].revents);
 
         if (fds[0].revents & POLLIN) {
             uint8_t msg;
@@ -121,13 +127,13 @@ static void *aapiSockWorker(void *pipe)
             r_read(fds[0].fd, &sock, sizeof(sock));
             logd("msg %u with p %p\n", msg, sock);
             if(sock)
-                logd("sock %p has atate %u and fd %u with sdp handle 0x%08x\n", sock, sock->rfc.state, sock->fd, sock->rfc.sdpHandle);
+                logd("sock %p has state %u and fd %u with sdp handle 0x%08x\n", sock, sock->rfc.state, sock->fd, sock->rfc.sdpHandle);
             switch (msg) {
             case WORKER_MSG_SOCK_ADD:
                 if (arrNum == arrSz) {
                     uint32_t newArrSz = arrSz + 16; /* we grow 16 at a time */
-                    struct pollfd *newFds = realloc(fds, sizeof(struct pollfd[newArrSz]));
-                    struct aapiSock **newSocks = realloc(socks, sizeof(struct aapiSock*[newArrSz]));
+                    struct pollfd *newFds = realloc(fds, sizeof(struct pollfd) * newArrSz);
+                    struct aapiSock **newSocks = realloc(socks, sizeof(struct aapiSock*) * newArrSz);
 
                     if (newFds)
                         fds = newFds;
@@ -142,6 +148,7 @@ static void *aapiSockWorker(void *pipe)
                 socks[arrNum] = sock;
                 fds[arrNum].fd = sock->fd;
                 fds[arrNum].events = POLLERR | POLLNVAL | POLLHUP;
+                fds[arrNum].revents = 0;
                 arrNum++;
                 break;
             case WORKER_MSG_FD_CAN_RX:
