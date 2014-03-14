@@ -38,6 +38,12 @@ struct aapiSock {
     };
 };
 
+struct appiSockListener {
+    struct appiSockListener *next;
+    uint32_t sdpHandle;
+    uint8_t uuid[16];
+};
+
 #define RFC_SOCK_STATE_LISTENING       1
 #define RFC_SOCK_STATE_AUTOACCEPTING   2 /* we allocated an instance but it is not yet openened by rfcomm */
 #define RFC_SOCK_STATE_ESTABLISHED     3 /* it is open */
@@ -58,6 +64,7 @@ static pthread_t mWorker;
 static int mWorkerPipe = -1;
 static bool mSocksUp;
 static bool mSocksWantUp;
+static struct appiSockListener *mListeners = NULL;
 
 
 /* fwd decls */
@@ -160,8 +167,6 @@ static void *aapiSockWorker(void *pipe)
                     memcpy(fds + i, fds + arrNum - 1, sizeof(struct pollfd));
                     socks[i] = socks[arrNum - 1];
                     arrNum--;
-                    if (sock->rfc.state == RFC_SOCK_STATE_LISTENING)
-                        sdpServiceDescriptorDel(sock->rfc.sdpHandle);
                     aapiSockFree(sock);
                 }
                 break;
@@ -220,11 +225,8 @@ static void *aapiSockWorker(void *pipe)
         }
     }
 
-    for (i = 1; i < arrNum; i++) {
-        if (socks[i]->rfc.state == RFC_SOCK_STATE_LISTENING)
-            sdpServiceDescriptorDel(socks[i]->rfc.sdpHandle);
+    for (i = 1; i < arrNum; i++)
         aapiSockFree(socks[i]);
-    }
     close((int)pipe);    
 
     free(fds);
@@ -265,6 +267,12 @@ static void aapiSockDoInit(void)
  */
 static void aapiSockDoDeinit(void)
 {
+    while (mListeners) {
+        struct appiSockListener *sl = mListeners;
+        mListeners = mListeners->next;
+        free(sl);
+    }
+
     aapiSockWorkerMsgSend(WORKER_MSG_QUIT, NULL);
     pthread_join(mWorker, NULL);
     close(mWorkerPipe);
@@ -386,7 +394,20 @@ static void aapiSockFree(struct aapiSock* sock)
     case BTSOCK_RFCOMM:
         sgFree(sock->rfc.bufTx);
         sgFree(sock->rfc.bufRx);
-        if (sock->rfc.conn)
+        if (sock->rfc.state == RFC_SOCK_STATE_LISTENING) {
+            struct appiSockListener *sl, *p = NULL;
+            for (sl = mListeners; sl && sl->sdpHandle != sock->rfc.sdpHandle; p = sl, sl = sl->next);
+            if (!sl)
+                logw("Failed to find listener object for closed listening socket\n");
+            else {
+                if (p)
+                    p->next = sl->next;
+                else
+                    mListeners = sl->next;
+                free(sl);
+            }
+            sdpServiceDescriptorDel(sl->sdpHandle);
+        } else if (sock->rfc.conn)
             rfcClose(sock->rfc.conn);
         break;
     default:
@@ -528,6 +549,7 @@ static void aapiSockRfcListenEvt(void *userData, void *instance, uint8_t evt, sg
 static bt_status_t aapiSockListen(btsock_type_t type, const char* serviceName, const uint8_t* serviceUuid, int channel, int* sockFdP, int flags)
 {
     bt_status_t ret = BT_STATUS_FAIL;
+    struct appiSockListener *sl;
     struct aapiSock* sock;
     uint8_t ch;
 
@@ -535,8 +557,20 @@ static bt_status_t aapiSockListen(btsock_type_t type, const char* serviceName, c
     pthread_mutex_lock(&mSocksLock);
     if (!mSocksUp) {
         pthread_mutex_unlock(&mSocksLock);
-        logw("Refusing sock open when socks not up\n");
+        logw("Refusing sock listen when socks not up\n");
         goto out;
+    }
+    for (sl = mListeners; sl && memcmp(sl->uuid, serviceUuid, sizeof(sl->uuid)); sl = sl->next);
+    if (sl) {
+        pthread_mutex_unlock(&mSocksLock);
+        logw("Refusing sock listen when identical listener exists\n");
+        goto out;
+    }
+    sl = malloc(sizeof(struct appiSockListener));
+    if (sl) {
+        memcpy(sl->uuid, serviceUuid, sizeof(sl->uuid));
+        sl->next = mListeners;
+        mListeners = sl;
     }
     pthread_mutex_unlock(&mSocksLock);
 
@@ -568,6 +602,20 @@ static bt_status_t aapiSockListen(btsock_type_t type, const char* serviceName, c
 
     sock->rfc.sdpHandle = aapiSockAddSdpRecord(serviceUuid, ch, serviceName);
     logd("sock %p has atate %u and fd %u with sdp handle 0x%08x\n", sock, sock->rfc.state, sock->fd, sock->rfc.sdpHandle);
+
+    pthread_mutex_lock(&mSocksLock);
+    if (sock->rfc.sdpHandle)
+        sl->sdpHandle = sock->rfc.sdpHandle;
+    else {
+        struct appiSockListener *p = NULL;
+        for (p = mListeners; p && p->next != sl; p = p->next);
+        if (p)
+            p->next = sl->next;
+        else
+            mListeners = sl->next;
+        free(sl);
+    }
+    pthread_mutex_unlock(&mSocksLock);
 
     if (sock->rfc.sdpHandle) {
         *sockFdP = sock->java_fd;
@@ -608,7 +656,7 @@ static bt_status_t aapiSockConnect(const bt_bdaddr_t *bd_addr, btsock_type_t typ
     pthread_mutex_lock(&mSocksLock);
     if (!mSocksUp) {
         pthread_mutex_unlock(&mSocksLock);
-        logw("Refusing sock open when socks not up\n");
+        logw("Refusing sock connect when socks not up\n");
         goto out;
     }
     pthread_mutex_unlock(&mSocksLock);
