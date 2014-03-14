@@ -683,9 +683,6 @@ bool vendorTx(uint8_t typ, sg data)
 
     vendorChipWake();
 
-    if (!sgConcatFrontCopy(data, &typ, 1))
-        return false;
-
     if (mLog) {
         char line[128] = "vTX <ZLP>";
         uint32_t i;
@@ -703,6 +700,10 @@ bool vendorTx(uint8_t typ, sg data)
         }
         logd(line);
     }
+
+    if (!sgConcatFrontCopy(data, &typ, 1))
+        return false;
+
 
     switch (typ) {
     case HCI_PKT_TYP_CMD:
