@@ -39,7 +39,8 @@
 #define RFC_CONN_ST_ESTABLISHED   7 /* connection is live */
 #define RFC_CONN_ST_NEED_DISC     8 /* we need to send a DISC and are waiting for a chance to send it */
 #define RFC_CONN_ST_SENT_DISC     9 /* we sent a DISC and are waiting for a confirming UA */
-#define RFC_CONN_ST_TEARDOWN      10 /* connection is being torn down */
+#define RFC_CONN_ST_GOT_DISC      10 /* we got a DISC replied */
+#define RFC_CONN_ST_TEARDOWN      11 /* connection is being torn down */
 
 /* states for an rfcInst instance */
 #define RFC_INST_ST_INVALID       0 /* definitely not a valid state */
@@ -1148,6 +1149,7 @@ static void rfcCloseConn(struct rfcConn *c, bool tellOtherSide, bool tellOurSide
         tellOtherSide = tellOurSide = delStruct = false;
         break;
     case RFC_CONN_ST_ESTABLISHED:
+    case RFC_CONN_ST_GOT_DISC:
         useDM = false;
     case RFC_CONN_ST_SVC_OPENED:
         if (tellOtherSide)
@@ -1425,6 +1427,7 @@ static void rfcRxDisc(struct rfcInst *inst, uint8_t dlci)
     } else {
         if (!rfcSendUa(inst, dlci))
             loge("Failed to send UA\n");
+        c->cState = RFC_CONN_ST_GOT_DISC;
         rfcCloseConn(c, false, true);
     }
 }
