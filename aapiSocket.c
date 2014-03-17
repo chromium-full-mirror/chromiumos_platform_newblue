@@ -230,6 +230,7 @@ static void *aapiSockWorker(void *pipe)
                 }
             }
             if (fds[i].revents & POLLOUT) { /* java is ready for data */
+                pthread_mutex_lock(&mSocksLock);
                 for (done = 0, iter = sgIterStart(socks[i]->rfc.bufRx); iter; iter = sgIterAdvance(iter)) {
                     ssize_t now = write(fds[i].fd, sgIterCurData(iter), sgIterCurLen(iter));
                     if (now <= 0)
@@ -243,6 +244,7 @@ static void *aapiSockWorker(void *pipe)
                     rfcFlow(socks[i]->rfc.conn, false);
                 if (!sgLength(socks[i]->rfc.bufRx))
                     fds[i].events &=~ POLLOUT; /* if we have no more to give, do not bother caring if java can read */
+                pthread_mutex_unlock(&mSocksLock);
             }
         }
     }
@@ -537,6 +539,7 @@ static void aapiSockRfcListenEvt(void *userData, void *instance, uint8_t evt, sg
     struct aapiSock *sock = (struct aapiSock*)instance;
 
     logd("aapi sock evt %u ch %u\n", evt, sock->rfc.chNum);
+    pthread_mutex_lock(&mSocksLock);
 
     switch (evt) {
     case RFC_EVT_OPEN:
@@ -562,6 +565,7 @@ static void aapiSockRfcListenEvt(void *userData, void *instance, uint8_t evt, sg
         sock->rfc.conn = 0;
         aapiSockWorkerMsgSend(WORKER_MSG_SOCK_DEL, sock);
     }
+    pthread_mutex_unlock(&mSocksLock);
 }
 
 /*
