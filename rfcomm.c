@@ -757,9 +757,6 @@ static bool rfcWrapUIH(struct rfcInst *inst, uint8_t dlci, int nCreds, sg s)
     uint8_t hdrLen = sizeof(struct rfcHdr);
     uint16_t len = sgLength(s);
 
-    if (nCreds)
-        len++;
-
     utilSetLE8(&hdr->addr, RFC_BIT_EA | (inst->initiator ? RFC_BIT_CR : 0) | (dlci << 2));
     utilSetLE8(&hdr->ctrl, RFC_CTRL_UIH | (nCreds ? RFC_CTRL_PF_MASK : 0));
 
