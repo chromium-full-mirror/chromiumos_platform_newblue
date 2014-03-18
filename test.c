@@ -253,6 +253,7 @@ int main(int argc, char** argv)
     vendorLogEnable(true);
 #endif
 
+    persistLoad();
     timersInit();
     if (!hciUp(mac)) {
         loge("HCI up fail\n");
@@ -386,6 +387,7 @@ int main(int argc, char** argv)
     l2cDeinit();
     hciDown();
     timersDeinit();
+    persistStore();
 
     logi("done\n");
 

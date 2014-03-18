@@ -3,6 +3,7 @@
 #include "aapiSocket.h"
 #include "aapiGatt.h"
 #include "workQueue.h"
+#include "persist.h"
 #include "rfcomm.h"
 #include "config.h"
 #include "timer.h"
@@ -602,9 +603,11 @@ static int aapiEnable(void)
     logd("AAPI: enable\n");
     pthread_mutex_lock(&mStateLock);
     if (mStackUp) {
-        loge("stack requested to coem up while already up\n");
+        loge("stack requested to come up while already up\n");
         goto fail_up;
     }
+
+    persistLoad();
 
     if (!timersInit()) {
         loge("timers failed\n");
@@ -679,6 +682,7 @@ fail_up:
     mStackUp = false;
     aapiSocketNotifStackState(false);
     aapiGattNotifStackState(false);
+    persistStore();
     pthread_mutex_unlock(&mStateLock);
     return BT_STATUS_FAIL;
 }
@@ -706,6 +710,7 @@ static int aapiDisable(void)
     }
     aapiSocketNotifStackState(false);
     aapiGattNotifStackState(false);
+    persistStore();
     pthread_mutex_unlock(&mStateLock);
     return 0;
 }
