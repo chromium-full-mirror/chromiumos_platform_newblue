@@ -2,8 +2,10 @@
 #define _LOG_H_
 
 #include <stdio.h>
-#include <android/log.h>
-#include <utils/Log.h>
+#ifndef EXECUTABLE
+# include <android/log.h>
+# include <utils/Log.h>
+#endif
 
 #define LOG_STRINGIFYX(x) #x
 #define LOG_STRINGIFY(x) LOG_STRINGIFYX(x)
