@@ -29,7 +29,7 @@ struct persistPropOnDisk {
 struct persistProp {
     struct persistProp *next;
     struct persistProp *prev;
-    struct persistPropOnDisk data;
+    struct persistPropOnDisk info;
 };
 
 struct persistFileHdr {
@@ -37,6 +37,10 @@ struct persistFileHdr {
     uint32_t version;
 } __packed;
 
+struct persistKey {
+    uint8_t keyType;
+    uint8_t key[HCI_LINK_KEY_LEN];
+} __packed;
 
 #define PERSIST_MAGIC                    0x374940ED
 
@@ -51,10 +55,10 @@ struct persistFileHdr {
 #define PERS_NAME_DISC_TIMEOUT           0x00000002 /* type: PERS_TYPE_UINT, size: 1 */
 #define PERS_NAME_DEV_CLS                0x00000003 /* type: PERS_TYPE_UINT, size: 4 */
 #define PERS_NAME_KEYS                   0x00000004 /* type: PERS_TYPE_ARRAY of {PERS_NAME_KEY_TYPE, PERS_NAME_KEY_VAL} */
-#define PERS_NAME_KEY_TYPE               0x00000005 /* type: PERS_TYPE_UINT, size: 1 */
-#define PERS_NAME_KEY_VAL                0x00000006 /* type: PER_TYPE_BYTE_ARRAY */
-#define PERS_NAME_BONDED_DEVICES         0x00000007 /* type: PERS_TYPE_ARRAY of {PERS_NAME_DEVICE_NAME, PERS_NAME_BT_ADDR, PERS_NAME_KEYS} */
-#define PERS_NAME_BT_ADDR                0x00000008 /* type: PERS_TYPE_BT_ADDR */
+#define PERS_NAME_KEY                    0x00000005 /* type: PERS_TYPE_BYTE_ARRAY, size: sizeof(struct persistKey) */
+#define PERS_NAME_KNOWN_DEVICES          0x00000006 /* type: PERS_TYPE_ARRAY of {PERS_NAME_DEVICE_NAME, PERS_NAME_BT_ADDR, PERS_NAME_DEV_CLS, PERS_NAME_KEYS, PERS_NAME_LAST_SEEN} */
+#define PERS_NAME_BT_ADDR                0x00000007 /* type: PERS_TYPE_BT_ADDR */
+#define PERS_NAME_LAST_SEEN              0x00000008 /* type: PERS_TYPE_UINT, size: 8 */
 
 /* types */
 #define PERS_TYPE_UINT                   0x00000001
@@ -88,23 +92,23 @@ static struct persistProp* persistPropAlloc(uint32_t name, uint32_t type, uint32
 {
     struct persistProp *t = (struct persistProp*)calloc(1, sizeof(struct persistProp) + len);
     if (t) {
-        t->data.name = name;
-        t->data.type = type;
-        t->data.len = len;
+        t->info.name = name;
+        t->info.type = type;
+        t->info.len = len;
     }
     return t;
 }
 
 /*
  * FUNCTION: persistPropFree
- * USE:      Free an property struct
- * PARAMS:   p - the onject
+ * USE:      Free a property struct
+ * PARAMS:   p - the object
  * RETURN:   NONE
  * NOTES:
  */
 static void persistPropFree(struct persistProp *p)
 {
-    if (p->data.type == PERS_TYPE_ARRAY) {
+    if (p->info.type == PERS_TYPE_ARRAY) {
         struct persistArrayInRam *arr = (struct persistArrayInRam*)(p + 1);
         struct persistProp *t = arr->head, *curr;
 
@@ -115,6 +119,30 @@ static void persistPropFree(struct persistProp *p)
         }
     }
     free(p);
+}
+
+/*
+ * FUNCTION: persistPropDelete
+ * USE:      Delete a property struct from the list it is in & then free it
+ * PARAMS:   headP - list head stored here
+ *           tailP - lsit tail stored here
+ *           p - the object
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void persistPropDelete(struct persistProp **headP, struct persistProp **tailP, struct persistProp *p)
+{
+    if (p->next)
+        p->next->prev = p->prev;
+    else
+        (*tailP) = p->prev;
+
+    if (p->prev)
+        p->prev->next = p->next;
+    else
+        (*headP) = p->next;
+
+    persistPropFree(p);
 }
 
 /*
@@ -145,7 +173,7 @@ static void persistFree(void)
  */
 static struct persistProp* persistPropFind(struct persistProp *head, uint32_t name, uint32_t type)
 {
-    while (head && head->data.type != type && head->data.name != name)
+    while (head && head->info.type != type && head->info.name != name)
         head = head->next;
 
     return head;
@@ -279,12 +307,13 @@ static struct persistProp* persistPropAddInt(struct persistProp **headP, struct 
  */
 static struct persistProp* persistPropLoad(int fd, uint64_t *lenP)
 {
+    uint8_t buf[sizeof(uint64_t)];
     struct persistArrayInRam *arr;
     struct persistPropOnDisk p;
     struct persistProp *prop;
     uint32_t type, inRamLen;
+    struct bt_addr *addr;
     uint64_t onDiskLen;
-    uint8_t buf[sizeof(uint64_t)];
 
 
     if (*lenP < sizeof(p))
@@ -341,9 +370,14 @@ static struct persistProp* persistPropLoad(int fd, uint64_t *lenP)
             loge("Invalid bt_addr length %u\n", inRamLen);
             break;
         }
-        if (!r_read(fd, prop + 1, inRamLen))
-            return prop;
-        break;
+        addr = (struct bt_addr*)(prop + 1);
+        if (!r_read(fd, addr, inRamLen))
+            break;
+        if (addr->type >= BT_ADDR_TYPE_NUM) {
+            loge("Invalid device addr type\n");
+            break;
+        }
+        return prop;
     case PERS_TYPE_ARRAY:
         arr = (struct persistArrayInRam*)(prop + 1);
         if (!persistPropListLoad(&arr->head, &arr->tail, fd, onDiskLen)) {
@@ -380,8 +414,8 @@ static void persistLoadRequiredProps(void)
             loge("Failed to add discovery length default prop\n");
 
     if (!persistPropFind(mPropsHead, PERS_NAME_DISC_TIMEOUT, PERS_TYPE_UINT))
-        if (!persistPropAddEmptyArray(&mPropsHead, &mPropsTail, PERS_NAME_BONDED_DEVICES))
-            loge("Failed to add bonded devices default prop\n");
+        if (!persistPropAddEmptyArray(&mPropsHead, &mPropsTail, PERS_NAME_KNOWN_DEVICES))
+            loge("Failed to add known devices default prop\n");
 }
 
 /*
@@ -400,10 +434,10 @@ static uint32_t persistPropCalcListSize(const struct persistProp *head)
 
         len += sizeof(struct persistPropOnDisk);
 
-        if (head->data.type == PERS_TYPE_ARRAY)
+        if (head->info.type == PERS_TYPE_ARRAY)
             len += persistPropCalcListSize(arr->head);
         else
-            len += head->data.len;
+            len += head->info.len;
 
         head = head->next;
     }
@@ -426,23 +460,23 @@ static bool persistPropStore(int fd, const struct persistProp *prop)
     const struct persistProp *t;
     struct persistPropOnDisk p;
 
-    utilSetBE32(&p.name, prop->data.name);
-    utilSetBE32(&p.type, prop->data.type);
+    utilSetBE32(&p.name, prop->info.name);
+    utilSetBE32(&p.type, prop->info.type);
 
-    if (prop->data.type == PERS_TYPE_ARRAY)
+    if (prop->info.type == PERS_TYPE_ARRAY)
         utilSetBE32(&p.len, persistPropCalcListSize(arr->head));
     else
-        utilSetBE32(&p.len, prop->data.len);
+        utilSetBE32(&p.len, prop->info.len);
 
     if (!r_write(fd, &p, sizeof(p))) {
         loge("Failed to write prop header\n");
         return false;
     }
 
-    switch (prop->data.type) {
+    switch (prop->info.type) {
     case PERS_TYPE_UINT:
     case PERS_TYPE_SINT:
-        switch (prop->data.len) {
+        switch (prop->info.len) {
         case sizeof(uint8_t):
             utilSetBE8(buf, *(uint8_t*)(prop + 1));
             break;
@@ -456,17 +490,17 @@ static bool persistPropStore(int fd, const struct persistProp *prop)
             utilSetBE64(buf, *(uint64_t*)(prop + 1));
             break;
         default:
-            loge("Unknown integer size %u\n", prop->data.len);
+            loge("Unknown integer size %u\n", prop->info.len);
             return false;
         }
-        return r_write(fd, buf, prop->data.len);
+        return r_write(fd, buf, prop->info.len);
 
     case PERS_TYPE_BYTE_ARRAY:
-        return r_write(fd, prop + 1, prop->data.len);
+        return r_write(fd, prop + 1, prop->info.len);
 
     case PERS_TYPE_BT_ADDR:
-        if (prop->data.len != sizeof(struct bt_addr)) {
-            loge("Bad bt_addr size %u\n", prop->data.len);
+        if (prop->info.len != sizeof(struct bt_addr)) {
+            loge("Bad bt_addr size %u\n", prop->info.len);
             return false;
         }
         return r_write(fd, prop + 1, sizeof(struct bt_addr));
@@ -479,7 +513,7 @@ static bool persistPropStore(int fd, const struct persistProp *prop)
         }
         return true;
     default:
-        loge("Unknown property type %u\n", prop->data.type);
+        loge("Unknown property type %u\n", prop->info.type);
         return false;
     }
 }
@@ -489,7 +523,7 @@ static bool persistPropStore(int fd, const struct persistProp *prop)
  * USE:      Store persistent preferences to the preferences file
  * PARAMS:   NONE
  * RETURN:   NONE
- * NOTES:    call with mLock held
+ * NOTES:
  */
 void persistStore(void)
 {
@@ -498,6 +532,7 @@ void persistStore(void)
     int fd;
 
 
+    pthread_mutex_lock(&mLock);
     utilSetBE32(&hdr.magic, PERSIST_MAGIC);
     utilSetBE32(&hdr.version, PERSIST_VERSION_CUR);
 
@@ -520,10 +555,12 @@ void persistStore(void)
     }
 
     close(fd);
+    pthread_mutex_unlock(&mLock);
     return;
 
 fail:
     close(fd);
+    pthread_mutex_unlock(&mLock);
     unlink(PREF_PATH); /* better no file than bad file */
 }
 
@@ -558,7 +595,7 @@ static bool persistPropListLoad(struct persistProp **headP, struct persistProp *
  * USE:      Load persistent preferences from the preferences file
  * PARAMS:   NONE
  * RETURN:   NONE
- * NOTES:    call with mLock held
+ * NOTES:
  */
 void persistLoad(void)
 {
@@ -566,6 +603,9 @@ void persistLoad(void)
     struct persistFileHdr hdr;
     uint64_t fileLen;
     int fd;
+
+
+    pthread_mutex_lock(&mLock);
 
     mPropsHead = NULL;
     mPropsTail = NULL;
@@ -608,4 +648,319 @@ out:
     logi("Adding default preferences if needed\n");
     persistLoadRequiredProps();
     persistStore();
+    pthread_mutex_unlock(&mLock);
 }
+
+/*
+ * FUNCTION: persistGetDeviceName
+ * USE:      Get stored device name for our device
+ * PARAMS:   buf - name gets stored here. Should fit at least HCI_DEV_NAME_LEN bytes
+ * RETURN:   length of name returned
+ * NOTES:    NONE
+ */
+uint32_t persistGetDeviceName(void* buf)
+{
+    struct persistProp *t;
+    uint32_t ret = 0;
+
+    pthread_mutex_lock(&mLock);
+    t = persistPropFind(mPropsHead, PERS_NAME_DEVICE_NAME, PERS_TYPE_BYTE_ARRAY);
+    if (!t)
+        logw("Device name property not found\n");
+    else {
+        ret = t->info.len;
+        if (t->info.len > HCI_DEV_NAME_LEN) {
+            logw("Device name property too long - truncating\n");
+            ret = HCI_DEV_NAME_LEN;
+        }
+        memcpy(buf, t + 1, ret);
+    }
+    pthread_mutex_unlock(&mLock);
+    return ret;
+}
+
+/*
+ * FUNCTION: persistSetDeviceName
+ * USE:      Set stored device name for our device
+ * PARAMS:   buf - the name to save
+ *           len - length of said name (at most HCI_DEV_NAME_LEN bytes)
+ * RETURN:   success
+ * NOTES:    NONE
+ */
+bool persistSetDeviceName(const void *buf, uint32_t len) //should be at most HCI_DEV_NAME_LEN bytes long
+{
+    struct persistProp *t;
+    bool ret = false;
+
+    if (len > HCI_DEV_NAME_LEN) {
+        logw("Name to long. Truncating\n");
+        len = HCI_DEV_NAME_LEN;
+    }
+
+    pthread_mutex_lock(&mLock);
+    t = persistPropFind(mPropsHead, PERS_NAME_DEVICE_NAME, PERS_TYPE_BYTE_ARRAY);
+    if (t) {
+        if (t->info.len < len) {
+            persistPropDelete(&mPropsHead, &mPropsTail, t);
+            t = NULL;
+        } else {
+            t->info.len = len;
+            memcpy(t + 1, buf, len);
+            ret = true;
+            goto done;
+        }
+    }
+
+    ret = !!persistPropAddByteArr(&mPropsHead, &mPropsTail, PERS_NAME_DEVICE_NAME, len, buf);
+
+done:
+    pthread_mutex_unlock(&mLock);
+    return ret;
+}
+
+/*
+ * FUNCTION: persistGetDiscoveryLength
+ * USE:      Get stored discovery length limit
+ * PARAMS:   NONE
+ * RETURN:   stored discovery length in seconds
+ * NOTES:    NONE
+ */
+uint8_t persistGetDiscoveryLength(void)
+{
+    struct persistProp *t;
+    uint8_t ret = 60;
+
+    pthread_mutex_lock(&mLock);
+    t = persistPropFind(mPropsHead, PERS_NAME_DISC_TIMEOUT, PERS_TYPE_UINT);
+    if (!t)
+        logw("Discovery length property not found\n");
+    else {
+        if (t->info.len != sizeof(uint8_t))
+            logw("Discovery length property wrong size: %u\n", t->info.len);
+        else
+            ret = *(uint8_t*)(t + 1);
+    }
+    pthread_mutex_unlock(&mLock);
+    return ret;
+}
+
+/*
+ * FUNCTION: persistSetDiscoveryLength
+ * USE:      Set stored discovery length limit
+ * PARAMS:   discLen - the length of discovery
+ * RETURN:   success
+ * NOTES:    NONE
+ */
+bool persistSetDiscoveryLength(uint8_t discLen)
+{
+    struct persistProp *t;
+    bool ret = false;
+
+    pthread_mutex_lock(&mLock);
+    t = persistPropFind(mPropsHead, PERS_NAME_DISC_TIMEOUT, PERS_TYPE_UINT);
+    if (t) {
+        if (t->info.len < sizeof(discLen)) {
+            persistPropDelete(&mPropsHead, &mPropsTail, t);
+            t = NULL;
+        } else {
+            t->info.len = sizeof(discLen);
+            memcpy(t + 1, &discLen, sizeof(discLen));
+            ret = true;
+            goto done;
+        }
+    }
+
+    ret = !!persistPropAddInt(&mPropsHead, &mPropsTail,PERS_NAME_DISC_TIMEOUT, false, sizeof(discLen), discLen);
+
+done:
+    pthread_mutex_unlock(&mLock);
+    return ret;
+}
+
+/*
+ * FUNCTION: persistGetAllKnownDevs
+ * USE:      Enumerate all known devices
+ * PARAMS:   discLen - the length of discovery
+ * RETURN:   true if enumeration finished by itself, false if by request of callback
+ * NOTES:    NONE
+ */
+bool persistGetAllKnownDevs(persistKnownDevEnumeratorF enumF, void *cbkData)
+{
+    struct persistProp *t;
+    bool ret = true;
+
+    pthread_mutex_lock(&mLock);
+    t = persistPropFind(mPropsHead, PERS_NAME_KNOWN_DEVICES, PERS_TYPE_ARRAY);
+    if (!t)
+        logw("Known device list not found\n");
+    else {
+        struct persistArrayInRam *arr = (struct persistArrayInRam*)(t + 1);
+        struct persistProp *dev;
+
+        /* iterate over all devices in the "known devices" list */
+        for (dev = arr->head; dev; dev = dev->next) {
+            struct persistProp *devItem, *dAddr = NULL, *dKeys = NULL;
+            struct persistArrayInRam *subArr = (struct persistArrayInRam*)(dev + 1);
+            uint32_t nameLen = 0, haveKeys = 0, devCls = 0;
+            uint64_t lastSeen = 0;
+            const void* name;
+
+            if (dev->info.type != PERS_TYPE_ARRAY) {
+                logw("Unexpected child type %u in known devices array\n", dev->info.type);
+                continue;
+            }
+
+            /* iterate over all items for this device and find which we care about */
+            for (devItem = subArr->head; devItem; devItem = devItem->next) {
+                if (devItem->info.name == PERS_NAME_DEVICE_NAME && devItem->info.type == PERS_TYPE_BYTE_ARRAY && devItem->info.len <= HCI_DEV_NAME_LEN) {
+                    name = devItem + 1;
+                    nameLen = devItem->info.len;
+                } else if (devItem->info.name == PERS_NAME_BT_ADDR && devItem->info.type == PERS_TYPE_BT_ADDR && devItem->info.len == sizeof(struct bt_addr))
+                    dAddr = devItem;
+                else if (devItem->info.name == PERS_NAME_DEV_CLS && devItem->info.type == PERS_TYPE_UINT && devItem->info.len == sizeof(uint32_t))
+                    devCls = *(uint32_t*)(devItem + 1);
+                else if (devItem->info.name == PERS_NAME_KEYS && devItem->info.type == PERS_TYPE_ARRAY)
+                    dKeys = devItem;
+                else if (devItem->info.name == PERS_NAME_LAST_SEEN && devItem->info.type == PERS_TYPE_UINT && devItem->info.len == sizeof(uint64_t))
+                    lastSeen = *(uint64_t*)(devItem + 1);
+            }
+
+            if (!dAddr) {
+                logw("Device with no address in seen device list - ignoring\n");
+                continue;
+            }
+
+            /* iterate over all the keys for this device to collect the proper value for "haveKeys" */
+            if (dKeys) {
+                struct persistArrayInRam *keyArr = (struct persistArrayInRam*)(dKeys + 1);
+                struct persistKey *keyStruct;
+                struct persistProp *keyProp;
+
+                for (keyProp = keyArr->head; keyProp; keyProp = keyProp->next) {
+                    if (keyProp->info.name != PERS_NAME_KEY || keyProp->info.type != PERS_TYPE_BYTE_ARRAY || keyProp->info.len != sizeof(struct persistKey)) {
+                        logw("Unexpected item in keys array of name %u, type %u, and len %u\n", keyProp->info.name, keyProp->info.type, keyProp->info.len);
+                        continue;
+                    }
+                    keyStruct = (struct persistKey*)(keyProp + 1);
+                    haveKeys |= 1UL << keyStruct->keyType;
+                }
+            }
+
+            /* call the callback with all this info */
+            if (!enumF(cbkData, (const struct bt_addr*)(dAddr + 1), name, nameLen, devCls, haveKeys)) {
+                ret = false;
+                break;
+            }
+        }
+    }
+    pthread_mutex_unlock(&mLock);
+    return ret;
+}
+
+/*
+ * FUNCTION: persistFindKnownDev
+ * USE:      Find a known device's property in known devices list
+ * PARAMS:   addr - the device address we're looking for
+ * RETURN:   the device property or NULL if none
+ * NOTES:    call wuth mLock held
+ */
+static struct persistProp* persistFindKnownDev(const struct bt_addr *addr)
+{
+    struct persistArrayInRam *arr, *itemsArr;
+    struct persistProp *t, *dev, *devItem;
+    struct bt_addr *devAddr;
+   
+    t = persistPropFind(mPropsHead, PERS_NAME_KNOWN_DEVICES, PERS_TYPE_ARRAY);
+    if (!t) {
+        logw("Known device list not found\n");
+        return NULL;
+    }
+    arr = (struct persistArrayInRam*)(t + 1);
+    for (dev = arr->head; dev; dev = dev->next) {
+        if (dev->info.type != PERS_TYPE_ARRAY)
+            continue;
+        itemsArr = (struct persistArrayInRam*)(dev + 1);
+        for (devItem = itemsArr->head; devItem; devItem = devItem->next) {
+            if (devItem->info.name != PERS_NAME_BT_ADDR)
+                continue;
+            if (devItem->info.type != PERS_TYPE_BT_ADDR)
+                continue;
+            if (devItem->info.len != sizeof(struct bt_addr))
+                continue;
+            devAddr = (struct bt_addr*)(devItem + 1);
+            if (memcmp(devAddr, addr, sizeof(struct bt_addr)))
+                continue;
+            return dev;
+        }
+    }
+    return NULL;
+}
+
+/*
+ * FUNCTION: persistGetKnownDev
+ * USE:      Find info given a mac address
+ * PARAMS:   addr - the address to look up
+ *           name - name gets stored here (shoudl fit at least HCI_DEV_NAME_LEN bytes). may be null
+ *           nameLen - name's length gets stored here. may be null
+ *           devCls - device class gets stored here. may be null
+ * RETURN:   true if device was found (not a promise that any data was returned)
+ * NOTES:    NONE
+ */
+bool persistGetKnownDev(const struct bt_addr *addr, void *name, uint32_t *nameLen, uint32_t *devCls)
+{
+    struct persistArrayInRam *devItems;
+    struct persistProp *dev, *t;
+    uint32_t len;
+
+    pthread_mutex_lock(&mLock);
+    dev = persistFindKnownDev(addr);
+    if (dev) {
+        devItems = (struct persistArrayInRam*)(dev + 1);
+
+        t = persistPropFind(devItems->head, PERS_NAME_DEVICE_NAME, PERS_TYPE_BYTE_ARRAY);
+        if (t) {
+            len = t->info.len;
+            if (len > HCI_DEV_NAME_LEN)
+                len = HCI_DEV_NAME_LEN;
+            if (name)
+                memcpy(name, t + 1, len);
+            if (nameLen)
+                *nameLen = len;
+        } else if (nameLen)
+            *nameLen = 0;
+
+        if (devCls) {
+             t = persistPropFind(devItems->head, PERS_NAME_DEV_CLS, PERS_TYPE_UINT);
+             if (t && t->info.len == sizeof(uint32_t))
+                 *devCls = *(uint32_t*)(t + 1);
+             else
+                 *devCls = 0;
+        }
+    }
+    pthread_mutex_unlock(&mLock);
+    return !!dev;
+}
+
+/*
+ * FUNCTION: persistDelKnownDev
+ * USE:      Delete device info from known device list
+ * PARAMS:   addr - the address
+ * RETURN:   NONE
+ * NOTES:
+ */
+void persistDelKnownDev(const struct bt_addr *addr)
+{
+    struct persistProp *dev, *allDevs;
+    struct persistArrayInRam *allDevsArr;
+
+    pthread_mutex_lock(&mLock);
+    allDevs = persistPropFind(mPropsHead, PERS_NAME_KNOWN_DEVICES, PERS_TYPE_ARRAY);
+    allDevsArr = (struct persistArrayInRam*)(allDevs + 1);
+    dev = persistFindKnownDev(addr);
+    if (allDevs && dev)
+        persistPropDelete(&allDevsArr->head, &allDevsArr->tail, dev);
+    pthread_mutex_unlock(&mLock);
+}
+
+
+
