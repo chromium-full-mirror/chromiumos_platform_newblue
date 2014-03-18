@@ -35,6 +35,41 @@
 
 #define HCI_DEV_NAME_LEN        248
 
+/* eir data types */
+#define HCI_EIR_TYPE_FLAGS                0x01
+#define HCI_EIR_TYPE_INCOMPL_LIST_UUID16  0x02
+#define HCI_EIR_TYPE_COMPL_LIST_UUID16    0x03
+#define HCI_EIR_TYPE_INCOMPL_LIST_UUID32  0x04
+#define HCI_EIR_TYPE_COMPL_LIST_UUID32    0x05
+#define HCI_EIR_TYPE_INCOMPL_LIST_UUID128 0x06
+#define HCI_EIR_TYPE_COMPL_LIST_UUID128   0x07
+#define HCI_EIR_TYPE_SHORTENED_NAME       0x08
+#define HCI_EIR_TYPE_FULL_NAME            0x09
+#define HCI_EIR_TX_POWER_LEVEL            0x0A
+#define HCI_EIR_DEV_CLS                   0x0D
+#define HCI_EIR_SSP_C                     0x0E
+#define HCI_EIR_SSP_R                     0x0F
+#define HCI_EIR_SM_OOB_FLAGS              0x11
+#define HCI_EIR_FLAVE_CONN_INTS           0x12
+#define HCI_EIR_SVC_SOLICITS_UUID16       0x14
+#define HCI_EIR_SVC_SOLICITS_UUID128      0x15
+#define HCI_EIR_SVC_DATA_UUID16           0x16
+#define HCI_EIR_PUBLIC_TARGET_ADDR        0x17
+#define HCI_EIR_RANDOM_TARGET_ADDR        0x18
+#define HCI_EIR_APPEARANCE                0x19
+#define HCI_EIR_ADV_INT                   0x1A
+#define HCI_EIR_LE_BT_DEV_ADDR            0x1B
+#define HCI_EIR_LE_ROLE                   0x1C
+#define HCI_EIR_SSP_C_256                 0x1D
+#define HCI_EIR_SSP_R_256                 0x1E
+#define HCI_EIR_SVC_SOLICITS_UUID32       0x1F
+#define HCI_EIR_SVC_DATA_UUID32           0x20
+#define HCI_EIR_SVC_DATA_UUID128          0x21
+#define HCI_EIR_3D_INFO_DATA              0x3D
+#define HCI_EIR_MANUF_DATA                0xFF
+
+
+
 #define HCI_AUTH_REQMENT_NO_MITM_PROT_NO_BOND                    0
 #define HCI_AUTH_REQMENT_MITM_PROT_NO_BOND                       1
 #define HCI_AUTH_REQMENT_NO_MITM_PROT_DEDICATED_BOND             2
