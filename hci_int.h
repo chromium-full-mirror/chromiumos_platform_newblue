@@ -2,6 +2,7 @@
 #define _HCI_INT_H_
 
 #include "util.h"
+#include "hci.h"
 
 
 
