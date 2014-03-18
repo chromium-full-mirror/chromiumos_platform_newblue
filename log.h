@@ -14,10 +14,7 @@
 # ifndef LOG_PRINTF_CALL
 #  define LOG_PRINTF_CALL(...) fprintf(stderr, __VA_ARGS__)
 # endif
-
-
 # define log(level, ...) LOG_PRINTF_CALL(level "@ " __FILE__ ":" LOG_STRINGIFY(__LINE__) ": " __VA_ARGS__)
-
 # define loge(...)	log("E", __VA_ARGS__)
 # define logw(...)	log("W", __VA_ARGS__)
 # define logi(...)	log("I", __VA_ARGS__)
