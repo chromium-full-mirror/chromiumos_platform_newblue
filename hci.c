@@ -15,6 +15,7 @@
 #include "workQueue.h"
 #include "vendorLib.h"
 #include "hci_int.h"
+#include "persist.h"
 #include "config.h"
 #include "l2cap.h"
 #include "stack.h"
@@ -2279,6 +2280,47 @@ HCI_SIMPLY_SYNC_CMD_W_STATUS(Inquiry, (uint32_t lap, uint8_t inqLen, uint8_t num
 HCI_SIMPLY_SYNC_END
 
 /*
+ * FUNCTION: hciInquiryUpdatePersistDeviceDb
+ * USE:      Updat epersitent "seen devices" DB with results of discovery
+ * PARAMS:   addr - the address of the remote device
+ *           devClsP - device class or NULL if not known
+ *           eir - the provided EIR data (if any)
+ *           eirLen - size of the above buffer
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void hciInquiryUpdatePersistDeviceDb(const struct bt_addr *addr, const uint32_t *devClsP, const void *eir, uint8_t eirLen)
+{
+    const uint8_t *name = NULL;
+    uint32_t nameLen = 0;
+    uint32_t eirDevCls;
+
+    if (eirLen) { /* parse eir to find name */
+        const uint8_t *eirP = (const uint8_t*)eir;
+        const uint8_t *eirEnd = eirP + eirLen;
+
+        while (eirP < eirEnd) {
+            uint8_t type, len = *eirP++;
+            if (!len) /* zero length item means end of EIR */
+                break;
+            type = *eirP++;
+            len--;
+
+            if (type == HCI_EIR_TYPE_SHORTENED_NAME || type == HCI_EIR_TYPE_FULL_NAME) {
+                name = eirP;
+                nameLen = len;
+            } else if (type == HCI_EIR_DEV_CLS && len == 3) {
+                eirDevCls = utilGetLE24(eirP);
+                devClsP = &eirDevCls;
+            }
+            eirP += len;
+        }
+    }
+
+    persistAddKnownDev(addr, name, name ? &nameLen : NULL, devClsP);
+}
+
+/*
  * FUNCTION: hciInquiryEvtEdrSingleItem
  * USE:      Enqueue a callback to discovery EDR cbk
  * PARAMS:   addr - the address of the remote device
@@ -2292,7 +2334,10 @@ HCI_SIMPLY_SYNC_END
  */
 static void hciInquiryEvtEdrSingleItem(const struct bt_addr *addr, uint32_t devCls, struct hciNameGetInfo* fng, int8_t rssi, const void *eir, uint8_t eirLen)
 {
-    struct hciCbkWorkItem *w = (struct hciCbkWorkItem*)malloc(sizeof(struct hciCbkWorkItem) + eirLen);
+    struct hciCbkWorkItem *w;
+
+
+    w = (struct hciCbkWorkItem*)malloc(sizeof(struct hciCbkWorkItem) + eirLen);
     if (!w) {
         logw("Dropping EDR discovered item due to memory error\n");
         return;
@@ -2305,6 +2350,7 @@ static void hciInquiryEvtEdrSingleItem(const struct bt_addr *addr, uint32_t devC
     w->edrDev.rssi = rssi;
     w->edrDev.eirLen = eirLen;
 
+    hciInquiryUpdatePersistDeviceDb(addr, &devCls, eir, eirLen);
     if (workQueuePut(mCallbackWork, w))
         return;
 
@@ -2338,6 +2384,7 @@ static void hciInquiryEvtLeSingleItem(const struct bt_addr *addr, uint8_t advTyp
     w->leDev.advLen = advDataLen;
     w->leDev.rssi = rssi;
 
+    hciInquiryUpdatePersistDeviceDb(addr, NULL, advData, advDataLen);
     if (workQueuePut(mCallbackWork, w))
         return;
 
@@ -2412,9 +2459,10 @@ static void hciInquiryEvtEdrName(struct hciDiscoverNameState *dns, struct hciDis
  * RETURN:   NONE
  * NOTES:    a copy of all params is made as needed
  */
-static void hciInquiryEvtEdrNameMac(const uint8_t *mac, uint8_t nameReqState, bool lastCbk, const char *name, uint8_t nameMaxLen)
+static void hciInquiryEvtEdrNameMac(const uint8_t *mac, uint8_t nameReqState, bool lastCbk, const char *name, uint32_t nameMaxLen)
 {
     struct hciDiscoverNameState *dns, *prev = NULL;
+    struct bt_addr addr;
 
     /* now find the callback & enqueue the work*/
     pthread_mutex_lock(&mDiscoveryStateLock);
@@ -2423,6 +2471,10 @@ static void hciInquiryEvtEdrNameMac(const uint8_t *mac, uint8_t nameReqState, bo
         prev = dns;
         dns = dns->next;
     }
+
+    addr.type = BT_ADDR_TYPE_EDR;
+    memcpy(addr.addr, mac, sizeof(addr.addr));
+    persistAddKnownDev(&addr, name, &nameMaxLen, NULL);
 
     hciInquiryEvtEdrName(dns, prev, nameReqState, lastCbk, name, nameMaxLen);
     pthread_mutex_unlock(&mDiscoveryStateLock);
@@ -2843,20 +2895,20 @@ static bool hciConnEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evt
     evtType = utilGetLE8(&evt->code);
     if (evtType == HCI_EVT_Connection_Request) {
         struct hciEvtConnRequest *req = (struct hciEvtConnRequest*)(evt + 1);
+        uint32_t devCls = utilGetLE24(req->deviceClass);
+        struct bt_addr addr;
 
-        //TODO: ask user?
-        logd("ACL EDR conn request from "MACFMT" of class "CLSFMT" -> accepting\n", MACCONV(req->mac), CLSCONV(req->deviceClass));
+        memcpy(addr.addr, req->mac, sizeof(addr.addr));
+        addr.type = BT_ADDR_TYPE_EDR;
+
+        persistAddKnownDev(&addr, NULL, NULL, &devCls); /* record the device sighting */
+
 
         //TODO: ask higher layer/user/whatever?
-        {
-            struct bt_addr addr;
-            memcpy(addr.addr, req->mac, sizeof(addr.addr));
-            addr.type = BT_ADDR_TYPE_EDR;
+        logd("ACL EDR conn request from "MACFMT" of class "CLSFMT" -> accepting\n", MACCONV(req->mac), CLSCONV(req->deviceClass));
 
-            if (!hciConnRequestReplyYes(&addr, true))
-                loge("Failed to accept this connection\n");
-        }
-
+        if (!hciConnRequestReplyYes(&addr, true))
+            loge("Failed to accept this connection\n");
 
     } else if (evtType == HCI_EVT_Connection_Complete) {
         struct hciEvtConnComplete *conn = (struct hciEvtConnComplete*)(evt + 1);
