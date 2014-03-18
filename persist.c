@@ -1114,16 +1114,33 @@ void persistDelKnownDev(const struct bt_addr *addr)
  * USE:      Add a new known device or info about current one. "Last seen" timestamp is also updated
  * PARAMS:   addr - the address
  *           name - device name if seen
- *           nameLen - device name length or NULL if no name known
+ *           nameLenP - device name length or NULL if no name known
  *           devCls - device class or NULL if not known
  * RETURN:   the device property or NULL on error
  * NOTES:    call with mLock held
  */
-static struct persistProp* persistAddKnownDevInt(const struct bt_addr *addr, const void *name, const uint32_t *nameLen, const uint32_t *devCls)
+static struct persistProp* persistAddKnownDevInt(const struct bt_addr *addr, const void *name, const uint32_t *nameLenP, const uint32_t *devCls)
 {
     struct persistArrayInRam *allDevsArr, *devArr;
     struct persistProp *dev = NULL, *allDevs, *t;
+    bool haveName = !!nameLenP;
+    uint32_t nameLen;
     uint64_t time;
+
+    if (haveName)
+        nameLen = *nameLenP;
+
+    /* shorten name if it has a NULL */
+    if (haveName) {
+        uint32_t bytesLeft = nameLen;
+        const uint8_t *buf = (const uint8_t*)name;
+
+        while(bytesLeft && *buf++)
+            bytesLeft--;
+
+        nameLen -= bytesLeft;
+    }
+
 
     time = persistGetRealtime();
 
@@ -1140,7 +1157,7 @@ static struct persistProp* persistAddKnownDevInt(const struct bt_addr *addr, con
         goto out;
 
     devArr = (struct persistArrayInRam*)(dev + 1);
-    if (nameLen && !persistSetPropInList(&devArr->head, &devArr->tail, PERS_NAME_DEVICE_NAME, PERS_TYPE_BYTE_ARRAY, name, *nameLen))
+    if (haveName && !persistSetPropInList(&devArr->head, &devArr->tail, PERS_NAME_DEVICE_NAME, PERS_TYPE_BYTE_ARRAY, name, nameLen))
         logw("Failed to save device name\n");
 
     if (devCls && !persistSetPropInList(&devArr->head, &devArr->tail, PERS_NAME_DEV_CLS, PERS_TYPE_UINT, devCls, sizeof(*devCls)))
