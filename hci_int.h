@@ -1067,7 +1067,7 @@ struct hciCmplDeleteStoredLinkKey {
 
 #define HCI_CMD_Write_Local_Name                                 0x0013 /* complete */
 struct hciWriteLocalName {
-    char name[248];
+    char name[HCI_DEV_NAME_LEN];
 } __packed;
 struct hciCmplWriteLocalName {
     uint8_t status;
@@ -1076,7 +1076,7 @@ struct hciCmplWriteLocalName {
 #define HCI_CMD_Read_Local_Name                                  0x0014 /* complete */
 struct hciCmplReadLocalName {
     uint8_t status;
-    char name[248];
+    char name[HCI_DEV_NAME_LEN];
 } __packed;
 
 #define HCI_CMD_Read_Connection_Accept_Timeout                   0x0015 /* complete */
@@ -2476,7 +2476,7 @@ struct hciEvtAuthComplete {
 struct hciEvtRemoteNameReqComplete {
     uint8_t status;
     uint8_t mac[6];
-    char name[248];
+    char name[HCI_DEV_NAME_LEN];
 } __packed;
 
 #define HCI_EVT_Encryption_Change                                0x08

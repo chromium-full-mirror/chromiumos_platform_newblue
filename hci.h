@@ -33,6 +33,8 @@
 #define HCI_EIR_DATA_LEN        240
 #define HCI_RSSI_UNKNOWN        127
 
+#define HCI_DEV_NAME_LEN        248
+
 #define HCI_AUTH_REQMENT_NO_MITM_PROT_NO_BOND                    0
 #define HCI_AUTH_REQMENT_MITM_PROT_NO_BOND                       1
 #define HCI_AUTH_REQMENT_NO_MITM_PROT_DEDICATED_BOND             2
