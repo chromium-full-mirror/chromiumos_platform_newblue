@@ -101,8 +101,13 @@ static struct persistProp* persistPropAlloc(uint32_t name, uint32_t type, uint32
 
 /*
  * FUNCTION: persistPropFree
+<<<<<<< HEAD
  * USE:      Free a property struct
  * PARAMS:   p - the object
+=======
+ * USE:      Free an property struct
+ * PARAMS:   p - the onject
+>>>>>>> 288b6bbf7a27e593a2d95dddbb9c435db6be3fc9
  * RETURN:   NONE
  * NOTES:
  */
@@ -314,7 +319,6 @@ static struct persistProp* persistPropLoad(int fd, uint64_t *lenP)
     uint32_t type, inRamLen;
     struct bt_addr *addr;
     uint64_t onDiskLen;
-
 
     if (*lenP < sizeof(p))
         return NULL;

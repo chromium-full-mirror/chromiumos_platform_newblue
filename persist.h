@@ -38,5 +38,6 @@ bool persistGetDevKey(const struct bt_addr *addr, uint8_t keyType, uint8_t *key)
 
 bool persistDeviceResolve(persistIdentityResolutionHelperF helpF, void *cbkData, const struct bt_addr *addr_in);         //for LE resolution
 
+
 #endif
 
