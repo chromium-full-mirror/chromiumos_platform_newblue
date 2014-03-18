@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <fcntl.h>
+#include <time.h>
 #include "persist.h"
 #include "config.h"
 #include "util.h"
@@ -56,9 +57,10 @@ struct persistKey {
 #define PERS_NAME_DEV_CLS                0x00000003 /* type: PERS_TYPE_UINT, size: 4 */
 #define PERS_NAME_KEYS                   0x00000004 /* type: PERS_TYPE_ARRAY of {PERS_NAME_KEY_TYPE, PERS_NAME_KEY_VAL} */
 #define PERS_NAME_KEY                    0x00000005 /* type: PERS_TYPE_BYTE_ARRAY, size: sizeof(struct persistKey) */
-#define PERS_NAME_KNOWN_DEVICES          0x00000006 /* type: PERS_TYPE_ARRAY of {PERS_NAME_DEVICE_NAME, PERS_NAME_BT_ADDR, PERS_NAME_DEV_CLS, PERS_NAME_KEYS, PERS_NAME_LAST_SEEN} */
+#define PERS_NAME_DEVICE                 0x00000006 /* type: PERS_TYPE_ARRAY of {PERS_NAME_DEVICE_NAME, PERS_NAME_BT_ADDR, PERS_NAME_DEV_CLS, PERS_NAME_KEYS, PERS_NAME_LAST_SEEN} */
+#define PERS_NAME_KNOWN_DEVICES          0x00000006 /* type: PERS_TYPE_ARRAY of PERS_NAME_KNOWN_DEVICES */
 #define PERS_NAME_BT_ADDR                0x00000007 /* type: PERS_TYPE_BT_ADDR */
-#define PERS_NAME_LAST_SEEN              0x00000008 /* type: PERS_TYPE_UINT, size: 8 */
+#define PERS_NAME_LAST_SEEN              0x00000008 /* type: PERS_TYPE_UINT, size: 8, milliseconds since epoch */
 
 /* types */
 #define PERS_TYPE_UINT                   0x00000001
@@ -78,6 +80,27 @@ static struct persistProp *mPropsTail = NULL;
 
 /* fwd decls */
 static bool persistPropListLoad(struct persistProp **headP, struct persistProp **tailP, int fd, uint64_t len);
+static bool persistSetPropInList(struct persistProp **headP, struct persistProp **tailP, uint32_t name, uint32_t type, const void *buf, uint32_t len);
+
+/*
+ * FUNCTION: persistGetRealtime
+ * USE:      Get clock time at a uint64_t
+ * PARAMS:   NONE
+ * RETURN:   time in milliseconds as a uint64
+ * NOTES:
+ */
+static uint64_t persistGetRealtime(void)
+{
+    struct timespec ts;
+    uint64_t time;
+
+    clock_gettime(CLOCK_REALTIME, &ts);
+    time = ts.tv_sec;
+    time *= 1000;
+    time += ts.tv_nsec / 1000000UL;
+
+    return time;
+}
 
 /*
  * FUNCTION: persistPropAlloc
@@ -101,13 +124,8 @@ static struct persistProp* persistPropAlloc(uint32_t name, uint32_t type, uint32
 
 /*
  * FUNCTION: persistPropFree
-<<<<<<< HEAD
  * USE:      Free a property struct
  * PARAMS:   p - the object
-=======
- * USE:      Free an property struct
- * PARAMS:   p - the onject
->>>>>>> 288b6bbf7a27e593a2d95dddbb9c435db6be3fc9
  * RETURN:   NONE
  * NOTES:
  */
@@ -399,6 +417,68 @@ static struct persistProp* persistPropLoad(int fd, uint64_t *lenP)
 }
 
 /*
+ * FUNCTION: persistFindKey
+ * USE:      Find a given key in a given property list
+ * PARAMS:   head - list head
+ *           keyType - key type to find
+ * RETURN:   key's property structure or NULL on error
+ * NOTES:
+ */
+static struct persistProp* persistFindKey(struct persistProp *head, uint8_t keyType)
+{
+    while (head) {
+
+        if (head->info.name == PERS_NAME_KEY && head->info.type == PERS_TYPE_BYTE_ARRAY && head->info.len == sizeof(struct persistKey)) {
+            struct persistKey *key = (struct persistKey*)(head + 1);
+            if (key->keyType == keyType)
+                return head;
+        }
+
+        head = head->next;
+    }
+    return NULL;
+}
+
+/*
+ * FUNCTION: persistAddKey
+ * USE:      Add a key of the given type and add it to the given list (and optinally generate it)
+ * PARAMS:   headP - list head stored here
+ *           tailP - lsit tail stored here
+ *           keyType - key type to generate
+ *           key - key or NULL if you want it auto-generated
+ * RETURN:   success
+ * NOTES:
+ */
+static bool persistAddKey(struct persistProp **headP, struct persistProp **tailP, uint8_t keyType, const uint8_t *key)
+{
+    struct persistKey pkey;
+    bool ret;
+    int fd;
+
+    pkey.keyType = keyType;
+
+    if (key)
+        memcpy(pkey.key, key, sizeof(pkey.key));
+    else {
+        fd = open("/dev/urandom", O_RDONLY);
+        if (fd == -1) {
+            logw("Failed to open urandom\n");
+            return false;
+        }
+
+        ret = r_read(fd, pkey.key, sizeof(pkey.key));
+        close(fd);
+
+        if (!ret) {
+            logw("Failed to read urandom\n");
+            return false;
+        }
+    }
+
+    return persistSetPropInList(headP, tailP, PERS_NAME_KEY, PERS_TYPE_BYTE_ARRAY, &pkey, sizeof(pkey));
+}
+
+/*
  * FUNCTION: persistLoadRequiredProps
  * USE:      Load default properties into the RAM structure if they are not present
  * PARAMS:   NONE
@@ -408,6 +488,7 @@ static struct persistProp* persistPropLoad(int fd, uint64_t *lenP)
 static void persistLoadRequiredProps(void)
 {
     static const char defaultName[] = "NB.t";
+    struct persistProp *keylist, *key;
 
     if (!persistPropFind(mPropsHead, PERS_NAME_DEVICE_NAME, PERS_TYPE_BYTE_ARRAY))
         if (!persistPropAddByteArr(&mPropsHead, &mPropsTail, PERS_NAME_DEVICE_NAME, strlen(defaultName), defaultName))
@@ -417,9 +498,39 @@ static void persistLoadRequiredProps(void)
         if (!persistPropAddInt(&mPropsHead, &mPropsTail, PERS_NAME_DISC_TIMEOUT, false, sizeof(uint8_t), 60) /* 60 seconds seems reasonable */)
             loge("Failed to add discovery length default prop\n");
 
-    if (!persistPropFind(mPropsHead, PERS_NAME_DISC_TIMEOUT, PERS_TYPE_UINT))
+    if (!persistPropFind(mPropsHead, PERS_NAME_KNOWN_DEVICES, PERS_TYPE_ARRAY))
         if (!persistPropAddEmptyArray(&mPropsHead, &mPropsTail, PERS_NAME_KNOWN_DEVICES))
             loge("Failed to add known devices default prop\n");
+
+    keylist = persistPropFind(mPropsHead, PERS_NAME_KEYS, PERS_TYPE_ARRAY);
+    if (!keylist)
+        keylist = persistPropAddEmptyArray(&mPropsHead, &mPropsTail, PERS_NAME_KEYS);
+    if (!keylist)
+        loge("Failed to add device keys default prop\n");
+    else {
+        struct persistArrayInRam *keyArr = (struct persistArrayInRam*)(keylist + 1);
+        key = keyArr->head;
+
+        /* delete all keys that are invalid */
+        while ((key = persistPropFind(key, PERS_NAME_KEY, PERS_TYPE_ARRAY))) {
+            if (key->info.len != sizeof(struct persistKey)) {
+                persistPropDelete(&keyArr->head, &keyArr->tail, key);
+                key = keyArr->head;
+            }
+        }
+
+        if (!persistFindKey(keyArr->head, KEY_TYPE_CSRK))
+            if (!persistAddKey(&keyArr->head, &keyArr->tail, KEY_TYPE_CSRK, NULL))
+                loge("failed to create & store CSRK\n");
+
+        if (!persistFindKey(keyArr->head, KEY_TYPE_IRK))
+            if (!persistAddKey(&keyArr->head, &keyArr->tail, KEY_TYPE_IRK, NULL))
+                loge("failed to create & store IRK\n");
+
+        if (!persistFindKey(keyArr->head, KEY_TYPE_DHK))
+            if (!persistAddKey(&keyArr->head, &keyArr->tail, KEY_TYPE_DHK, NULL))
+                loge("failed to create & store DHK\n");
+    }
 }
 
 /*
@@ -684,14 +795,18 @@ uint32_t persistGetDeviceName(void* buf)
 }
 
 /*
- * FUNCTION: persistSetDeviceName
- * USE:      Set stored device name for our device
- * PARAMS:   buf - the name to save
- *           len - length of said name (at most HCI_DEV_NAME_LEN bytes)
+ * FUNCTION: persistSetPropInList
+ * USE:      Set a property in a given property list
+ * PARAMS:   headP - head of lsit stored here
+ *           tailP- tail of list stored here
+ *           name - name of the property
+ *           type - type of the property
+ *           buf - the data to save
+ *           len - length of said data
  * RETURN:   success
- * NOTES:    NONE
+ * NOTES:    call with mLock held
  */
-bool persistSetDeviceName(const void *buf, uint32_t len) //should be at most HCI_DEV_NAME_LEN bytes long
+static bool persistSetPropInList(struct persistProp **headP, struct persistProp **tailP, uint32_t name, uint32_t type, const void *buf, uint32_t len)
 {
     struct persistProp *t;
     bool ret = false;
@@ -701,11 +816,10 @@ bool persistSetDeviceName(const void *buf, uint32_t len) //should be at most HCI
         len = HCI_DEV_NAME_LEN;
     }
 
-    pthread_mutex_lock(&mLock);
-    t = persistPropFind(mPropsHead, PERS_NAME_DEVICE_NAME, PERS_TYPE_BYTE_ARRAY);
+    t = persistPropFind(*headP, name, type);
     if (t) {
         if (t->info.len < len) {
-            persistPropDelete(&mPropsHead, &mPropsTail, t);
+            persistPropDelete(headP, tailP, t);
             t = NULL;
         } else {
             t->info.len = len;
@@ -715,10 +829,28 @@ bool persistSetDeviceName(const void *buf, uint32_t len) //should be at most HCI
         }
     }
 
-    ret = !!persistPropAddByteArr(&mPropsHead, &mPropsTail, PERS_NAME_DEVICE_NAME, len, buf);
+    ret = !!persistPropAdd(headP, tailP, name, type, len, buf);
 
 done:
+    return ret;
+}
+
+/*
+ * FUNCTION: persistSetDeviceName
+ * USE:      Set stored device name for our device
+ * PARAMS:   buf - the name to save
+ *           len - length of said name (at most HCI_DEV_NAME_LEN bytes)
+ * RETURN:   success
+ * NOTES:    NONE
+ */
+bool persistSetDeviceName(const void *buf, uint32_t len)
+{
+    bool ret;
+
+    pthread_mutex_lock(&mLock);
+    ret = persistSetPropInList(&mPropsHead, &mPropsTail, PERS_NAME_DEVICE_NAME, PERS_TYPE_BYTE_ARRAY, buf, len);
     pthread_mutex_unlock(&mLock);
+
     return ret;
 }
 
@@ -782,13 +914,15 @@ done:
 }
 
 /*
- * FUNCTION: persistGetAllKnownDevs
+ * FUNCTION: persistEnumKnownDevs
  * USE:      Enumerate all known devices
- * PARAMS:   discLen - the length of discovery
+ * PARAMS:   enumF - callback to call
+ *           cbkData - data to pass to said callback
+ *           wantedKeyType - if not null, only call bacllback for devices for which we have a key of this type
  * RETURN:   true if enumeration finished by itself, false if by request of callback
  * NOTES:    NONE
  */
-bool persistGetAllKnownDevs(persistKnownDevEnumeratorF enumF, void *cbkData)
+bool persistEnumKnownDevs(persistKnownDevEnumeratorF enumF, void *cbkData, const uint8_t *wantedKeyType)
 {
     struct persistProp *t;
     bool ret = true;
@@ -806,11 +940,16 @@ bool persistGetAllKnownDevs(persistKnownDevEnumeratorF enumF, void *cbkData)
             struct persistProp *devItem, *dAddr = NULL, *dKeys = NULL;
             struct persistArrayInRam *subArr = (struct persistArrayInRam*)(dev + 1);
             uint32_t nameLen = 0, haveKeys = 0, devCls = 0;
+            const uint8_t *wantedKey = NULL;
             uint64_t lastSeen = 0;
             const void* name;
 
             if (dev->info.type != PERS_TYPE_ARRAY) {
                 logw("Unexpected child type %u in known devices array\n", dev->info.type);
+                continue;
+            }
+            if (dev->info.name != PERS_NAME_DEVICE) {
+                logw("Unexpected child name %u in known devices array\n", dev->info.name);
                 continue;
             }
 
@@ -834,7 +973,7 @@ bool persistGetAllKnownDevs(persistKnownDevEnumeratorF enumF, void *cbkData)
                 continue;
             }
 
-            /* iterate over all the keys for this device to collect the proper value for "haveKeys" */
+            /* iterate over all the keys for this device to collect the proper value for "haveKeys" also find the wanted one if asked */
             if (dKeys) {
                 struct persistArrayInRam *keyArr = (struct persistArrayInRam*)(dKeys + 1);
                 struct persistKey *keyStruct;
@@ -847,11 +986,13 @@ bool persistGetAllKnownDevs(persistKnownDevEnumeratorF enumF, void *cbkData)
                     }
                     keyStruct = (struct persistKey*)(keyProp + 1);
                     haveKeys |= 1UL << keyStruct->keyType;
+                    if (wantedKeyType && keyStruct->keyType == *wantedKeyType)
+                        wantedKey = keyStruct->key;
                 }
             }
 
             /* call the callback with all this info */
-            if (!enumF(cbkData, (const struct bt_addr*)(dAddr + 1), name, nameLen, devCls, haveKeys)) {
+            if ((!wantedKeyType || wantedKey) && !enumF(cbkData, (const struct bt_addr*)(dAddr + 1), name, nameLen, devCls, haveKeys, wantedKey)) {
                 ret = false;
                 break;
             }
@@ -882,6 +1023,8 @@ static struct persistProp* persistFindKnownDev(const struct bt_addr *addr)
     arr = (struct persistArrayInRam*)(t + 1);
     for (dev = arr->head; dev; dev = dev->next) {
         if (dev->info.type != PERS_TYPE_ARRAY)
+            continue;
+        if (dev->info.name != PERS_NAME_DEVICE)
             continue;
         itemsArr = (struct persistArrayInRam*)(dev + 1);
         for (devItem = itemsArr->head; devItem; devItem = devItem->next) {
@@ -954,8 +1097,8 @@ bool persistGetKnownDev(const struct bt_addr *addr, void *name, uint32_t *nameLe
  */
 void persistDelKnownDev(const struct bt_addr *addr)
 {
-    struct persistProp *dev, *allDevs;
     struct persistArrayInRam *allDevsArr;
+    struct persistProp *dev, *allDevs;
 
     pthread_mutex_lock(&mLock);
     allDevs = persistPropFind(mPropsHead, PERS_NAME_KNOWN_DEVICES, PERS_TYPE_ARRAY);
@@ -964,6 +1107,191 @@ void persistDelKnownDev(const struct bt_addr *addr)
     if (allDevs && dev)
         persistPropDelete(&allDevsArr->head, &allDevsArr->tail, dev);
     pthread_mutex_unlock(&mLock);
+}
+
+/*
+ * FUNCTION: persistAddKnownDevInt
+ * USE:      Add a new known device or info about current one. "Last seen" timestamp is also updated
+ * PARAMS:   addr - the address
+ *           name - device name if seen
+ *           nameLen - device name length or NULL if no name known
+ *           devCls - device class or NULL if not known
+ * RETURN:   the device property or NULL on error
+ * NOTES:    call with mLock held
+ */
+static struct persistProp* persistAddKnownDevInt(const struct bt_addr *addr, const void *name, const uint32_t *nameLen, const uint32_t *devCls)
+{
+    struct persistArrayInRam *allDevsArr, *devArr;
+    struct persistProp *dev = NULL, *allDevs, *t;
+    uint64_t time;
+
+    time = persistGetRealtime();
+
+    allDevs = persistPropFind(mPropsHead, PERS_NAME_KNOWN_DEVICES, PERS_TYPE_ARRAY);
+    if (!allDevs)
+        goto out;
+
+    allDevsArr = (struct persistArrayInRam*)(allDevs + 1);
+    dev = persistFindKnownDev(addr);
+
+    if (!dev)
+        dev = persistPropAddEmptyArray(&allDevsArr->head, &allDevsArr->tail, PERS_NAME_DEVICE);
+    if (!dev)
+        goto out;
+
+    devArr = (struct persistArrayInRam*)(dev + 1);
+    if (nameLen && !persistSetPropInList(&devArr->head, &devArr->tail, PERS_NAME_DEVICE_NAME, PERS_TYPE_BYTE_ARRAY, name, *nameLen))
+        logw("Failed to save device name\n");
+
+    if (devCls && !persistSetPropInList(&devArr->head, &devArr->tail, PERS_NAME_DEV_CLS, PERS_TYPE_UINT, devCls, sizeof(*devCls)))
+        logw("Failed to save device class\n");
+
+    if (devCls && !persistSetPropInList(&devArr->head, &devArr->tail, PERS_NAME_LAST_SEEN, PERS_TYPE_UINT, &time, sizeof(time)))
+        logw("Failed to save device last seen\n");
+
+    if (!persistPropFind(devArr->head, PERS_NAME_KEYS, PERS_TYPE_ARRAY))
+        if (!persistPropAddEmptyArray(&devArr->head, &devArr->tail, PERS_NAME_KEYS))
+            logw("Failed to add the missing keys container to device\n");
+
+out:
+    return dev;
+}
+
+/*
+ * FUNCTION: persistAddKnownDev
+ * USE:      Add a new known device or info about current one. "Last seen" timestamp is also updated
+ * PARAMS:   addr - the address
+ *           name - device name if seen
+ *           nameLen - device name length or NULL if no name known
+ *           devCls - device class or NULL if not known
+ * RETURN:   NONE
+ * NOTES:
+ */
+void persistAddKnownDev(const struct bt_addr *addr, const void *name, const uint32_t *nameLen, const uint32_t *devCls)
+{
+    pthread_mutex_lock(&mLock);
+    persistAddKnownDevInt(addr, name, nameLen, devCls);
+    pthread_mutex_unlock(&mLock);
+}
+
+/*
+ * FUNCTION: persistAddDevKey
+ * USE:      Add a new key to a given device (or ourselves)
+ * PARAMS:   addr - the address or NULL for ourselves
+ *           keyType - type of key being added
+ *           key - the key to add (HCI_LINK_KEY_LEN bytes)
+ * RETURN:   success
+ * NOTES:    any existing keys of same type are overwritten
+ */
+bool persistAddDevKey(const struct bt_addr *addr, uint8_t keyType, const uint8_t *key) //addr = NULL for our own keys, all keys are HCI_LINK_KEY_LEN bytes long
+{
+    struct persistArrayInRam *parArr;
+    struct persistProp *parent;
+    bool ret = false;
+
+
+    pthread_mutex_lock(&mLock);
+    if (addr) {
+        parent = persistAddKnownDevInt(addr, NULL, NULL, NULL); /* if we're adding a key for it means we saw it and/or are talking to it */
+        if (parent)
+            parent = persistPropFind(((struct persistArrayInRam*)(parent + 1))->head, PERS_NAME_KEYS, PERS_TYPE_ARRAY);
+    } else
+        parent = persistPropFind(mPropsHead, PERS_NAME_KEYS, PERS_TYPE_ARRAY);
+ 
+    if (!parent) {
+        logw("Failed to find key list parent for given addess - >abandonning key addition\n");
+        goto out;
+    }
+    parArr = (struct persistArrayInRam*)(parent + 1);
+
+    ret = persistAddKey(&parArr->head, &parArr->tail, keyType, key);
+
+out:
+    pthread_mutex_unlock(&mLock);
+    return ret;
+}
+
+/*
+ * FUNCTION: persistDelDevKeys
+ * USE:      Delete all keys for a given device
+ * PARAMS:   addr - the address
+ * RETURN:   success
+ * NOTES:
+ */
+bool persistDelDevKeys(const struct bt_addr *addr)
+{
+    struct persistArrayInRam *keyArr;
+    struct persistProp *dev, *keys, *k;
+    bool ret = true;
+
+    pthread_mutex_lock(&mLock);
+    dev = persistFindKnownDev(addr);
+    if (!dev) {
+        logd("Device not found probably means we have no keys stored for it either\n");
+        goto out;
+    }
+
+    keys = persistPropFind(((struct persistArrayInRam*)(dev + 1))->head, PERS_NAME_KEYS, PERS_TYPE_ARRAY);
+    if (!keys) {
+        logd("Keys property not found probably means we have no keys stored for the device\n");
+        goto out;
+    }
+
+    keyArr = (struct persistArrayInRam*)(keys + 1);
+    keyArr->tail = NULL;
+    while (keyArr->head) {
+        k = keyArr->head;
+        keyArr->head = keyArr->head->next;
+        persistPropFree(k);
+    }
+
+out:
+    pthread_mutex_unlock(&mLock);
+    return ret;
+}
+
+/*
+ * FUNCTION: persistGetDevKey
+ * USE:      Get a key (ours or another device's)
+ * PARAMS:   addr - the address for whic hto retreive th ekey (NULL for our own)
+ *           keyType - key type to find
+ *           key - key is returned here (HCI_LINK_KEY_LEN bytes)
+ * RETURN:   true if key was found and returned
+ * NOTES:
+ */
+bool persistGetDevKey(const struct bt_addr *addr, uint8_t keyType, uint8_t *key)
+{
+    struct persistArrayInRam *parArr;
+    struct persistProp *parent, *keyProp;
+    struct persistKey *keyStruct;
+    bool ret = false;
+
+
+    pthread_mutex_lock(&mLock);
+    if (addr) {
+        parent = persistAddKnownDevInt(addr, NULL, NULL, NULL); /* if we're finding a key for it means we saw it and/or are talking to it */
+        if (parent)
+            parent = persistPropFind(((struct persistArrayInRam*)(parent + 1))->head, PERS_NAME_KEYS, PERS_TYPE_ARRAY);
+    } else
+        parent = persistPropFind(mPropsHead, PERS_NAME_KEYS, PERS_TYPE_ARRAY);
+ 
+    if (!parent) {
+        logw("Failed to find key list parent for given addess - >abandonning key search\n");
+        goto out;
+    }
+    parArr = (struct persistArrayInRam*)(parent + 1);
+
+    keyProp = persistFindKey(parArr->head, keyType);
+    if (!keyProp)
+        goto out;
+
+    keyStruct = (struct persistKey*)(key + 1);
+    memcpy(key, keyStruct->key, HCI_LINK_KEY_LEN);
+    ret = true;
+
+out:
+    pthread_mutex_unlock(&mLock);
+    return ret;
 }
 
 
