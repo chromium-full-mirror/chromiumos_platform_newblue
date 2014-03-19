@@ -240,6 +240,7 @@ struct hciAclConn {
         } le;
         struct {
             uint64_t   ftrs[MAX_FTR_PAGES];
+            uint8_t    btVer;
         } edr;
     };
 };
@@ -259,6 +260,10 @@ struct hciDiscoverNameState {
     struct bt_addr                 addr;
     uniq_t                         handle;
 };
+
+
+/* useful constants */
+static const char *mBtVers[] = {"1.0b", "1.1", "1.2", "2.0", "2.1", "3.0", "4.0", "4.1"};
 
 /* our state */
 
@@ -3215,7 +3220,6 @@ static bool hciBtStackUp(void)
     /* read local BT version */
     {
         struct hciCmplReadLocalVersion evt;
-        static const char *btVers[] = {"1.0b", "1.1", "1.2", "2.0", "2.1", "3.0", "4.0", "4.1"};
         uint8_t hciVersion, lmpVersion;
 
         logi("BT UP: reading version\n");
@@ -3240,7 +3244,7 @@ static bool hciBtStackUp(void)
             mBtVer = HCI_VERSION_1_2;
         }
 
-        logi("BT UP: effective BT version: %u (BT spec %s)\n", mBtVer, btVers[mBtVer]);
+        logi("BT UP: effective BT version: %u (BT spec %s)\n", mBtVer, mBtVers[mBtVer]);
 
         if (mBtVer < HCI_VERSION_1_1) {
             loge("BT 1.1 minimum!\n");
@@ -4292,104 +4296,6 @@ static void hciHandleConnAclDown(uint16_t cid, uint8_t reason)
     pthread_mutex_unlock(&mConnsLock);
 }
 
-
-/*
-
-uniq_t hciDiscoverEdrGetName(hciDeviceDiscoveredEdrNameCbk cbk, void *cbkData, const struct hciNameGetInfo *forNameGetting); // safe to call from hci callbacks
-bool hciDiscoverEdrGetNameCancel(uniq_t handle);
-hciWriteAutoFlushTimeout
-
-
-struct hciNameGetInfo {
-    uint8_t  mac[6];
-    uint16_t clockOffset; // if unknown, set all to zeroes except mac
-    uint8_t  PSRM;
-    uint8_t  PSM; // unused in BT 1.2+
-};
-
-
-#define CONN_CFG_STEP_LE           0x0000
-#define CONN_CFG_STEP_EDR          0x1000
-#define CONN_CFG_STAP_FAIL         0xFFFF
-
-
-///aaa
-
-struct hciEvtWaitDescr {
-    uint8_t    evtType; // == 0 -> not valid/not enabled
-    uint16_t   extra;
-    hciEvtCbk  cbk;
-    void      *cbkData;
-    bool       persistent;
-};
-
-*/
-
-
-/*
- * FUNCTION: hciConnCfgCbk
- * USE:      event handler for hciConnCfg()
- * PARAMS:   evt - the resuting event
- *           cbkData - the data from hciConnCfg (step and aux encoded into a pointer)
- *           evtWaitStateID - unused
- *           forCmdID - unused
- * RETURN:   true if this is our event (always yes)
- * NOTES:    call with mConnsLock held
- */
-static bool hciConnCfgCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
-{
-    struct hciEvtLeMeta *leMetaEvt = (struct hciEvtLeMeta*)(evt + 1);
-    struct hciEvtLeReadRemoteFeaturesComplete *rrf = (struct hciEvtLeReadRemoteFeaturesComplete*)(leMetaEvt + 1);
-    struct hciEvtCmdComplete *cmpl = (struct hciEvtCmdComplete*)(evt + 1);
-    struct hciCmplWriteAutoFlushTimeout *waft = (struct hciCmplWriteAutoFlushTimeout*)(cmpl + 1);
-    uint16_t step = ((uint32_t)(uintptr_t)cbkData) >> 16;
-    uint16_t aux = (uint16_t)(uintptr_t)cbkData;
-    struct hciAclConn *c = NULL;
-    uint8_t sta = 0xff;
-    uint16_t cid;
-
-    pthread_mutex_lock(&mConnsLock);
-
-    switch (step) {
-    case CONN_CFG_STEP_LE + 0: /* first LE config step = get remote features */
-        cid = utilGetLE16(&rrf->conn);
-        sta = utilGetLE8(&rrf->status);
-        c = hciConnFindById(cid);
-        if (!c)
-            break;
-        if (sta)
-            break;
-        c->le.ftrs = utilGetLE64(&rrf->leFeatures);
-        step++;
-        break;
-    case CONN_CFG_STEP_EDR + 1: /* second EDR step = set flush timeout */
-        cid = utilGetLE16(&waft->conn);
-        sta = utilGetLE8(&waft->status);
-        c = hciConnFindById(cid);
-        if (!c)
-            break;
-        if (sta)
-            break;
-        step++;
-        break;
-    default:
-        loge("unknown connection config step step 0x%04X.05%04X\n", step, aux);
-        break;
-    }
-
-    if (!c)
-        loge("connection config failed: unable to find connection\n");
-    else if (!sta)
-        hciConnCfg(c, step, aux);
-    else if (sta) {
-        loge("connection config failed: sta 0x%02X. Closing.\n", sta);
-        hciConnDisconnect(c->id);
-    }
-    pthread_mutex_unlock(&mConnsLock);
-
-    return true;
-}
-
 /*
  * FUNCTION: hciConnCfgEdrNameCbk
  * USE:      Name callback for an EDR connection's configuration stage
@@ -4423,6 +4329,93 @@ static void hciConnCfgEdrNameCbk(void *cbkData, const struct bt_addr *addr, uint
 }
 
 /*
+ * FUNCTION: hciConnCfgCbk
+ * USE:      event handler for hciConnCfg()
+ * PARAMS:   evt - the resuting event
+ *           cbkData - the data from hciConnCfg (step and aux encoded into a pointer)
+ *           evtWaitStateID - unused
+ *           forCmdID - unused
+ * RETURN:   true if this is our event (always yes)
+ * NOTES:    call with mConnsLock held
+ */
+static bool hciConnCfgCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
+{
+    struct hciEvtLeMeta *leMetaEvt = (struct hciEvtLeMeta*)(evt + 1);
+    struct hciEvtLeReadRemoteFeaturesComplete *rrf = (struct hciEvtLeReadRemoteFeaturesComplete*)(leMetaEvt + 1);
+    struct hciEvtReadRemoteVersionComplete *rrv = (struct hciEvtReadRemoteVersionComplete*)(evt + 1);
+    struct hciEvtCmdComplete *cmpl = (struct hciEvtCmdComplete*)(evt + 1);
+    struct hciEvtCmdStatus *stat = (struct hciEvtCmdStatus*)(evt + 1);
+    struct hciCmplWriteAutoFlushTimeout *waft = (struct hciCmplWriteAutoFlushTimeout*)(cmpl + 1);
+    uint16_t step = ((uint32_t)(uintptr_t)cbkData) >> 16;
+    uint16_t aux = (uint16_t)(uintptr_t)cbkData;
+    uint8_t evtType = utilGetLE8(&evt->code);
+    struct hciAclConn *c = NULL;
+    uint8_t sta = 0xff;
+    uint16_t cid;
+
+    pthread_mutex_lock(&mConnsLock);
+
+    switch (step) {
+    case CONN_CFG_STEP_LE + 0: /* first LE config step = get remote features */
+        cid = utilGetLE16(&rrf->conn);
+        sta = utilGetLE8(&rrf->status);
+        c = hciConnFindById(cid);
+        if (!c)
+            break;
+        if (sta)
+            break;
+        c->le.ftrs = utilGetLE64(&rrf->leFeatures);
+        step++;
+        break;
+    case CONN_CFG_STEP_EDR + 1: /* second EDR step = set flush timeout */
+        cid = utilGetLE16(&waft->conn);
+        sta = utilGetLE8(&waft->status);
+        c = hciConnFindById(cid);
+        if (!c)
+            break;
+        if (sta)
+            break;
+        step++;
+        break;
+    case CONN_CFG_STEP_EDR + 2: /* third EDR step = read remote version */
+        if (evtType == HCI_EVT_Command_Status) { /* we just started the request */
+            sta = utilGetLE8(&stat->status);
+            if (!sta) /* if no error we do nothing - let the request go on */
+                goto out;
+            break; /* on error, report it and kill conn */
+        }
+        cid = utilGetLE16(&rrv->conn);
+        sta = utilGetLE8(&rrv->status);
+        c = hciConnFindById(cid);
+        if (!c)
+            break;
+        if (sta)
+            break;
+        step++;
+        c->edr.btVer = utilGetLE8(&rrv->lmpVersion);
+        logd("Remote reports BT version %u (effective: %s)\n", c->edr.btVer, mBtVers[c->edr.btVer > HCI_VERSION_4_1 ? HCI_VERSION_4_1 : c->edr.btVer]);
+        break;
+
+    default:
+        loge("unknown connection config step step 0x%04X.05%04X\n", step, aux);
+        break;
+    }
+
+    if (!c)
+        loge("connection config failed: unable to find connection\n");
+    else if (!sta)
+        hciConnCfg(c, step, aux);
+    else if (sta) {
+        loge("connection config failed: sta 0x%02X. Closing.\n", sta);
+        hciConnDisconnect(c->id);
+    }
+out:
+    pthread_mutex_unlock(&mConnsLock);
+
+    return true;
+}
+
+/*
  * FUNCTION: hciConnCfg
  * USE:      Configure a new connection to our liking and tell upper layer when done
  * PARAMS:   c - the connection struct
@@ -4433,34 +4426,35 @@ static void hciConnCfgEdrNameCbk(void *cbkData, const struct bt_addr *addr, uint
  */
 static void hciConnCfg(struct hciAclConn *c, uint32_t step, uint32_t aux)
 {
-    struct hciEvtWaitDescr ewd = {.cbk = hciConnCfgCbk, .persistent = false};
+    struct hciEvtWaitDescr ewd[2] = {{.cbk = hciConnCfgCbk, .persistent = false}, {.cbk = hciConnCfgCbk, .persistent = false}};
     struct hciNameGetInfo fng = {.clockOffset = 0, .PSRM = 0, .PSM = 0};
     void *userData = (void*)(uintptr_t)((step << 16) | aux);
     struct hciLeReadRemoteUsedFeatures rrf;
     struct hciWriteAutoFlushTimeout waft;
+    struct hciReadRemoteVersionInfo rrv;
     bool success = true;
 
     if (c->state != CONN_STATE_CFG) {
-        logw("Tried to config a conenction not in config state\n");
+        logw("Tried to config a connection not in config state\n");
         return;
     }
 
     switch (step) {
-    case CONN_CFG_STEP_LE + 0: /* fist LE config step = get remote features */
+    case CONN_CFG_STEP_LE + 0: /* first LE config step = get remote features */
         if (!c->isMaster)
             break; /* as a slave there is no config to do */
         utilSetLE16(&rrf.conn, c->id);
-        ewd.evtType = HCI_EVT_LE_Meta;
-        ewd.extra = HCI_EVTLE_Read_Remote_Used_Features_Complete;
-        ewd.cbkData = userData;
-        if (!hciCmdSubmit(HCI_OGF_LE, HCI_CMD_LE_Read_Remote_Used_Features, &rrf, sizeof(rrf), &ewd, NULL)) {
+        ewd[0].evtType = HCI_EVT_LE_Meta;
+        ewd[0].extra = HCI_EVTLE_Read_Remote_Used_Features_Complete;
+        ewd[0].cbkData = userData;
+        if (!hciCmdSubmit(HCI_OGF_LE, HCI_CMD_LE_Read_Remote_Used_Features, &rrf, sizeof(rrf), ewd + 0, NULL)) {
             success = false;
             loge("Failed to send read remote used features command\n");
             break;
         }
         return;
 
-    case CONN_CFG_STEP_LE + 1: /* secone LE config step = done! */
+    case CONN_CFG_STEP_LE + 1: /* second LE config step = done! */
         break;
 
     case CONN_CFG_STEP_EDR + 0: /* first EDR step = get name */
@@ -4471,19 +4465,33 @@ static void hciConnCfg(struct hciAclConn *c, uint32_t step, uint32_t aux)
     case CONN_CFG_STEP_EDR + 1: /* second EDR step = set flush timeout */
         utilSetLE16(&waft.conn, c->id);
         utilSetLE16(&waft.timeout, 0); /* infinite timeout */
-        ewd.evtType = HCI_EVT_Command_Complete;
-        ewd.extra = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Automatic_Flush_Timeout);
-        ewd.cbkData = userData;
-        if (!hciCmdSubmit(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Automatic_Flush_Timeout, &waft, sizeof(waft), &ewd, NULL)) {
+        ewd[0].evtType = HCI_EVT_Command_Complete;
+        ewd[0].extra = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Automatic_Flush_Timeout);
+        ewd[0].cbkData = userData;
+        if (!hciCmdSubmit(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Automatic_Flush_Timeout, &waft, sizeof(waft), ewd + 0, NULL)) {
             success = false;
             loge("Failed to send set flush timeout command\n");
             break;
         }
         return;
 
-    case CONN_CFG_STEP_EDR + 2: /* third EDR step = ??? */
-        break;
+    case CONN_CFG_STEP_EDR + 2: /* third EDR step = read remote version */
+        utilSetLE16(&rrv.conn, c->id);
+        ewd[0].evtType = HCI_EVT_Command_Status;
+        ewd[0].extra = CMD_MAKE_OPCODE(HCI_OGF_Link_Control, HCI_CMD_Read_Remote_Version_Information);
+        ewd[0].cbkData = userData;
+        ewd[1].evtType = HCI_EVT_Read_Remote_Version_Complete;
+        ewd[1].cbkData = userData;
+        if (!hciCmdSubmit(HCI_OGF_Link_Control, HCI_CMD_Read_Remote_Version_Information , &rrv, sizeof(rrv), ewd + 0, ewd + 1, NULL)) {
+            success = false;
+            loge("Failed to send get remote version command\n");
+            break;
+        }
+        return;
 
+    case CONN_CFG_STEP_EDR + 3: /* fourth EDR step = read remote features */
+        //TODO
+        break;
     }
 
     /* if we got here, the configuration step ended and it is time to proceed */
