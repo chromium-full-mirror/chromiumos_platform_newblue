@@ -4340,6 +4340,8 @@ static bool hciConnCfgCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evt
 {
     struct hciEvtLeMeta *leMetaEvt = (struct hciEvtLeMeta*)(evt + 1);
     struct hciEvtLeReadRemoteFeaturesComplete *rrf = (struct hciEvtLeReadRemoteFeaturesComplete*)(leMetaEvt + 1);
+    struct hciEvtCmdComplete *cmpl = (struct hciEvtCmdComplete*)(evt + 1);
+    struct hciCmplWriteAutoFlushTimeout *waft = (struct hciCmplWriteAutoFlushTimeout*)(cmpl + 1);
     uint16_t step = ((uint32_t)(uintptr_t)cbkData) >> 16;
     uint16_t aux = (uint16_t)(uintptr_t)cbkData;
     struct hciAclConn *c = NULL;
@@ -4358,6 +4360,16 @@ static bool hciConnCfgCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evt
         if (sta)
             break;
         c->le.ftrs = utilGetLE64(&rrf->leFeatures);
+        step++;
+        break;
+    case CONN_CFG_STEP_EDR + 1: /* second EDR step = set flush timeout */
+        cid = utilGetLE16(&waft->conn);
+        sta = utilGetLE8(&waft->status);
+        c = hciConnFindById(cid);
+        if (!c)
+            break;
+        if (sta)
+            break;
         step++;
         break;
     default:
@@ -4394,8 +4406,6 @@ static void hciConnCfgEdrNameCbk(void *cbkData, const struct bt_addr *addr, uint
     uint16_t aux = (uint16_t)(uintptr_t)cbkData;
     struct hciAclConn *c = NULL;
 
-logd("name req ret %d, name '%s'\n", nameReqStatus, (nameReqStatus == HCI_NAME_REQ_STATUS_COMPLETE) ? name : "{{UNKNOWN}}");
-
     if (nameReqStatus == HCI_NAME_REQ_STATUS_IN_PROGRESS)
         return;
 
@@ -4424,9 +4434,10 @@ logd("name req ret %d, name '%s'\n", nameReqStatus, (nameReqStatus == HCI_NAME_R
 static void hciConnCfg(struct hciAclConn *c, uint32_t step, uint32_t aux)
 {
     struct hciEvtWaitDescr ewd = {.cbk = hciConnCfgCbk, .persistent = false};
+    struct hciNameGetInfo fng = {.clockOffset = 0, .PSRM = 0, .PSM = 0};
     void *userData = (void*)(uintptr_t)((step << 16) | aux);
     struct hciLeReadRemoteUsedFeatures rrf;
-    struct hciNameGetInfo fng = {.clockOffset = 0, .PSRM = 0, .PSM = 0};
+    struct hciWriteAutoFlushTimeout waft;
     bool success = true;
 
     if (c->state != CONN_STATE_CFG) {
@@ -4458,8 +4469,21 @@ static void hciConnCfg(struct hciAclConn *c, uint32_t step, uint32_t aux)
         return;
 
     case CONN_CFG_STEP_EDR + 1: /* second EDR step = set flush timeout */
-        //TODO, for now just succeed
+        utilSetLE16(&waft.conn, c->id);
+        utilSetLE16(&waft.timeout, 0); /* infinite timeout */
+        ewd.evtType = HCI_EVT_Command_Complete;
+        ewd.extra = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Automatic_Flush_Timeout);
+        ewd.cbkData = userData;
+        if (!hciCmdSubmit(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Automatic_Flush_Timeout, &waft, sizeof(waft), &ewd, NULL)) {
+            success = false;
+            loge("Failed to send set flush timeout command\n");
+            break;
+        }
+        return;
+
+    case CONN_CFG_STEP_EDR + 2: /* third EDR step = ??? */
         break;
+
     }
 
     /* if we got here, the configuration step ended and it is time to proceed */
