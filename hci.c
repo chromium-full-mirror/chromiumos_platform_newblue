@@ -18,7 +18,6 @@
 #include "persist.h"
 #include "config.h"
 #include "l2cap.h"
-#include "stack.h"
 #include "aapi.h"
 #include "util.h"
 #include "uniq.h"
@@ -2598,7 +2597,7 @@ void hciSecUserCbkPinCodeReq(const struct bt_addr *addr, const uint8_t *pin, uin
  * RETURN:   NONE
  * NOTES:
  */
-static void hciSecUserCbkLinkKeyReq(const struct bt_addr *addr, void *cbkData, const uint8_t *key)
+static void hciSecUserCbkLinkKeyReq(const struct bt_addr *addr, const uint8_t *key)
 {
     struct hciLinkKeyRequestNegativeReply cmdN;
     struct hciLinkKeyRequestReply cmdY;
@@ -2782,6 +2781,65 @@ void hciSecUserCbkSspUserOobReq(const struct bt_addr *addr, const uint8_t *C, co
 }
 
 /*
+ * FUNCTION: hciSecHandleLinkKeyReq
+ * USE:      Try to find the proper key for a given EDR connection
+ * PARAMS:   addr - the peer address
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void hciSecHandleLinkKeyReq(const struct bt_addr *addr)
+{
+    uint8_t key[HCI_LINK_KEY_LEN];
+    bool mitmProt = true;
+
+    if (!persistGetDevKey(addr, KEY_TYPE_MITM_PROTECTED, key)) {
+        mitmProt = false;
+        if (!persistGetDevKey(addr, KEY_TYPE_MITM_UNPROTECTED, key)) {
+            logd("Link key request from "ADDRFMT" declined\n", ADDRCONV(*addr));
+            hciSecUserCbkLinkKeyReq(addr, NULL);
+            return;
+        }
+    }
+
+    logd("Found and provided link key for "ADDRFMT". Mitm protection: %s\n", ADDRCONV(*addr), mitmProt ? "YES" : "NO");
+    hciSecUserCbkLinkKeyReq(addr, key);
+}
+
+/*
+ * FUNCTION: hciSecHandleNewLinkKey
+ * USE:      Record a new link key for an EDR device
+ * PARAMS:   addr - the peer address
+ *           key - the key provided
+ *           btKeyType - key type as per BT spec
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void hciSecHandleNewLinkKey(const struct bt_addr *addr, const uint8_t *key, uint8_t btKeyType)
+{
+    uint8_t persistKeyType;
+
+    switch (btKeyType) {
+    case HCI_EDR_LINK_KEY_COMBO:
+    case HCI_EDR_LINK_KEY_AUTH_COMBO:
+    case HCI_EDR_LINK_KEY_CHANGED:
+        persistKeyType = KEY_TYPE_MITM_PROTECTED;
+        break;
+    case HCI_EDR_LINK_KEY_LOCAL:
+    case HCI_EDR_LINK_KEY_REMOTE:
+    case HCI_EDR_LINK_KEY_UNAUTH_COMBO:
+        persistKeyType = KEY_TYPE_MITM_UNPROTECTED;
+        break;
+    case HCI_EDR_LINK_KEY_DEBUG:
+    default:
+        logd("Ignoring key type %u\n", btKeyType);
+        return;
+    }
+
+    if (!persistAddDevKey(addr, persistKeyType, key))
+        logw("Failed to stor elink key for "ADDRFMT".\n", ADDRCONV(*addr));
+}
+
+/*
  * FUNCTION: hciSecUserEvtCbk
  * USE:      Called with user-interaction-related security events
  * PARAMS:   evt - the event
@@ -2810,16 +2868,13 @@ static bool hciSecUserEvtCbk(const struct hciEvtHdr *evtHdr, void *cbkData, uniq
         struct hciEvtPinCodeReq *evt = (struct hciEvtPinCodeReq*)(evtHdr + 1);
 
         memcpy(addr.addr, evt->mac, sizeof(addr.addr));
-        if (!stackLinkKeyRequest(&addr, hciSecUserCbkLinkKeyReq, NULL)) {
-            logw("callback for EDR security event 0x%02X failed -> sending negative reply\n", evtType);
-            hciSecUserCbkLinkKeyReq(&addr, NULL, NULL);
-        }
+        hciSecHandleLinkKeyReq(&addr);
+
     } else if (evtType == HCI_EVT_Link_Key_Notification) {
         struct hciEvtLinkKeyNotif *evt = (struct hciEvtLinkKeyNotif*)(evtHdr + 1);
 
         memcpy(addr.addr, evt->mac, sizeof(addr.addr));
-        if (!stackLinkKeyNotif(&addr, evt->key, utilGetLE8(&evt->keyType)))
-            logw("callback for EDR security event 0x%02X failed\n", evtType);
+        hciSecHandleNewLinkKey(&addr, evt->key, utilGetLE8(&evt->keyType));
 
     } else if (evtType == HCI_EVT_IO_Capability_Request) {
         struct hciEvtIoCapRequest *evt = (struct hciEvtIoCapRequest*)(evtHdr + 1);

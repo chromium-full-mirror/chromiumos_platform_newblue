@@ -118,6 +118,14 @@
 #define HCI_MCA_30_PPM                                           0x06
 #define HCI_MCA_20_PPM                                           0x07
 
+#define HCI_EDR_LINK_KEY_COMBO                                   0x00
+#define HCI_EDR_LINK_KEY_LOCAL                                   0x01
+#define HCI_EDR_LINK_KEY_REMOTE                                  0x02
+#define HCI_EDR_LINK_KEY_DEBUG                                   0x03
+#define HCI_EDR_LINK_KEY_UNAUTH_COMBO                            0x04
+#define HCI_EDR_LINK_KEY_AUTH_COMBO                              0x05
+#define HCI_EDR_LINK_KEY_CHANGED                                 0x06
+
 #define HCI_VERSION_1_0_B                                         0 /* BT 1.0b */
 #define HCI_VERSION_1_1                                           1 /* BT 1.1  */
 #define HCI_VERSION_1_2                                           2 /* BT 1.2  */
