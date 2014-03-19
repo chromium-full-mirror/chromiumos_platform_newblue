@@ -158,6 +158,7 @@ struct hciCbkWorkItem {
         } edrDev;
 
         struct {
+            struct bt_addr                addr;
             hciDeviceDiscoveredEdrNameCbk cbk;
             void                         *cbkData;
             uint8_t                       nameReqState;
@@ -244,14 +245,18 @@ struct hciAclConn {
 };
 
 #define CONN_STATE_WAIT            0
-#define CONN_STATE_RUNNING         1
-#define CONN_STATE_DELETING        2
+#define CONN_STATE_CFG             1
+#define CONN_STATE_RUNNING         2
+#define CONN_STATE_DELETING        3
+
+#define CONN_CFG_STEP_LE           0x0000
+#define CONN_CFG_STEP_EDR          0x1000
 
 struct hciDiscoverNameState {
     struct hciDiscoverNameState   *next;
     hciDeviceDiscoveredEdrNameCbk  cbk;
     void                          *cbkData;
-    uint8_t                        mac[6];
+    struct bt_addr                 addr;
     uniq_t                         handle;
 };
 
@@ -324,6 +329,7 @@ static bool hciConnUpdate(uint16_t cid, uint16_t minInt, uint16_t maxInt, uint16
 static void hciCmdStatusCbk(void *cbkData, uint8_t status);
 static bool hciConnDisconnect(uint16_t cid);
 static bool hciConnLeCancel(void);
+static void hciConnCfg(struct hciAclConn *c, uint32_t step, uint32_t aux);
 
 
 
@@ -885,7 +891,7 @@ static void* hciCbkWorker(void *unused)
             mDiscoverEdrCbk(mDiscoverEdrData, &w->edrDev.addr, w->edrDev.devCls, &w->edrDev.fng, w->edrDev.rssi, w->edrDev.eir, w->edrDev.eirLen);
             break;
         case CBK_WORK_EDR_DISC_NAME:
-            w->edrName.cbk(w->edrName.cbkData, w->edrName.nameReqState, w->edrName.name);
+            w->edrName.cbk(w->edrName.cbkData, &w->edrName.addr, w->edrName.nameReqState, w->edrName.name);
             break;
         case CBK_WORK_LE_DISC_DEV:
             mDiscoverLeCbk(mDiscoverLeData, &w->leDev.addr, w->leDev.rssi, w->leDev.advType, w->leDev.adv, w->leDev.advLen);
@@ -2087,16 +2093,6 @@ HCI_SIMPLY_SYNC_WRITE(WriteAuthEnable, (bool authRequired), HCI_OGF_Controller_a
 HCI_SIMPLY_SYNC_END
 
 /*
- * FUNCTION: hciWriteAutoFlushTimeoutSync
- * USE:      Set how long a packet is retired before it is abandonned
- * PARAMS:   conn - the ACL connection this pertains to
- */
-HCI_SIMPLY_SYNC_WRITE(WriteAutoFlushTimeout, (uint16_t conn, uint16_t timeout), HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Automatic_Flush_Timeout)
-    HCI_COPY_IN_U16(conn)
-    HCI_COPY_IN_U16(timeout)
-HCI_SIMPLY_SYNC_END
-
-/*
  * FUNCTION: hciWriteSyncFlowCtrlEnableSync
  * USE:      Set whether we get command complete packets for SCO data
  * PARAMS:   syncFlowCtrlOn - set if we will get those packets, false else
@@ -2418,6 +2414,7 @@ static void hciInquiryEvtEdrName(struct hciDiscoverNameState *dns, struct hciDis
     }
 
     w->cbkWorkItemType = CBK_WORK_EDR_DISC_NAME;
+    memcpy(&w->edrName.addr, &dns->addr, sizeof(w->edrName.addr));
     memcpy(&w->edrName.name, name, nameLen);
     w->edrName.name[nameLen] = 0;
     w->edrName.nameReqState = nameReqState;
@@ -2466,7 +2463,7 @@ static void hciInquiryEvtEdrNameMac(const uint8_t *mac, uint8_t nameReqState, bo
     /* now find the callback & enqueue the work*/
     pthread_mutex_lock(&mDiscoveryStateLock);
     dns = mDiscoverNames;
-    while (dns && memcmp(&dns->mac, mac, sizeof(dns->mac))) {
+    while (dns && memcmp(&dns->addr.addr, mac, sizeof(dns->addr.addr))) {
         prev = dns;
         dns = dns->next;
     }
@@ -3143,7 +3140,6 @@ static bool hciInquiryEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t 
     } else if (evtType == HCI_EVT_Command_Status) {
         struct hciEvtCmdStatus *staEvt = (struct hciEvtCmdStatus*)(evt + 1);
         uint8_t status = utilGetLE8(&staEvt->status);
-        struct hciDiscoverNameState *dns;
         uniq_t handle = *(uniq_t*)cbkData;
 
         if (utilGetLE16(&staEvt->opcode) != CMD_MAKE_OPCODE(HCI_OGF_Link_Control, HCI_CMD_Remote_Name_Request)) {
@@ -3505,7 +3501,7 @@ out:
 static void hciDiscoverStopAndFreeNameReq(struct hciDiscoverNameState *toFree)
 {
     if (mBtVer >= HCI_VERSION_1_2)
-        hciRemoteNameRequestCancelSync(toFree->mac); /* error ignored on purpose */
+        hciRemoteNameRequestCancelSync(toFree->addr.addr); /* error ignored on purpose */
     free(toFree);
 }
 
@@ -3636,7 +3632,8 @@ uniq_t hciDiscoverEdrGetName(hciDeviceDiscoveredEdrNameCbk cbk, void *cbkData, c
     dns->cbk = cbk;
     dns->cbkData = cbkData;
     dns->handle = *handleCopy = ret = uniqGetNext();
-    memcpy(dns->mac, forNameGetting->mac, sizeof(dns->mac));
+    memcpy(dns->addr.addr, forNameGetting->mac, sizeof(dns->addr.addr));
+    dns->addr.type = BT_ADDR_TYPE_EDR;
 
     ewd.extra = CMD_MAKE_OPCODE(HCI_OGF_Link_Control, HCI_CMD_Remote_Name_Request);
     ewd.evtType = HCI_EVT_Command_Status;
@@ -4122,6 +4119,7 @@ bool hciDisconnect(const struct bt_addr* addr)
                 logd("cannot cancel in-progress EDR connection\n");
             conn->state = CONN_STATE_DELETING;
             break;
+        case CONN_STATE_CFG:
         case CONN_STATE_RUNNING:
             hciConnDisconnect(conn->id);
             hciConnAclStructDel(conn);
@@ -4280,6 +4278,7 @@ static void hciHandleConnAclDown(uint16_t cid, uint8_t reason)
         case CONN_STATE_WAIT:
             logw("Unexpected connection down in wait state!\n");
             /* fallthrough */
+        case CONN_STATE_CFG:
         case CONN_STATE_RUNNING:
             if (!hciScheduleConnDownNotif(conn->handle))
                 loge("Failed to schedule conn down notif\n");
@@ -4291,6 +4290,187 @@ static void hciHandleConnAclDown(uint16_t cid, uint8_t reason)
         hciConnAclStructDel(conn);
     }
     pthread_mutex_unlock(&mConnsLock);
+}
+
+
+/*
+
+uniq_t hciDiscoverEdrGetName(hciDeviceDiscoveredEdrNameCbk cbk, void *cbkData, const struct hciNameGetInfo *forNameGetting); // safe to call from hci callbacks
+bool hciDiscoverEdrGetNameCancel(uniq_t handle);
+hciWriteAutoFlushTimeout
+
+
+struct hciNameGetInfo {
+    uint8_t  mac[6];
+    uint16_t clockOffset; // if unknown, set all to zeroes except mac
+    uint8_t  PSRM;
+    uint8_t  PSM; // unused in BT 1.2+
+};
+
+
+#define CONN_CFG_STEP_LE           0x0000
+#define CONN_CFG_STEP_EDR          0x1000
+#define CONN_CFG_STAP_FAIL         0xFFFF
+
+
+///aaa
+
+struct hciEvtWaitDescr {
+    uint8_t    evtType; // == 0 -> not valid/not enabled
+    uint16_t   extra;
+    hciEvtCbk  cbk;
+    void      *cbkData;
+    bool       persistent;
+};
+
+*/
+
+
+/*
+ * FUNCTION: hciConnCfgCbk
+ * USE:      event handler for hciConnCfg()
+ * PARAMS:   evt - the resuting event
+ *           cbkData - the data from hciConnCfg (step and aux encoded into a pointer)
+ *           evtWaitStateID - unused
+ *           forCmdID - unused
+ * RETURN:   true if this is our event (always yes)
+ * NOTES:    call with mConnsLock held
+ */
+static bool hciConnCfgCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
+{
+    struct hciEvtLeMeta *leMetaEvt = (struct hciEvtLeMeta*)(evt + 1);
+    struct hciEvtLeReadRemoteFeaturesComplete *rrf = (struct hciEvtLeReadRemoteFeaturesComplete*)(leMetaEvt + 1);
+    uint16_t step = ((uint32_t)(uintptr_t)cbkData) >> 16;
+    uint16_t aux = (uint16_t)(uintptr_t)cbkData;
+    struct hciAclConn *c = NULL;
+    uint8_t sta = 0xff;
+    uint16_t cid;
+
+    pthread_mutex_lock(&mConnsLock);
+
+    switch (step) {
+    case CONN_CFG_STEP_LE + 0: /* first LE config step = get remote features */
+        cid = utilGetLE16(&rrf->conn);
+        sta = utilGetLE8(&rrf->status);
+        c = hciConnFindById(cid);
+        if (!c)
+            break;
+        if (sta)
+            break;
+        c->le.ftrs = utilGetLE64(&rrf->leFeatures);
+        step++;
+        break;
+    default:
+        loge("unknown connection config step step 0x%04X.05%04X\n", step, aux);
+        break;
+    }
+
+    if (!c)
+        loge("connection config failed: unable to find connection\n");
+    else if (!sta)
+        hciConnCfg(c, step, aux);
+    else if (sta) {
+        loge("connection config failed: sta 0x%02X. Closing.\n", sta);
+        hciConnDisconnect(c->id);
+    }
+    pthread_mutex_unlock(&mConnsLock);
+
+    return true;
+}
+
+/*
+ * FUNCTION: hciConnCfgEdrNameCbk
+ * USE:      Name callback for an EDR connection's configuration stage
+ * PARAMS:   cbkData - the data from hciConnCfg (step and aux encoded into a pointer)
+ *           addr - peer's address
+ *           nameReqStatus - status of the request
+ *           name - the name (if status is success). null terminated
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void hciConnCfgEdrNameCbk(void *cbkData, const struct bt_addr *addr, uint8_t nameReqStatus, const char *name)
+{
+    uint16_t step = ((uint32_t)(uintptr_t)cbkData) >> 16;
+    uint16_t aux = (uint16_t)(uintptr_t)cbkData;
+    struct hciAclConn *c = NULL;
+
+logd("name req ret %d, name '%s'\n", nameReqStatus, (nameReqStatus == HCI_NAME_REQ_STATUS_COMPLETE) ? name : "{{UNKNOWN}}");
+
+    if (nameReqStatus == HCI_NAME_REQ_STATUS_IN_PROGRESS)
+        return;
+
+    pthread_mutex_lock(&mConnsLock);
+    c = hciConnFindByAddr(addr);
+    if (!c)
+        loge("Unable to find conection for name request to "ADDRFMT"\n", ADDRCONV(*addr));
+    else if (nameReqStatus == HCI_NAME_REQ_STATUS_COMPLETE)
+        hciConnCfg(c, step + 1, aux);
+    else {
+        loge("Error getting name from "ADDRFMT"\n", ADDRCONV(*addr));
+        hciConnDisconnect(c->id);
+    }
+    pthread_mutex_unlock(&mConnsLock);
+}
+
+/*
+ * FUNCTION: hciConnCfg
+ * USE:      Configure a new connection to our liking and tell upper layer when done
+ * PARAMS:   c - the connection struct
+ *           step - the step to perform
+ *           aux - substep
+ * RETURN:   NONE
+ * NOTES:    call with mConnsLock held
+ */
+static void hciConnCfg(struct hciAclConn *c, uint32_t step, uint32_t aux)
+{
+    struct hciEvtWaitDescr ewd = {.cbk = hciConnCfgCbk, .persistent = false};
+    void *userData = (void*)(uintptr_t)((step << 16) | aux);
+    struct hciLeReadRemoteUsedFeatures rrf;
+    struct hciNameGetInfo fng = {.clockOffset = 0, .PSRM = 0, .PSM = 0};
+    bool success = true;
+
+    if (c->state != CONN_STATE_CFG) {
+        logw("Tried to config a conenction not in config state\n");
+        return;
+    }
+
+    switch (step) {
+    case CONN_CFG_STEP_LE + 0: /* fist LE config step = get remote features */
+        if (!c->isMaster)
+            break; /* as a slave there is no config to do */
+        utilSetLE16(&rrf.conn, c->id);
+        ewd.evtType = HCI_EVT_LE_Meta;
+        ewd.extra = HCI_EVTLE_Read_Remote_Used_Features_Complete;
+        ewd.cbkData = userData;
+        if (!hciCmdSubmit(HCI_OGF_LE, HCI_CMD_LE_Read_Remote_Used_Features, &rrf, sizeof(rrf), &ewd, NULL)) {
+            success = false;
+            loge("Failed to send read remote used features command\n");
+            break;
+        }
+        return;
+
+    case CONN_CFG_STEP_LE + 1: /* secone LE config step = done! */
+        break;
+
+    case CONN_CFG_STEP_EDR + 0: /* first EDR step = get name */
+        memcpy(&fng.mac, c->addr.addr, sizeof(fng.mac));
+        hciDiscoverEdrGetName(hciConnCfgEdrNameCbk, userData, &fng);
+        return;
+
+    case CONN_CFG_STEP_EDR + 1: /* second EDR step = set flush timeout */
+        //TODO, for now just succeed
+        break;
+    }
+
+    /* if we got here, the configuration step ended and it is time to proceed */
+    if (success) {
+        c->state = CONN_STATE_RUNNING; 
+        if (hciScheduleConnUpNotif(c->handle, &c->addr, c->isMaster, c->encrypted))
+            return;
+        else
+            loge("Failed to enqueue upcall for conn up\n");
+    }
+    hciConnDisconnect(c->id);
 }
 
 /*
@@ -4330,22 +4510,23 @@ static struct hciAclConn* hciConnAclUp(bool established, uint16_t id, const uint
     addr.type = addrType;
 
     if (!c) {
-        c = hciConnAclStructNew(id, &addr, CONN_STATE_RUNNING, isMaster);
-        c->isMaster = false;
+        c = hciConnAclStructNew(id, &addr, CONN_STATE_CFG, isMaster);
+        if (!c) {
+            loge("Failed to alloc conn struct for new ACL link\n");
+            hciConnDisconnect(id);
+            return NULL;
+        }
+        c->isMaster = isLE ? isMaster : false;
     } else if (c->state == CONN_STATE_WAIT) {
-        c->encrypted = encrypted;
+        c->state = CONN_STATE_CFG;
         if (isLE)
             c->isMaster = isMaster;
-        //TODO: start next LE connection/restart adv/etc?
+        /* TODO: start next LE connection/restart adv/etc? */
     } else {
         loge("Connection in state %d at up time\n", c->state);
     }
-
     c->encrypted = encrypted;
-
-    /*XXX: TODO: before scheduling upcall, we need to set flush timeout and get remote features */
-    if (!hciScheduleConnUpNotif(c->handle, &c->addr, isMaster, encrypted))
-        loge("Failed to enqueue upcall for conn up\n");
+    hciConnCfg(c, isLE ? CONN_CFG_STEP_LE : CONN_CFG_STEP_EDR, 0);
 
     return c;
 }

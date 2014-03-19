@@ -122,7 +122,7 @@ typedef uniq_t hci_conn_t;
 /* various callbacks - it is universally a bad idea to call back into hci from these, except otherwise noted funcs */
 /* "devCls" is devic class, rssi = 127 -> no RSSI */
 typedef void (*hciDeviceDiscoveredEdrCbk)(void *cbkData, const struct bt_addr *addr, uint32_t devCls, const struct hciNameGetInfo *forNameGetting, int8_t rssi, const void *eir, uint8_t eirLen);
-typedef void (*hciDeviceDiscoveredEdrNameCbk)(void *cbkData, uint8_t nameReqStatus, const char *name);
+typedef void (*hciDeviceDiscoveredEdrNameCbk)(void *cbkData, const struct bt_addr *addr, uint8_t nameReqStatus, const char *name);
 typedef void (*hciDeviceDiscoveredLeCbk)(void *cbkData, const struct bt_addr *addr, int8_t rssi, uint8_t replyType, const void *eir, uint8_t eirLen);
 
 typedef void (*hciOpDoneCbk)(void *cbkData, uint8_t status /* 0 = good */);
