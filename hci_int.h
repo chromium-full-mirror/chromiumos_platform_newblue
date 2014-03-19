@@ -514,12 +514,6 @@ struct hciReadRemoteSupportedFeatures {
     uint16_t conn;
 } __packed;
 
-#define HCI_CMD_Read_Remote_Extended_Features                    0x001C /* status */
-struct hciReadRemoteExtendedFeatures {
-    uint16_t conn;
-    uint8_t page; /* BT1.2 max: 0 */
-} __packed;
-
 #define HCI_CMD_Read_Remote_Version_Information                  0x001D /* status */
 struct hciReadRemoteVersionInfo {
     uint16_t conn;
@@ -532,6 +526,12 @@ struct hciReadClockOffset {
 
 
 /* ==== BT 1.2 ==== */
+
+#define HCI_CMD_Read_Remote_Extended_Features                    0x001C /* status */
+struct hciReadRemoteExtendedFeatures {
+    uint16_t conn;
+    uint8_t page; /* BT1.2 max: 0 */
+} __packed;
 
 #define HCI_CMD_Read_Lmp_Handle                                  0x0020 /* complete */
 struct hciReadLmpHandle {
