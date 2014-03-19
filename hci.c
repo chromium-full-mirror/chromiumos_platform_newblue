@@ -209,6 +209,11 @@ struct hciCbkWorkItem {
     };
 };
 
+struct hciBacklogItemHdr {
+    uint32_t len;
+    uint16_t aclHdr;
+} __packed;
+
 struct hciSimpleCbkData {
     hciSimpleCbk  cbk; /* may be null */
     void         *cbkData1;
@@ -229,6 +234,7 @@ struct hciAclConn {
     bool               isMaster;
     bool               encrypted;
     uint8_t            state; /* CONN_STATE_* */
+    sg                 rxBacklog; /* data we RXed during configuration stage */
 
     union {
         struct {
@@ -335,6 +341,7 @@ static void hciCmdStatusCbk(void *cbkData, uint8_t status);
 static bool hciConnDisconnect(uint16_t cid);
 static bool hciConnLeCancel(void);
 static void hciConnCfg(struct hciAclConn *c, uint32_t step, uint32_t aux);
+static bool hciRxAclForRunningConn(struct hciAclConn* conn, uint16_t hdr, sg packet);
 
 
 
@@ -561,6 +568,28 @@ static void hciRxSco(uint16_t hdr, sg packet)
 }
 
 /*
+ * FUNCTION: hciRxAclForRunningConn
+ * USE:      Called with a valid ACL packet/fragment for a running connection
+ * PARAMS:   conn - the connection this is for
+ *           hdr - packet header
+ *           packet - the packet we got
+ * RETURN:   NONE
+ * NOTES:    call with mConnsLock held
+ */
+static bool hciRxAclForRunningConn(struct hciAclConn* conn, uint16_t hdr, sg packet)
+{
+    uint16_t pb = hdr & ACL_HDR_MASK_PB;
+    uint16_t bc = hdr & ACL_HDR_MASK_BC;
+
+    if (pb == ACL_HDR_PB_FIRST_NONAUTO || pb == ACL_HDR_PB_COMPLETE) {
+        logw("Invalid acl.pb flag from chp: 0x%04X. Dropped\n", pb);
+        return false;
+    }
+
+    return hciScheduleConnDataRx(conn->handle, packet, pb == ACL_HDR_PB_FIRST_AUTO);
+}
+
+/*
  * FUNCTION: hciRxAcl
  * USE:      Called with a valid ACL packet/fragment
  * PARAMS:   hdr - packet header
@@ -570,22 +599,33 @@ static void hciRxSco(uint16_t hdr, sg packet)
  */
 static void hciRxAcl(uint16_t hdr, sg packet)
 {
-    uint16_t pb = hdr & ACL_HDR_MASK_PB;
-    uint16_t bc = hdr & ACL_HDR_MASK_BC;
     uint16_t cid = hdr & ACL_HDR_MASK_CONN_ID;
     struct hciAclConn* conn;
 
-    if (pb == ACL_HDR_PB_FIRST_NONAUTO || pb == ACL_HDR_PB_COMPLETE) {
-        logw("Invalid acl.pb flag from chp: 0x%04X. Dropped\n", pb);
-        return;
-    }
 
     pthread_mutex_lock(&mConnsLock);
     conn = hciConnFindById(cid);
     if (!conn) {
         logi("Dropping packet for unknown acl link %d\n", cid);
         sgFree(packet);
-    } else if (!hciScheduleConnDataRx(conn->handle, packet, pb == ACL_HDR_PB_FIRST_AUTO)) {
+    } else if (conn->state == CONN_STATE_CFG) {
+        struct hciBacklogItemHdr itemHdr = {.len = sgLength(packet), .aclHdr = hdr};
+
+        if (!conn->rxBacklog)
+            conn->rxBacklog = sgNew();
+
+        if (conn->rxBacklog && sgConcatFrontCopy(packet, &itemHdr, sizeof(itemHdr)) && sgLength(conn->rxBacklog) + sgLength(packet) <= HCI_CONN_CFG_DATA_BACKLOG_MAX) {
+            sgConcat(conn->rxBacklog, packet);
+            logd("Added packet to RX backlog\n");
+        } else {
+            logi("Dropping connection -> we're unable to save RX in backlog\n");
+            hciConnDisconnect(conn->id);
+            sgFree(packet);
+        }
+    } else if (conn->state != CONN_STATE_RUNNING) {
+        logi("Dropping arrived data for connection in state %u\n", conn->state);
+        sgFree(packet);
+    } else if (!hciRxAclForRunningConn(conn, hdr, packet)) {
         logi("Failed to enqueue packet RX for link %d\n", cid);
         sgFree(packet);
     }
@@ -4026,6 +4066,8 @@ static void hciConnAclStructDel(struct hciAclConn* conn)
     else
         mConns = conn->next;
 
+    if (conn->rxBacklog)
+        sgFree(conn->rxBacklog);
 
     logd("deleting conn struct for "ADDRFMT" h="HANDLEFMT"\n", ADDRCONV(conn->addr), HANDLECNV(conn->handle));
     free(conn);
@@ -4568,11 +4610,41 @@ static void hciConnCfg(struct hciAclConn *c, uint32_t step, uint32_t aux)
     /* if we got here, the configuration step ended and it is time to proceed */
     if (success) {
         c->state = CONN_STATE_RUNNING; 
-        if (hciScheduleConnUpNotif(c->handle, &c->addr, c->isMaster, c->encrypted))
+        if (hciScheduleConnUpNotif(c->handle, &c->addr, c->isMaster, c->encrypted)) {
+            /* if there are any backlogged RX messages, queue them up too */
+            while (c->rxBacklog) {
+                struct hciBacklogItemHdr itemHdr;
+                sg packet;
+
+                if (!sgSerializeCutFront(c->rxBacklog, &itemHdr, sizeof(itemHdr))) {
+                    loge("backlog header dequque fail!\n");
+                    goto fail;
+                }
+                packet = sgSplit(c->rxBacklog, itemHdr.len);
+                if (!packet) {
+                    loge("backlog packet dequeue fail\n");
+                    goto fail;
+                }
+                sgSwap(packet, c->rxBacklog);
+                if (!sgLength(c->rxBacklog)) {
+                    sgFree(c->rxBacklog);
+                    c->rxBacklog = NULL;
+                }
+
+                if (!hciRxAclForRunningConn(c, itemHdr.aclHdr, packet)) {
+                    loge("backlog packet rx enqueue fail\n");
+                    sgFree(packet);
+                    goto fail;
+                }
+            }
+
             return;
-        else
+
+        } else
             loge("Failed to enqueue upcall for conn up\n");
     }
+
+fail:
     hciConnDisconnect(c->id);
 }
 

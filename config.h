@@ -74,6 +74,12 @@
 #define HCI_LE_SCAN_WINDOW                 4  /* 2.5 ms */
 
 /*
+ * How many bytes of RX data we're willing to buffer for a new ACL link during
+ * configuration before we decide they're spamming us and drop the link.
+ */
+#define HCI_CONN_CFG_DATA_BACKLOG_MAX      65536
+
+/*
  * How long we let other side wait for our decision till we auto-reject (in units of 0.625 ms)
  */
 #define HCI_CONN_RX_TIMEOUT                16000
