@@ -213,6 +213,8 @@ static void *aapiSockWorker(void *pipe)
                         break;
                     if (!sgConcatBackCopy(socks[i]->rfc.bufTx, rdbuf, now))
                         loge("Failed to concat read data. TX data will be lost\n");
+                    if (now != sizeof(rdbuf))
+                        break;
                 }
                 txRet = rfcTx(socks[i]->rfc.conn, socks[i]->rfc.bufTx);
                 if (txRet == RFC_TX_RET_ENTIRE_SENT) {
