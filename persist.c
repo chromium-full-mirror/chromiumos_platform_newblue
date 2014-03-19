@@ -1163,6 +1163,9 @@ static struct persistProp* persistAddKnownDevInt(const struct bt_addr *addr, con
         goto out;
 
     devArr = (struct persistArrayInRam*)(dev + 1);
+    if (!persistSetPropInList(&devArr->head, &devArr->tail, PERS_NAME_BT_ADDR, PERS_TYPE_BT_ADDR, addr, sizeof(struct bt_addr), true))
+        logw("Failed to save device name\n");
+
     if (haveName && !persistSetPropInList(&devArr->head, &devArr->tail, PERS_NAME_DEVICE_NAME, PERS_TYPE_BYTE_ARRAY, name, nameLen, true))
         logw("Failed to save device name\n");
 
@@ -1311,7 +1314,7 @@ bool persistGetDevKey(const struct bt_addr *addr, uint8_t keyType, uint8_t *key)
     if (!keyProp)
         goto out;
 
-    keyStruct = (struct persistKey*)(key + 1);
+    keyStruct = (struct persistKey*)(keyProp + 1);
     memcpy(key, keyStruct->key, HCI_LINK_KEY_LEN);
     ret = true;
 
