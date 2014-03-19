@@ -2688,7 +2688,7 @@ struct hciEvtInquiryResultWithRssi {
 #define HCI_EVT_Read_Remote_Extended_Features_Complete           0x23
 struct hciEvtReadRemoteExtFeturesComplete {
     uint8_t status;
-    uint16_t handle;
+    uint16_t conn;
     uint8_t pageNum;
     uint8_t maxPageNum;
     uint64_t extLmpFeatures; /* HCI_LMP_EXT_FTR_P* & HCI_LMP_FTR_* */

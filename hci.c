@@ -4341,7 +4341,9 @@ static void hciConnCfgEdrNameCbk(void *cbkData, const struct bt_addr *addr, uint
 static bool hciConnCfgCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
 {
     struct hciEvtLeMeta *leMetaEvt = (struct hciEvtLeMeta*)(evt + 1);
+    struct hciEvtReadRemoteSupportedFeaturesComplete *rrsf = (struct hciEvtReadRemoteSupportedFeaturesComplete*)(evt + 1);
     struct hciEvtLeReadRemoteFeaturesComplete *rrf = (struct hciEvtLeReadRemoteFeaturesComplete*)(leMetaEvt + 1);
+    struct hciEvtReadRemoteExtFeturesComplete *rref = (struct hciEvtReadRemoteExtFeturesComplete*)(evt + 1);
     struct hciEvtReadRemoteVersionComplete *rrv = (struct hciEvtReadRemoteVersionComplete*)(evt + 1);
     struct hciEvtCmdComplete *cmpl = (struct hciEvtCmdComplete*)(evt + 1);
     struct hciEvtCmdStatus *stat = (struct hciEvtCmdStatus*)(evt + 1);
@@ -4395,7 +4397,49 @@ static bool hciConnCfgCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evt
         c->edr.btVer = utilGetLE8(&rrv->lmpVersion);
         logd("Remote reports BT version %u (effective: %s)\n", c->edr.btVer, mBtVers[c->edr.btVer > HCI_VERSION_4_1 ? HCI_VERSION_4_1 : c->edr.btVer]);
         break;
+    case CONN_CFG_STEP_EDR + 3: /* fourth EDR step = read remote features/extended features */
+        if (evtType == HCI_EVT_Command_Status) { /* we just started the request */
+            sta = utilGetLE8(&stat->status);
+            if (!sta) /* if no error we do nothing - let the request go on */
+                goto out;
+            break; /* on error, report it and kill conn */
+        }
+        if (evtType == HCI_EVT_Read_Remote_Supported_Features_Complete) {
+            cid = utilGetLE16(&rrsf->conn);
+            sta = utilGetLE8(&rrsf->status);
+            c = hciConnFindById(cid);
+            if (!c)
+                break;
+            if (sta)
+                break;
+            step++;
+            c->edr.ftrs[0] = utilGetLE64(&rrsf->lmpFeatures);
+        } else {
+            uint8_t pgIdx, pgMax;
+            cid = utilGetLE16(&rref->conn);
+            sta = utilGetLE8(&rref->status);
+            c = hciConnFindById(cid);
+            if (!c)
+                break;
+            if (sta)
+                break;
+            pgIdx = utilGetLE8(&rref->pageNum);
+            pgMax = utilGetLE8(&rref->maxPageNum);
 
+            if (pgIdx >= MAX_FTR_PAGES) {
+                logd("Got remote features for page %u, which we do not support. Moving on.\n", pgIdx);
+                step++;
+                aux = 0;
+            } else {
+                c->edr.ftrs[pgIdx] = utilGetLE64(&rref->extLmpFeatures);
+                if (pgIdx == pgMax) {
+                    aux = 0;
+                    step++;
+                } else
+                    aux++;
+            }
+        }
+        break;
     default:
         loge("unknown connection config step step 0x%04X.05%04X\n", step, aux);
         break;
@@ -4429,6 +4473,8 @@ static void hciConnCfg(struct hciAclConn *c, uint32_t step, uint32_t aux)
     struct hciEvtWaitDescr ewd[2] = {{.cbk = hciConnCfgCbk, .persistent = false}, {.cbk = hciConnCfgCbk, .persistent = false}};
     struct hciNameGetInfo fng = {.clockOffset = 0, .PSRM = 0, .PSM = 0};
     void *userData = (void*)(uintptr_t)((step << 16) | aux);
+    struct hciReadRemoteSupportedFeatures rrsf;
+    struct hciReadRemoteExtendedFeatures rref;
     struct hciLeReadRemoteUsedFeatures rrf;
     struct hciWriteAutoFlushTimeout waft;
     struct hciReadRemoteVersionInfo rrv;
@@ -4489,8 +4535,33 @@ static void hciConnCfg(struct hciAclConn *c, uint32_t step, uint32_t aux)
         }
         return;
 
-    case CONN_CFG_STEP_EDR + 3: /* fourth EDR step = read remote features */
-        //TODO
+    case CONN_CFG_STEP_EDR + 3: /* fourth EDR step = read remote features/extended features */
+        ewd[0].evtType = HCI_EVT_Command_Status;
+        ewd[0].cbkData = userData;
+        ewd[1].cbkData = userData;
+        if (c->edr.btVer >= HCI_VERSION_1_2 && mBtVer >= HCI_VERSION_1_2) { /* can use read extended features */
+            ewd[0].extra = CMD_MAKE_OPCODE(HCI_OGF_Link_Control, HCI_CMD_Read_Remote_Extended_Features);
+            ewd[1].evtType = HCI_EVT_Read_Remote_Extended_Features_Complete;
+            utilSetLE16(&rref.conn, c->id);
+            utilSetLE8(&rref.page, aux);
+            if (!hciCmdSubmit(HCI_OGF_Link_Control, HCI_CMD_Read_Remote_Extended_Features, &rref, sizeof(rref), ewd + 0, ewd + 1, NULL)) {
+                success = false;
+                loge("Failed to send read remote extended features command\n");
+                break;
+            }
+        } else { //must use read features
+            ewd[0].extra = CMD_MAKE_OPCODE(HCI_OGF_Link_Control, HCI_CMD_Read_Remote_Supported_Features);
+            ewd[1].evtType = HCI_EVT_Read_Remote_Supported_Features_Complete;
+            utilSetLE16(&rrsf.conn, c->id);
+            if (!hciCmdSubmit(HCI_OGF_Controller_and_Baseband, HCI_CMD_Read_Remote_Supported_Features, &waft, sizeof(waft), ewd + 0, NULL)) {
+                success = false;
+                loge("Failed to send read remote supported features command\n");
+                break;
+            }
+        }
+        return;
+
+    case CONN_CFG_STEP_EDR + 4: /* fifth EDR step = done! */
         break;
     }
 
