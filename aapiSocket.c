@@ -46,6 +46,8 @@ struct appiSockListener {
 #define RFC_SOCK_STATE_LISTENING       1
 #define RFC_SOCK_STATE_AUTOACCEPTING   2 /* we allocated an instance but it is not yet openened by rfcomm */
 #define RFC_SOCK_STATE_ESTABLISHED     3 /* it is open */
+#define RFC_SOCK_STATE_AAPI_CLOSED     4 /* aapi closed, waiting for RFCOMM confirmation */
+#define RFC_SOCK_STATE_RFC_CLOSED      5 /* rfc closed, waiting for aapi confirmation */
 
 
 #define WORKER_MSG_SOCK_ADD            0
@@ -109,15 +111,9 @@ static void *aapiSockWorker(void *pipe)
         for (i = 0; i < arrNum; i++)
             fds[i].revents = 0;
 
-        for (i = 0; i < arrNum; i++)
-            logd(" in.fds[%d] = {%3d, 0x%04x, 0x%04x}\n", i, fds[i].fd, fds[i].events, fds[i].revents);
-
         do {
             ret = poll(fds, arrNum, -1);
         } while (ret == -1 && errno == EINTR);
-
-        for (i = 0; i < arrNum; i++)
-            logd("out.fds[%d] = {%3d, 0x%04x, 0x%04x}\n", i, fds[i].fd, fds[i].events, fds[i].revents);
 
         if (fds[0].revents & POLLIN) {
             uint8_t msg;
@@ -125,9 +121,6 @@ static void *aapiSockWorker(void *pipe)
 
             r_read(fds[0].fd, &msg, sizeof(msg));
             r_read(fds[0].fd, &sock, sizeof(sock));
-            logd("msg %u with p %p\n", msg, sock);
-            if(sock)
-                logd("sock %p has state %u and fd %u with sdp handle 0x%08x\n", sock, sock->rfc.state, sock->fd, sock->rfc.sdpHandle);
             switch (msg) {
             case WORKER_MSG_SOCK_ADD:
                 if (arrNum == arrSz) {
@@ -434,12 +427,15 @@ static void aapiSockFree(struct aapiSock* sock)
             sdpServiceDescriptorDel(sl->sdpHandle);
         } else if (sock->rfc.conn)
             rfcClose(sock->rfc.conn);
+        if (sock->rfc.state == RFC_SOCK_STATE_RFC_CLOSED)
+            free(sock);
+        else
+            sock->rfc.state = RFC_SOCK_STATE_AAPI_CLOSED;
         break;
     default:
         logw("Unknown socket type %u on close\n", sock->type);
         break;
     }
-    free(sock);
     pthread_mutex_unlock(&mSocksLock);
 }
 
@@ -476,8 +472,10 @@ static bool aapiSockNotifyOfConnReq(struct aapiSock *srvSock, struct aapiSock *n
             ret = sendmsg(srvSock->fd, &msg, MSG_NOSIGNAL);
         } while (ret < 0 && errno == EINTR);
 
-        if (ret == -1)
+        if (ret == -1) {
+            logd("sendmsg err: %d\n", errno);
             return false;
+        }
 
         sigBuf += ret;
         len -= ret;
@@ -504,6 +502,8 @@ static void* aapiSockRfcListenAlloc(void *userData, const struct bt_addr *peerAd
     /* we have no way to ask user to accept or not, so we accept for the user, and sort it out later */
     struct aapiSock *srvSock = (struct aapiSock*)userData;
     struct aapiSock *newSock;
+
+    logd("Connection to "ADDRFMT"[%u] alloc\n", ADDRCONV(*peerAddr), chNum);
 
     pthread_mutex_lock(&mSocksLock);
     newSock = aapiSockAllocRfc(chNum, RFC_SOCK_STATE_AUTOACCEPTING);
@@ -545,6 +545,7 @@ static void aapiSockRfcListenEvt(void *userData, void *instance, uint8_t evt, sg
 
     switch (evt) {
     case RFC_EVT_OPEN:
+        logd("Connection to "ADDRFMT"[%u] open\n", ADDRCONV(sock->peer), sock->rfc.chNum);
         if (sock->rfc.state != RFC_SOCK_STATE_AUTOACCEPTING)
             logw("Weird socket state %u on rfc open\n", sock->rfc.state);
         sock->rfc.state = RFC_SOCK_STATE_ESTABLISHED;
@@ -554,10 +555,15 @@ static void aapiSockRfcListenEvt(void *userData, void *instance, uint8_t evt, sg
         aapiSockWorkerMsgSend(WORKER_MSG_FD_CAN_TX, sock);
         break;
     case RFC_EVT_RX:
-        sgConcat(sock->rfc.bufRx, s);
-        if (sgLength(sock->rfc.bufRx) >= AAPI_RFC_MAX_BUF)
-            rfcFlow(sock->rfc.conn, true);
-        aapiSockWorkerMsgSend(WORKER_MSG_FD_CAN_RX, sock);
+        if (sock->rfc.state != RFC_SOCK_STATE_ESTABLISHED) {
+            logw("Dropping data for non-established socket\n");
+            sgFree(s);
+        } else {
+            sgConcat(sock->rfc.bufRx, s);
+            if (sgLength(sock->rfc.bufRx) >= AAPI_RFC_MAX_BUF)
+                rfcFlow(sock->rfc.conn, true);
+            aapiSockWorkerMsgSend(WORKER_MSG_FD_CAN_RX, sock);
+        }
         break;
     case RFC_EVT_MAY_SEND:
         aapiSockWorkerMsgSend(WORKER_MSG_FD_CAN_TX, sock);
@@ -565,7 +571,12 @@ static void aapiSockRfcListenEvt(void *userData, void *instance, uint8_t evt, sg
     case RFC_EVT_CLOSE:
         logd("Connection to "ADDRFMT"[%u] closed\n", ADDRCONV(sock->peer), sock->rfc.chNum);
         sock->rfc.conn = 0;
-        aapiSockWorkerMsgSend(WORKER_MSG_SOCK_DEL, sock);
+        if (sock->rfc.state == RFC_SOCK_STATE_AAPI_CLOSED)
+            free(sock);
+        else {
+            sock->rfc.state = RFC_SOCK_STATE_RFC_CLOSED;
+            aapiSockWorkerMsgSend(WORKER_MSG_SOCK_DEL, sock);
+        }
     }
     pthread_mutex_unlock(&mSocksLock);
 }
@@ -596,7 +607,7 @@ static bt_status_t aapiSockListen(btsock_type_t type, const char* serviceName, c
         goto out;
     }
 
-    //XXX: HACK, was: for (p = NULL, sl = mListeners; sl && memcmp(sl->uuid, serviceUuid, sizeof(sl->uuid)); p = sl, sl = sl->next);
+    for (p = NULL, sl = mListeners; sl && memcmp(sl->uuid, serviceUuid, sizeof(sl->uuid)); p = sl, sl = sl->next);
     if (sl) {
         logw("Sock listen when identical listener exists -> deleting old\n");
         for (sock = mSocks; sock; sock = sock->next) {
