@@ -36,11 +36,14 @@
 #define RFC_CONN_ST_PN_SENT       4 /* we sent a PN to open a channel */
 #define RFC_CONN_ST_NEED_SABM     5 /* we need to send a SABM */
 #define RFC_CONN_ST_SENT_SABM     6 /* we sent a SABM */
-#define RFC_CONN_ST_ESTABLISHED   7 /* connection is live */
-#define RFC_CONN_ST_NEED_DISC     8 /* we need to send a DISC and are waiting for a chance to send it */
-#define RFC_CONN_ST_SENT_DISC     9 /* we sent a DISC and are waiting for a confirming UA */
-#define RFC_CONN_ST_GOT_DISC      10 /* we got a DISC replied */
-#define RFC_CONN_ST_TEARDOWN      11 /* connection is being torn down */
+#define RFC_CONN_ST_NEED_MSC_R_C  7 /* we still need an MSC reply and an MSC command to be RXed */
+#define RFC_CONN_ST_NEED_MSC_C    8 /* we still need an MSC command to be RXed */
+#define RFC_CONN_ST_NEED_MSC_R    9 /* we still need an MSC reply to be RXed */
+#define RFC_CONN_ST_ESTABLISHED   10 /* connection is live */
+#define RFC_CONN_ST_NEED_DISC     11 /* we need to send a DISC and are waiting for a chance to send it */
+#define RFC_CONN_ST_SENT_DISC     12 /* we sent a DISC and are waiting for a confirming UA */
+#define RFC_CONN_ST_GOT_DISC      13 /* we got a DISC replied */
+#define RFC_CONN_ST_TEARDOWN      14 /* connection is being torn down */
 
 /* states for an rfcInst instance */
 #define RFC_INST_ST_INVALID       0 /* definitely not a valid state */
@@ -1076,8 +1079,25 @@ static bool rfcRxControl(struct rfcInst *inst, bool pfBit, sg s)
             logw("SIG.MSC frame for non-connected DLCI\n");
             return false;
         }
-        if (sType == RFC_CMD_MSC && !rfcSendMsc(conn, false, conn->stopFlow))
-            logw("Failed to reply to SIG.MSC cmd\n");
+        if (sType == RFC_CMD_MSC) {
+            if(!rfcSendMsc(conn, false, conn->stopFlow))
+                logw("Failed to reply to SIG.MSC cmd\n");
+            else {
+                if (conn->cState == RFC_CONN_ST_NEED_MSC_C) {
+                    conn->cState = RFC_CONN_ST_ESTABLISHED;
+                    rfcSchedEvtOpen(conn);
+                } else if (conn->cState == RFC_CONN_ST_NEED_MSC_R_C) {
+                    conn->cState = RFC_CONN_ST_NEED_MSC_R;
+                }
+            }
+        } else {
+             if (conn->cState == RFC_CONN_ST_NEED_MSC_R_C) {
+                conn->cState = RFC_CONN_ST_NEED_MSC_C;
+            } else if (conn->cState == RFC_CONN_ST_NEED_MSC_R) {
+                conn->cState = RFC_CONN_ST_ESTABLISHED;
+                rfcSchedEvtOpen(conn);
+            }
+        }
 
         if (!inst->dlcis[conn->dlci].numInitialCreds)
             conn->stopTx = !!(utilGetLE8(&msc.msc) & 0x02);
@@ -1146,6 +1166,9 @@ static void rfcCloseConn(struct rfcConn *c, bool tellOtherSide, bool tellOurSide
         tellOtherSide = tellOurSide = delStruct = false;
         break;
     case RFC_CONN_ST_ESTABLISHED:
+    case RFC_CONN_ST_NEED_MSC_R_C:
+    case RFC_CONN_ST_NEED_MSC_C:
+    case RFC_CONN_ST_NEED_MSC_R:
     case RFC_CONN_ST_GOT_DISC:
         useDM = false;
     case RFC_CONN_ST_SVC_OPENED:
@@ -1337,12 +1360,11 @@ static void rfcRxUa(struct rfcInst *inst, uint8_t dlci)
                 break;
             case RFC_CONN_ST_SENT_SABM:
                 rfcInstCloseTimerStop(inst);
-                c->cState = RFC_CONN_ST_ESTABLISHED;
+                c->cState = RFC_CONN_ST_NEED_MSC_R_C;
                 if (!rfcSendMsc(c, true, false)) { /* must send this */
                     loge("Failed to send MSC.C\n");
                     rfcCloseConn(c, true, true);
                 }
-                rfcSchedEvtOpen(c);
                 inst->reqInFlight = false;
                 sendNextInflight = true;
                 break;
@@ -2076,10 +2098,9 @@ static void* rfcWorkerThread(void *unused)
             } else {
                 c->evtCbkInst = wi->svcAlloc.allocCbk(wi->svcAlloc.cbkData, &c->rfcInst->addr, c->dlci >> 1);
                 if (c->evtCbkInst) {
-                    c->cState = RFC_CONN_ST_ESTABLISHED;
+                    c->cState = RFC_CONN_ST_NEED_MSC_R_C;
                     c->evtCbk = wi->svcAlloc.evtCbk;
                     c->evtCbkData = wi->svcAlloc.cbkData;
-                    rfcSchedEvtOpen(c);
                     if (!rfcSendUa(c->rfcInst, c->dlci)) {
                         loge("Failed to send ua\n");
                         rfcCloseConn(c, false, true);
