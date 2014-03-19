@@ -1141,7 +1141,6 @@ static struct persistProp* persistAddKnownDevInt(const struct bt_addr *addr, con
         nameLen -= bytesLeft;
     }
 
-
     time = persistGetRealtime();
 
     allDevs = persistPropFind(mPropsHead, PERS_NAME_KNOWN_DEVICES, PERS_TYPE_ARRAY);
