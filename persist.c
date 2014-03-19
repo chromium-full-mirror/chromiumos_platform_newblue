@@ -653,7 +653,7 @@ void persistStore(void)
 
     fd = open(PREF_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0700);
     if (fd == -1) {
-        loge("Preferences not opened\n");
+        loge("Preferences not opened: %d\n", errno);
         goto fail;
     }
 
@@ -855,7 +855,7 @@ bool persistSetDeviceName(const void *buf, uint32_t len)
     pthread_mutex_lock(&mLock);
     ret = persistSetPropInList(&mPropsHead, &mPropsTail, PERS_NAME_DEVICE_NAME, PERS_TYPE_BYTE_ARRAY, buf, len, true);
     pthread_mutex_unlock(&mLock);
-
+    persistStore();
     return ret;
 }
 
@@ -915,6 +915,7 @@ bool persistSetDiscoveryLength(uint8_t discLen)
 
 done:
     pthread_mutex_unlock(&mLock);
+    persistStore();
     return ret;
 }
 
@@ -1112,6 +1113,7 @@ void persistDelKnownDev(const struct bt_addr *addr)
     if (allDevs && dev)
         persistPropDelete(&allDevsArr->head, &allDevsArr->tail, dev);
     pthread_mutex_unlock(&mLock);
+    persistStore();
 }
 
 /*
@@ -1193,6 +1195,7 @@ void persistAddKnownDev(const struct bt_addr *addr, const void *name, const uint
     pthread_mutex_lock(&mLock);
     persistAddKnownDevInt(addr, name, nameLen, devCls);
     pthread_mutex_unlock(&mLock);
+    persistStore();
 }
 
 /*
@@ -1229,6 +1232,7 @@ bool persistAddDevKey(const struct bt_addr *addr, uint8_t keyType, const uint8_t
 
 out:
     pthread_mutex_unlock(&mLock);
+    persistStore();
     return ret;
 }
 
@@ -1268,6 +1272,7 @@ bool persistDelDevKeys(const struct bt_addr *addr)
 
 out:
     pthread_mutex_unlock(&mLock);
+    persistStore();
     return ret;
 }
 
