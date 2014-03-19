@@ -58,9 +58,9 @@ struct persistKey {
 #define PERS_NAME_KEYS                   0x00000004 /* type: PERS_TYPE_ARRAY of {PERS_NAME_KEY_TYPE, PERS_NAME_KEY_VAL} */
 #define PERS_NAME_KEY                    0x00000005 /* type: PERS_TYPE_BYTE_ARRAY, size: sizeof(struct persistKey) */
 #define PERS_NAME_DEVICE                 0x00000006 /* type: PERS_TYPE_ARRAY of {PERS_NAME_DEVICE_NAME, PERS_NAME_BT_ADDR, PERS_NAME_DEV_CLS, PERS_NAME_KEYS, PERS_NAME_LAST_SEEN} */
-#define PERS_NAME_KNOWN_DEVICES          0x00000006 /* type: PERS_TYPE_ARRAY of PERS_NAME_KNOWN_DEVICES */
-#define PERS_NAME_BT_ADDR                0x00000007 /* type: PERS_TYPE_BT_ADDR */
-#define PERS_NAME_LAST_SEEN              0x00000008 /* type: PERS_TYPE_UINT, size: 8, milliseconds since epoch */
+#define PERS_NAME_KNOWN_DEVICES          0x00000007 /* type: PERS_TYPE_ARRAY of PERS_NAME_KNOWN_DEVICES */
+#define PERS_NAME_BT_ADDR                0x00000008 /* type: PERS_TYPE_BT_ADDR */
+#define PERS_NAME_LAST_SEEN              0x00000009 /* type: PERS_TYPE_UINT, size: 8, milliseconds since epoch */
 
 /* types */
 #define PERS_TYPE_UINT                   0x00000001
@@ -80,7 +80,7 @@ static struct persistProp *mPropsTail = NULL;
 
 /* fwd decls */
 static bool persistPropListLoad(struct persistProp **headP, struct persistProp **tailP, int fd, uint64_t len);
-static bool persistSetPropInList(struct persistProp **headP, struct persistProp **tailP, uint32_t name, uint32_t type, const void *buf, uint32_t len);
+static bool persistSetPropInList(struct persistProp **headP, struct persistProp **tailP, uint32_t name, uint32_t type, const void *buf, uint32_t len, bool replaceExisting);
 
 /*
  * FUNCTION: persistGetRealtime
@@ -196,7 +196,7 @@ static void persistFree(void)
  */
 static struct persistProp* persistPropFind(struct persistProp *head, uint32_t name, uint32_t type)
 {
-    while (head && head->info.type != type && head->info.name != name)
+    while (head && (head->info.type != type || head->info.name != name))
         head = head->next;
 
     return head;
@@ -431,17 +431,17 @@ static struct persistProp* persistFindKey(struct persistProp *head, uint8_t keyT
         if (head->info.name == PERS_NAME_KEY && head->info.type == PERS_TYPE_BYTE_ARRAY && head->info.len == sizeof(struct persistKey)) {
             struct persistKey *key = (struct persistKey*)(head + 1);
             if (key->keyType == keyType)
-                return head;
+                break;
         }
 
         head = head->next;
     }
-    return NULL;
+    return head;
 }
 
 /*
  * FUNCTION: persistAddKey
- * USE:      Add a key of the given type and add it to the given list (and optinally generate it)
+ * USE:      Add a key of the given type and add it to the given list (and optionally generate it)
  * PARAMS:   headP - list head stored here
  *           tailP - lsit tail stored here
  *           keyType - key type to generate
@@ -475,7 +475,7 @@ static bool persistAddKey(struct persistProp **headP, struct persistProp **tailP
         }
     }
 
-    return persistSetPropInList(headP, tailP, PERS_NAME_KEY, PERS_TYPE_BYTE_ARRAY, &pkey, sizeof(pkey));
+    return persistSetPropInList(headP, tailP, PERS_NAME_KEY, PERS_TYPE_BYTE_ARRAY, &pkey, sizeof(pkey), false);
 }
 
 /*
@@ -651,10 +651,10 @@ void persistStore(void)
     utilSetBE32(&hdr.magic, PERSIST_MAGIC);
     utilSetBE32(&hdr.version, PERSIST_VERSION_CUR);
 
-    fd = open(PREF_PATH, O_WRONLY);
+    fd = open(PREF_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0700);
     if (fd == -1) {
         loge("Preferences not opened\n");
-        return;
+        goto fail;
     }
 
     if (!r_write(fd, &hdr, sizeof(hdr))) {
@@ -731,6 +731,8 @@ void persistLoad(void)
         goto out;
     }
 
+    fileLen = lseek(fd, 0, SEEK_END);
+    lseek(fd, 0, SEEK_SET);
     if (!r_read(fd, &hdr, sizeof(hdr))) {
         logw("Failed to read header\n");
         goto out_close;
@@ -751,8 +753,7 @@ void persistLoad(void)
         goto out_close;
     }
 
-    fileLen = lseek(fd, 0, SEEK_END);
-    lseek(fd, 0, SEEK_SET);
+    fileLen -= sizeof(struct persistFileHdr);
     if (!persistPropListLoad(&mPropsHead, &mPropsTail, fd, fileLen))
         loge("Failed to read preference file\n");
 
@@ -762,8 +763,8 @@ out_close:
 out:
     logi("Adding default preferences if needed\n");
     persistLoadRequiredProps();
-    persistStore();
     pthread_mutex_unlock(&mLock);
+    persistStore();
 }
 
 /*
@@ -803,29 +804,28 @@ uint32_t persistGetDeviceName(void* buf)
  *           type - type of the property
  *           buf - the data to save
  *           len - length of said data
+ *           replaceExisting - if not set can create keys with identical names/types
  * RETURN:   success
  * NOTES:    call with mLock held
  */
-static bool persistSetPropInList(struct persistProp **headP, struct persistProp **tailP, uint32_t name, uint32_t type, const void *buf, uint32_t len)
+static bool persistSetPropInList(struct persistProp **headP, struct persistProp **tailP, uint32_t name, uint32_t type, const void *buf, uint32_t len, bool replaceExisting)
 {
     struct persistProp *t;
     bool ret = false;
 
-    if (len > HCI_DEV_NAME_LEN) {
-        logw("Name to long. Truncating\n");
-        len = HCI_DEV_NAME_LEN;
-    }
 
-    t = persistPropFind(*headP, name, type);
-    if (t) {
-        if (t->info.len < len) {
-            persistPropDelete(headP, tailP, t);
-            t = NULL;
-        } else {
-            t->info.len = len;
-            memcpy(t + 1, buf, len);
-            ret = true;
-            goto done;
+    if (replaceExisting) {
+        t = persistPropFind(*headP, name, type);
+        if (t) {
+            if (t->info.len < len) {
+                persistPropDelete(headP, tailP, t);
+                t = NULL;
+            } else {
+                t->info.len = len;
+                memcpy(t + 1, buf, len);
+                ret = true;
+                goto done;
+            }
         }
     }
 
@@ -847,8 +847,13 @@ bool persistSetDeviceName(const void *buf, uint32_t len)
 {
     bool ret;
 
+    if (len > HCI_DEV_NAME_LEN) {
+        logw("Name to long. Truncating\n");
+        len = HCI_DEV_NAME_LEN;
+    }
+
     pthread_mutex_lock(&mLock);
-    ret = persistSetPropInList(&mPropsHead, &mPropsTail, PERS_NAME_DEVICE_NAME, PERS_TYPE_BYTE_ARRAY, buf, len);
+    ret = persistSetPropInList(&mPropsHead, &mPropsTail, PERS_NAME_DEVICE_NAME, PERS_TYPE_BYTE_ARRAY, buf, len, true);
     pthread_mutex_unlock(&mLock);
 
     return ret;
@@ -1156,13 +1161,13 @@ static struct persistProp* persistAddKnownDevInt(const struct bt_addr *addr, con
         goto out;
 
     devArr = (struct persistArrayInRam*)(dev + 1);
-    if (haveName && !persistSetPropInList(&devArr->head, &devArr->tail, PERS_NAME_DEVICE_NAME, PERS_TYPE_BYTE_ARRAY, name, nameLen))
+    if (haveName && !persistSetPropInList(&devArr->head, &devArr->tail, PERS_NAME_DEVICE_NAME, PERS_TYPE_BYTE_ARRAY, name, nameLen, true))
         logw("Failed to save device name\n");
 
-    if (devCls && !persistSetPropInList(&devArr->head, &devArr->tail, PERS_NAME_DEV_CLS, PERS_TYPE_UINT, devCls, sizeof(*devCls)))
+    if (devCls && !persistSetPropInList(&devArr->head, &devArr->tail, PERS_NAME_DEV_CLS, PERS_TYPE_UINT, devCls, sizeof(*devCls), true))
         logw("Failed to save device class\n");
 
-    if (devCls && !persistSetPropInList(&devArr->head, &devArr->tail, PERS_NAME_LAST_SEEN, PERS_TYPE_UINT, &time, sizeof(time)))
+    if (devCls && !persistSetPropInList(&devArr->head, &devArr->tail, PERS_NAME_LAST_SEEN, PERS_TYPE_UINT, &time, sizeof(time), true))
         logw("Failed to save device last seen\n");
 
     if (!persistPropFind(devArr->head, PERS_NAME_KEYS, PERS_TYPE_ARRAY))
