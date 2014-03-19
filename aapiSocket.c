@@ -48,6 +48,7 @@ struct appiSockListener {
 #define RFC_SOCK_STATE_ESTABLISHED     3 /* it is open */
 #define RFC_SOCK_STATE_AAPI_CLOSED     4 /* aapi closed, waiting for RFCOMM confirmation */
 #define RFC_SOCK_STATE_RFC_CLOSED      5 /* rfc closed, waiting for aapi confirmation */
+#define RFC_SOCK_STATE_RFC_STOP_LISTEN 6 /* someone else stopped listening for us */
 
 
 #define WORKER_MSG_SOCK_ADD            0
@@ -425,9 +426,11 @@ static void aapiSockFree(struct aapiSock* sock)
             }
             rfcStopListen(sock->rfc.chNum);
             sdpServiceDescriptorDel(sl->sdpHandle);
+        } else if (sock->rfc.state == RFC_SOCK_STATE_RFC_STOP_LISTEN) {
+            /* nothing to do here */
         } else if (sock->rfc.conn)
             rfcClose(sock->rfc.conn);
-        if (sock->rfc.state == RFC_SOCK_STATE_RFC_CLOSED)
+        if (sock->rfc.state == RFC_SOCK_STATE_RFC_CLOSED || sock->rfc.state == RFC_SOCK_STATE_RFC_STOP_LISTEN || sock->rfc.state == RFC_SOCK_STATE_LISTENING)
             free(sock);
         else
             sock->rfc.state = RFC_SOCK_STATE_AAPI_CLOSED;
@@ -618,18 +621,18 @@ static bt_status_t aapiSockListen(btsock_type_t type, const char* serviceName, c
         }
         if (sock) {
             logd("Previous identical socket found\n");
+            sock->rfc.state = RFC_SOCK_STATE_RFC_STOP_LISTEN;
+            rfcStopListen(sock->rfc.chNum);
+            sock->rfc.chNum = 0;
+            sdpServiceDescriptorDel(sl->sdpHandle);
+            sock->rfc.sdpHandle = 0;
             aapiSockWorkerMsgSend(WORKER_MSG_SOCK_DEL, sock);
         } else {
             logw("Failed to find previous listening socket. SDP likely to be leaked->auto-freeing\n");
             sdpServiceDescriptorDel(sl->sdpHandle);
-            if (p)
-                p->next = sl->next;
-            else
-                mListeners = sl->next;
-            free(sl);
         }
-    }
-    sl = malloc(sizeof(struct appiSockListener));
+    } else
+        sl = malloc(sizeof(struct appiSockListener));
     if (sl)
         memcpy(sl->uuid, serviceUuid, sizeof(sl->uuid));
     else {
