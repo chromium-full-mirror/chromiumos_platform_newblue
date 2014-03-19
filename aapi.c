@@ -89,7 +89,7 @@ static bool mStackUp = false;
 /* properties java can get/set */
 //TODO: mutex around these!
 static bt_bdaddr_t mLocalMac = {{0x11, 0x22, 0x33, 0x44, 0x55, 0x66}};
-static bt_bdname_t mLocalName = {{"NewBlue.test\0"}};
+static bt_bdname_t mLocalName;
 static uint32_t mDevCls = 0xCC0704; //wristwatch (0x20C is smartphone)
 static bt_scan_mode_t mScanMode = BT_SCAN_MODE_NONE;
 static bt_device_type_t mDevType = BT_DEVICE_DEVTYPE_DUAL;
@@ -514,6 +514,8 @@ static int aapiSetAdapterProperty(const bt_property_t *property)
             logw("Name truncated\n");
         }
         memcpy(&mLocalName, property->val, len);
+        if (!persistSetDeviceName(mLocalName.name, len))
+            logw("Failed to save BT name\n");
         if (hciSetLocalName((const char*)mLocalName.name, aapiSetPropOpDoneCbk, (void*)BT_PROPERTY_BDNAME))
             break;
         loge("Set name up failed\n");
@@ -537,6 +539,8 @@ static int aapiSetAdapterProperty(const bt_property_t *property)
             return BT_STATUS_FAIL;
         }
         memcpy(&mDiscoveryTimeout, property->val, sizeof(mDiscoveryTimeout));
+        if (!persistSetDiscoveryLength(mDiscoveryTimeout))
+            logw("Failed to save discovery timeout\n");
         return aapiGetSomeAdapterProperties(BT_STATUS_SUCCESS, &property->type);
 
     default:
@@ -608,6 +612,8 @@ static int aapiEnable(void)
     }
 
     persistLoad();
+    mLocalName.name[persistGetDeviceName(mLocalName.name)] = 0;
+    mDiscoveryTimeout = persistGetDiscoveryLength();
 
     if (!timersInit()) {
         loge("timers failed\n");
