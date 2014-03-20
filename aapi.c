@@ -373,6 +373,48 @@ static int aapiSetRemoteDevProperty(bt_bdaddr_t *remote_addr, const bt_property_
     return 0;
 }
 
+struct aapiBondedDevicesEnumData {
+    bt_bdaddr_t *devs;
+    uint32_t num;
+};
+
+
+/*
+ * FUNCTION: aapiGetallBondedDevices
+ * USE:      Call back to get all bonded devices. We determine it is bonded by
+ *           looking at the keys we have for it
+ * PARAMS:   cbkData - *(struct aapiBondedDevicesEnumData) - enumeration state
+ *           addr - is the peer address
+ *           name - device name if known
+ *           nameLen - length of the name
+ *           devCls - the device class
+ *           haveKeys - bitmaskof keys we have
+ *           wantedKey - unused, NULL
+ * RETURN:   true to keep enumerating
+ * NOTES:
+ */
+static bool aapiGetallBondedDevicesEnumF(void *cbkData, const struct bt_addr *addr, const void *name, uint32_t nameLen, uint32_t devCls, uint32_t haveKeys, const uint8_t *wantedKey)
+{
+    struct aapiBondedDevicesEnumData *data = (struct aapiBondedDevicesEnumData*)cbkData;
+    bt_bdaddr_t *devs;
+
+    //TODO: which LE key to use to tell we're bnoded?
+    if (!(haveKeys & ((1 << KEY_TYPE_MITM_PROTECTED) | (1 << KEY_TYPE_MITM_UNPROTECTED))))
+        return true;
+
+    /* since android only uses the 6-byte mac, we may get collisions between EDR and LE devices. Nothing we can do */
+    devs = realloc(data->devs, sizeof(bt_bdaddr_t[data->num + 1]));
+    if (!devs) {
+        logw("Ending bonded device enumeration early - out of memory\n");
+        return false;
+    }
+    memcpy(&devs[data->num].address, addr->addr, sizeof(devs[data->num].address));
+    data->num++;
+    data->devs = devs;
+
+    return true;
+}
+
 /*
  * FUNCTION: aapiGetSomeAdapterProperties
  * USE:      Get all or one of Bluetooth Adapter properties
@@ -383,8 +425,8 @@ static int aapiSetRemoteDevProperty(bt_bdaddr_t *remote_addr, const bt_property_
  */
 static int aapiGetSomeAdapterProperties(bt_status_t statToSend, const bt_property_type_t *typeP)
 {
+    struct aapiBondedDevicesEnumData bondedDevsEnumData = {.devs = NULL, .num = 0};
     static bt_uuid_t uuids[] = {{{0}}}; /* TODO */
-    static bt_bdaddr_t bondedDevs = {{0,}}; /* TODO */
     bt_property_t props[BT_MAX_PROPS];
     unsigned numProps = 0, numUuids = 0, numBondedDevs = 0;
 
@@ -433,9 +475,10 @@ static int aapiGetSomeAdapterProperties(bt_status_t statToSend, const bt_propert
     }
 
     if (!typeP || *typeP == BT_PROPERTY_ADAPTER_BONDED_DEVICES) {
+        persistEnumKnownDevs(aapiGetallBondedDevicesEnumF, &bondedDevsEnumData, NULL);
         props[numProps].type = BT_PROPERTY_ADAPTER_BONDED_DEVICES;
-        props[numProps].len = sizeof(bt_bdaddr_t[numBondedDevs]);
-        props[numProps].val = &bondedDevs;
+        props[numProps].len = sizeof(bt_bdaddr_t[bondedDevsEnumData.num]);
+        props[numProps].val = bondedDevsEnumData.devs;
         numProps++;
     }
 
@@ -446,8 +489,9 @@ static int aapiGetSomeAdapterProperties(bt_status_t statToSend, const bt_propert
         numProps++;
     }
 
-
     aapiAdapterProperties(statToSend, numProps, props);
+    if (bondedDevsEnumData.devs)
+        free(bondedDevsEnumData.devs);
     return BT_STATUS_SUCCESS;
 }
 
