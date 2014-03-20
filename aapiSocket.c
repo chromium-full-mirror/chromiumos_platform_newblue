@@ -538,7 +538,7 @@ static void aapiSockRfcListenEvt(void *userData, void *instance, uint8_t evt, sg
         break;
     case RFC_EVT_RX:
         if (sock->rfc.state != RFC_SOCK_STATE_ESTABLISHED) {
-            logw("Dropping data for non-established socket\n");
+            logw("Dropping data for non-established socket in state %u\n", sock->rfc.state);
             sgFree(s);
         } else {
             sgConcat(sock->rfc.bufRx, s);
