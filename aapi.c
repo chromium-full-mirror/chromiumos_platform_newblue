@@ -1139,22 +1139,20 @@ void aapiDiscoveryStateChanged(bool on)
  * FUNCTION: aapiPinReqCbk
  * USE:      Notify android about a need for PIN entry UI
  * PARAMS:   peer - remote device address (a copy is made)
- *           bd_name - remote device name (a copy is made)
- *           devCls - remote device class
  * RETURN:   NONE
  * NOTES:
  */
-void aapiPinReqCbk(const struct bt_addr *peer, const bt_bdname_t *bd_name, uint32_t devCls)
+void aapiPinReqCbk(const struct bt_addr *peer)
 {
     struct aapiWorkItem* wi = aapiWorkItemAlloc(WT_PIN_REQ, 0);
 
     if (!wi)
         return;
 
-    wi->pinReq.cod = devCls;
+    (void)persistGetKnownDev(peer, wi->pinReq.bd_name.name, NULL, &wi->pinReq.cod);
+
     memcpy(&wi->pinReq.remote_bd_addr.address, peer->addr, sizeof(wi->pinReq.remote_bd_addr.address));
-    if (bd_name)
-        memcpy(&wi->pinReq.bd_name, bd_name, sizeof(wi->pinReq.bd_name));
+
     aapiWorkItemEnqueue(wi);
 }
 
@@ -1162,26 +1160,24 @@ void aapiPinReqCbk(const struct bt_addr *peer, const bt_bdname_t *bd_name, uint3
  * FUNCTION: aapiSspReqCbk
  * USE:      Notify android about a need for SSP pairing UI
  * PARAMS:   peer - remote device address (a copy is made)
- *           bd_name - remote device name (a copy is made)
- *           devCls - remote device class
  *           pairing_variant - pairing typ requested
  *           pass_key - the passkey to display, if relevant
  * RETURN:   NONE
  * NOTES:
  */
-void aapiSspReqCbk(const struct bt_addr *peer, const bt_bdname_t *bd_name, uint32_t devCls, bt_ssp_variant_t pairing_variant, uint32_t pass_key)
+void aapiSspReqCbk(const struct bt_addr *peer, bt_ssp_variant_t pairing_variant, uint32_t pass_key)
 {
     struct aapiWorkItem* wi = aapiWorkItemAlloc(WT_SSP_REQ, 0);
 
     if (!wi)
         return;
 
-    wi->sspReq.cod = devCls;
+    (void)persistGetKnownDev(peer, wi->sspReq.bd_name.name, NULL, &wi->sspReq.cod);
+
     wi->sspReq.pairing_variant = pairing_variant;
     wi->sspReq.pass_key = pass_key;
     memcpy(&wi->sspReq.remote_bd_addr.address, peer->addr, sizeof(wi->sspReq.remote_bd_addr.address));
-    if (bd_name)
-        memcpy(&wi->sspReq.bd_name, bd_name, sizeof(wi->sspReq.bd_name));
+
     aapiWorkItemEnqueue(wi);
 }
 

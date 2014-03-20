@@ -2905,7 +2905,7 @@ static bool hciSecUserEvtCbk(const struct hciEvtHdr *evtHdr, void *cbkData, uniq
 
         memcpy(addr.addr, evt->mac, sizeof(addr.addr));
         aapiBondStateChangedCbk(&addr, AAPI_BOND_STATE_INPROGRESS);
-        aapiPinReqCbk(&addr, NULL /* TODO: name */, 0 /* TODO :devCls*/);
+        aapiPinReqCbk(&addr);
     } else if (evtType == HCI_EVT_Link_Key_Request) {
         struct hciEvtPinCodeReq *evt = (struct hciEvtPinCodeReq*)(evtHdr + 1);
 
@@ -2935,13 +2935,13 @@ static bool hciSecUserEvtCbk(const struct hciEvtHdr *evtHdr, void *cbkData, uniq
         struct hciEvtUserConfRequest *evt = (struct hciEvtUserConfRequest*)(evtHdr + 1);
 
         memcpy(addr.addr, evt->mac, sizeof(addr.addr));
-        aapiSspReqCbk(&addr, NULL /* TODO: name */, 0 /* TODO :devCls*/, BT_SSP_VARIANT_PASSKEY_CONFIRMATION, utilGetLE32(&evt->numericValue));
+        aapiSspReqCbk(&addr, BT_SSP_VARIANT_PASSKEY_CONFIRMATION, utilGetLE32(&evt->numericValue));
 
     } else if (evtType == HCI_EVT_User_Passkey_Request) {
         struct hciEvtUserPasskeyRequest *evt = (struct hciEvtUserPasskeyRequest*)(evtHdr + 1);
 
         memcpy(addr.addr, evt->mac, sizeof(addr.addr));
-        aapiSspReqCbk(&addr, NULL /* TODO: name */, 0 /* TODO :devCls*/, BT_SSP_VARIANT_PASSKEY_ENTRY, 0);
+        aapiSspReqCbk(&addr, BT_SSP_VARIANT_PASSKEY_ENTRY, 0);
     } else if (evtType == HCI_EVT_Remote_OOB_Data_Request) {
         struct hciEvtRemoteOobRequest *evt = (struct hciEvtRemoteOobRequest*)(evtHdr + 1);
 
@@ -2959,7 +2959,7 @@ static bool hciSecUserEvtCbk(const struct hciEvtHdr *evtHdr, void *cbkData, uniq
         struct hciEvtUserPasskeyNotif *evt = (struct hciEvtUserPasskeyNotif*)(evtHdr + 1);
 
         memcpy(addr.addr, evt->mac, sizeof(addr.addr));
-        aapiSspReqCbk(&addr, NULL /* TODO: name */, 0 /* TODO :devCls*/, BT_SSP_VARIANT_PASSKEY_NOTIFICATION, utilGetLE32(&evt->passkey));
+        aapiSspReqCbk(&addr, BT_SSP_VARIANT_PASSKEY_NOTIFICATION, utilGetLE32(&evt->passkey));
 
     } else if (evtType == HCI_EVT_Keypress_Notification) {
         struct hciEvtKeypressNotification *evt = (struct hciEvtKeypressNotification*)(evtHdr + 1);
