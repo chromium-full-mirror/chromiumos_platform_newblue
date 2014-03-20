@@ -136,6 +136,7 @@ void sendQueueFree(struct sendQ *q)
         sgFree(p->s);
         free(p);
     }
+    pthread_mutex_unlock(&q->lock);
     pthread_mutex_destroy(&q->lock);
     free(q);
 }
