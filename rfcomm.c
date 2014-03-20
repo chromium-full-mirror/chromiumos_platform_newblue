@@ -686,6 +686,7 @@ static bool rfcSendUa(struct rfcInst *inst, uint8_t dlci)
 static bool rfcRxData(struct rfcInst *inst, uint8_t dlci, bool pfBit, sg s)
 {
     struct rfcConn *c = rfcFindConnByDlci(inst, dlci);
+    bool gotCredsAfterStarvation = false;
     bool ret = false;
 
     if (!c) {
@@ -700,6 +701,7 @@ static bool rfcRxData(struct rfcInst *inst, uint8_t dlci, bool pfBit, sg s)
         if (!sgSerializeCutFront(s, &creds, sizeof(uint8_t)))
             logw("Got too short a packet for credits!\n");
         creds = utilGetLE8(&creds);
+        gotCredsAfterStarvation = creds && !c->numTxCredits;
         c->numTxCredits += creds;
     } else if (pfBit)
         logw("P/F UIH RXed on non-credit-based DLCI\n");
@@ -716,8 +718,9 @@ static bool rfcRxData(struct rfcInst *inst, uint8_t dlci, bool pfBit, sg s)
         ret = true;
     }
 
-    if (c->numRxCredits >= RFC_THRESH_HELD_CREDITS)
-        rfcTryTx(c); /* among other things sends back credits */
+    /* if we owe a lot of credits or just got some after having none - maybe reply? */
+    if (c->numRxCredits >= RFC_THRESH_HELD_CREDITS || gotCredsAfterStarvation)
+        rfcTryTx(c);
 
     return ret;
 }
@@ -1738,7 +1741,6 @@ static void rfcInstFree(struct rfcInst *inst)
 int32_t rfcTx(rfc_conn_t connHandle, sg s)
 {
     struct rfcConn* conn;
-    bool gotMoreData = false;
     int32_t ret;
 
     conn = rfcFindConnByHandle(connHandle);
@@ -1750,7 +1752,6 @@ int32_t rfcTx(rfc_conn_t connHandle, sg s)
 
     if (sgLength(s) + sgLength(conn->txQueue) <= conn->maxQueueSz) { /* queue all */
         sgConcat(conn->txQueue, s);
-        gotMoreData = true;
         ret = RFC_TX_RET_ENTIRE_SENT;
     } else if (sgLength(conn->txQueue) < conn->maxQueueSz) { /* queue as much as we can */
 
@@ -1761,12 +1762,11 @@ int32_t rfcTx(rfc_conn_t connHandle, sg s)
             sgSwap(t, s); /* now t has the front, and s the remainder */
             ret = sgLength(t);
             sgConcat(conn->txQueue, t);
-            gotMoreData = true;
         }
     } else
         ret = RFC_TX_RET_STOP_SENDING;
 
-    if (gotMoreData)
+    if (sgLength(conn->txQueue))
         rfcTryTx(conn);
 
     pthread_mutex_unlock(&conn->rfcInst->lock);
@@ -1980,6 +1980,7 @@ static void rfcTryTx(struct rfcConn* c)
     uint8_t attachCreds = 0;
     sg s;
 
+
     /* if we cannot send - do not bother checking anything else */
     if (!sendQueueCanTx(mSendQ, inst->conn))
         return;
@@ -2023,9 +2024,14 @@ static void rfcTryTx(struct rfcConn* c)
     if (rfcWrapUIH(inst, c->dlci, c->numRxCredits, s)) {
         rfcShow("TX.rd", s);
         if (sendQueueTx(mSendQ, inst->conn, s)) {
-            if (sendSz)
-                c->numTxCredits--;
             c->numRxCredits = 0;
+            if (sendSz) {
+                c->numTxCredits--;
+                if (!rfcSchedEvt(c, RFC_EVT_MAY_SEND, NULL)) {
+                    loge("Failed to tell rfc client it may send more\n");
+                    rfcCloseConn(c, true, true);
+                }
+            }
             return;
         } else
             rfcUnwrapUIH(c->numRxCredits, s);
