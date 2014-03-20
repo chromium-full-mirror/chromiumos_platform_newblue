@@ -171,7 +171,7 @@ static void mt_ctrl_c_handler(int sig)
 
     for(t = objs; t; t = t->next) {
         if (t->oType == MT_TYPE_MUTEX) {
-            logd("**["FMT64"u] atexit mutex %p\n", CNV64(mt_get_time()), t->obj);
+            logd("**["FMT64"u] atexit mutex %p (locked=%c)\n", CNV64(mt_get_time()), t->obj, t->lockedAt ? 'Y' : 'N');
             mt_log(&t->lastLocked, "last locked here", t->obj);
             mt_log(&t->firstSeen, "first seen here", t->obj);
         }
@@ -183,6 +183,11 @@ static void mt_ctrl_c_handler(int sig)
 static void mt_init_guts(void)
 {
     signal(SIGINT, mt_ctrl_c_handler);
+}
+
+void mt_do_analize_death(void )
+{
+    mt_ctrl_c_handler(SIGINT);
 }
 
 static void mt_init(void)

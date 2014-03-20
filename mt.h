@@ -59,10 +59,13 @@ bool r_read(int fd, void *data, size_t count); /* true if all writen, else false
 # define pthread_setname_np(t,n)        mt_pthread_setname_np(__FILE__, __LINE__, #t, t, n)
 # define pthread_cond_wait(c,m)         mt_pthread_cond_wait(__FILE__, __LINE__, #m, c, m)
 # define pthread_cond_timeout_np(c,m,t) mt_pthread_cond_timeout_np(__FILE__, __LINE__, #m, c, m, t)
+#define mt_analize_death mt_do_analize_death
+#else
+#define mt_analize_death
 #endif
 
 
-
+void mt_do_analize_death();
 int mt_pthread_mutex_lock(const char* file, int line, const char* name, pthread_mutex_t *m);
 int mt_pthread_mutex_trylock(const char* file, int line, const char* name, pthread_mutex_t *m);
 int mt_pthread_mutex_unlock(const char* file, int line, const char* name, pthread_mutex_t *m);
