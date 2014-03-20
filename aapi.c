@@ -391,7 +391,7 @@ static int aapiSetRemoteDevProperty(bt_bdaddr_t *remote_addr, const bt_property_
  * RETURN:   true to keep enumerating
  * NOTES:
  */
-static bool aapiGetallBondedDevicesEnumF(void *cbkData, const struct bt_addr *addr, const void *name, uint32_t nameLen, uint32_t devCls, uint32_t haveKeys, const uint8_t *wantedKey)
+static bool aapiGetAllBondedDevicesEnumF(void *cbkData, const struct bt_addr *addr, const void *name, uint32_t nameLen, uint32_t devCls, uint32_t haveKeys, const uint8_t *wantedKey)
 {
     struct aapiBondedDevicesEnumData *data = (struct aapiBondedDevicesEnumData*)cbkData;
     bt_bdaddr_t *devs;
@@ -429,6 +429,7 @@ static int aapiGetSomeAdapterProperties(bt_status_t statToSend, const bt_propert
     unsigned numProps = 0, numUuids = 0, numBondedDevs = 0;
 
     if (!typeP || *typeP == BT_PROPERTY_BDNAME) {
+        mLocalName.name[persistGetDeviceName(mLocalName.name)] = 0;
         props[numProps].type = BT_PROPERTY_BDNAME;
         props[numProps].len = strnlen((const char*)mLocalName.name, sizeof(mLocalName.name));
         props[numProps].val = &mLocalName;
@@ -473,7 +474,7 @@ static int aapiGetSomeAdapterProperties(bt_status_t statToSend, const bt_propert
     }
 
     if (!typeP || *typeP == BT_PROPERTY_ADAPTER_BONDED_DEVICES) {
-        persistEnumKnownDevs(aapiGetallBondedDevicesEnumF, &bondedDevsEnumData, NULL);
+        persistEnumKnownDevs(aapiGetAllBondedDevicesEnumF, &bondedDevsEnumData, NULL);
         props[numProps].type = BT_PROPERTY_ADAPTER_BONDED_DEVICES;
         props[numProps].len = sizeof(bt_bdaddr_t[bondedDevsEnumData.num]);
         props[numProps].val = bondedDevsEnumData.devs;
@@ -481,6 +482,7 @@ static int aapiGetSomeAdapterProperties(bt_status_t statToSend, const bt_propert
     }
 
     if (!typeP || *typeP == BT_PROPERTY_ADAPTER_DISCOVERY_TIMEOUT) {
+        mDiscoveryTimeout = persistGetDiscoveryLength();
         props[numProps].type = BT_PROPERTY_ADAPTER_DISCOVERY_TIMEOUT;
         props[numProps].len = sizeof(mDiscoveryTimeout);
         props[numProps].val = &mDiscoveryTimeout;
@@ -1187,11 +1189,14 @@ void aapiDiscoveryStateChanged(bool on)
 void aapiPinReqCbk(const struct bt_addr *peer)
 {
     struct aapiWorkItem* wi = aapiWorkItemAlloc(WT_PIN_REQ, 0);
+    bool ret;
 
     if (!wi)
         return;
 
-    (void)persistGetKnownDev(peer, wi->pinReq.bd_name.name, NULL, &wi->pinReq.cod);
+    ret = persistGetKnownDev(peer, wi->pinReq.bd_name.name, NULL, &wi->pinReq.cod);
+    if (!ret)
+        logw("SSP-requesting device not know\n");
 
     memcpy(&wi->pinReq.remote_bd_addr.address, peer->addr, sizeof(wi->pinReq.remote_bd_addr.address));
 
@@ -1210,11 +1215,14 @@ void aapiPinReqCbk(const struct bt_addr *peer)
 void aapiSspReqCbk(const struct bt_addr *peer, bt_ssp_variant_t pairing_variant, uint32_t pass_key)
 {
     struct aapiWorkItem* wi = aapiWorkItemAlloc(WT_SSP_REQ, 0);
+    bool ret;
 
     if (!wi)
         return;
 
-    (void)persistGetKnownDev(peer, wi->sspReq.bd_name.name, NULL, &wi->sspReq.cod);
+    ret = persistGetKnownDev(peer, wi->sspReq.bd_name.name, NULL, &wi->sspReq.cod);
+    if (!ret)
+        logw("SSP-requesting device not know\n");
 
     wi->sspReq.pairing_variant = pairing_variant;
     wi->sspReq.pass_key = pass_key;
