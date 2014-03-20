@@ -1255,6 +1255,7 @@ static void* hciCmdSendWorker(void *unused)
         ts.tv_sec += BT_COMMAND_TIMEOUT;
         if (r_sem_timedwait(&mCmdSendSem, &ts)) {
             loge("CHIP DEAD!\n");
+            mt_analize_death();
             abort();
         }
         ret = workQueueGet(mCmdsSendWork, (void**)&w);
