@@ -234,6 +234,8 @@ struct hciAclConn {
     bool               isMaster;
     bool               encrypted;
     uint8_t            state; /* CONN_STATE_* */
+    bool               pinPending;
+    bool               sspPending;
     sg                 rxBacklog; /* data we RXed during configuration stage */
 
     union {
@@ -2893,8 +2895,9 @@ static void hciSecHandleNewLinkKey(const struct bt_addr *addr, const uint8_t *ke
  */
 static bool hciSecUserEvtCbk(const struct hciEvtHdr *evtHdr, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
 {
-    uint8_t evtType;
     struct bt_addr addr = {.type = BT_ADDR_TYPE_EDR};
+    struct hciAclConn* conn;
+    uint8_t evtType;
 
     if (!evtHdr)
         return false;
@@ -2904,8 +2907,21 @@ static bool hciSecUserEvtCbk(const struct hciEvtHdr *evtHdr, void *cbkData, uniq
         struct hciEvtPinCodeReq *evt = (struct hciEvtPinCodeReq*)(evtHdr + 1);
 
         memcpy(addr.addr, evt->mac, sizeof(addr.addr));
-        aapiBondStateChangedCbk(&addr, AAPI_BOND_STATE_INPROGRESS);
-        aapiPinReqCbk(&addr);
+
+        pthread_mutex_lock(&mConnsLock);
+        conn = hciConnFindByAddr(&addr);
+        if (conn && conn->state == CONN_STATE_CFG) {
+            /*
+             * We do not call java to give congfig time to finish. See comment for SSP under HCI_EVT_IO_Capability_Request
+             */
+            conn->pinPending = true;
+        } else {
+            if (!conn)
+                logw("Connection not found for pending PIN req\n");
+            aapiBondStateChangedCbk(&addr, AAPI_BOND_STATE_INPROGRESS);
+            aapiPinReqCbk(&addr);
+        }
+        pthread_mutex_unlock(&mConnsLock);
     } else if (evtType == HCI_EVT_Link_Key_Request) {
         struct hciEvtPinCodeReq *evt = (struct hciEvtPinCodeReq*)(evtHdr + 1);
 
@@ -2922,9 +2938,22 @@ static bool hciSecUserEvtCbk(const struct hciEvtHdr *evtHdr, void *cbkData, uniq
         struct hciEvtIoCapRequest *evt = (struct hciEvtIoCapRequest*)(evtHdr + 1);
 
         memcpy(addr.addr, evt->mac, sizeof(addr.addr));
-        aapiBondStateChangedCbk(&addr, AAPI_BOND_STATE_INPROGRESS);
-        /* we just reply inline here, though we really should do something cleverer */
-        hciSecUserCbkSspIoCapabilityReq(&addr, HCI_DISP_CAP_DISP_YES_NO, false, HCI_AUTH_REQMENT_MITM_PROT_GENERAL_BOND);
+
+        pthread_mutex_lock(&mConnsLock);
+        conn = hciConnFindByAddr(&addr);
+        if (conn && conn->state == CONN_STATE_CFG) {
+            /*
+             * Not replying immediately here holds SSP up a bit, allowing connection configuration to complete. This
+             * means that we'll know the device name by the time we tell java about this SSP request. 
+             */
+            conn->sspPending = true;
+        } else {
+            if (!conn)
+                logw("Connection not found for pending SSP req\n");
+            hciSecUserCbkSspIoCapabilityReq(&addr, HCI_DISP_CAP_DISP_YES_NO, false, HCI_AUTH_REQMENT_MITM_PROT_GENERAL_BOND);
+        }
+        pthread_mutex_unlock(&mConnsLock);
+
     } else if (evtType == HCI_EVT_IO_Capability_Response) {
         struct hciEvtIoCapResponse *evt = (struct hciEvtIoCapResponse*)(evtHdr + 1);
 
@@ -2935,12 +2964,14 @@ static bool hciSecUserEvtCbk(const struct hciEvtHdr *evtHdr, void *cbkData, uniq
         struct hciEvtUserConfRequest *evt = (struct hciEvtUserConfRequest*)(evtHdr + 1);
 
         memcpy(addr.addr, evt->mac, sizeof(addr.addr));
+        aapiBondStateChangedCbk(&addr, AAPI_BOND_STATE_INPROGRESS);
         aapiSspReqCbk(&addr, BT_SSP_VARIANT_PASSKEY_CONFIRMATION, utilGetLE32(&evt->numericValue));
 
     } else if (evtType == HCI_EVT_User_Passkey_Request) {
         struct hciEvtUserPasskeyRequest *evt = (struct hciEvtUserPasskeyRequest*)(evtHdr + 1);
 
         memcpy(addr.addr, evt->mac, sizeof(addr.addr));
+        aapiBondStateChangedCbk(&addr, AAPI_BOND_STATE_INPROGRESS);
         aapiSspReqCbk(&addr, BT_SSP_VARIANT_PASSKEY_ENTRY, 0);
     } else if (evtType == HCI_EVT_Remote_OOB_Data_Request) {
         struct hciEvtRemoteOobRequest *evt = (struct hciEvtRemoteOobRequest*)(evtHdr + 1);
@@ -2959,6 +2990,7 @@ static bool hciSecUserEvtCbk(const struct hciEvtHdr *evtHdr, void *cbkData, uniq
         struct hciEvtUserPasskeyNotif *evt = (struct hciEvtUserPasskeyNotif*)(evtHdr + 1);
 
         memcpy(addr.addr, evt->mac, sizeof(addr.addr));
+        aapiBondStateChangedCbk(&addr, AAPI_BOND_STATE_INPROGRESS);
         aapiSspReqCbk(&addr, BT_SSP_VARIANT_PASSKEY_NOTIFICATION, utilGetLE32(&evt->passkey));
 
     } else if (evtType == HCI_EVT_Keypress_Notification) {
@@ -4638,6 +4670,18 @@ static void hciConnCfg(struct hciAclConn *c, uint32_t step, uint32_t aux)
                 }
             }
 
+            /* if there is a backlogged PIN or SSP request, fulfill them */
+            if (c->pinPending) {
+                logd("Fulfilling pending PIN request\n");
+                aapiBondStateChangedCbk(&c->addr, AAPI_BOND_STATE_INPROGRESS);
+                aapiPinReqCbk(&c->addr);
+                c->pinPending = false;
+            }
+            if (c->sspPending) {
+                logd("Fulfilling pending SSP request\n");
+                hciSecUserCbkSspIoCapabilityReq(&c->addr, HCI_DISP_CAP_DISP_YES_NO, false, HCI_AUTH_REQMENT_MITM_PROT_GENERAL_BOND);
+                c->sspPending = false;
+            }
             return;
 
         } else
