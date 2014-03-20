@@ -100,6 +100,13 @@ static bt_device_type_t mDevType = BT_DEVICE_DEVTYPE_DUAL;
 static uint32_t mDiscoveryTimeout = 60 ;/* in seconds */
 
 
+
+/* fwd decls */
+static void aapiSendDeviceInfo(const struct bt_addr *peer);
+
+
+
+
 /*
  * FUNCTION: aapiIsStackUp
  * USE:      Find out if stack is up
@@ -655,7 +662,6 @@ static int aapiEnable(void)
         goto fail_up;
     }
 
-    persistLoad();
     mLocalName.name[persistGetDeviceName(mLocalName.name)] = 0;
     mDiscoveryTimeout = persistGetDiscoveryLength();
 
@@ -758,9 +764,9 @@ static int aapiDisable(void)
         hciDown();
         timersDeinit();
     }
+    persistStore();
     aapiSocketNotifStackState(false);
     aapiGattNotifStackState(false);
-    persistStore();
     pthread_mutex_unlock(&mStateLock);
     return 0;
 }
@@ -857,6 +863,7 @@ static void* btWorker(void *callbacks)
             logw("unknown work item type %u\n", wi->type);
             break;
         }
+        logd("callback type %u done\n", wi->type);
         free(wi);
     }
 
@@ -890,6 +897,7 @@ static int aapiInit(bt_callbacks_t* callbacks)
 
     memcpy(&cbks, callbacks, sizeof(cbks));
 
+    persistLoad();
     mWorkQ = workQueueAlloc(AAPI_NUM_OUTSTANDING_WORK_ITEMS);
     if (!mWorkQ)
         return BT_STATUS_NOMEM;
@@ -1082,7 +1090,7 @@ static struct aapiWorkItem* aapiWorkItemAllocWithProperties(uint8_t type, int nu
     for (i = 0; i < num_properties; i++)
         len += sizeof(bt_property_t) + properties[i].len;
 
-    wi = aapiWorkItemAlloc(WT_ADAPTER_PROPS, len);
+    wi = aapiWorkItemAlloc(type, len);
     if (!wi)
         return NULL;
 
@@ -1200,6 +1208,7 @@ void aapiPinReqCbk(const struct bt_addr *peer)
 
     memcpy(&wi->pinReq.remote_bd_addr.address, peer->addr, sizeof(wi->pinReq.remote_bd_addr.address));
 
+    aapiSendDeviceInfo(peer);
     aapiWorkItemEnqueue(wi);
 }
 
@@ -1228,6 +1237,7 @@ void aapiSspReqCbk(const struct bt_addr *peer, bt_ssp_variant_t pairing_variant,
     wi->sspReq.pass_key = pass_key;
     memcpy(&wi->sspReq.remote_bd_addr.address, peer->addr, sizeof(wi->sspReq.remote_bd_addr.address));
 
+    aapiSendDeviceInfo(peer);
     aapiWorkItemEnqueue(wi);
 }
 
@@ -1262,6 +1272,7 @@ void aapiBondStateChangedCbk(const struct bt_addr *peer, uint8_t state)
     }
 
     memcpy(&wi->stateCbk.remote_bd_addr.address, peer->addr, sizeof(wi->stateCbk.remote_bd_addr.address));
+    aapiSendDeviceInfo(peer);
     aapiWorkItemEnqueue(wi);
 }
 
@@ -1284,6 +1295,7 @@ void aapiAclStateChanged(bt_status_t status, const struct bt_addr *peer, bool up
     wi->stateCbk.status = status;
     wi->stateCbk.state = up ? BT_ACL_STATE_CONNECTED : BT_ACL_STATE_DISCONNECTED;
     memcpy(&wi->stateCbk.remote_bd_addr.address, peer->addr, sizeof(wi->stateCbk.remote_bd_addr.address));
+    aapiSendDeviceInfo(peer);
     aapiWorkItemEnqueue(wi);
 }
 
@@ -1328,4 +1340,63 @@ void aapiLeTestModeEventCbk(bt_status_t status, uint16_t num_packets)
     wi->leTestEvt.num_packets = num_packets;
     aapiWorkItemEnqueue(wi);
 }
+
+/*
+ * FUNCTION: aapiSendDeviceInfo
+ * USE:      Notify android about a device we know about
+ * PARAMS:   peer - the address of the device
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void aapiSendDeviceInfo(const struct bt_addr *peer)
+{
+    bt_property_t props[BT_MAX_PROPS];
+    bt_device_type_t devType;
+    unsigned numProps = 0;
+    bt_bdname_t name;
+    uint32_t nameLen;
+    bt_bdaddr_t addr;
+    uint32_t devCls;
+
+    if (!persistGetKnownDev(peer, name.name, &nameLen, &devCls)) {
+        logi("Device unknown to aapiSendDeviceInfo()\n");
+        return;
+    }
+
+    memcpy(addr.address, peer->addr, sizeof(addr.address));
+    props[numProps].type = BT_PROPERTY_BDADDR;
+    props[numProps].len = sizeof(mLocalMac);
+    props[numProps].val = &mLocalMac;
+    numProps++;
+
+    props[numProps].type = BT_PROPERTY_TYPE_OF_DEVICE;
+    props[numProps].len = sizeof(mDevType);
+    props[numProps].val = &mDevType;
+    numProps++;
+
+    //TODO: collapse LE & EDR devices into one if really the same device
+    devType = BT_ADDR_IS_EDR(*peer) ? BT_DEVICE_DEVTYPE_BREDR : BT_DEVICE_DEVTYPE_BLE;
+
+    if (nameLen) {
+        name.name[nameLen] = 0;
+        props[numProps].type = BT_PROPERTY_BDNAME;
+        props[numProps].len = nameLen;
+        props[numProps].val = &name;
+        numProps++;
+    }
+
+    if (devCls) {
+        props[numProps].type = BT_PROPERTY_CLASS_OF_DEVICE;
+        props[numProps].len = sizeof(mDevCls);
+        props[numProps].val = &mDevCls;
+        numProps++;
+    }
+
+    logd("%u props for device sent\n", numProps);
+    aapiRemoteDevProperties(BT_STATUS_SUCCESS, &addr, numProps, props);
+}
+
+
+
+
 
