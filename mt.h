@@ -61,7 +61,7 @@ bool r_read(int fd, void *data, size_t count); /* true if all writen, else false
 # define pthread_cond_timeout_np(c,m,t) mt_pthread_cond_timeout_np(__FILE__, __LINE__, #m, c, m, t)
 #define mt_analize_death mt_do_analize_death
 #else
-#define mt_analize_death
+#define mt_analize_death()
 #endif
 
 
