@@ -76,6 +76,10 @@ struct aapiWorkItem {
 
 
 
+struct aapiBondedDevicesEnumData {
+    bt_bdaddr_t *devs;
+    uint32_t num;
+};
 
 
 
@@ -372,12 +376,6 @@ static int aapiSetRemoteDevProperty(bt_bdaddr_t *remote_addr, const bt_property_
     //TODO
     return 0;
 }
-
-struct aapiBondedDevicesEnumData {
-    bt_bdaddr_t *devs;
-    uint32_t num;
-};
-
 
 /*
  * FUNCTION: aapiGetallBondedDevices
