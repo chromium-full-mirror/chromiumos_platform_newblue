@@ -563,6 +563,10 @@ bool vendorUp(const uint8_t *addr, vendorCbkChipUp chipUpCbk, vendorCbkRx dataRx
     if (!mCbkResult)
         goto out_need_thread_shutdown;
 
+
+return true;
+
+
     logd("Setting LPM mode\n");
     tv8 = BT_VND_LPM_ENABLE;
     ret = mVendorIface->op(BT_VND_OP_LPM_SET_MODE, (void*)&tv8);
