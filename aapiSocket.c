@@ -279,27 +279,6 @@ static void aapiSockDoInit(void)
 }
 
 /*
- * FUNCTION: aapiSockDoDeinit
- * USE:      Deinit aapi.sock
- * PARAMS:   NONE
- * RETURN:   NONE
- * NOTES:
- */
-static void aapiSockDoDeinit(void)
-{
-    while (mListeners) {
-        struct appiSockListener *sl = mListeners;
-        mListeners = mListeners->next;
-        free(sl);
-    }
-
-    aapiSockWorkerMsgSend(WORKER_MSG_QUIT, NULL);
-    pthread_join(mWorker, NULL);
-    close(mWorkerPipe);
-    mSocksUp = false;
-}
-
-/*
  * FUNCTION: aapiSockWorkerMsgSend
  * USE:      Wake up aapi.sock worker with a message
  * PARAMS:   msg - the message
@@ -569,6 +548,7 @@ static void aapiSockRfcListenEvt(void *userData, void *instance, uint8_t evt, sg
         }
         break;
     case RFC_EVT_MAY_SEND:
+        logd("TX unthrottled in rfc\n");
         aapiSockWorkerMsgSend(WORKER_MSG_FD_CAN_TX, sock);
         break;
     case RFC_EVT_CLOSE:
@@ -874,12 +854,22 @@ void aapiSocketNotifStackState(bool up)
     if (up && !mSocksUp && mSocksWantUp) {
         logd("socks coming up now\n");
         aapiSockDoInit();
+        pthread_mutex_unlock(&mSocksLock);
     } else if (!up) {
-        if(mSocksUp)
-            aapiSockDoDeinit();
         mSocksWantUp = false;
+        while (mListeners) {
+            struct appiSockListener *sl = mListeners;
+            mListeners = mListeners->next;
+            free(sl);
+        }
+        pthread_mutex_unlock(&mSocksLock);
+        if(mSocksUp) {
+            aapiSockWorkerMsgSend(WORKER_MSG_QUIT, NULL);
+            pthread_join(mWorker, NULL);
+            close(mWorkerPipe);
+        }
+        mSocksUp = false;
     }
-    pthread_mutex_unlock(&mSocksLock);
 }
 
 
