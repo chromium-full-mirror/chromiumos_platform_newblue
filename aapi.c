@@ -1,4 +1,3 @@
-#include <pthread.h>
 #include <stdlib.h>
 #include "aapiSocket.h"
 #include "aapiGatt.h"
