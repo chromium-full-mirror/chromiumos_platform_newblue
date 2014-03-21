@@ -101,20 +101,19 @@ static void vendorChipWake(bool keepAwake)
         return;
 
     pthread_mutex_lock(&mStateLock);
-    if (mChipAwake)
-        goto out;
-
     if (mSleepTimer)
         mSleepTimer = 0;
 
-    /* waking chip up now */
-    logd("LPM: waking up\n");
-    mVendorIface->op(BT_VND_OP_LPM_WAKE_SET_STATE, (void*)&state);
-    mChipAwake = true;
+    if (!mChipAwake) {
+        /* waking chip up now */
+        logd("LPM: waking up\n");
+        mVendorIface->op(BT_VND_OP_LPM_WAKE_SET_STATE, (void*)&state);
+        mChipAwake = true;
+    }
 
     if (mKeepAwake && keepAwake)
         loge("double-wake in vendor lib!\n");
-    if (keepAwake || mKeepAwake){
+    if (!keepAwake && !mKeepAwake){
         mSleepTimer = uniqGetNext();
         timerSet(mLpmTimeout, vendorSleepTimeout, mSleepTimer);
         mKeepAwake = true;
