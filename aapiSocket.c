@@ -167,7 +167,9 @@ static void *aapiSockWorker(void *pipe)
                     memcpy(fds + i, fds + arrNum - 1, sizeof(struct pollfd));
                     socks[i] = socks[arrNum - 1];
                     arrNum--;
+                    pthread_mutex_lock(&mSocksLock);
                     aapiSockFree(sock);
+                    pthread_mutex_unlock(&mSocksLock);
                 }
                 break;
             case WORKER_MSG_QUIT:
@@ -244,9 +246,10 @@ static void *aapiSockWorker(void *pipe)
             }
         }
     }
-
+    pthread_mutex_lock(&mSocksLock);
     for (i = 1; i < arrNum; i++)
         aapiSockFree(socks[i]);
+    pthread_mutex_unlock(&mSocksLock);
     close((int)pipe);    
 
     free(fds);
@@ -370,11 +373,10 @@ static struct aapiSock* aapiSockAllocRfc(uint8_t chNum, uint8_t state)
  * USE:      Free a socket struct
  * PARAMS:   sock - the socket struct
  * RETURN:   NONE
- * NOTES:
+ * NOTES:    call with mSocksLock held
  */
 static void aapiSockFree(struct aapiSock* sock)
 {
-    pthread_mutex_lock(&mSocksLock);
     shutdown(sock->fd, SHUT_RDWR);
     close(sock->fd);
 
@@ -418,7 +420,6 @@ static void aapiSockFree(struct aapiSock* sock)
         logw("Unknown socket type %u on close\n", sock->type);
         break;
     }
-    pthread_mutex_unlock(&mSocksLock);
 }
 
 static bool aapiSockNotifyOfConnReq(struct aapiSock *srvSock, struct aapiSock *newSock)
