@@ -252,7 +252,7 @@ static void rfcPerhapsTx(struct rfcConn* c);
 
 static void rfcShow(const char *lbl, sg s)
 {
-#ifdef RFC_DEBUG
+    #ifdef RFC_DEBUG
         char line[128] = "rfcomm *D* <ZLP>";
         uint32_t i;
         uint8_t v;
@@ -268,7 +268,14 @@ static void rfcShow(const char *lbl, sg s)
             }
         }
         logd(line);
-#endif
+    #endif
+}
+
+static void rfcShowCredits(unsigned line, struct rfcConn *c)
+{
+    #ifdef RFC_DEBUG
+        logd("Line %u: have %u creds, owe %u creds\n", line, c->numTxCredits, c->numRxCredits);
+    #endif
 }
 
 
@@ -704,11 +711,13 @@ static bool rfcRxData(struct rfcInst *inst, uint8_t dlci, bool pfBit, sg s)
         creds = utilGetLE8(&creds);
         gotCredsAfterStarvation = creds && !c->numTxCredits;
         c->numTxCredits += creds;
+        rfcShowCredits(__LINE__, c);
     } else if (pfBit)
         logw("P/F UIH RXed on non-credit-based DLCI\n");
 
     if (sgLength(s)) {
         c->numRxCredits++;
+        rfcShowCredits(__LINE__, c);
         rfcShow("RX.d", s);
         if (rfcSchedEvt(c, RFC_EVT_RX, s))
             ret = true;
@@ -1985,6 +1994,12 @@ static void rfcTryTx(struct rfcConn* c)
     if (!sendQueueCanTx(mSendQ, inst->conn))
         return;
 
+    /* do not wate bandwidth on empty packets with too few credits */
+    if (inst->dlcis[c->dlci].numInitialCreds && c->numRxCredits < RFC_THRESH_HELD_CREDITS && !sgLength(c->txQueue))
+        return;
+
+    rfcShowCredits(__LINE__, c);
+
     if (!inst->dlcis[c->dlci].numInitialCreds) { /* not credit based */
 
         if (inst->stopFlow || c->stopTx || !sgLength(c->txQueue))
@@ -2032,6 +2047,7 @@ static void rfcTryTx(struct rfcConn* c)
                     rfcCloseConn(c, true, true);
                 }
             }
+            rfcShowCredits(__LINE__, c);
             return;
         } else
             rfcUnwrapUIH(c->numRxCredits, s);
@@ -2059,6 +2075,9 @@ static void rfcPerhapsTxTimerCbk(uniq_t which,  uint64_t connHandle)
 
     /* we now hold conn->inst->lock */
 
+
+    rfcShowCredits(__LINE__, conn);
+
     if (conn->txTimer == which) { /* if we're not an outdated timer - do the send */
 
         conn->txTimer = 0;
@@ -2079,6 +2098,8 @@ static void rfcPerhapsTx(struct rfcConn* c)
 {
     bool doItNow = false;
 
+
+    rfcShowCredits(__LINE__, c);
 
     /* if we have enough data for a full frame - send it now */
     if (sgLength(c->txQueue) + 1/* in case of credits */ >= c->rfcInst->dlcis[c->dlci].maxFrm)
@@ -2174,7 +2195,7 @@ static void* rfcWorkerThread(void *unused)
                 } else {
                     logd("rfc conn refused for dlci %u\n", c->dlci);
                     c->cState = RFC_CONN_ST_SVC_OPENED;
-                    rfcCloseConn(c, true, false);///aaa
+                    rfcCloseConn(c, true, false);
                 }
             }
             pthread_mutex_unlock(&inst->lock);
@@ -2219,7 +2240,7 @@ bool rfcInit(void)
     if (pthread_create(&mWorkThread, NULL, rfcWorkerThread, NULL))
         goto fail_worker;
 
-    mSendQ = sendQueueAlloc(8);
+    mSendQ = sendQueueAlloc(16);
     if (!mSendQ)
         goto fail_send_q;
 
