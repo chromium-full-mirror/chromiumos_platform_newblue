@@ -237,6 +237,7 @@ struct hciAclConn {
     bool               pinPending;
     bool               sspPending;
     sg                 rxBacklog; /* data we RXed during configuration stage */
+    uint32_t           outstandingPackets;
 
     union {
         struct {
@@ -257,6 +258,7 @@ struct hciAclConn {
 #define CONN_STATE_CFG             1
 #define CONN_STATE_RUNNING         2
 #define CONN_STATE_DELETING        3
+#define CONN_STATE_CREDIT_ZOMBIE   4
 
 #define CONN_CFG_STEP_LE           0x0000
 #define CONN_CFG_STEP_EDR          0x1000
@@ -344,6 +346,7 @@ static bool hciConnDisconnect(uint16_t cid);
 static bool hciConnLeCancel(void);
 static void hciConnCfg(struct hciAclConn *c, uint32_t step, uint32_t aux);
 static bool hciRxAclForRunningConn(struct hciAclConn* conn, uint16_t hdr, sg packet);
+static void hciConnAclStructDel(struct hciAclConn* conn);
 
 
 
@@ -704,12 +707,24 @@ static void hciRxEvt(sg packet)
             conn = hciConnFindById(connID);
             if (!conn)
                 loge("Unknown conn 0x%04X in packets completed. Credits leaked: %d\n", connID, numPackets);
-            else if (BT_ADDR_IS_LE(conn->addr) && !mBtJointBuffers) {
-                hadLeCreds = true;
-                newCreditsLe += numPackets;
-            } else {
-                hadEdrCreds = true;
-                newCreditsEdr += numPackets;
+            else {
+                if (conn->outstandingPackets >= numPackets)
+                    conn->outstandingPackets -= numPackets;
+                else {
+                    loge("Conn %u has %u outstanding packets but got %u credits back. Leaked!\n", (unsigned)conn->id, conn->outstandingPackets, numPackets);
+                    conn->outstandingPackets = 0;
+                }
+
+                if (BT_ADDR_IS_LE(conn->addr) && !mBtJointBuffers) {
+                    hadLeCreds = true;
+                    newCreditsLe += numPackets;
+                } else {
+                    hadEdrCreds = true;
+                    newCreditsEdr += numPackets;
+                }
+
+                if (conn->state == CONN_STATE_CREDIT_ZOMBIE && !conn->outstandingPackets)
+                    hciConnAclStructDel(conn);
             }
         }
         pthread_mutex_unlock(&mConnsLock);
@@ -4082,6 +4097,15 @@ static bool hciConnectLe(const uint8_t *mac, bool randomAddr, uint16_t scanInt, 
  */
 static void hciConnAclStructDel(struct hciAclConn* conn)
 {
+    if (conn->outstandingPackets) {
+        if (conn->state == CONN_STATE_CREDIT_ZOMBIE)
+            logd("Converting connection %u to zombie till %u credits arrive back\n", (unsigned)conn->id, conn->outstandingPackets);
+        else
+            logd("Connection %u is already a zombie waiting for %u creds\n", (unsigned)conn->id, conn->outstandingPackets);
+        conn->state = CONN_STATE_CREDIT_ZOMBIE;
+        return;
+    }
+
     if (conn->next)
         conn->next->prev = conn->prev;
     if (conn->prev)
@@ -4276,7 +4300,7 @@ bool hciDemandEncr(hci_conn_t aclConn)
 uint8_t hciTryToTx(hci_conn_t aclConn, sg data, uint8_t boundary)
 {
     struct hciAclConn* conn;
-    uint8_t ret;
+    uint8_t ret = HCI_TX_SEND_ERROR;
 
     pthread_mutex_lock(&mConnsLock);
     conn = hciConnFindByHandle(aclConn);
@@ -4295,9 +4319,7 @@ uint8_t hciTryToTx(hci_conn_t aclConn, sg data, uint8_t boundary)
         rv = r_sem_trywait(relevantSem);
         if (rv && errno == EAGAIN)
             ret = HCI_TX_SEND_NO_CREDITS;
-        else if (rv)
-            ret = HCI_TX_SEND_ERROR;
-        else {
+        else if (!rv) {
             struct hciAclHdr hdr;
             uint16_t pb = 0xFFFF; /* this will catch all other cases */
             uint16_t start_pb = mBtVer >= HCI_VERSION_2_1 ? ACL_HDR_PB_FIRST_NONAUTO : ACL_HDR_PB_FIRST_AUTO;
@@ -4318,7 +4340,15 @@ uint8_t hciTryToTx(hci_conn_t aclConn, sg data, uint8_t boundary)
             utilSetLE16(&hdr.len, sgLength(data));
             utilSetLE16(&hdr.hdr, conn->id | pb);
 
-            ret = (sgConcatFrontCopy(data, &hdr, sizeof(hdr)) && vendorTx(HCI_PKT_TYP_ACL, data, false)) ? HCI_TX_SEND_OK : HCI_TX_SEND_ERROR;
+            if (sgConcatFrontCopy(data, &hdr, sizeof(hdr))) {
+                if (vendorTx(HCI_PKT_TYP_ACL, data, false)) {
+                    conn->outstandingPackets++;
+                    ret = HCI_TX_SEND_OK;
+                } else {
+                    /* undo our concat of header in case caller wants to use this sg again */
+                    sgTruncFront(data, sizeof(hdr));
+                }
+            }
         }
     }
     pthread_mutex_unlock(&mConnsLock);
