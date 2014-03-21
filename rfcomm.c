@@ -1175,7 +1175,7 @@ static void rfcCloseConn(struct rfcConn *c, bool tellOtherSide, bool tellOurSide
     case RFC_CONN_ST_GOT_DISC:
         useDM = false;
     case RFC_CONN_ST_SVC_OPENED:
-        if (tellOtherSide)
+        if (tellOtherSide && !useDM)
             delStruct = false;
         break;
     case RFC_CONN_ST_NEED_DISC:
@@ -1190,8 +1190,8 @@ static void rfcCloseConn(struct rfcConn *c, bool tellOtherSide, bool tellOurSide
     }
 
     if (tellOtherSide) {
-        if (delStruct)
-            logw("Cannot del conn struct if telling other side...need to wait for reply first!\n");
+        if (delStruct && !useDM)
+            logw("Cannot del conn struct if sending DISC to other side...need to wait for reply first!\n");
         if (useDM) {
             if (!rfcSendDm(inst, c->dlci))
                 loge("Failed to send DM\n");
@@ -2172,15 +2172,18 @@ static void* rfcWorkerThread(void *unused)
                         rfcCloseConn(c, true, true);
                     }
                 } else {
-                    logd("rfc conn refused for dlci %u\n", c->dlci >> 1);
+                    logd("rfc conn refused for dlci %u\n", c->dlci);
                     c->cState = RFC_CONN_ST_SVC_OPENED;
-                    rfcCloseConn(c, true, false);
+                    rfcCloseConn(c, true, false);///aaa
                 }
             }
             pthread_mutex_unlock(&inst->lock);
             break;
         case RFC_WORK_CONN_EVT:
-            wi->evt.evtCbk(wi->evt.evtCbkData, wi->evt.evtCbkInst, wi->evt.evtType, wi->evt.data);
+            if (wi->evt.evtCbk)
+                wi->evt.evtCbk(wi->evt.evtCbkData, wi->evt.evtCbkInst, wi->evt.evtType, wi->evt.data);
+            else
+                logw("rfc: ignoring request for state call to NULL\n");
             break;
         default:
             loge("Unknown work type %d\n", wi->type);
