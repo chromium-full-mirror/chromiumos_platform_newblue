@@ -90,6 +90,7 @@ static struct workQueue *mWorkQ;
 static pthread_mutex_t mStateLock = PTHREAD_MUTEX_INITIALIZER;
 static bool mStackUp = false;
 
+
 /* properties java can get/set */
 //TODO: mutex around these!
 static bt_bdaddr_t mLocalMac = {{0x11, 0x22, 0x33, 0x44, 0x55, 0x66}};
@@ -279,7 +280,7 @@ static int aapiBondRemove(const bt_bdaddr_t *bd_addr)
 static int aapiBondCancel(const bt_bdaddr_t *bd_addr)
 {
     logd("AAPI: bond cancel\n");
-    //TODO
+    //TODO: java will call this to cancel SSP. instead of sending us an SSP reply. this means we need to keep a list of all pending pairings here and send a relpy to hci from here...
     return 0;
 }
 
@@ -758,6 +759,8 @@ static int aapiDisable(void)
         loge("Cannot turn stack off while off\n");
     else {
         mStackUp = false;
+        aapiSocketNotifStackState(false);
+        aapiGattNotifStackState(false);
         rfcDeinit();
         sdpDeinit();
         l2cDeinit();
@@ -765,8 +768,6 @@ static int aapiDisable(void)
         timersDeinit();
     }
     persistStore();
-    aapiSocketNotifStackState(false);
-    aapiGattNotifStackState(false);
     pthread_mutex_unlock(&mStateLock);
     return 0;
 }
