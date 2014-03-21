@@ -96,7 +96,7 @@ static bool mStackUp = false;
 static bt_bdaddr_t mLocalMac = {{0x11, 0x22, 0x33, 0x44, 0x55, 0x66}};
 static bt_bdname_t mLocalName;
 static uint32_t mDevCls = 0xCC0704; //wristwatch (0x20C is smartphone)
-static bt_scan_mode_t mScanMode = BT_SCAN_MODE_NONE;
+static bt_scan_mode_t mScanMode = BT_SCAN_MODE_CONNECTABLE;
 static bt_device_type_t mDevType = BT_DEVICE_DEVTYPE_DUAL;
 static uint32_t mDiscoveryTimeout = 60 ;/* in seconds */
 
