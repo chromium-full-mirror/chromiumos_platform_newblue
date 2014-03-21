@@ -38,10 +38,11 @@ static sem_t mInitSem;
 static pthread_t mWorkerThread;
 static int mWorkerClosePipe;
 
-static uint32_t mLpmTimeout = 0;
+static uint32_t mLpmTimeout;
 static pthread_mutex_t mStateLock = PTHREAD_MUTEX_INITIALIZER;
-static uniq_t mSleepTimer = 0;
-static bool mChipAwake = false;
+static bool mKeepAwake;
+static uniq_t mSleepTimer;
+static bool mChipAwake;
 
 static pthread_mutex_t mTxLock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -72,25 +73,27 @@ static void vendorSleepTimeout(uniq_t timer, uniq_t userData)
 {
     uint8_t state = BT_VND_LPM_WAKE_DEASSERT;
 
-    if (pthread_mutex_trylock(&mStateLock)) {
-        mSleepTimer = timerSet(mLpmTimeout, vendorSleepTimeout, userData); /* reset for later then */
-    } else {
-        if (mSleepTimer == userData && mChipAwake)
+    if (pthread_mutex_trylock(&mStateLock))
+        timerSet(mLpmTimeout, vendorSleepTimeout, userData); /* reset for later then */
+    else {
+        if (mSleepTimer == userData && mChipAwake) {
             mChipAwake = false;
+            /* letting chip sleep now */
+            logd("LPM: going to bed\n");
+            mVendorIface->op(BT_VND_OP_LPM_WAKE_SET_STATE, (void*)&state);
+        }
         pthread_mutex_unlock(&mStateLock);
-        /* letting chip sleep now */
-        mVendorIface->op(BT_VND_OP_LPM_WAKE_SET_STATE, (void*)&state);
     }
 }
 
 /*
  * FUNCTION: vendorChipWake
  * USE:      Wake chip. if needed
- * PARAMS:   NONE
+ * PARAMS:   keepAwake - do not start auto-sleep timer
  * RETURN:   NONE
  * NOTES:
  */
-static void vendorChipWake(void)
+static void vendorChipWake(bool keepAwake)
 {
     uint8_t state = BT_VND_LPM_WAKE_ASSERT;
 
@@ -105,15 +108,40 @@ static void vendorChipWake(void)
         mSleepTimer = 0;
 
     /* waking chip up now */
+    logd("LPM: waking up\n");
     mVendorIface->op(BT_VND_OP_LPM_WAKE_SET_STATE, (void*)&state);
-
-    mSleepTimer = uniqGetNext();
-    timerSet(mLpmTimeout, vendorSleepTimeout, mSleepTimer);
     mChipAwake = true;
+
+    if (mKeepAwake && keepAwake)
+        loge("double-wake in vendor lib!\n");
+    if (keepAwake || mKeepAwake){
+        mSleepTimer = uniqGetNext();
+        timerSet(mLpmTimeout, vendorSleepTimeout, mSleepTimer);
+        mKeepAwake = true;
+    }
 
 out:
     pthread_mutex_unlock(&mStateLock);
 }
+
+/*
+ * FUNCTION: vendorTxDoneWithEvts
+ * USE:      Allow chip to sleep, if other causes allow
+ * PARAMS:   tNONE
+ * RETURN:   NONE
+ * NOTES:
+ */
+void vendorTxDoneWithEvts(void)
+{
+    pthread_mutex_lock(&mStateLock);
+    if (!mKeepAwake)
+        loge("double-sleep in vendor lib!\n");
+    mKeepAwake = false;
+    mSleepTimer = uniqGetNext();
+    timerSet(mLpmTimeout, vendorSleepTimeout, mSleepTimer);
+    pthread_mutex_unlock(&mStateLock);
+}
+
 
 /*
  * FUNCTION: vcbkSomeConfigDone
@@ -193,7 +221,7 @@ static uint8_t vcbkXmit(uint16_t opcode, void *p_buf, tINT_CMD_CBACK p_cback)
     /* but we also do not want to send the header, so we cleverly truncate it away */
     sgTruncFront(cmdSg, sizeof(HC_BT_HDR));
 
-    if (vendorTx(HCI_PKT_TYP_CMD, cmdSg))
+    if (vendorTx(HCI_PKT_TYP_CMD, cmdSg, false))
         return 1;
 
     loge("vendorTx() failed for vendor lib cmd\n");
@@ -397,6 +425,10 @@ bool vendorOpen(void)
     mFdAclIn = -1;
     mFdAclOut = -1;
     mCmdCompleteWaiting = 0;
+    mKeepAwake = true;
+    mChipAwake = false;
+    mLpmTimeout = 0;
+    mSleepTimer = 0;
 
 
     mVendorLibHandle = dlopen(BT_VENDOR_LIB_NAME, 0);
@@ -563,10 +595,6 @@ bool vendorUp(const uint8_t *addr, vendorCbkChipUp chipUpCbk, vendorCbkRx dataRx
     if (!mCbkResult)
         goto out_need_thread_shutdown;
 
-
-return true;
-
-
     logd("Setting LPM mode\n");
     tv8 = BT_VND_LPM_ENABLE;
     ret = mVendorIface->op(BT_VND_OP_LPM_SET_MODE, (void*)&tv8);
@@ -614,17 +642,18 @@ out_need_close:
  * USE:      Send data to che chip
  * PARAMS:   typ - data type
  *           data - the data to send
+ *           expectReply - keep chip awake?
  * RETURN:   success
  * NOTES:    May block
  */
-bool vendorTx(uint8_t typ, sg data)
+bool vendorTx(uint8_t typ, sg data, bool expectReply)
 {
     bool ret = false;
     void *iter;
     int fd;
 
     pthread_mutex_lock(&mTxLock);
-    vendorChipWake();
+    vendorChipWake(false);
 
     if (mLog) {
         char line[128] = "vTX <ZLP>";
@@ -676,6 +705,7 @@ bool vendorTx(uint8_t typ, sg data)
     ret = true;
 
 out:
+    vendorChipWake(expectReply);
     pthread_mutex_unlock(&mTxLock);
     return ret;
 }

@@ -1244,6 +1244,7 @@ static bool hciScheduleConnDataRx(hci_conn_t conn, sg packet, bool first)
 static void* hciCmdSendWorker(void *unused)
 {
     struct hciCmdSendWorkItem *w;
+    bool weExpectReply = false;
     struct timespec ts;
     int ret, i;
 
@@ -1258,6 +1259,7 @@ static void* hciCmdSendWorker(void *unused)
             mt_analize_death();
             abort();
         }
+        vendorTxDoneWithEvts();
         ret = workQueueGet(mCmdsSendWork, (void**)&w);
         if (ret)
             break;
@@ -1269,6 +1271,8 @@ static void* hciCmdSendWorker(void *unused)
         pthread_mutex_lock(&mCmdLock);
 
         for (i = 0; i < w->numEventWaiters; i++) {
+            if (!w->ewds[i].descr.persistent)
+                weExpectReply = true;
             w->ewds[i].id = hciEvtWaitEnqueue(&w->ewds[i].descr, w->cmdID);
             if (!w->ewds[i].id) {
                 loge("Failed to enqueue handler [%d] \n", i);
@@ -1276,7 +1280,7 @@ static void* hciCmdSendWorker(void *unused)
             }
         }
 
-        if (vendorTx(HCI_PKT_TYP_CMD, w->cmd))
+        if (vendorTx(HCI_PKT_TYP_CMD, w->cmd, weExpectReply))
             goto success;
 
         loge("Failed to TX a cmd\n");
@@ -4328,7 +4332,7 @@ uint8_t hciTryToTx(hci_conn_t aclConn, sg data, uint8_t boundary)
             utilSetLE16(&hdr.len, sgLength(data));
             utilSetLE16(&hdr.hdr, conn->id | pb);
 
-            ret = (sgConcatFrontCopy(data, &hdr, sizeof(hdr)) && vendorTx(HCI_PKT_TYP_ACL, data)) ? HCI_TX_SEND_OK : HCI_TX_SEND_ERROR;
+            ret = (sgConcatFrontCopy(data, &hdr, sizeof(hdr)) && vendorTx(HCI_PKT_TYP_ACL, data, false)) ? HCI_TX_SEND_OK : HCI_TX_SEND_ERROR;
         }
     }
     pthread_mutex_unlock(&mConnsLock);

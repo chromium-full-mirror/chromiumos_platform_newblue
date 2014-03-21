@@ -21,7 +21,10 @@ void vendorLogEnable(bool on);
 bool vendorUp(const uint8_t *addr, vendorCbkChipUp chipUpCbk, vendorCbkRx dataRxCbk, void *chipCbkData);
 
 /* send - may block */
-bool vendorTx(uint8_t typ, sg data);
+bool vendorTx(uint8_t typ, sg data, bool expectReply);
+
+/* notify vendor lib that we aren't waiting for any events */
+void vendorTxDoneWithEvts(void);
 
 /* bring down the chip */
 void vendorDown(void);
