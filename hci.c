@@ -2136,15 +2136,6 @@ HCI_SIMPLY_SYNC_WRITE(WritePageTimeout, (uint16_t timeout), HCI_OGF_Controller_a
 HCI_SIMPLY_SYNC_END
 
 /*
- * FUNCTION: hciWriteAuthEnableSync
- * USE:      Set whether we require authentication for all connections
- * PARAMS:   authRequired - set if we requite auth on all connection
- */
-HCI_SIMPLY_SYNC_WRITE(WriteAuthEnable, (bool authRequired), HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Authentication_Enable)
-    HCI_COPY_IN_BOOL(authRequired)
-HCI_SIMPLY_SYNC_END
-
-/*
  * FUNCTION: hciWriteSyncFlowCtrlEnableSync
  * USE:      Set whether we get command complete packets for SCO data
  * PARAMS:   syncFlowCtrlOn - set if we will get those packets, false else
@@ -3444,11 +3435,6 @@ static bool hciBtStackUp(void)
 
         logi("Setting auto-accept timeout\n");
         ret = hciWriteConnAcceptTimeoutSync(HCI_CONN_RX_TIMEOUT);
-        if (ret)
-            goto out;
-
-        logi("Requiting authentication\n");
-        ret = hciWriteAuthEnableSync(true);
         if (ret)
             goto out;
 
