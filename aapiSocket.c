@@ -499,8 +499,9 @@ static void* aapiSockRfcListenAlloc(void *userData, const struct bt_addr *peerAd
 
     memcpy(&newSock->peer, peerAddr, sizeof(newSock->peer));
     if (!aapiSockNotifyOfConnReq(srvSock, newSock)) {
-        loge("Failed to notify of new connection\n");
+        loge("Failed to notify of new connection - closing server socket too\n");
         aapiSockFree(newSock);
+        aapiSockWorkerMsgSend(WORKER_MSG_SOCK_DEL, srvSock);
         newSock = NULL;
     }
 
