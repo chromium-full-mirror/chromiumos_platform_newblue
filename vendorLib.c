@@ -134,8 +134,6 @@ out:
 void vendorTxDoneWithEvts(void)
 {
     pthread_mutex_lock(&mStateLock);
-    if (!mKeepAwake)
-        loge("double-sleep in vendor lib!\n");
     mKeepAwake = false;
     mSleepTimer = uniqGetNext();
     timerSet(mLpmTimeout, vendorSleepTimeout, mSleepTimer);
