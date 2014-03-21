@@ -2054,7 +2054,7 @@ static void rfcPerhapsTxTimerCbk(uniq_t which,  uint64_t connHandle)
 {
     struct rfcConn* conn = rfcFindConnByHandle(connHandle);
 
-    if (!conn) /* no conenction */
+    if (!conn) /* no connection */
         return;
 
     /* we now hold conn->inst->lock */
@@ -2064,6 +2064,7 @@ static void rfcPerhapsTxTimerCbk(uniq_t which,  uint64_t connHandle)
         conn->txTimer = 0;
         rfcTryTx(conn);
     }
+
     pthread_mutex_unlock(&conn->rfcInst->lock);
 }
 
