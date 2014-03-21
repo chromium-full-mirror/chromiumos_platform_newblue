@@ -258,7 +258,6 @@ struct hciAclConn {
 #define CONN_STATE_CFG             1
 #define CONN_STATE_RUNNING         2
 #define CONN_STATE_DELETING        3
-#define CONN_STATE_CREDIT_ZOMBIE   4
 
 #define CONN_CFG_STEP_LE           0x0000
 #define CONN_CFG_STEP_EDR          0x1000
@@ -722,9 +721,6 @@ static void hciRxEvt(sg packet)
                     hadEdrCreds = true;
                     newCreditsEdr += numPackets;
                 }
-
-                if (conn->state == CONN_STATE_CREDIT_ZOMBIE && !conn->outstandingPackets)
-                    hciConnAclStructDel(conn);
             }
         }
         pthread_mutex_unlock(&mConnsLock);
@@ -4098,12 +4094,15 @@ static bool hciConnectLe(const uint8_t *mac, bool randomAddr, uint16_t scanInt, 
 static void hciConnAclStructDel(struct hciAclConn* conn)
 {
     if (conn->outstandingPackets) {
-        if (conn->state == CONN_STATE_CREDIT_ZOMBIE)
-            logd("Converting connection %u to zombie till %u credits arrive back\n", (unsigned)conn->id, conn->outstandingPackets);
-        else
-            logd("Connection %u is already a zombie waiting for %u creds\n", (unsigned)conn->id, conn->outstandingPackets);
-        conn->state = CONN_STATE_CREDIT_ZOMBIE;
-        return;
+        if (BT_ADDR_IS_EDR(conn->addr)) {
+            while (conn->outstandingPackets--)
+                sem_post(&mAclPacketsEdr);
+            l2cAclCreditAvail(false);
+        } else {
+            while (conn->outstandingPackets--)
+                sem_post(&mAclPacketsLe);
+            l2cAclCreditAvail(true);
+        }
     }
 
     if (conn->next)
