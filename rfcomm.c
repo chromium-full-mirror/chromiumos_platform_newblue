@@ -70,6 +70,7 @@ struct rfcConn { /* one per RFC channel */
 
     uint32_t               maxQueueSz; /* max we'll queue for transmission */
     sg                     txQueue;
+    uniq_t                 txTimer; /* or zero if none is set */
 
     uint16_t               mtu;
     uint8_t                dlci;
@@ -246,7 +247,7 @@ static void rfcInstCloseTimerStart(struct rfcInst *inst, uint32_t timelen);
 static bool rfcSendDm(struct rfcInst *inst, uint8_t dlci);
 static bool rfcSendDisc(struct rfcInst *inst, uint8_t dlci);
 static bool rfcSendSabm(struct rfcInst *inst, uint8_t dlci);
-static void rfcTryTx(struct rfcConn* c);
+static void rfcPerhapsTx(struct rfcConn* c);
 
 
 static void rfcShow(const char *lbl, sg s)
@@ -719,8 +720,7 @@ static bool rfcRxData(struct rfcInst *inst, uint8_t dlci, bool pfBit, sg s)
     }
 
     /* if we owe a lot of credits or just got some after having none - maybe reply? */
-    if (c->numRxCredits >= RFC_THRESH_HELD_CREDITS || gotCredsAfterStarvation)
-        rfcTryTx(c);
+    rfcPerhapsTx(c);
 
     return ret;
 }
@@ -1767,7 +1767,7 @@ int32_t rfcTx(rfc_conn_t connHandle, sg s)
         ret = RFC_TX_RET_STOP_SENDING;
 
     if (sgLength(conn->txQueue))
-        rfcTryTx(conn);
+        rfcPerhapsTx(conn);
 
     pthread_mutex_unlock(&conn->rfcInst->lock);
 
@@ -2040,6 +2040,61 @@ static void rfcTryTx(struct rfcConn* c)
         sgSwap(c->txQueue, s);
     }
     sgFree(s);
+}
+
+/*
+ * FUNCTION: rfcPerhapsTxTimerCbk
+ * USE:      Callabck for timer for timed RFC TXs
+ * PARAMS:   which - the timer
+ *           connHandle - the connection handle
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void rfcPerhapsTxTimerCbk(uniq_t which,  uint64_t connHandle)
+{
+    struct rfcConn* conn = rfcFindConnByHandle(connHandle);
+
+    if (!conn) /* no conenction */
+        return;
+
+    /* we now hold conn->inst->lock */
+
+    if (conn->txTimer == which) { /* if we're not an outdated timer - do the send */
+
+        conn->txTimer = 0;
+        rfcTryTx(conn);
+    }
+    pthread_mutex_unlock(&conn->rfcInst->lock);
+}
+
+/*
+ * FUNCTION: rfcPerhapsTx
+ * USE:      Try to TX now or schedule an atempt for later
+ * PARAMS:   c - the conn
+ * RETURN:   NONE
+ * NOTES:    call with inst->lock held
+ */
+static void rfcPerhapsTx(struct rfcConn* c)
+{
+    bool doItNow = false;
+
+
+    /* if we have enough data for a full frame - send it now */
+    if (sgLength(c->txQueue) + 1/* in case of credits */ >= c->rfcInst->dlcis[c->dlci].maxFrm)
+        doItNow = true;
+
+    /* if we owe a lot of credits - send them now */
+    else if (c->numRxCredits >= RFC_THRESH_HELD_CREDITS)
+        doItNow = true;
+
+    if (doItNow) {
+        if (c->txTimer) {
+            timerCancel(c->txTimer);
+            c->txTimer = 0;
+        }
+        rfcTryTx(c);
+    } else if (!c->txTimer) /* if a timer already exists, do not delay it - could cause staervation in case of many small writes */
+        c->txTimer = timerSet(RFC_TX_WAIT_MSEC, rfcPerhapsTxTimerCbk, c->handle);
 }
 
 /*
