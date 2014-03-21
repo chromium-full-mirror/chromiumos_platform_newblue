@@ -426,10 +426,10 @@ static bool aapiSockNotifyOfConnReq(struct aapiSock *srvSock, struct aapiSock *n
 {
     sock_connect_signal_t sig = {.size = sizeof(sock_connect_signal_t), .channel = srvSock->rfc.chNum, .status = 0, };
     uint8_t *sigBuf  = (uint8_t*)&sig;
-    char cmsgBuf[CMSG_SPACE(1)];
+    char cmsgBuf[CMSG_SPACE(1)] = {0,};
     int ret, len = sizeof(sig);
     struct cmsghdr *cmsg;
-    struct msghdr msg;
+    struct msghdr msg = {0,};
 
     memcpy(sig.bd_addr.address, newSock->peer.addr, sizeof(sig.bd_addr.address));
 
