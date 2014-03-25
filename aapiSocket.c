@@ -406,7 +406,7 @@ static void aapiSockFree(struct aapiSock* sock)
                 free(sl);
             }
             rfcStopListen(sock->rfc.chNum);
-            sdpServiceDescriptorDel(sl->sdpHandle);
+            sdpServiceDescriptorDel(sock->rfc.sdpHandle);
         } else if (sock->rfc.state == RFC_SOCK_STATE_RFC_STOP_LISTEN) {
             /* nothing to do here */
         } else if (sock->rfc.conn)
