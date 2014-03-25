@@ -2,9 +2,9 @@ LOCAL_PATH := $(my-dir)
 include $(CLEAR_VARS)
 
 
-LOCAL_SRC_FILES := sg.c hci.c l2cap.c timer.c uniq.c vendorLib.c workQueue.c multiNotif.c sdp.c sendQ.c rfcomm.c mt.c sm.c persist.c
+LOCAL_SRC_FILES := sg.c hci.c l2cap.c timer.c uniq.c vendorLib.c workQueue.c multiNotif.c sdp.c sendQ.c rfcomm.c mt.c sm.c persist.c att.c
 LOCAL_MODULE_TAGS := optional
-LOCAL_CFLAGS += -Wno-unused-parameter -DSDP_DBG -DSG_DEBUG -DRFC_DEBUG #-DTEST_DEBUG -DMT_DEBUG
+LOCAL_CFLAGS += -Wno-unused-parameter -DSG_DEBUG -DRFC_DEBUG #-DMT_DEBUG -DSDP_DBG -DTEST_DEBUG
 LOCAL_SHARED_LIBRARIES := libdl
 
 #for shared lib
