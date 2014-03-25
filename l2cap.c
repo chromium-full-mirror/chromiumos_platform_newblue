@@ -19,14 +19,22 @@
 
 
 /* constants from spec */
-#define L2C_EXT_FTRS_SUPPORTED     0x180 /* support fixedCh & unicast data Rx */
+#define L2C_FTR_FLOW_CTRL_MODE     0x00000001
+#define L2C_FTR_RETR_MODE          0x00000002
+#define L2C_FTR_BIDIR_QOS          0x00000004
+#define L2C_FTR_ENH_RETR_MODE      0x00000008
+#define L2C_FTR_STREAMING_MODE     0x00000010
+#define L2C_FTR_FCS_OPTION         0x00000020
+#define L2C_FTR_EXTD_FLOW_SPEC     0x00000040
+#define L2C_FTR_FIXED_CHS          0x00000080
+#define L2C_FTR_EXTD_WINDOW_SZ     0x00000100
+#define L2C_FTR_CONNLESS_DATA_RX   0x00000200
+
+#define L2C_EXT_FTRS_SUPPORTED     (L2C_FTR_FIXED_CHS)
 #define L2C_FIXED_CHS_SUPPORTED    0x6   /* as mandated by the spec */
 #define L2C_MIN_CONNECTIONLESS_MTU 48
 #define L2C_MIN_SIG_MTU            48
 
-
-/* connection bit to indicate in-progress connection */
-#define L2C_CONN_IN_PROGRESS       UNIQ_MARKER
 
 /* also, the first non-fixed channel */
 #define L2C_NUM_FIXED_CHANNELS     64
@@ -39,6 +47,26 @@
 #define L2C_CH_CONNECTIONLESS      0x0002
 #define L2C_CH_SIGNALLING_LE       0x0005
 
+
+#define L2C_MODE_BASIC             0
+#define L2C_MODE_RETR              1
+#define L2C_MODE_FLOW_CTRL         2
+#define L2C_MODE_STREAM            3
+#define L2C_MODE_ENH_RETR          4
+
+#define L2C_FLG_S_FRM              0x0001
+#define L2C_FLG_R                  0x0080
+#define L2C_FLG_F                  0x0080
+#define L2C_MASK_SAR               0xC000
+#define L2C_SHFT_SAR               14
+#define L2C_MASK_S                 0x000C
+#define L2C_SHFT_S                 2
+#define L2C_FLG_P                  0x0010
+#define L2C_FLG_RSVD_S             0x0002
+#define L2C_FLG_MASK_REQ_SEQ       0x3F00
+#define L2C_FLG_SHFT_REQ_SEQ       8
+#define L2C_FLG_MASK_TX_SEQ        0x007E
+#define L2C_FLG_SHFT_TX_SEQ        1
 
 
 /* L2CAP signalling packet codes and respective formats */
@@ -227,7 +255,7 @@ struct l2cSigConnUpdtRsp {
 
 
 /* low level L2CAP frame */
-struct l2cFrm {
+struct l2cFrmHdr { /* header of all frames */
     uint16_t len;
     uint16_t cid;
 } __packed;
@@ -249,13 +277,15 @@ struct l2cAclConn {
     hci_conn_t         conn;
     sg                 reassSg;
 
+    uint32_t           peerFeatures;
+    uint64_t           peerFixedChs;
     uint8_t            ident; /* next ident to use */
     uint16_t           nextChan; /* a guess to a currently-free channel */
     uint16_t           connectionlessMtu;
     uint16_t           sigMtu;
     struct bt_addr     addr;
+    uint8_t            state;
     uint8_t            isMaster  : 1;
-    uint8_t            goingDown : 1;
     uint8_t            encrypted : 1;
 
     uint8_t            reqIdent; /* ident for an outstanding request */
@@ -381,6 +411,7 @@ struct l2cConn {
     uint8_t            ident; /* for control channel ops */
 
     uint8_t            state;
+    uint8_t            mode; /* L2C_MODE_* */
 
     psm_t              psm; /* 0 for fixedCh */
     uint16_t           localCh; /* both this & remCh ==0 means */
@@ -389,7 +420,8 @@ struct l2cConn {
     uint16_t           theirMtu; /* for other side */
 
     uint8_t            weOpened : 1; /* 1 if we asked for this, 0 if peer */
-    uint8_t            inUse : 1;    /* 1 if connection is in use, 0 else */
+    uint8_t            inUse    : 1; /* 1 if connection is in use, 0 else */
+    uint8_t            fcs      : 1; /* 1 if FCS is on */
 
     union {            /* per-state info */
         struct {       /*  config */
@@ -408,6 +440,11 @@ struct l2cConn {
 #define L2C_CONN_STATE_DIE_REQD        7 /* we closed, call to svc in pipeline */
 #define L2C_CONN_STATE_DIE_RXED        8 /* other side closed, call to svc in pipeline */
 #define L2C_CONN_STATE_TEARDOWN        9 /* tearing down */
+
+#define L2C_ACL_STATE_PENDING          0 /* not yet established */
+#define L2C_ACL_STATE_CFG              1 /* we are still finding out peer config. do not yet start outbound connections */
+#define L2C_ACL_STATE_ESTABLISHED      2 /* we can now start outbound connections */
+#define L2C_ACL_STATE_TEARDOWN         3 /* going down - do not use */
 
 #define L2C_CFG_STATE_INITIAL          0
 #define L2C_CFG_STATE_REQ_SENT         1
@@ -444,6 +481,8 @@ static void l2cAclDownTimerStop(struct l2cAclConn *aclConn);
 static void l2cAclLinkDownInt(struct l2cAclConn *aclConn, bool tellOtherSide);
 static void l2cPsmCfgStart(struct l2cAclConn *aclConn, struct l2cConn *conn);
 static void l2cTryMakeSendProgress(bool forLeBuffers, bool needLock);
+static uint8_t l2cSigSendInfoReq(struct l2cAclConn *aclConn, uint16_t infoType);
+static uint16_t l2cUtilFcs(uint16_t fcs, const void *data, uint32_t len);
 
 
 /* our state */
@@ -560,7 +599,7 @@ static bool l2cPsmValid(psm_t psm)
  */
 static struct l2cSvcWork* l2cSvcWorkAlloc(int type, uint32_t extraLen)
 {
-    struct l2cSvcWork* w = (struct l2cSvcWork*)malloc(sizeof(struct l2cSvcWork) + extraLen);
+    struct l2cSvcWork* w = (struct l2cSvcWork*)calloc(1, sizeof(struct l2cSvcWork) + extraLen);
 
     if (w)
         w->type = type;
@@ -1510,7 +1549,7 @@ static void l2cHandleInfoReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
 
 /*
  * FUNCTION: l2cHandleInfoRsp
- * USE:      Handle an incoming information response
+ * USE:      Handle an incoming information response, enqueue the next one we need, if we need one
  * PARAMS:   conn - the per-ACL-connection structure
  *           ident - the ident in the response packet
  *           infoType - the requested info type
@@ -1522,37 +1561,59 @@ static void l2cHandleInfoReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
  */
 static void l2cHandleInfoRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t infoType, uint16_t result, sg payload, uint32_t infoLen)
 {
-    uint16_t val;
+    uint8_t buf[8];
 
-    if (infoType != L2C_SIG_INFO_TYPE_UNCONN_MTU) {
-        logi("Got unexpected info rsp with type %d\n", infoType);
-        return;
-    }
-
-    if (result != L2C_SIG_INFO_RESULT_OK) {
-        logi("Got unexpected info rsp error (result=%d)\n", result);
-        return;
-    }
-
-    if (infoLen != sizeof(uint16_t)) {
-        logi("Got unexpected info rsp size (infoLen=%d)\n", infoLen);
-        return;
-    }
+    if (aclConn->state != L2C_ACL_STATE_CFG)
+        logw("ACL conn in state %u when RXing info RSPs\n", aclConn->state);
 
     if (ident != aclConn->reqIdent) {
         logw("Got info resp with mismatching ident (got %d wanted %d)\n", ident, aclConn->reqIdent);
         return;
     }
-
     aclConn->reqIdent = 0;
-    sgSerialize(payload, 0, sizeof(uint16_t), &val); /* reads it in BT endianness */
-    val = utilGetLE16(&val); /* converts to our endianness */
-    if (val < L2C_MIN_CONNECTIONLESS_MTU) {
-        logi("Peer reports connectionless mtu %d for acl "HCI_CONN_FMT"x. correcting to %d\n", val, HCI_CONN_CONV(aclConn->conn), L2C_MIN_CONNECTIONLESS_MTU);
-        val = L2C_MIN_CONNECTIONLESS_MTU;
+
+    switch (infoType) {
+    case L2C_SIG_INFO_TYPE_UNCONN_MTU:
+        aclConn->connectionlessMtu = 0;
+        if (result == L2C_SIG_INFO_RESULT_OK && sgSerializeCutFront(payload, buf, sizeof(uint16_t)))
+            aclConn->connectionlessMtu = utilGetLE16(buf);
+        else
+            logi("Peer did not properly tell us the connectionless MTU. Asuming not supported\n");
+        infoType = L2C_SIG_INFO_TYPE_EXT_FTRS;
+        break;
+    case L2C_SIG_INFO_TYPE_EXT_FTRS:
+        aclConn->peerFeatures = 0;
+        if (result == L2C_SIG_INFO_RESULT_OK && sgSerializeCutFront(payload, buf, sizeof(uint32_t)))
+            aclConn->peerFeatures = utilGetLE32(buf);
+        else
+            logi("Peer did not properly tell us supported features. Asuming none.\n");
+
+        /* if peer supports fixed channels, find out which */
+        infoType = (aclConn->peerFeatures & L2C_FTR_FIXED_CHS) ? L2C_SIG_INFO_TYPE_FIXED_CHS : 0;
+        break;
+    case L2C_SIG_INFO_TYPE_FIXED_CHS:
+        aclConn->peerFixedChs = 0;
+        if (result == L2C_SIG_INFO_RESULT_OK && sgSerializeCutFront(payload, buf, sizeof(uint64_t)))
+            aclConn->peerFixedChs = utilGetLE64(buf);
+        else
+            logi("Peer did not properly tell us supported fixed channels. Asuming none.\n");
+        if (aclConn->state == L2C_ACL_STATE_CFG)
+            aclConn->state = L2C_ACL_STATE_ESTABLISHED;
+        infoType = 0;
+        break;
+    default:
+        logw("Unknown info type 0x%04X RXed. Ignoring\n", infoType);
+        infoType = 0;
+        break;
     }
 
-    aclConn->connectionlessMtu = val;
+    if (infoType) {
+        aclConn->reqIdent = l2cSigSendInfoReq(aclConn, infoType);
+        if (!aclConn->reqIdent) {
+            aclConn->state = L2C_ACL_STATE_ESTABLISHED;
+            logw("Failed to send req for info %u for acl "HCI_CONN_FMT"x. It will not be known\n", infoType, HCI_CONN_CONV(aclConn->conn));
+        }
+    }
 }
 
 /*
@@ -2285,19 +2346,87 @@ static void l2cSignallingRx(struct l2cAclConn *conn, sg payload)
 }
 
 /*
- * FUNCTION: l2cFixedChRx
+ * FUNCTION: l2cAdvEnhFrameRxS
+ * USE:      Called to RX an enhanced L2C S-frame with FCS checked
+ * PARAMS:   conn - the connection struct
+ *           reqSeq - sent reqSeq as per spec
+ *           flgF - F flag as per spec
+ *           flgP - P flag as per spec
+ *           s - sent S value as per spec
+ * RETURN:   false if data went nowhere
+ * NOTES:    call with mConnsLock lock held.
+ */
+static bool l2cAdvEnhFrameRxS(struct l2cConn *conn, uint16_t reqSeq, bool flgF, bool flgP, uint8_t s)
+{
+    //todo
+    return false;
+}
+
+/*
+ * FUNCTION: l2cAdvFrameRxS
+ * USE:      Called to RX a non-enhanced L2C S-frame with FCS checked
+ * PARAMS:   conn - the connection struct
+ *           reqSeq - sent reqSeq as per spec
+ *           flgR - R flag as per spec
+ *           s - sent S value as per spec
+ * RETURN:   false if data went nowhere
+ * NOTES:    call with mConnsLock lock held.
+ */
+static bool l2cAdvFrameRxS(struct l2cConn *conn, uint16_t reqSeq, bool flgR, uint8_t s)
+{
+    //todo
+    return false;
+}
+
+/*
+ * FUNCTION: l2cAdvEnhFrameRxI
+ * USE:      Called to RX an enhanced L2C I-frame with FCS checked
+ * PARAMS:   conn - the connection struct
+ *           sar - the far flags as per spec
+ *           reqSeq - sent reqSeq as per spec
+ *           flgF - F flag as per spec
+ *           txSeq - sent txSeq as per spec
+ * RETURN:   false if data went nowhere
+ * NOTES:    call with mConnsLock lock held.
+ */
+static bool l2cAdvEnhFrameRxI(struct l2cConn *conn, uint8_t sar, uint16_t reqSeq, bool flgF, uint16_t txSeq)
+{
+    //todo
+    return false;
+}
+
+/*
+ * FUNCTION: l2cAdvFrameRxI
+ * USE:      Called to RX a non-enhanced L2C I-frame with FCS checked
+ * PARAMS:   conn - the connection struct
+ *           sar - the far flags as per spec
+ *           reqSeq - sent reqSeq as per spec
+ *           flgR - R flag as per spec
+ *           txSeq - sent txSeq as per spec
+ * RETURN:   false if data went nowhere
+ * NOTES:    call with mConnsLock lock held.
+ */
+static bool l2cAdvFrameRxI(struct l2cConn *conn, uint8_t sar, uint16_t reqSeq, bool flgR, uint16_t txSeq)
+{
+    //todo
+    return false;
+}
+
+/*
+ * FUNCTION: l2cHandleCompleteDataFrameRx
  * USE:      Called when given channel data arrives. Dispatches it
  *           to the right destination
  * PARAMS:   aclConn - the ACL connection
- *           cid - the channel data arrived on
+ *           frm - the frame header if the packet
  *           payload - the arrived payload
  * RETURN:   false if data went nowhere
  * NOTES:    call with mConnsLock lock held.
  */
-static bool l2cSendRxToChannel(struct l2cAclConn *aclConn, uint16_t chan, sg payload)
+static bool l2cHandleCompleteDataFrameRx(struct l2cAclConn *aclConn, struct l2cFrmHdr *frm, sg payload)
 {
+    uint16_t cid = utilGetLE16(&frm->cid);
     struct l2cConn *iter, *cur = NULL;
-    bool ret;
+    bool ret = false;
 
     iter = mConns;
     while (iter) {
@@ -2307,7 +2436,7 @@ static bool l2cSendRxToChannel(struct l2cAclConn *aclConn, uint16_t chan, sg pay
         if (cur->acl != aclConn->handle) /* wrong ACL connection */
             continue;
 
-        if (cur->localCh != chan) /* wrong channel */
+        if (cur->localCh != cid) /* wrong channel */
             continue;
 
         if (cur->state != L2C_CONN_STATE_ESTABLISHED) { /* not open yet */
@@ -2324,33 +2453,82 @@ static bool l2cSendRxToChannel(struct l2cAclConn *aclConn, uint16_t chan, sg pay
             cur->inUse = 1;
             l2cAclDownTimerStop(aclConn);
         }
-        if (l2cSvcWorkScheduleStateCall(cur, L2C_STATE_RX, &payload, sizeof(payload)))
-            return true;
-    }
+        if (cur->mode == L2C_MODE_BASIC)
+            ret = l2cSvcWorkScheduleStateCall(cur, L2C_STATE_RX, &payload, sizeof(payload));
+        else {
+            uint16_t ctrl, fcsGot, fcsCalc, reqSeq;
 
-    return false;
+            if (cur->fcs) {
+                void *iter;
+                if (sgLength(payload) < 2 || sizeof(fcsGot) != sgSerialize(payload, sgLength(payload) - sizeof(fcsGot), sizeof(fcsGot), &fcsGot)) {
+                    logd("FCS on and cannot read FCS\n");
+                    goto badFrame;
+                }
+                sgTruncBack(payload, sizeof(uint16_t));
+                fcsGot = utilGetLE16(&fcsGot);
+                fcsCalc = l2cUtilFcs(0, frm, sizeof(struct l2cFrmHdr));
+                for (iter = sgIterStart(payload); iter; iter = sgIterAdvance(iter))
+                    fcsCalc = l2cUtilFcs(fcsCalc, sgIterCurData(iter), sgIterCurLen(iter));
+
+                if (fcsCalc != fcsGot) {
+                    logd("FCS bad. Got 0x%04X Calc 0x%04X\n", fcsGot, fcsCalc);
+                    goto badFrame;
+                }
+            }
+            if (!sgSerializeCutFront(payload, &ctrl, sizeof(ctrl))) {
+                logd("Cannot find ctrl\n");
+                goto badFrame;
+            }
+            reqSeq = (ctrl & L2C_FLG_MASK_REQ_SEQ) >> L2C_FLG_SHFT_REQ_SEQ;
+            if (ctrl & L2C_FLG_S_FRM) { /* S frame */
+                if (ctrl & L2C_FLG_RSVD_S)
+                    goto badFrame;
+
+                if (cur->mode == L2C_MODE_ENH_RETR)
+                    ret = l2cAdvEnhFrameRxS(cur, reqSeq, !!(ctrl & L2C_FLG_F), !!(ctrl & L2C_FLG_P), (ctrl & L2C_MASK_S) >> L2C_SHFT_S);
+                else
+                    ret = l2cAdvFrameRxS(cur, reqSeq, !!(ctrl & L2C_FLG_R), (ctrl & L2C_MASK_S) >> L2C_SHFT_S);
+            } else {                    /* I frame */
+                uint16_t txSeq = (ctrl & L2C_FLG_MASK_TX_SEQ) >> L2C_FLG_SHFT_TX_SEQ;
+
+                if (cur->mode == L2C_MODE_ENH_RETR)
+                    ret = l2cAdvEnhFrameRxI(cur, (ctrl & L2C_MASK_SAR) >> L2C_SHFT_SAR, reqSeq, !!(ctrl & L2C_FLG_F), txSeq);
+                else
+                    ret = l2cAdvFrameRxI(cur, (ctrl & L2C_MASK_SAR) >> L2C_SHFT_SAR, reqSeq, !!(ctrl & L2C_FLG_R), txSeq);
+            }
+            goto out;
+
+badFrame:
+            logw("got invalid L2C advanced frame\n");
+        }
+    }
+out:
+    return ret;
 }
 
 /*
  * FUNCTION: l2cAclDataRxCompletePacket
  * USE:      Called when a complete reassembled packet has arrived
- * PARAMS:   aclConn - the connection ID
+ * PARAMS:   aclConn - the acl connection struct
+ *           frm - the frame header if the packet
  *           packet - a complete received ACL packet
  * RETURN:   NONE
  * NOTES:    call with mConnsLock held
  */
-static void l2cAclDataRxCompletePacket(struct l2cAclConn *conn, uint16_t cid, sg packet)
+static void l2cAclDataRxCompletePacket(struct l2cAclConn *aclConn, struct l2cFrmHdr *frm, sg packet)
 {
+    uint16_t cid = utilGetLE16(&frm->cid);
+
     if (cid == L2C_CH_SIGNALLING_EDR) {
-        if (!BT_ADDR_IS_EDR(conn->addr))
+        if (!BT_ADDR_IS_EDR(aclConn->addr))
             loge("Received EDR signalling packet on non-EDR link. Dropping.\n");
         else
-            l2cSignallingRx(conn, packet);
+            l2cSignallingRx(aclConn, packet);
     } else if (cid == L2C_CH_SIGNALLING_LE) {
-        if (!BT_ADDR_IS_LE(conn->addr))
+        if (!BT_ADDR_IS_LE(aclConn->addr))
             loge("Received LE signalling packet on non-LE link. Dropping.\n");
         else
-            l2cSignallingRx(conn, packet);
+            l2cSignallingRx(aclConn, packet);
     } else if (cid == L2C_CH_CONNECTIONLESS) {
         psm_t psm;
 
@@ -2360,19 +2538,17 @@ static void l2cAclDataRxCompletePacket(struct l2cAclConn *conn, uint16_t cid, sg
         } else {
             sgSerialize(packet, 0, sizeof(psm_t), &psm);
             sgTruncFront(packet, sizeof(psm_t));
-            if (!l2cSvcWorkSchedulePsmConnectionlessRx(psm, conn->handle, packet)) {
+            if (!l2cSvcWorkSchedulePsmConnectionlessRx(psm, aclConn->handle, packet)) {
                 loge("Failed to schedule call to connectionless RX for psm %d\n", psm);
                 sgFree(packet);
             }
         }
-    } else {
-        if (!l2cSendRxToChannel(conn, cid, packet)) {
-            if (cid < L2C_NUM_FIXED_CHANNELS)
-                logw("Dropping RXed FixedCh data for cid %d\n", cid);
-            else
-                logw("Dropping RXed PSM data for unknown cid %d\n", cid);
-            sgFree(packet);
-        }
+    } else if (!l2cHandleCompleteDataFrameRx(aclConn, frm, packet)) {
+        if (cid < L2C_NUM_FIXED_CHANNELS)
+            logw("Dropping RXed FixedCh data for cid %d\n", cid);
+        else
+            logw("Dropping RXed PSM data for unknown cid %d\n", cid);
+        sgFree(packet);
     }
 }
 
@@ -2388,18 +2564,18 @@ static void l2cAclDataRxCompletePacket(struct l2cAclConn *conn, uint16_t cid, sg
  */
 static bool l2cAclDataRxProcessIfComplete(struct l2cAclConn *conn, sg packet)
 {
-    struct l2cFrm frm;
+    struct l2cFrmHdr frm;
     uint16_t frmLen, totalLen;
     uint32_t len = sgLength(packet);
 
     /* must be long enough to fit a header */
-    if (len < sizeof(struct l2cFrm))
+    if (len < sizeof(struct l2cFrmHdr))
         return false;
 
-    sgSerialize(packet, 0, sizeof(struct l2cFrm), &frm);
+    sgSerialize(packet, 0, sizeof(struct l2cFrmHdr), &frm);
 
     frmLen = utilGetLE16(&frm.len);
-    totalLen = frmLen + sizeof(struct l2cFrm);
+    totalLen = frmLen + sizeof(struct l2cFrmHdr);
 
     /* must fit header and data */
     if (totalLen > len)
@@ -2410,8 +2586,8 @@ static bool l2cAclDataRxProcessIfComplete(struct l2cAclConn *conn, sg packet)
         logw("ACL data packet %ub but L2C expects %ub\n", len, totalLen);
 
     /* full packet - process it */
-    sgTruncFront(packet, sizeof(struct l2cFrm));
-    l2cAclDataRxCompletePacket(conn, utilGetLE16(&frm.cid), packet);
+    sgTruncFront(packet, sizeof(struct l2cFrmHdr));
+    l2cAclDataRxCompletePacket(conn, &frm, packet);
     return true;
 }
 
@@ -2909,7 +3085,7 @@ static bool l2cAclEnqueueSigTx(struct l2cAclConn *aclConn, sg pdu)
         }
     }
 
-    item = (struct l2cSigPduSendItem*)malloc(sizeof(struct l2cSigPduSendItem));
+    item = (struct l2cSigPduSendItem*)calloc(1, sizeof(struct l2cSigPduSendItem));
     if (!item)
         return false;
 
@@ -3618,7 +3794,7 @@ psm_t l2cApiServicePsmRegister(psm_t psm, const struct l2cServicePsmDescriptor *
         return false;
     }
 
-    svc = (struct l2cPsmSvc*)malloc(sizeof(struct l2cPsmSvc));
+    svc = (struct l2cPsmSvc*)calloc(1, sizeof(struct l2cPsmSvc));
     if (!svc)
         return false;
 
@@ -3734,7 +3910,7 @@ bool l2cApiServiceFixedChRegister(uint16_t chan, const struct l2cServiceFixedChD
         chan == L2C_CH_SIGNALLING_LE || !chan || chan >= L2C_NUM_FIXED_CHANNELS)
         return false;
 
-    svc = (struct l2cFixedChSvc*)malloc(sizeof(struct l2cFixedChSvc));
+    svc = (struct l2cFixedChSvc*)calloc(1, sizeof(struct l2cFixedChSvc));
     if (!svc)
         return false;
 
@@ -3949,7 +4125,7 @@ static void l2cTryMakeSendProgress(bool forLeBuffers, bool needLock)
             sendFirst = true;
 
             if (!picked->hasL2cHdr) {
-                struct l2cFrm frm;
+                struct l2cFrmHdr frm;
 
                 utilSetLE16(&frm.len, sgLength(picked->pdu));
                 utilSetLE16(&frm.cid, picked->cid);
@@ -4164,7 +4340,7 @@ uint8_t l2cApiDataTx(l2c_handle_t handle, sg data)
         ret = L2C_TX_ERROR;
         logw("Attempt to send data over MTU size (%u > %u)\n", sgLength(data), conn->theirMtu);
     } else {
-        struct l2cFrm frm;
+        struct l2cFrmHdr frm;
 
         if (!conn->inUse) {
             logd("Marking conn "HANDLEFMT" as in use due to TX\n", HANDLECNV(conn->handle));
@@ -4214,8 +4390,8 @@ uint8_t l2cApiConnectionlessDataTx(const struct bt_addr *addr, psm_t psm, sg dat
         logw("Dropping connectionless send over MTU %u > %u\n", sgLength(data), aclConn->connectionlessMtu);
         ret = L2C_TX_ERROR;
     } else {
-        uint8_t hdr[sizeof(struct l2cFrm) + sizeof(psm_t)];
-        struct l2cFrm *frm = (struct l2cFrm*)hdr;
+        uint8_t hdr[sizeof(struct l2cFrmHdr) + sizeof(psm_t)];
+        struct l2cFrmHdr *frm = (struct l2cFrmHdr*)hdr;
 
         utilSetLE16(&frm->len, sgLength(data) + sizeof(psm_t));
         utilSetLE16(&frm->cid, L2C_CH_CONNECTIONLESS);
@@ -4244,7 +4420,7 @@ static void l2cAclLinkUpTimeout(uniq_t which,  uint64_t aclConnHandle)
     aclConn = l2cAclConnFindByHandle(aclConnHandle);
     if (aclConn && aclConn->openTimer == which) {
         logi("ACL link open failed for "HANDLEFMT"\n", HANDLECNV(aclConn->handle));
-        aclConn->goingDown = true;
+        aclConn->state = L2C_ACL_STATE_TEARDOWN;
         if (!l2cSvcWorkScheduleAclLinkClose(&aclConn->addr))
             loge("Failed to schedule call to close ACL link "HANDLEFMT"\n", HANDLECNV(aclConn->handle));
         l2cAclLinkDownInt(aclConn, false);
@@ -4265,7 +4441,7 @@ static struct l2cAclConn* l2cCreateAndOpenNewAclConn(const struct bt_addr* addr)
 
     conn = l2cAclConnFindByAddr(addr);
     if (conn) {
-        if (conn->goingDown) {
+        if (conn->state == L2C_ACL_STATE_TEARDOWN) {
             logw("Asked to establish existing ACL conn as it goes down. Bad luck\n");
             return NULL;
         } else {
@@ -4274,7 +4450,7 @@ static struct l2cAclConn* l2cCreateAndOpenNewAclConn(const struct bt_addr* addr)
         }
     }
 
-    conn = (struct l2cAclConn*)malloc(sizeof(struct l2cAclConn));
+    conn = (struct l2cAclConn*)calloc(1, sizeof(struct l2cAclConn));
     if (!conn) {
         loge("Out of memory\n");
         return NULL;
@@ -4282,7 +4458,7 @@ static struct l2cAclConn* l2cCreateAndOpenNewAclConn(const struct bt_addr* addr)
 
     memcpy(&conn->addr, addr, sizeof(conn->addr));
     conn->handle = uniqGetNext();
-    conn->conn = L2C_CONN_IN_PROGRESS;
+    conn->state = L2C_ACL_STATE_PENDING;
     conn->prev = NULL;
     conn->reassSg = NULL;
     conn->sigMtu = L2C_MIN_SIG_MTU;
@@ -4340,7 +4516,7 @@ bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr* addr, uint16_t m
 
     pthread_mutex_lock(&mConnsLock);
     aclConn = l2cAclConnFindByAddr(addr);
-    if (aclConn && aclConn->goingDown) {
+    if (aclConn && aclConn->state == L2C_ACL_STATE_TEARDOWN) {
         logw("Trying to open a connection over a going-down ACL link. Bad luck\n");
         goto out;
     } else if (!aclConn) {
@@ -4364,7 +4540,7 @@ bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr* addr, uint16_t m
     conn->instance = instance;
     conn->inUse = 1;
 
-    if (aclConn->conn != L2C_CONN_IN_PROGRESS) {
+    if (aclConn->conn == L2C_ACL_STATE_ESTABLISHED) {
         uint8_t ident;
         uint16_t localCh = l2cAclFreeCid(aclConn);
 
@@ -4430,7 +4606,7 @@ bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr* addr, l2
 
     pthread_mutex_lock(&mConnsLock);
     aclConn = l2cAclConnFindByAddr(addr);
-    if (aclConn && aclConn->goingDown) {
+    if (aclConn && aclConn->state == L2C_ACL_STATE_TEARDOWN) {
         logw("Trying to open a connection over a going-down ACL link. Bad luck\n");
         goto out;
     } else if (!aclConn) {
@@ -4464,7 +4640,7 @@ bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr* addr, l2
     conn->instance = instance;
     conn->inUse = 1;
 
-    if (aclConn->conn != L2C_CONN_IN_PROGRESS) {
+    if (aclConn->conn == L2C_ACL_STATE_ESTABLISHED) {
         l2cChannelReadyForData(aclConn, conn);
         l2cAclDownTimerStop(aclConn);
     }
@@ -4550,7 +4726,7 @@ static void l2cAclConnTeardownTimerCbk(uniq_t which, uint64_t cbkData)
     aclConn = l2cAclConnFindByHandle(aclHandle);
     if (aclConn && aclConn->teardownTimer == which) {
         logd("Link timer expired for acl "HCI_CONN_FMT"x. Closing\n", HCI_CONN_CONV(aclConn->conn));
-        aclConn->goingDown = true;
+        aclConn->state = L2C_ACL_STATE_TEARDOWN;
         if (!l2cSvcWorkScheduleAclLinkClose(&aclConn->addr))
             loge("Failed to schedule call to close acl "HCI_CONN_FMT"x\n", HCI_CONN_CONV(aclConn->conn));
         l2cAclLinkDownInt(aclConn, true);
@@ -4613,7 +4789,7 @@ void l2cAclLinkUp(hci_conn_t aclConnID, const struct bt_addr* addr, bool isMaste
         aapiAclStateChanged(0, addr, true);
         aclConn = l2cAclConnFindByAddr(addr);
         if (aclConn) {
-            if (aclConn->conn == L2C_CONN_IN_PROGRESS) {
+            if (aclConn->state == L2C_ACL_STATE_PENDING) {
                 aclConn->openTimer = 0;
                 logd("Us-initiated link up (acl "HCI_CONN_FMT"x)\n", HCI_CONN_CONV(aclConnID));
             } else {
@@ -4623,7 +4799,7 @@ void l2cAclLinkUp(hci_conn_t aclConnID, const struct bt_addr* addr, bool isMaste
             }
         } else {
             logd("Remote-initiated link up acl "HCI_CONN_FMT"x\n", HCI_CONN_CONV(aclConnID));
-            aclConn = (struct l2cAclConn*)malloc(sizeof(struct l2cAclConn));
+            aclConn = (struct l2cAclConn*)calloc(1, sizeof(struct l2cAclConn));
             if (aclConn) {
                 aclConn->handle = uniqGetNext();
                 aclConn->prev = NULL;
@@ -4640,9 +4816,9 @@ void l2cAclLinkUp(hci_conn_t aclConnID, const struct bt_addr* addr, bool isMaste
         }
         memcpy(&aclConn->addr, addr, sizeof(aclConn->addr));
         aclConn->ident = 1;
+        aclConn->state = L2C_ACL_STATE_CFG;
         aclConn->teardownTimer = 0;
         aclConn->isMaster = isMaster ? 1 : 0;
-        aclConn->goingDown = 0;
         aclConn->connectionlessMtu = L2C_MIN_CONNECTIONLESS_MTU;
         aclConn->connUpdtRequestIdent = 0;
         aclConn->nextChan = L2C_NUM_FIXED_CHANNELS;
@@ -4651,8 +4827,10 @@ void l2cAclLinkUp(hci_conn_t aclConnID, const struct bt_addr* addr, bool isMaste
 
         /* send an info req */
         aclConn->reqIdent = l2cSigSendInfoReq(aclConn, L2C_SIG_INFO_TYPE_UNCONN_MTU);
-        if (!aclConn->reqIdent)
+        if (!aclConn->reqIdent) {
+            aclConn->state = L2C_ACL_STATE_ESTABLISHED;
             logw("Failed to send req for connectionless mtu for acl "HCI_CONN_FMT"x. It will not be known\n", HCI_CONN_CONV(aclConn->conn));
+        }
 
         /* handle all pending-open connections */
         connIter = mConns;
@@ -4838,3 +5016,41 @@ void l2cAclLinkEncrChange(hci_conn_t aclConnID, bool isEncrypted)
     pthread_mutex_unlock(&mConnsLock);
 }
 
+/*
+ * FUNCTION: l2cUtilFcs
+ * USE:      Calculate an L2CAP FCS (CRC-16 with poly 0x8005) for some data
+ * PARAMS:   fcs - input fcs
+ *           data - the data
+ *           len - the length of said data
+ * RETURN:   the fc
+ * NOTES:
+ */
+static uint16_t l2cUtilFcs(uint16_t fcs, const void *data, uint32_t len)
+{
+    static const uint16_t crctab[] = {
+        0x0000, 0xC0C1, 0xC181, 0x0140, 0xC301, 0x03C0, 0x0280, 0xC241, 0xC601, 0x06C0, 0x0780, 0xC741, 0x0500, 0xC5C1, 0xC481,
+        0x0440, 0xCC01, 0x0CC0, 0x0D80, 0xCD41, 0x0F00, 0xCFC1, 0xCE81, 0x0E40, 0x0A00, 0xCAC1, 0xCB81, 0x0B40, 0xC901, 0x09C0,
+        0x0880, 0xC841, 0xD801, 0x18C0, 0x1980, 0xD941, 0x1B00, 0xDBC1, 0xDA81, 0x1A40, 0x1E00, 0xDEC1, 0xDF81, 0x1F40, 0xDD01,
+        0x1DC0, 0x1C80, 0xDC41, 0x1400, 0xD4C1, 0xD581, 0x1540, 0xD701, 0x17C0, 0x1680, 0xD641, 0xD201, 0x12C0, 0x1380, 0xD341,
+        0x1100, 0xD1C1, 0xD081, 0x1040, 0xF001, 0x30C0, 0x3180, 0xF141, 0x3300, 0xF3C1, 0xF281, 0x3240, 0x3600, 0xF6C1, 0xF781,
+        0x3740, 0xF501, 0x35C0, 0x3480, 0xF441, 0x3C00, 0xFCC1, 0xFD81, 0x3D40, 0xFF01, 0x3FC0, 0x3E80, 0xFE41, 0xFA01, 0x3AC0,
+        0x3B80, 0xFB41, 0x3900, 0xF9C1, 0xF881, 0x3840, 0x2800, 0xE8C1, 0xE981, 0x2940, 0xEB01, 0x2BC0, 0x2A80, 0xEA41, 0xEE01,
+        0x2EC0, 0x2F80, 0xEF41, 0x2D00, 0xEDC1, 0xEC81, 0x2C40, 0xE401, 0x24C0, 0x2580, 0xE541, 0x2700, 0xE7C1, 0xE681, 0x2640,
+        0x2200, 0xE2C1, 0xE381, 0x2340, 0xE101, 0x21C0, 0x2080, 0xE041, 0xA001, 0x60C0, 0x6180, 0xA141, 0x6300, 0xA3C1, 0xA281,
+        0x6240, 0x6600, 0xA6C1, 0xA781, 0x6740, 0xA501, 0x65C0, 0x6480, 0xA441, 0x6C00, 0xACC1, 0xAD81, 0x6D40, 0xAF01, 0x6FC0,
+        0x6E80, 0xAE41, 0xAA01, 0x6AC0, 0x6B80, 0xAB41, 0x6900, 0xA9C1, 0xA881, 0x6840, 0x7800, 0xB8C1, 0xB981, 0x7940, 0xBB01,
+        0x7BC0, 0x7A80, 0xBA41, 0xBE01, 0x7EC0, 0x7F80, 0xBF41, 0x7D00, 0xBDC1, 0xBC81, 0x7C40, 0xB401, 0x74C0, 0x7580, 0xB541,
+        0x7700, 0xB7C1, 0xB681, 0x7640, 0x7200, 0xB2C1, 0xB381, 0x7340, 0xB101, 0x71C0, 0x7080, 0xB041, 0x5000, 0x90C1, 0x9181,
+        0x5140, 0x9301, 0x53C0, 0x5280, 0x9241, 0x9601, 0x56C0, 0x5780, 0x9741, 0x5500, 0x95C1, 0x9481, 0x5440, 0x9C01, 0x5CC0,
+        0x5D80, 0x9D41, 0x5F00, 0x9FC1, 0x9E81, 0x5E40, 0x5A00, 0x9AC1, 0x9B81, 0x5B40, 0x9901, 0x59C0, 0x5880, 0x9841, 0x8801,
+        0x48C0, 0x4980, 0x8941, 0x4B00, 0x8BC1, 0x8A81, 0x4A40, 0x4E00, 0x8EC1, 0x8F81, 0x4F40, 0x8D01, 0x4DC0, 0x4C80, 0x8C41,
+        0x4400, 0x84C1, 0x8581, 0x4540, 0x8701, 0x47C0, 0x4680, 0x8641, 0x8201, 0x42C0, 0x4380, 0x8341, 0x4100, 0x81C1, 0x8081
+    };
+
+    const uint8_t *ptr = (const uint8_t*)data;
+
+    while (len--)
+        fcs = (fcs >> 8) ^ crctab[(fcs & 0xFF) ^ *ptr++];
+
+    return fcs;
+}
