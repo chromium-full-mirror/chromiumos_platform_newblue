@@ -35,6 +35,7 @@
 #define L2C_MIN_CONNECTIONLESS_MTU 48
 #define L2C_MIN_SIG_MTU            48
 
+#define L2C_RETR_NUM_BUFFERS       64
 
 /* also, the first non-fixed channel */
 #define L2C_NUM_FIXED_CHANNELS     64
@@ -67,6 +68,16 @@
 #define L2C_FLG_SHFT_REQ_SEQ       8
 #define L2C_FLG_MASK_TX_SEQ        0x007E
 #define L2C_FLG_SHFT_TX_SEQ        1
+
+#define L2C_SAR_COMPLETE           0
+#define L2C_SAR_START              1
+#define L2C_SAR_END                2
+#define L2C_SAR_CONT               3
+
+#define L2C_S_RR                   0
+#define L2C_S_REJ                  1
+#define L2C_S_RNR                  2
+#define L2C_S_SREJ                 3
 
 
 /* L2CAP signalling packet codes and respective formats */
@@ -394,6 +405,10 @@ struct l2cFixedChSvc {
     uint32_t beingRemoved : 1;
 };
 
+struct l2cAdvFrag {
+    sg                 data;
+    uint8_t            sar;
+};
 
 /* our per-l2c connection struct */
 /* also used for fixed ch "connections" */
@@ -429,7 +444,27 @@ struct l2cConn {
             uint8_t cfgRxState;
         };
     };
+
+    /* advanced mode structures for TX */
+    struct l2cAdvFrag  advTxFrags[L2C_RETR_NUM_BUFFERS]; /* our tx buffers */
+    sg                 advEnqueuedPacket;                /* may be more than a fragment long */
+    uint8_t            advTxSendPos;                     /* where next send will come from */
+    uint8_t            advTxWritePos;                    /* where the next write will go */
+    uint8_t            advTxFirstUnacked;                /* what the first non-acked packet was */
+    uint8_t            advTxWindowSz;                    /* how many outstanding not-acked packets there can be in our TX path */
+    bool               advTxShutUp;                      /* set if peer wants us to stop sending *DATA* */
+    bool               advTxWeOweAck;                    /* do we owe them an ack */
+    uint16_t           advTxMps;                         /* max payload per fragment */
+
+    /* advanced mode structures for RX */
+    struct l2cAdvFrag  advRxFrags[L2C_RETR_NUM_BUFFERS]; /* our rx buffers */
+    sg                 advTxReassBuf;                    /* our current work on reassembling a frame */
+    uint16_t           advTxReassExpectLen;              /* expected extra length of packet we're reassembling */
+    uint8_t            advRxFirstMissing;                /* first fragment we need */
+    uint8_t            advRxWindowSz;                    /* how many outstanding not-acked packets there can be in our RX path */
+    bool               advRxWeOweAck;                    /* do we owe them an ack */
 };
+
 #define L2C_CONN_STATE_CONN_WAIT       0 /* waiting for ACL link up */
 #define L2C_CONN_STATE_RX_OPEN_SVC     1 /* call to service in pipeline */
 #define L2C_CONN_STATE_TX_OPEN_TXED    2 /* request sent to other side */
@@ -480,9 +515,14 @@ static void l2cAclDownTimerStart(struct l2cAclConn *aclConn);
 static void l2cAclDownTimerStop(struct l2cAclConn *aclConn);
 static void l2cAclLinkDownInt(struct l2cAclConn *aclConn, bool tellOtherSide);
 static void l2cPsmCfgStart(struct l2cAclConn *aclConn, struct l2cConn *conn);
-static void l2cTryMakeSendProgress(bool forLeBuffers, bool needLock);
+static void l2cTryMakeSendProgress(bool forLeBuffers);
 static uint8_t l2cSigSendInfoReq(struct l2cAclConn *aclConn, uint16_t infoType);
 static uint16_t l2cUtilFcs(uint16_t fcs, const void *data, uint32_t len);
+static uint16_t l2cUtilFcsSg(uint16_t fcs, sg s);
+static bool l2cAdvMayTx(void);
+static bool l2cAdvMayTxLocked(void);
+static uint8_t l2cAdvUserTx(struct l2cConn *conn, sg data); /* -> L2C_TX_* */
+static uint8_t l2cDataSendOnAclLink(struct l2cAclConn *aclConn, const void *hdr, uint32_t hdrLen, sg data);
 
 
 /* our state */
@@ -503,6 +543,7 @@ static psm_t mNextPsm;
 static pthread_mutex_t mConnsLock = PTHREAD_MUTEX_INITIALIZER;
 static struct l2cAclConn *mAclConns = NULL;
 static struct l2cConn *mConns = NULL;
+static struct l2cConn *mNextToTx = NULL;
 static sg mQueueBufLe = NULL;
 static sg mQueueBufEdr = NULL;
 static bool mQueueFirstLe;
@@ -1452,7 +1493,7 @@ static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
  * RETURN:   NONE
  * NOTES:    call with mConnsLock held
  */
-static void l2cHandleConfRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localCh, uint16_t flags, uint16_t result, sg payload, uint16_t len) //TODO
+static void l2cHandleConfRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t localCh, uint16_t flags, uint16_t result, sg payload, uint16_t len)
 {
     struct l2cConn *conn = NULL;
 
@@ -2346,6 +2387,322 @@ static void l2cSignallingRx(struct l2cAclConn *conn, sg payload)
 }
 
 /*
+ * FUNCTION: l2cAdvTxCreateFragments
+ * USE:      Called when we may have space in the buffer list and may want to create a fragment
+ * PARAMS:   conn - the conn struct
+ *           first - will this be a first fragment?
+ * RETURN:   success
+ * NOTES:    call with mConnsLock held.
+ */
+static bool l2cAdvTxCreateFragments(struct l2cConn *conn, bool first)
+{
+    bool ret = false;
+    uint16_t len;
+
+    while (conn->advEnqueuedPacket && !conn->advTxFrags[conn->advTxWritePos].data) {
+
+        len = sgLength(conn->advEnqueuedPacket);
+
+        if (len <= conn->advTxMps) { /* fist in one fragment */
+            if (first)
+                conn->advTxFrags[conn->advTxWritePos].sar = L2C_SAR_COMPLETE;
+            else
+                conn->advTxFrags[conn->advTxWritePos].sar = L2C_SAR_END;
+            conn->advTxFrags[conn->advTxWritePos].data = conn->advEnqueuedPacket;
+            conn->advEnqueuedPacket = NULL;
+        } else {
+            sg data = sgSplit(conn->advEnqueuedPacket, conn->advTxMps - (first ? sizeof(uint16_t) : 0));
+
+            if (!data) {
+                loge("Failed to split data sg\n");
+                return false;
+            }
+            sgSwap(data, conn->advEnqueuedPacket);
+
+            if (first) {
+                conn->advTxFrags[conn->advTxWritePos].sar = L2C_SAR_START;
+                utilSetLE16(&len, len);
+                if (!sgConcatFrontAlloced(data, &len, sizeof(len))) {
+                    loge("Failed to append len. Dropping fragment.\n");
+                    sgFree(data);
+                    return false;
+                }
+            } else
+                conn->advTxFrags[conn->advTxWritePos].sar = L2C_SAR_CONT;
+            conn->advTxFrags[conn->advTxWritePos].data = data;
+        }
+        conn->advTxWritePos = (conn->advTxWritePos + 1) % L2C_RETR_NUM_BUFFERS;
+        first = false;
+        ret = true;
+    }
+
+    return ret;
+}
+
+/*
+ * FUNCTION: l2cAdvUserTx
+ * USE:      Called when a user wants us to send data on an advanced connection
+ * PARAMS:   conn - the conn struct
+ *           data - the data
+ * RETURN:   L2C_TX_*
+ * NOTES:    call with mConnsLock held
+ */
+static uint8_t l2cAdvUserTx(struct l2cConn *conn, sg data) /* -> L2C_TX_* */
+{
+    if (conn->advEnqueuedPacket) /* if a packet is half-sent, we have no space */
+        return L2C_TX_TRY_LATER;
+
+    if (conn->advTxFrags[conn->advTxWritePos].data) /* if current write pointer is not empty - we have no space */
+        return L2C_TX_TRY_LATER;
+
+    conn->advEnqueuedPacket = data;
+    if (l2cAdvTxCreateFragments(conn, true))
+        return L2C_TX_ACCEPTED;
+
+    conn->advEnqueuedPacket = NULL;
+    return L2C_TX_ERROR;
+}
+
+/*
+ * FUNCTION: l2cAdvTxWrapNextPacket
+ * USE:      Produce a valid I-frame for a given connection
+ * PARAMS:   NONE
+ * RETURN:   true if we enqueued a frame
+ * NOTES:    call with mConnsLock held. Note that conn is not modified here
+ */
+static sg l2cAdvTxWrapNextPacket(struct l2cConn *conn)
+{
+    uint16_t len, control = 0, fcs = 0, hdrSz = sizeof(struct l2cFrmHdr) + sizeof(uint16_t);
+    struct l2cAdvFrag *frag = conn->advTxFrags + conn->advTxSendPos;
+    uint8_t buf[sizeof(struct l2cFrmHdr) + sizeof(uint16_t)];
+    struct l2cFrmHdr *hdr = (struct l2cFrmHdr*)buf;
+    uint16_t *ctrlP = (uint16_t*)(hdr + 1);
+    sg packet = frag->data;
+    bool needLen = false;
+
+    if (!packet)
+        return NULL;
+
+    control |= (uint16_t)conn->advRxFirstMissing << L2C_FLG_SHFT_REQ_SEQ;
+    control |= (uint16_t)conn->advTxSendPos << L2C_FLG_SHFT_TX_SEQ;
+    control |= (uint16_t)frag->sar << L2C_SHFT_SAR;
+
+    utilSetLE16(&hdr->cid, conn->remCh);
+    utilSetLE16(&hdr->len, sgLength(packet) + hdrSz + (conn->fcs ? sizeof(uint16_t) : 0));
+    utilSetLE16(ctrlP, control);
+
+    if (!sgConcatFrontCopy(packet, hdr, hdrSz)) {
+        logw("Failed to append header\n");
+        return NULL;
+    }
+
+    if (conn->fcs) {
+        fcs = l2cUtilFcsSg(fcs, packet);
+        utilSetLE16(&fcs, fcs);
+        if (!sgConcatBackCopy(packet, &fcs, sizeof(uint16_t))) {
+            loge("Failed to append FCS\n");
+            sgTruncFront(packet, hdrSz);
+            return NULL;
+        }
+    }
+
+    return packet;
+}
+
+/*
+ * FUNCTION: l2cAdvTxUnWrapNextPacket
+ * USE:      Remove I-frame headers and footers and put it back into the connection's buffer list.
+ *           Essentially undoes what l2cAdvTxWrapNextPacket() did. Only safe to call after a call
+ *           to l2cAdvTxWrapNextPacket() and with the struct not modifie din between!
+ * PARAMS:   NONE
+ * RETURN:   true if we enqueued a frame
+ * NOTES:    call with mConnsLock held. Note that conn is not modified here
+ */
+static void l2cAdvTxUnWrapNextPacket(struct l2cConn *conn, sg packet)
+{
+    struct l2cAdvFrag *frag = conn->advTxFrags + conn->advTxSendPos;
+
+    if (conn->fcs)
+        sgTruncBack(packet, sizeof(uint16_t));
+
+    sgTruncFront(packet, sizeof(struct l2cFrmHdr) + sizeof(uint16_t));
+}
+
+/*
+ * FUNCTION: l2cAdvTxPrepareSFrame
+ * USE:      Prepare an S-frame for transmission
+ * PARAMS:   conn - the conn struct
+ * RETURN:   said frame or NULL
+ * NOTES:    call with mConnsLockHeld
+ */
+static sg l2cAdvTxPrepareSFrame(struct l2cConn *conn)
+{
+    const uint16_t l2cPayloadLen = sizeof(uint16_t) + (conn->fcs ? sizeof(uint16_t) : 0);
+    const uint16_t maxPacketLen = sizeof(struct l2cFrmHdr) + sizeof(uint16_t[2]); /* control and fcs */
+    const uint16_t checksummedLen = sizeof(struct l2cFrmHdr) + sizeof(uint16_t);
+    const uint16_t packetLen = sizeof(struct l2cFrmHdr) + l2cPayloadLen;
+    uint8_t buf[maxPacketLen];
+    struct l2cFrmHdr *hdr = (struct l2cFrmHdr*)buf;
+    uint16_t *ctrlP = (uint16_t*)(hdr + 1);
+    uint16_t control = L2C_FLG_S_FRM;
+    uint16_t *fcsP = ctrlP + 1;
+
+    control |= (uint16_t)conn->advRxFirstMissing << L2C_FLG_SHFT_REQ_SEQ;
+    control |= (uint16_t)L2C_S_RR; /* we only do this for now. it i snot necessarily the best idea */
+
+    utilSetLE16(&hdr->len, l2cPayloadLen);
+    utilSetLE16(&hdr->cid, conn->remCh);
+    utilSetLE16(ctrlP, control);
+
+    if (conn->fcs)
+        utilSetLE16(fcsP, l2cUtilFcs(0, buf, checksummedLen));
+
+    return sgNewWithCopyData(buf, packetLen);
+}
+
+/*
+ * FUNCTION: l2cAdvMayTxLocked
+ * USE:      Called to try to TX on any advanced connection
+ * PARAMS:   NONE
+ * RETURN:   true if we enqueued a frame
+ * NOTES:    call with mConnsLockHeld
+ */
+static bool l2cAdvMayTxLocked(void)
+{
+    struct l2cConn *orig, *conn;
+    struct l2cAclConn *aclConn;
+    uint8_t sendResult;
+    bool ret = false, isFrmS = false;
+    sg packet;
+
+    if (!mConns) /* no connections -> we have nothing to send */
+        return false;
+
+    orig = mNextToTx;
+    do {
+        if (!mNextToTx)
+            mNextToTx = mConns;
+        conn = mNextToTx;
+        mNextToTx = mNextToTx->next;
+
+        /* basic connections do not participate */
+        if (conn->mode == L2C_MODE_BASIC)
+            continue;
+
+        /* send S-frames first and foremost */
+        if (conn->advRxWeOweAck) {
+            packet = l2cAdvTxPrepareSFrame(conn);
+            if (!packet) {
+                loge("Failed to produce S frame\n");
+                continue;
+            }
+            isFrmS = true;
+        } else {
+
+            /* if the window is full, we cannot send */
+            if ((conn->advTxSendPos + L2C_RETR_NUM_BUFFERS - conn->advTxFirstUnacked) % L2C_RETR_NUM_BUFFERS >= conn->advTxWindowSz)
+                continue;
+
+            /* if there is no more data, we cannot send */
+            if (!conn->advTxFrags[conn->advTxSendPos].data)
+                continue;
+
+            /* if peer asked us to stop sending data, do so, except s-frames */
+            if (conn->advTxShutUp)
+                continue;
+
+            /* if we got here, this connection can send */
+            packet = l2cAdvTxWrapNextPacket(conn);
+            if (!packet) {
+                logw("Failed to wrap a packet for tx\n");
+                continue;
+            }
+        }
+
+        aclConn = l2cAclConnFindByHandle(conn->acl);
+        if (!aclConn) {
+            logw("Cannot find the ACL link for this connection\n");
+            continue;
+        }
+
+        switch (l2cDataSendOnAclLink(aclConn, NULL, 0, packet)) {
+        case L2C_TX_ACCEPTED:
+            conn->advRxWeOweAck = false;
+            if (!isFrmS) {
+                conn->advTxFrags[conn->advTxSendPos++].data = NULL;
+                conn->advTxSendPos %= L2C_RETR_NUM_BUFFERS;
+            }
+            ret = true;
+            break;
+        case L2C_TX_NO_CONN:
+        case L2C_TX_ERROR:
+            logd("ADV TX Failed\n");
+            sgFree(packet);
+            break;
+        case L2C_TX_TRY_LATER:
+            if (isFrmS)
+                sgFree(packet);
+            else
+                l2cAdvTxUnWrapNextPacket(conn, packet);
+            return false;
+        }
+
+    } while (mNextToTx != orig);
+
+    return ret;
+}
+
+
+/*
+ * FUNCTION: l2cAdvMayTx
+ * USE:      Called when TX buffer may have space for more frames
+ * PARAMS:   NONE
+ * RETURN:   true if we enqueued a frame
+ * NOTES:    takes mConnsLock
+ */
+static bool l2cAdvMayTx(void)
+{
+    bool ret;
+
+    pthread_mutex_lock(&mConnsLock);
+    ret = l2cAdvMayTxLocked();
+    pthread_mutex_unlock(&mConnsLock);
+
+    return ret;
+}
+
+/*
+ * FUNCTION: l2cAdvRxAck
+ * USE:      Called when the peer acks some packets
+ * PARAMS:   conn - the connection struct
+ *           newFirstUnackedPacket - new index of first unacked packet
+ * RETURN:   NONE
+ * NOTES:    call with mConnsLock lock held.
+ */
+static void l2cAdvRxAck(struct l2cConn *conn, uint16_t newFirstUnackedPacket)
+{
+    uint8_t ackedPackets = (newFirstUnackedPacket + L2C_RETR_NUM_BUFFERS - conn->advTxFirstUnacked) % L2C_RETR_NUM_BUFFERS;
+    bool somethingNewAcked = false;
+
+    if (ackedPackets > conn->advTxWindowSz) {
+        loge("Peer acked more packets than allowed. Ignoring\n");
+        return;
+    }
+
+    while (conn->advTxFirstUnacked != newFirstUnackedPacket) {
+        if (conn->advTxFrags[conn->advTxFirstUnacked].data)
+            sgFree(conn->advTxFrags[conn->advTxFirstUnacked].data);
+        else
+            loge("Peer acked NULL data\n");
+        conn->advTxFrags[conn->advTxFirstUnacked++].data = NULL;
+        conn->advTxFirstUnacked %= L2C_RETR_NUM_BUFFERS;
+        somethingNewAcked = true;
+    }
+    if (somethingNewAcked && l2cAdvTxCreateFragments(conn, false))
+        l2cSvcWorkScheduleTryTx(false /*advanced L2C works only on EDR links */);
+}
+
+/*
  * FUNCTION: l2cAdvEnhFrameRxS
  * USE:      Called to RX an enhanced L2C S-frame with FCS checked
  * PARAMS:   conn - the connection struct
@@ -2358,7 +2715,28 @@ static void l2cSignallingRx(struct l2cAclConn *conn, sg payload)
  */
 static bool l2cAdvEnhFrameRxS(struct l2cConn *conn, uint16_t reqSeq, bool flgF, bool flgP, uint8_t s)
 {
-    //todo
+    //TODO
+    loge("enhanced mode.s not impl yet\n");
+    return false;
+}
+
+
+/*
+ * FUNCTION: l2cAdvEnhFrameRxI
+ * USE:      Called to RX an enhanced L2C I-frame with FCS checked
+ * PARAMS:   conn - the connection struct
+ *           sar - the far flags as per spec
+ *           reqSeq - sent reqSeq as per spec
+ *           flgF - F flag as per spec
+ *           txSeq - sent txSeq as per spec
+ *           payload - the actual data
+ * RETURN:   false if data went nowhere
+ * NOTES:    call with mConnsLock lock held.
+ */
+static bool l2cAdvEnhFrameRxI(struct l2cConn *conn, uint8_t sar, uint16_t reqSeq, bool flgF, uint16_t txSeq, sg payload)
+{
+    //TODO
+    loge("enhanced mode.i not impl yet\n");
     return false;
 }
 
@@ -2372,27 +2750,103 @@ static bool l2cAdvEnhFrameRxS(struct l2cConn *conn, uint16_t reqSeq, bool flgF, 
  * RETURN:   false if data went nowhere
  * NOTES:    call with mConnsLock lock held.
  */
-static bool l2cAdvFrameRxS(struct l2cConn *conn, uint16_t reqSeq, bool flgR, uint8_t s)
+static bool l2cAdvFrameRxS(struct l2cConn *conn, uint16_t reqSeq, bool flgR, uint8_t s) //XXX: TODO: timers for adv modes!
 {
-    //todo
-    return false;
+    l2cAdvRxAck(conn, reqSeq);
+    conn->advTxShutUp = flgR;
+
+    if (s == L2C_S_RR) {
+        //TODO: timers
+    } else if (s == L2C_S_REJ) { // two of these shall never happen again, see "rej exception condition" in spec
+        //TODO: timers
+        conn->advTxSendPos = reqSeq;
+    } else {
+        logw("unexpected S value %d\n", s);
+        return false;
+    }
+    return true;
 }
 
 /*
- * FUNCTION: l2cAdvEnhFrameRxI
- * USE:      Called to RX an enhanced L2C I-frame with FCS checked
+ * FUNCTION: l2cAdvRxReass
+ * USE:      Called to attempt to reassemble an incoming fragment using ONE fragment at idx conn->advRxFirstMissing
  * PARAMS:   conn - the connection struct
- *           sar - the far flags as per spec
- *           reqSeq - sent reqSeq as per spec
- *           flgF - F flag as per spec
- *           txSeq - sent txSeq as per spec
- * RETURN:   false if data went nowhere
+ * RETURN:   true if we used ONE fragment
  * NOTES:    call with mConnsLock lock held.
  */
-static bool l2cAdvEnhFrameRxI(struct l2cConn *conn, uint8_t sar, uint16_t reqSeq, bool flgF, uint16_t txSeq)
+static bool l2cAdvRxReass(struct l2cConn *conn)
 {
-    //todo
-    return false;
+    struct l2cAdvFrag *frag = conn->advRxFrags + conn->advRxFirstMissing;
+    uint8_t buf[sizeof(uint16_t)];
+    bool ret = false;
+
+    if (!frag->data)
+        return false;
+
+    if (conn->advTxReassBuf && (frag->sar == L2C_SAR_START || frag->sar == L2C_SAR_COMPLETE)) {
+        logd("Dropping existing reass buffer because of new packet seen\n");
+        sgFree(conn->advTxReassBuf);
+        conn->advTxReassBuf = NULL;
+    }
+
+    if (!conn->advTxReassBuf && (frag->sar == L2C_SAR_CONT || frag->sar == L2C_SAR_END)) {
+        logd("Incosistent RX buf state\n");
+        return false;
+    }
+
+    switch (frag->sar) {
+    case L2C_SAR_COMPLETE:
+        conn->advTxReassExpectLen = 0;
+        conn->advTxReassBuf = frag->data;
+        frag->data = NULL;
+        break;
+    case L2C_SAR_START:
+        conn->advTxReassExpectLen = sgLength(frag->data);
+        conn->advTxReassBuf = frag->data;
+        frag->data = NULL;
+        if (!sgSerializeCutFront(conn->advTxReassBuf, buf, sizeof(buf))) {
+            loge("Failed to read length\n");
+            return false;
+        }
+        conn->advTxReassExpectLen = utilGetLE16(buf);
+        if (conn->advTxReassExpectLen < sgLength(conn->advTxReassBuf)) {
+            loge("Start fragment longer than entire packet\n");
+            sgFree(conn->advTxReassBuf);
+            conn->advTxReassBuf = NULL;
+            return false;
+        }
+        conn->advTxReassExpectLen -= sgLength(conn->advTxReassBuf);
+        return true;
+    case L2C_SAR_END:
+    case L2C_SAR_CONT:
+        if (sgLength(frag->data) > conn->advTxReassExpectLen) {
+            loge("Non-start fragment longer than expected\n");
+            return false;
+        }
+        if (sgLength(frag->data) == conn->advTxReassExpectLen && frag->sar == L2C_SAR_CONT) {
+            loge("Non-end fragment ends the expected length\n");
+            return false;
+        } else if (sgLength(frag->data) != conn->advTxReassExpectLen && frag->sar == L2C_SAR_END) {
+            loge("End fragment does not end the expected length\n");
+            return false;
+        }
+        conn->advTxReassExpectLen -= sgLength(frag->data);
+        sgConcat(conn->advTxReassBuf, frag->data);
+        frag->data = NULL;
+        break;
+    default:
+        loge("Unknown sar value %u\n", frag->sar);
+        return false;
+    }
+
+    /* if we got here, we need to send data to the user */
+    if (!l2cSvcWorkScheduleStateCall(conn, L2C_STATE_RX, &conn->advTxReassBuf, sizeof(conn->advTxReassBuf))) {
+        loge("Failed to send data to user. Dropped\n");
+        sgFree(conn->advTxReassBuf);
+    }
+
+    conn->advTxReassBuf = NULL;
+    return true;
 }
 
 /*
@@ -2403,13 +2857,44 @@ static bool l2cAdvEnhFrameRxI(struct l2cConn *conn, uint8_t sar, uint16_t reqSeq
  *           reqSeq - sent reqSeq as per spec
  *           flgR - R flag as per spec
  *           txSeq - sent txSeq as per spec
+ *           payload - the actual data
  * RETURN:   false if data went nowhere
  * NOTES:    call with mConnsLock lock held.
  */
-static bool l2cAdvFrameRxI(struct l2cConn *conn, uint8_t sar, uint16_t reqSeq, bool flgR, uint16_t txSeq)
+static bool l2cAdvFrameRxI(struct l2cConn *conn, uint8_t sar, uint16_t reqSeq, bool flgR, uint16_t txSeq, sg payload)
 {
-    //todo
-    return false;
+    l2cAdvRxAck(conn, reqSeq);
+    conn->advTxShutUp = flgR;
+    uint8_t numUsed = 0;
+
+    //TODO: timers
+
+    if (conn->advRxFrags[txSeq].data) {
+        if (sgLength(conn->advRxFrags[txSeq].data) != sgLength(payload) || conn->advRxFrags[txSeq].sar != sar) {
+            logd("Dropping old fragment of %ub with sar %u in favour of existing one: %ub, sar %u\n",
+                sgLength(conn->advRxFrags[txSeq].data), conn->advRxFrags[txSeq].sar, sgLength(payload), sar);
+            sgFree(conn->advRxFrags[txSeq].data);
+        } else {
+            /* it is a duplicate - move on */
+            sgFree(payload);
+            return true;
+        }
+    }
+
+    /* new packet we had not yet seen */
+    conn->advRxFrags[txSeq].data = payload;
+    conn->advRxFrags[txSeq].sar = sar;
+
+    while (numUsed < conn->advRxWindowSz && l2cAdvRxReass(conn))
+        numUsed++;
+
+    if (numUsed)
+        conn->advRxWeOweAck = true;
+
+    if (conn->advTxFrags[conn->advTxSendPos].data && !conn->advTxShutUp)
+        l2cAdvMayTxLocked();
+
+    return true;
 }
 
 /*
@@ -2467,8 +2952,7 @@ static bool l2cHandleCompleteDataFrameRx(struct l2cAclConn *aclConn, struct l2cF
                 sgTruncBack(payload, sizeof(uint16_t));
                 fcsGot = utilGetLE16(&fcsGot);
                 fcsCalc = l2cUtilFcs(0, frm, sizeof(struct l2cFrmHdr));
-                for (iter = sgIterStart(payload); iter; iter = sgIterAdvance(iter))
-                    fcsCalc = l2cUtilFcs(fcsCalc, sgIterCurData(iter), sgIterCurLen(iter));
+                fcsCalc = l2cUtilFcsSg(fcsCalc, payload);
 
                 if (fcsCalc != fcsGot) {
                     logd("FCS bad. Got 0x%04X Calc 0x%04X\n", fcsGot, fcsCalc);
@@ -2492,9 +2976,9 @@ static bool l2cHandleCompleteDataFrameRx(struct l2cAclConn *aclConn, struct l2cF
                 uint16_t txSeq = (ctrl & L2C_FLG_MASK_TX_SEQ) >> L2C_FLG_SHFT_TX_SEQ;
 
                 if (cur->mode == L2C_MODE_ENH_RETR)
-                    ret = l2cAdvEnhFrameRxI(cur, (ctrl & L2C_MASK_SAR) >> L2C_SHFT_SAR, reqSeq, !!(ctrl & L2C_FLG_F), txSeq);
+                    ret = l2cAdvEnhFrameRxI(cur, (ctrl & L2C_MASK_SAR) >> L2C_SHFT_SAR, reqSeq, !!(ctrl & L2C_FLG_F), txSeq, payload);
                 else
-                    ret = l2cAdvFrameRxI(cur, (ctrl & L2C_MASK_SAR) >> L2C_SHFT_SAR, reqSeq, !!(ctrl & L2C_FLG_R), txSeq);
+                    ret = l2cAdvFrameRxI(cur, (ctrl & L2C_MASK_SAR) >> L2C_SHFT_SAR, reqSeq, !!(ctrl & L2C_FLG_R), txSeq, payload);
             }
             goto out;
 
@@ -3038,7 +3522,7 @@ static void* l2cSvcWorker(void* unused)
                 loge("HCI refused to encrypt\n");
             break;
         case L2C_WORK_TRY_HCI_TX:
-            l2cTryMakeSendProgress(work->tryTx.useLeBuffers, true);
+            l2cTryMakeSendProgress(work->tryTx.useLeBuffers);
             break;
         default: {
             loge("Unknown work type %d\n", work->type);
@@ -3213,6 +3697,7 @@ void l2cDeinit(void)
     if (mConns)
         logw("Connections list not empty even when all acl links closed\n");
     mConns = NULL;
+    mNextToTx =  NULL;
     pthread_mutex_unlock(&mConnsLock);
     while (mPsmSvcs)
         l2cApiServicePsmUnregister(mPsmSvcs->psm, NULL, NULL);
@@ -3260,12 +3745,33 @@ void l2cDeinit(void)
  */
 static void l2cConnStructDelete(struct l2cConn *conn)
 {
+    uint8_t i;
+
+    if (mNextToTx == conn)
+        mNextToTx = NULL;
+
     if (conn->next)
         conn->next->prev = conn->prev;
     if (conn->prev)
         conn->prev->next = conn->next;
     else
         mConns = conn->next;
+
+    for (i = 0; i < L2C_RETR_NUM_BUFFERS; i++) {
+        if (conn->advTxFrags[i].data)
+            sgFree(conn->advTxFrags[i].data);
+        conn->advTxFrags[i].data = NULL;
+        if (conn->advRxFrags[i].data)
+            sgFree(conn->advRxFrags[i].data);
+        conn->advRxFrags[i].data = NULL;
+    }
+    if (conn->advEnqueuedPacket)
+        sgFree(conn->advEnqueuedPacket);
+    conn->advEnqueuedPacket = NULL;
+
+    if (conn->advTxReassBuf)
+        sgFree(conn->advTxReassBuf);
+    conn->advTxReassBuf = NULL;
 
     free(conn);
 }
@@ -4060,11 +4566,10 @@ void l2cApiDisconnect(l2c_handle_t handle)
  * USE:      Try to make forward progress on sending data to HCI for radio transmssion.
  *           Called when we either have new data or new credits.
  * PARAMS:   forLeBuffers - which set of buffers we should work on
- *           needLock - set if calling context does not hold mConnsLock
  * RETURN:   NONE
- * NOTES:    will take mConnsLock is not already held as indicated by needLock
+ * NOTES:    will take mConnsLock
  */
-static void l2cTryMakeSendProgress(bool forLeBuffers, bool needLock)
+static void l2cTryMakeSendProgress(bool forLeBuffers)
 {
     struct l2cSigPduSendItem *picked = NULL;
     struct l2cSigPduSendItem **sigQHP;
@@ -4078,11 +4583,10 @@ static void l2cTryMakeSendProgress(bool forLeBuffers, bool needLock)
     uint16_t wantSendLen, actualSendLen;
     bool sendFirst;
     sg sendSg, remainSg;
-    bool definitelyHaveMore;
+    bool hadData = true;
 
     while(1) {
-        if (needLock)
-            pthread_mutex_lock(&mConnsLock);
+        pthread_mutex_lock(&mConnsLock);
 
         if (forLeBuffers) {
             qBufP = &mQueueBufLe;
@@ -4142,12 +4646,16 @@ static void l2cTryMakeSendProgress(bool forLeBuffers, bool needLock)
             sendFirst = *qFirstP;
         }
 
-        if (!sendConn) { /* nothing to send anymore */
-            if (needLock)
-                pthread_mutex_unlock(&mConnsLock);
-            multiNotifNotify(mWriteNotif, NULL);
-            break;
+        if (!sendConn) { /* nothing to send */
+            pthread_mutex_unlock(&mConnsLock);
+            if (!hadData)
+                break;
+            hadData = false;
+            if (forLeBuffers || !l2cAdvMayTx())
+                multiNotifNotify(mWriteNotif, NULL);
+            continue;
         }
+        hadData = true;
 
         if (sgLength(sendSg) > chipBufSz) {
             remainSg = sgSplit(sendSg, chipBufSz);
@@ -4198,17 +4706,11 @@ static void l2cTryMakeSendProgress(bool forLeBuffers, bool needLock)
                 *qConnP = sendConn;
                 *qBufP = remainSg;
                 *qFirstP = false;
-                definitelyHaveMore = true;
-            } else /* done? free the buf */
-                definitelyHaveMore = true;
+            }
         }
 
         /* releasing the lock here allows threads waiting to write to do so and helps keep the pipeline full */
-        if (needLock) {
-            pthread_mutex_unlock(&mConnsLock);
-            if (!definitelyHaveMore) /* yeild will have no point if we hold the lock */
-                sched_yield();
-        }
+        pthread_mutex_unlock(&mConnsLock);
 
         if (ret == HCI_TX_SEND_NO_CREDITS)
             break;
@@ -4257,9 +4759,9 @@ void l2cAclCreditAvail(bool le)
  * FUNCTION: l2cDataSendOnAclLink
  * USE:      Request a send on an ACL link of data with a header
  * PARAMS:   aclConn - the link
- *           hdr - header to prepend IFF accepted for TX
+ *           hdr - header to prepend IFF accepted for TX (can be NULL if hdrLen is 0) 
  *           hdrLen - size fo said header
- *           data - the data to send
+ *           data - the data to send (can be null if hdrLen is nonzero)
  * RETURN:   L2C_TX_*
  * NOTES:    call with mConnsLock held
  */
@@ -4270,6 +4772,7 @@ static uint8_t l2cDataSendOnAclLink(struct l2cAclConn *aclConn, const void *hdr,
     hci_conn_t *queueConnP;
     bool *queueFirstP;
     bool useLeBuffers;
+    bool freeData = false;
 
     /* see which queue (LE/EDR) we need to use */
     useLeBuffers = BT_ADDR_IS_LE(aclConn->addr) && !mChipJointBuffers;
@@ -4287,7 +4790,15 @@ static uint8_t l2cDataSendOnAclLink(struct l2cAclConn *aclConn, const void *hdr,
     if (*queueBufP)
         ret = L2C_TX_TRY_LATER;
     else {
-        if (!sgConcatFrontCopy(data, hdr, hdrLen)) {
+        if (!data){
+            data = sgNew();
+            freeData = true;
+        }
+
+        if (!data) {
+            loge("Failed to alloc sg for data-free l2c acl send\n");
+            ret = L2C_TX_ERROR;
+        } else if (!sgConcatFrontCopy(data, hdr, hdrLen)) {
             loge("Failed to prepend L2C header\n");
             ret = L2C_TX_ERROR;
         } else {
@@ -4298,6 +4809,10 @@ static uint8_t l2cDataSendOnAclLink(struct l2cAclConn *aclConn, const void *hdr,
                 loge("Failed to schedule TX attempt\n");
         }
     }
+
+    if (ret != L2C_TX_ACCEPTED && freeData && data)
+        sgFree(data);
+
     return ret;
 }
 
@@ -4348,10 +4863,14 @@ uint8_t l2cApiDataTx(l2c_handle_t handle, sg data)
             l2cAclDownTimerStop(aclConn);
         }
 
-        utilSetLE16(&frm.len, sgLength(data));
-        utilSetLE16(&frm.cid, conn->remCh);
+        if (conn->mode == L2C_MODE_BASIC) {
 
-        ret = l2cDataSendOnAclLink(aclConn, &frm, sizeof(frm), data);
+            utilSetLE16(&frm.len, sgLength(data));
+            utilSetLE16(&frm.cid, conn->remCh);
+
+            ret = l2cDataSendOnAclLink(aclConn, &frm, sizeof(frm), data);
+        } else
+            ret = l2cAdvUserTx(conn, data);
     }
     pthread_mutex_unlock(&mConnsLock);
 
@@ -5022,7 +5541,7 @@ void l2cAclLinkEncrChange(hci_conn_t aclConnID, bool isEncrypted)
  * PARAMS:   fcs - input fcs
  *           data - the data
  *           len - the length of said data
- * RETURN:   the fc
+ * RETURN:   the fcs
  * NOTES:
  */
 static uint16_t l2cUtilFcs(uint16_t fcs, const void *data, uint32_t len)
@@ -5054,3 +5573,23 @@ static uint16_t l2cUtilFcs(uint16_t fcs, const void *data, uint32_t len)
 
     return fcs;
 }
+
+/*
+ * FUNCTION: l2cUtilFcsSg
+ * USE:      Calculate an L2CAP FCS (CRC-16 with poly 0x8005) for an SG
+ * PARAMS:   fcs - input fcs
+ *           s - the sg
+ * RETURN:   the fcs
+ * NOTES:
+ */
+static uint16_t l2cUtilFcsSg(uint16_t fcs, sg s)
+{
+    void *iter;
+
+    for (iter = sgIterStart(s); iter; iter = sgIterAdvance(iter))
+        fcs = l2cUtilFcs(fcs, sgIterCurData(iter), sgIterCurLen(iter));
+
+    return fcs;
+}
+
+
