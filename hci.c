@@ -1449,10 +1449,8 @@ void hciDown(void)
 
 /*
  * FUNCTION: hciCmdSubmit
- * USE:      Enqueue a command to be sent to the chip that will reply with a
- *           simple command complete/command status event. IF status, status
- *           will be used as the basis of callback "success" value. If
- *           complete, first byte of params.
+ * USE:      Atomically enqueue a command to be sent to the chip and event handlers for
+ *           events that will result.
  * PARAMS:   ogf - the command group
  *           ocf - the command code
  *           paramData - command params
