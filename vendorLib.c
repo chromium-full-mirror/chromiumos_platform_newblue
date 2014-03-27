@@ -400,11 +400,11 @@ static void* vendorWorker(void *pipeFdP)
                         sprintf(line + strlen(line), " %02X", packet[i + packetOffset]);
                     else {
                         if (i)
-                            logd(line);
+                            logd("%s", line);
                         sprintf(line, "vRX (%d) [%03X] %02X", buf[0], i, packet[i + packetOffset]);
                     }
                 }
-                logd(line);
+                logd("%s", line);
             }
 
             /* vendor lib code has first dibs on valid command complete packets */
@@ -728,11 +728,11 @@ bool vendorTx(uint8_t typ, sg data, bool expectReply)
                 sprintf(line + strlen(line), " %02X", v);
             else {
                 if (i)
-                    logd(line);
+                    logd("%s", line);
                 sprintf(line, "vTX (%d) [%03X] %02X", typ, i, v);
             }
         }
-        logd(line);
+        logd("%s", line);
     }
 
     if (!sgConcatFrontCopy(data, &typ, 1)) {
