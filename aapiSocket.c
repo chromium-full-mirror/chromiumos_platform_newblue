@@ -343,6 +343,7 @@ static struct aapiSock* aapiSockAlloc(btsock_type_t type, int sockType)
 static struct aapiSock* aapiSockAllocRfc(uint8_t chNum, uint8_t state)
 {
     struct aapiSock *sock = NULL;
+
     sg bufTx = sgNew();
     sg bufRx = sgNew();
 
@@ -391,8 +392,12 @@ static void aapiSockFree(struct aapiSock* sock)
         sock->next->prev = sock->prev;
     switch (sock->type) {
     case BTSOCK_RFCOMM:
-        sgFree(sock->rfc.bufTx);
-        sgFree(sock->rfc.bufRx);
+        if (sock->rfc.bufTx)
+            sgFree(sock->rfc.bufTx);
+        sock->rfc.bufTx = NULL;
+        if (sock->rfc.bufRx)
+            sgFree(sock->rfc.bufRx);
+        sock->rfc.bufTx = NULL;
         if (sock->rfc.state == RFC_SOCK_STATE_LISTENING) {
             struct appiSockListener *sl, *p = NULL;
             for (sl = mListeners; sl && sl->sdpHandle != sock->rfc.sdpHandle; p = sl, sl = sl->next);
