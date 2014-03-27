@@ -2542,6 +2542,11 @@ static void hciInquiryEvtEdrNameMac(const uint8_t *mac, uint8_t nameReqState, bo
         dns = dns->next;
     }
 
+    if (!dns) {
+        logw("No record of this name inquiry found. Dropping\n");
+        return;
+    }
+
     addr.type = BT_ADDR_TYPE_EDR;
     memcpy(addr.addr, mac, sizeof(addr.addr));
     persistAddKnownDev(&addr, name, &nameMaxLen, NULL);
@@ -2571,6 +2576,11 @@ static void hciInquiryEvtEdrNameHandle(uniq_t handle, uint8_t nameReqState, bool
     while (dns && dns->handle != handle) {
         prev = dns;
         dns = dns->next;
+    }
+
+    if (!dns) {
+        logw("No record of this name inquiry found. Dropping\n");
+        return;
     }
 
     hciInquiryEvtEdrName(dns, prev, nameReqState, lastCbk, name, nameMaxLen);
@@ -3695,12 +3705,6 @@ bool hciDiscoverEdrStop(uniq_t handle)
         handle = 0;
     else
         mDiscoverEdrHandle = uniqGetNext(); /* not us so nobdy can re-cancel. not zero so nobody can start another scan */
-
-    while (mDiscoverNames) {
-        struct hciDiscoverNameState *t = mDiscoverNames;
-        mDiscoverNames = mDiscoverNames->next;
-        free(t);
-    }
 
     pthread_mutex_unlock(&mDiscoveryStateLock);
 
