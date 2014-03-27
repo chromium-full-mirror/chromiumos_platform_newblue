@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <string.h>
 #include "vendorLib.h"
+#include "persist.h"
 #include "rfcomm.h"
 #include "timer.h"
 #include "l2cap.h"
@@ -96,7 +97,7 @@ static void leDiscoveryCbk(void *cbkData, const struct bt_addr *addr, int8_t rss
     }
 }
 
-static void edrDiscoveredNameCbk(void *cbkData, uint8_t nameReqStatus, const char *name)
+static void edrDiscoveredNameCbk(void *cbkData, const struct bt_addr *addr, uint8_t nameReqStatus, const char *name)
 {
     struct EdrDiscDev *t = (struct EdrDiscDev*)cbkData;
 
@@ -431,8 +432,7 @@ void aapiDiscoveryStateChanged(bool on)
     logd("aapiDiscoveryStateChanged(%d)\n", on);
 }
 
-
-void aapiPinReqCbk(const struct bt_addr *peer, const bt_bdname_t *bd_name, uint32_t devCls)
+void aapiPinReqCbk(const struct bt_addr *peer)
 {
     const uint8_t pin[4] = {'1','2','3','4'};
 
@@ -441,7 +441,7 @@ void aapiPinReqCbk(const struct bt_addr *peer, const bt_bdname_t *bd_name, uint3
     hciSecUserCbkPinCodeReq(peer, pin, sizeof(pin));
 }
 
-void aapiSspReqCbk(const struct bt_addr *peer, const bt_bdname_t *bd_name, uint32_t devCls, bt_ssp_variant_t pairing_variant, uint32_t pass_key)
+void aapiSspReqCbk(const struct bt_addr *peer, bt_ssp_variant_t pairing_variant, uint32_t pass_key)
 {
     logd("aapiSspReqCbk(...)\n");
     if (pairing_variant == BT_SSP_VARIANT_PASSKEY_ENTRY) {
