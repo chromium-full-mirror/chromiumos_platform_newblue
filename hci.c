@@ -2202,6 +2202,28 @@ HCI_SIMPLY_SYNC_WRITE(WriteLeHostSupported, (uint8_t leSupportedHost, uint8_t si
 HCI_SIMPLY_SYNC_END
 
 /*
+ * FUNCTION: hciWritePageScanActivitySync
+ * USE:      Set connectivity settings (page scan)
+ * PARAMS:   scanInterval - the scan interval
+ *           scanWindow - the scan window
+ */
+HCI_SIMPLY_SYNC_WRITE(WritePageScanActivity, (uint16_t scanInterval, uint16_t scanWindow), HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Page_Scan_Activity)
+    HCI_COPY_IN_U16(scanInterval)
+    HCI_COPY_IN_U16(scanWindow)
+HCI_SIMPLY_SYNC_END
+
+/*
+ * FUNCTION: hciWriteInquiryScanActivitySync
+ * USE:      Set discoverability settings (inquiry scan)
+ * PARAMS:   scanInterval - the scan interval
+ *           scanWindow - the scan window
+ */
+HCI_SIMPLY_SYNC_WRITE(WriteInquiryScanActivity, (uint16_t scanInterval, uint16_t scanWindow), HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Inquiry_Scan_Activity)
+    HCI_COPY_IN_U16(scanInterval)
+    HCI_COPY_IN_U16(scanWindow)
+HCI_SIMPLY_SYNC_END
+
+/*
  * FUNCTION: hciReadLocalVersionSync
  * USE:      read local version
  * PARAMS:   evt - event to return
@@ -3481,6 +3503,19 @@ static bool hciBtStackUp(void)
         evts &=~ HCI_EVENT_MAX_SLOTS_CHANGE; /* same here really */
         logi("Setting event mask to 0x"FMT64"X\n", CNV64(evts));
         ret = hciSetEventMaskSync(evts);
+        if (ret)
+            goto out;
+    }
+
+    /* set discoverability and connectivity scan settings */
+    {
+        logi("Setting page scan timings\n");
+        ret = hciWritePageScanActivitySync(0x100, 0x12);
+        if (ret)
+            goto out;
+
+        logi("Setting inquiry scan timings\n");
+        ret = hciWriteInquiryScanActivitySync(0x80, 0x12);
         if (ret)
             goto out;
     }
