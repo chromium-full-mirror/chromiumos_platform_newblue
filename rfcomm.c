@@ -263,11 +263,11 @@ static void rfcShow(const char *lbl, sg s)
                 sprintf(line + strlen(line), " %02X", v);
             else {
                 if (i)
-                    logd(line);
+                    logd("%s", line);
                 sprintf(line, "rfcomm %s [%03X] %02X", lbl, i, v);
             }
         }
-        logd(line);
+        logd("%s", line);
     #endif
 }
 
