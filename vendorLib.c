@@ -1,3 +1,4 @@
+#include <termios.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -17,7 +18,7 @@
 #include "sg.h"
 #include "mt.h"
 
-#define BT_VENDOR_LIB_NAME       "libbt-vendor.so"
+#define BT_VENDOR_LIB_NAME       "/vendor/lib/libbt-vendor.so"
 #define BT_VENDOR_INFACE_STRUCT  "BLUETOOTH_VENDOR_LIB_INTERFACE"
 
 
@@ -43,6 +44,8 @@ static pthread_mutex_t mStateLock = PTHREAD_MUTEX_INITIALIZER;
 static bool mKeepAwake;
 static uniq_t mSleepTimer;
 static bool mChipAwake;
+static bool mNeedsCompleteWrites;
+static bool mHaveLpm;
 
 static pthread_mutex_t mTxLock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -97,7 +100,7 @@ static void vendorChipWake(bool keepAwake)
 {
     uint8_t state = BT_VND_LPM_WAKE_ASSERT;
 
-    if (!mLpmTimeout)
+    if (!mLpmTimeout || !mHaveLpm)
         return;
 
     pthread_mutex_lock(&mStateLock);
@@ -132,6 +135,9 @@ out:
  */
 void vendorTxDoneWithEvts(void)
 {
+    if (!mLpmTimeout || !mHaveLpm)
+        return;
+
     pthread_mutex_lock(&mStateLock);
     mKeepAwake = false;
     mSleepTimer = uniqGetNext();
@@ -280,7 +286,7 @@ static void* vendorWorker(void *pipeFdP)
 
         for(i = 0; i < numfds; i++) {
             uint8_t buf[5], extraSz = 0, hdrSz = 0;
-            uint32_t sz;
+            uint32_t sz, packetOffset = 0;
             uint8_t *packet;
 
             if (i == exitPipeIdx)
@@ -290,49 +296,98 @@ static void* vendorWorker(void *pipeFdP)
                 continue;
 
             /* read the packet */
-            if (!r_read(pollfds[i].fd, buf, 1)) {
-                loge("Failed to read packet type: %d\n", ret);
-                continue;
-            }
-            switch (buf[0]) {
-            case HCI_PKT_TYP_ACL:
-                if (!r_read(pollfds[i].fd, buf + 1, hdrSz = 4)) {
-                    loge("Failed to read ACL hdr: %d\n", ret);
+            if (!mNeedsCompleteWrites && r_read(pollfds[i].fd, buf, 1)){
+
+                switch (buf[0]) {
+                case HCI_PKT_TYP_ACL:
+                    if (!r_read(pollfds[i].fd, buf + 1, hdrSz = 4)) {
+                        loge("Failed to read ACL hdr: %d\n", errno);
+                        continue;
+                    }
+                    sz = utilGetLE16(buf + 3);
+                    break;
+                case HCI_PKT_TYP_SCO:
+                    if (!r_read(pollfds[i].fd, buf + 1, hdrSz = 3)) {
+                        loge("Failed to read SCO hdr: %d\n", errno);
+                        continue;
+                    }
+                    sz = utilGetLE8(buf + 3);
+                    break;
+                case HCI_PKT_TYP_EVT:
+                    if (!r_read(pollfds[i].fd, buf + 1, hdrSz = 2)) {
+                        loge("Failed to read EVT hdr: %d\n", errno);
+                        continue;
+                    }
+                    sz = utilGetLE8(buf + 2);
+                    break;
+                default:
+                    loge("Unknown HCI packet type %d\n", buf[0]);
                     continue;
                 }
-                sz = utilGetLE16(buf + 3);
-                break;
-            case HCI_PKT_TYP_SCO:
-                if (!r_read(pollfds[i].fd, buf + 1, hdrSz = 3)) {
-                    loge("Failed to read SCO hdr: %d\n", ret);
+                packet = (uint8_t*)malloc(sz + hdrSz);
+                if (!packet) {
+                    loge("Failed to alloc %u bytes for packet\n", sz + hdrSz);
+                    /* read it anyways to avoid desync */
+                    while(sz--)
+                        r_read(pollfds[i].fd, buf, 1);
                     continue;
                 }
-                sz = utilGetLE8(buf + 3);
-                break;
-            case HCI_PKT_TYP_EVT:
-                if (!r_read(pollfds[i].fd, buf + 1, hdrSz = 2)) {
-                    loge("Failed to read EVT hdr: %d\n", ret);
+                memcpy(packet, buf + 1, hdrSz);
+                sz += hdrSz;
+                if (!r_read(pollfds[i].fd, packet + hdrSz, sz - hdrSz)) {
+                    loge("Failed to read packet remainder of a %ub packet\n", sz);
+                    free(packet);
                     continue;
                 }
-                sz = utilGetLE8(buf + 2);
-                break;
-            default:
-                loge("Unknown HCI packet type %d\n", buf[0]);
-                continue;
-            }
-            packet = (uint8_t*)malloc(sz + hdrSz);
-            if (!packet) {
-                loge("Failed to alloc %u bytes for packet\n", sz + hdrSz);
-                /* read it anyways to avoid desync */
-                while(sz--)
-                    r_read(pollfds[i].fd, buf, 1);
-                continue;
-            }
-            memcpy(packet, buf + 1, hdrSz);
-            sz += hdrSz;
-            if (!r_read(pollfds[i].fd, packet + hdrSz, sz - hdrSz)) {
-                loge("Failed to read packet remainder of a %ub packet\n", sz);
-                free(packet);
+            } else if (mNeedsCompleteWrites || errno == ENOMEM) { /* maybe they want us to read the entire packet at once */
+                int bytesAvail = -1;
+                if (ioctl(pollfds[i].fd, FIONREAD, &bytesAvail)) {
+                    loge("ioctl.FIONREAD failed too: %d\n", errno);
+                    continue;
+                }
+                if (bytesAvail <= 0) {
+                    loge("ioctl.FIONREAD told us there are %u bytes\n", bytesAvail);
+                    continue;
+                }
+                packet = (uint8_t*)malloc(bytesAvail);
+                if (!packet) {
+                    loge("alloc(%u) fails\n", bytesAvail);
+                    continue;
+                }
+                if (!r_read(pollfds[i].fd, packet, bytesAvail)) {
+                    free(packet);
+                    loge("second read fails: %d\n", errno);
+                    continue;
+                }
+                switch (packet[0]) {
+                case HCI_PKT_TYP_ACL:
+                    hdrSz = 4;
+                    sz = utilGetLE16(packet + 3);
+                    break;
+                case HCI_PKT_TYP_SCO:
+                    hdrSz = 3;
+                    sz = utilGetLE8(packet + 3);
+                    break;
+                case HCI_PKT_TYP_EVT:
+                    hdrSz = 2;
+                    sz = utilGetLE8(packet + 2);
+                    break;
+                default:
+                    loge("Unknown HCI packet type %d\n", packet[0]);
+                    free(packet);
+                    continue;
+                }
+                sz += hdrSz;
+                packetOffset++;
+                if ((unsigned)bytesAvail != sz + packetOffset) {
+                    loge("%u (incl %u) + %u != %u\n", sz, hdrSz, packetOffset, bytesAvail);
+                    free(packet);
+                    continue;
+                }
+                mNeedsCompleteWrites = true;
+                buf[0] = packet[0];
+            } else {
+                loge("Failed to read packet type: %d\n", errno);
                 continue;
             }
 
@@ -342,20 +397,20 @@ static void* vendorWorker(void *pipeFdP)
 
                 for(i = 0; i < sz; i++) {
                     if (i & 15)
-                        sprintf(line + strlen(line), " %02X", packet[i]);
+                        sprintf(line + strlen(line), " %02X", packet[i + packetOffset]);
                     else {
                         if (i)
                             logd(line);
-                        sprintf(line, "vRX (%d) [%03X] %02X", buf[0], i, packet[i]);
+                        sprintf(line, "vRX (%d) [%03X] %02X", buf[0], i, packet[i + packetOffset]);
                     }
                 }
                 logd(line);
             }
 
             /* vendor lib code has first dibs on valid command complete packets */
-            if (mCmdCompleteWaiting && buf[0] == HCI_PKT_TYP_EVT && packet[0] == 0x0E && sz >= 5) {
+            if (mCmdCompleteWaiting && buf[0] == HCI_PKT_TYP_EVT && packet[0 + packetOffset] == 0x0E && sz >= 5) {
 
-                uint16_t code = (((uint16_t)packet[4]) << 8) | packet[3];
+                uint16_t code = (((uint16_t)packet[4 + packetOffset]) << 8) | packet[3 + packetOffset];
 
                 /* but it only needs them of a certain type - so we filter here */
                 if (code == mCmdCompleteWaiting) {
@@ -366,7 +421,7 @@ static void* vendorWorker(void *pipeFdP)
                     if (!h)
                         loge("Failed to alloc reply for vendor complete event\n");
                     else {
-                        memcpy(h + 1, packet, sz);
+                        memcpy(h + 1, packet + packetOffset, sz);
                         mCmdCompleteCbk(h);
                     }
                     free(packet);
@@ -374,10 +429,11 @@ static void* vendorWorker(void *pipeFdP)
                 }
             }
             if (packet) {
-                sg data = sgNewWithAllocedData(packet, sz);
-                if (data)
+                sg data = sgNewWithAllocedData(packet, sz + packetOffset);
+                if (data) {
+                    sgTruncFront(data, packetOffset);
                     mCbkRx(mCbkData, buf[0], data);
-                else {
+                } else {
                     loge("failed to alloc RX sg\n");
                     free(packet);
                 }
@@ -444,7 +500,8 @@ bool vendorOpen(void)
     if (mVendorIface->size < sizeof(bt_vendor_interface_t)) {
         loge("Vendor lib iface size %u is strange, expected %u\n",
             (int)mVendorIface->size, (int)sizeof(bt_vendor_interface_t));
-        goto out_close_lib;
+        /* we cannot fail out of here since TI actually does this! */
+        //goto out_close_lib;
     }
 
     if (sem_init(&mInitSem, 0, 0)) {
@@ -494,6 +551,8 @@ bool vendorUp(const uint8_t *addr, vendorCbkChipUp chipUpCbk, vendorCbkRx dataRx
         .epilog_cb = vcbkSomeConfigDone,
     };
 
+    mHaveLpm = true;
+
     if (!chipUpCbk || !dataRxCbk) {
         loge("Missing callback for vendorUp()\n");
         return false;
@@ -524,13 +583,15 @@ bool vendorUp(const uint8_t *addr, vendorCbkChipUp chipUpCbk, vendorCbkRx dataRx
         goto out_need_close;
     }
 
-    logd("vendor->op(BT_VND_OP_GET_LPM_IDLE_TIMEOUT)\n");
-    ret = mVendorIface->op(BT_VND_OP_GET_LPM_IDLE_TIMEOUT, (void*)&mLpmTimeout);
-    if (ret) {
-        loge("iface LPM TO get failed with code %d\n", ret);
-        goto out_need_close;
+    if (mHaveLpm) {
+        logd("vendor->op(BT_VND_OP_GET_LPM_IDLE_TIMEOUT)\n");
+        ret = mVendorIface->op(BT_VND_OP_GET_LPM_IDLE_TIMEOUT, (void*)&mLpmTimeout);
+        if (ret) {
+            loge("iface LPM TO get failed with code %d\n", ret);
+            mHaveLpm = false;
+        }
+        logi("Vendor timeout: %ums\n", (unsigned)mLpmTimeout);
     }
-    logi("Vendor timeout: %ums\n", (unsigned)mLpmTimeout);
 
     logd("vendor->op(BT_VND_OP_POWER_CTRL, on)\n");
     tmp = BT_VND_PWR_ON;
@@ -592,16 +653,20 @@ bool vendorUp(const uint8_t *addr, vendorCbkChipUp chipUpCbk, vendorCbkRx dataRx
     if (!mCbkResult)
         goto out_need_thread_shutdown;
 
-    logd("Setting LPM mode\n");
-    tv8 = BT_VND_LPM_ENABLE;
-    ret = mVendorIface->op(BT_VND_OP_LPM_SET_MODE, (void*)&tv8);
-    if (!ret) { /* yup .. this one returns nonzero on error */
-        loge("iface LPM config failed with code %d\n", ret);
-        goto out_need_thread_shutdown;
+    if (mHaveLpm) {
+        logd("Setting LPM mode\n");
+        tv8 = BT_VND_LPM_ENABLE;
+        ret = mVendorIface->op(BT_VND_OP_LPM_SET_MODE, (void*)&tv8);
+        if (!ret) { /* yup .. this one returns nonzero on error */
+            loge("iface LPM config failed with code %d\n", ret);
+            mHaveLpm = false;
+        }
+        if (mHaveLpm) {
+            logd("Waiting for LPM init\n");
+            r_sem_wait(&mInitSem);
+            logd("LPM init done: %s\n", mCbkResult ? "OK" : "FAILED");
+        }
     }
-    logd("Waiting for LPM init\n");
-    r_sem_wait(&mInitSem);
-    logd("LPM init done: %s\n", mCbkResult ? "OK" : "FAILED");
 
     return true;
 
@@ -690,11 +755,35 @@ bool vendorTx(uint8_t typ, sg data, bool expectReply)
         goto out;
     }
 
-    /* quite elegant, don't you find? */
-    for (iter = sgIterStart(data); iter; iter = sgIterAdvance(iter)) {
-        if (!r_write(fd, sgIterCurData(iter), sgIterCurLen(iter))) {
+    if (mNeedsCompleteWrites) {
+        static uint8_t *txBufPtr = NULL;
+        static uint32_t txBufSz = 0;
+        uint8_t *tmp;
+
+        if (txBufSz < sgLength(data)) {
+            tmp = (uint8_t*)realloc(txBufPtr, sgLength(data));
+            if (!tmp) {
+                loge("Failed to realloc TXB to %ub\n", sgLength(data));
+                goto out;
+            }
+            txBufPtr = tmp;
+            txBufSz = sgLength(data);
+        }
+        if (sgSerialize(data, 0, sgLength(data), txBufPtr) != sgLength(data)) {
+            loge("Failed to serialize to TXB\n");
+            goto out;
+        }
+        if (!r_write(fd, txBufPtr, sgLength(data))) {
             loge("Write failed for data %d: %d\n", fd, errno);
             goto out;
+        }
+    } else {
+        /* quite elegant, don't you find? */
+        for (iter = sgIterStart(data); iter; iter = sgIterAdvance(iter)) {
+            if (!r_write(fd, sgIterCurData(iter), sgIterCurLen(iter))) {
+                loge("Write failed for data %d: %d\n", fd, errno);
+                goto out;
+            }
         }
     }
 
