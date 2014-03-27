@@ -4,6 +4,7 @@
 #include "sg.h"
 
 
+#define SG_FREE_MARKER   ((void*)(uintptr_t)0xDEADBEEFDEADBEEFULL)
 
 struct sgitem {
     struct sgitem *next;
@@ -29,6 +30,16 @@ struct sgbuf {
     {
         struct sgitem *c, *p = NULL;
         uint32_t sz = 0;
+
+        if (!s) {
+            loge("VERIFY: NULL!\n");
+            sgVerifyFail();
+        }
+
+        if (s->head == SG_FREE_MARKER || s->tail == SG_FREE_MARKER) {
+            loge("VERIFY: freed!\n");
+            sgVerifyFail();
+        }
 
         for(c = s->head; c; p = c, c = c->next)
             sz += c->len;
@@ -148,6 +159,8 @@ void sgFree(sg s)
         item = item->next;
         sgitemFree(t);
     }
+    s->head = SG_FREE_MARKER;
+    s->tail = SG_FREE_MARKER;
     free(s);
 }
 
