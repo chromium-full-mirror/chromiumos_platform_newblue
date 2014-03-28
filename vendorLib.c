@@ -45,6 +45,7 @@ static bool mKeepAwake;
 static uniq_t mSleepTimer;
 static bool mChipAwake;
 static bool mNeedsCompleteWrites;
+static bool mKnowAboutCompleWrites;
 static bool mHaveLpm;
 
 static pthread_mutex_t mTxLock = PTHREAD_MUTEX_INITIALIZER;
@@ -389,6 +390,7 @@ static void* vendorWorker(void *pipeFdP)
                 continue;
             }
 
+            mKnowAboutCompleWrites = true;
             if (mLog) {
                 char line[128] = "vRX <ZLP>";
                 uint32_t i;
@@ -753,7 +755,7 @@ bool vendorTx(uint8_t typ, sg data, bool expectReply)
         goto out;
     }
 
-    if (mNeedsCompleteWrites) {
+    if (mNeedsCompleteWrites || !mKnowAboutCompleWrites) {
         static uint8_t *txBufPtr = NULL;
         static uint32_t txBufSz = 0;
         uint8_t *tmp;
