@@ -288,11 +288,11 @@ static bool sdpSend(struct sdpInst *inst, sg s)
             sprintf(line + strlen(line), " %02X", v);
         else {
             if (i)
-                logd(line);
+                logd("%s\n", line);
             sprintf(line, "SDP TX [%03X] %02X", i, v);
         }
     }
-    logd(line);
+    logd("%s\n", line);
 #endif
     return sendQueueTx(mSendQ, inst->conn, s);
 }
@@ -1254,11 +1254,11 @@ static bool sdpRx(struct sdpInst *inst, sg req)
             sprintf(line + strlen(line), " %02X", v);
         else {
             if (i)
-                logd(line);
+                logd("%s\n", line);
             sprintf(line, "SDP RX [%03X] %02X", i, v);
         }
     }
-    logd(line);
+    logd("%s\n", line);
 #endif
 
     if (!sgSerializeCutFront(req, &reqPdu, sizeof(reqPdu)))
