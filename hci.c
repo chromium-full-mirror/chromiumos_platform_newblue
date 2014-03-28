@@ -4359,7 +4359,7 @@ uint8_t hciTryToTx(hci_conn_t aclConn, sg data, uint8_t boundary)
             struct hciAclHdr hdr;
             uint16_t pb = 0xFFFF; /* this will catch all other cases */
             uint16_t start_pb = mBtVer >= HCI_VERSION_2_1 ? ACL_HDR_PB_FIRST_NONAUTO : ACL_HDR_PB_FIRST_AUTO;
-            uint16_t complete_pb = mBtVer >= HCI_VERSION_3_0 ? ACL_HDR_PB_COMPLETE : start_pb;
+            uint16_t complete_pb = /*mBtVer >= HCI_VERSION_3_0 ? ACL_HDR_PB_COMPLETE : */start_pb; /* XXX: this causes problems with TI BT chips - they send "complete" as a "continue" confusing the other side */
 
             switch(boundary) {
             case HCI_BOUNDARY_COMPLETE:
