@@ -114,8 +114,6 @@ static void vendorChipWake(bool keepAwake)
         mChipAwake = true;
     }
 
-    if (mKeepAwake && keepAwake)
-        loge("double-wake in vendor lib!\n");
     if (!keepAwake && !mKeepAwake){
         mSleepTimer = uniqGetNext();
         timerSet(mLpmTimeout, vendorSleepTimeout, mSleepTimer);
