@@ -588,6 +588,7 @@ static bt_status_t aapiSockListen(btsock_type_t type, const char* serviceName, c
     bt_status_t ret = BT_STATUS_FAIL;
     struct appiSockListener *sl = NULL, *p;
     struct aapiSock* sock;
+    bool linkIn = true;
     uint8_t ch;
 
 
@@ -618,6 +619,7 @@ static bt_status_t aapiSockListen(btsock_type_t type, const char* serviceName, c
             logw("Failed to find previous listening socket. SDP likely to be leaked->auto-freeing\n");
             sdpServiceDescriptorDel(sl->sdpHandle);
         }
+        linkIn = false;
     } else
         sl = malloc(sizeof(struct appiSockListener));
     if (sl)
@@ -668,10 +670,11 @@ static bt_status_t aapiSockListen(btsock_type_t type, const char* serviceName, c
         goto out_stoplisten;
     }
 
-
     sl->sdpHandle = sock->rfc.sdpHandle;
-    sl->next = mListeners;
-    mListeners = sl;
+    if (linkIn) {
+        sl->next = mListeners;
+        mListeners = sl;
+    }
     
     *sockFdP = sock->java_fd;
     sock->java_fd = -1;
