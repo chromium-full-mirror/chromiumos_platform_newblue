@@ -838,10 +838,10 @@ static uint32_t attGetMtu(struct attServer *srv, l2c_handle_t to, bool tryDefaul
  * USE:      Sends an assembled packet to the peer
  * PARAMS:   srv - the server
  *           to - whom the data is to be sent to
- *           preData - first part of the packet
+ *           preData - first part of the packet or NULL
  *           preLen - length of fais data
- *           data - the middle of the packet
- *           postData - last part of the packet
+ *           data - the middle of the packet or NULL
+ *           postData - last part of the packet or NULL
  *           postLen - length of said data
  * RETURN:   ATT_TX_RET_*
  * NOTES:    call with srv->lock held for read
@@ -849,12 +849,25 @@ static uint32_t attGetMtu(struct attServer *srv, l2c_handle_t to, bool tryDefaul
 static uint8_t attSrvSend(struct attServer *srv, l2c_handle_t to, const void *preData, uint32_t preLen, sg data, const void *postData, uint32_t postLen)
 {
     uint8_t ret;
+    sg tmpData = NULL;
 
-    if (preLen && !sgConcatFrontCopy(data, preData, preLen))
+    if (!data) {
+        tmpData = data = sgNew();
+        if (!tmpData)
+            return ATT_TX_RET_OOM;
+    }
+
+    if (preLen && !sgConcatFrontCopy(data, preData, preLen)) {
+        if (tmpData)
+            sgFree(tmpData);
         return ATT_TX_RET_OOM;
+    }
 
     if (postLen && !sgConcatBackCopy(data, preData, preLen)) {
-        sgTruncFront(data, preLen);
+        if (tmpData)
+            sgFree(tmpData);
+        else
+            sgTruncFront(data, preLen);
         return ATT_TX_RET_OOM;
     }
 
@@ -862,8 +875,12 @@ static uint8_t attSrvSend(struct attServer *srv, l2c_handle_t to, const void *pr
     if (ret == ATT_TX_RET_ACCEPTED)
         return ret;
 
-    sgTruncBack(data, postLen);
-    sgTruncFront(data, preLen);
+    if (tmpData)
+        sgFree(tmpData);
+    else {
+        sgTruncBack(data, postLen);
+        sgTruncFront(data, preLen);
+    }
     return ret;
 }
 
@@ -897,7 +914,7 @@ static uint8_t attSrvSendNotif(struct attServer *srv, struct attRange *range, st
         utilSetLE16(&indH->handle, val->offset + range->start);
         hdrLen += sizeof(*indH);
     }
-    
+
     mtu = attGetMtu(srv, to, true);
     if (!mtu)
         return ATT_TX_RET_ATT_ERROR;
@@ -921,7 +938,7 @@ static uint8_t attSrvSendNotif(struct attServer *srv, struct attRange *range, st
  *           data - the data to send
  *           notify - send notification (as opposed to indication)
  * RETURN:   ATT_TX_RET_*
- * NOTES:
+ * NOTES:    call with srv->lock held for read
  */
 uint8_t attSrvValueNotifyChanged(struct attServer *srv, att_range_t rangeRef, uint16_t offset, l2c_handle_t to, sg data, bool notify)
 {
@@ -953,7 +970,7 @@ out:
  * USE:      Called to set the MTU for an ATT server to a given client
  * PARAMS:   srv - the server
  *           to - whom the MTU is to
- *           mtu - the mtu 
+ *           mtu - the mtu
  * RETURN:   NONE
  * NOTES:    used by EDR only. LE does its own negotiation
  */
@@ -965,11 +982,10 @@ void attSrvSetMtu(struct attServer *srv, l2c_handle_t to, uint32_t mtu)
 }
 
 /*
-
  * FUNCTION: attReadUuid
  * USE:      Read a UUID-128 or a UUID16 from an sg, if it is the noly thing there
  * PARAMS:   dst - we store the read UUID here
- *           s - the data 
+ *           s - the data
  * RETURN:   success
  * NOTES:
  */
@@ -992,11 +1008,241 @@ static bool attReadUuid(struct att_uuid *dst, sg s)
 }
 
 /*
+ * FUNCTION: attSrvSendErrorReply
+ * USE:      Sends an error to the client
+ * PARAMS:   srv - the server
+ *           to - whom to send to
+ *           err - the error
+ *           opcode - opcode for which the error happened
+ *           handle - the pertinent handle
+ * RETURN:   success
+ * NOTES:    call with srv->lock held for read
+ */
+static bool attSrvSendErrorReply(struct attServer *srv, l2c_handle_t to, uint8_t errNo, uint8_t opcode, uint16_t handle)
+{
+    struct attPduError err;
+    struct attHdr hdr;
+
+    utilSetLE8(&hdr.opcode, ATT_OPCODE_ERROR);
+    utilSetLE8(&err.reqOpcode, opcode);
+    utilSetLE8(&err.err, errNo);
+    utilSetLE16(&err.handle, handle);
+
+    return attSrvSend(srv, to, &hdr, sizeof(hdr), NULL, &err, sizeof(err)) == ATT_TX_RET_ACCEPTED;
+}
+
+/*
+ * FUNCTION: attSrvOpFindInfo
+ * USE:      Perform a find info request
+ * PARAMS:   srv - the server
+ *           to - whom to reply to
+ *           mtu - the mtu to use
+ *           startHandle - first handle the client cares about
+ *           endHandle - last handle the client cares about
+ * RETURN:   success
+ * NOTES:    call with srv->lock held for read
+ */
+static bool attSrvOpFindInfo(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t startHandle, uint16_t endHandle)
+{
+    //
+    return false;
+}
+
+/*
+ * FUNCTION: attSrvOpFindByTypeVal
+ * USE:      Perform a find by type value request
+ * PARAMS:   srv - the server
+ *           to - whom to reply to
+ *           mtu - the mtu to use
+ *           startHandle - first handle the client cares about
+ *           endHandle - last handle the client cares about
+ *           uuid - the uuid to find
+ *           s - the value to find
+ * RETURN:   success
+ * NOTES:    call with srv->lock held for read
+ */
+static bool attSrvOpFindByTypeVal(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t startHandle, uint16_t endHandle, const struct att_uuid *uuid, sg s)
+{
+    //
+    return false;
+}
+
+/*
+ * FUNCTION: attSrvOpReadByType
+ * USE:      Perform a read by type request
+ * PARAMS:   srv - the server
+ *           to - whom to reply to
+ *           mtu - the mtu to use
+ *           startHandle - first handle the client cares about
+ *           endHandle - last handle the client cares about
+ *           uuid - the uuid to find
+ * RETURN:   success
+ * NOTES:    call with srv->lock held for read
+ */
+static bool attSrvOpReadByType(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t startHandle, uint16_t endHandle, const struct att_uuid *uuid)
+{
+    //
+    return false;
+}
+
+/*
+ * FUNCTION: attSrvOpRead
+ * USE:      Perform a read request
+ * PARAMS:   srv - the server
+ *           to - whom to reply to
+ *           mtu - the mtu to use
+ *           handle - first handle the client cares about
+ * RETURN:   success
+ * NOTES:    call with srv->lock held for read
+ */
+static bool attSrvOpRead(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t handle)
+{
+    //
+    return false;
+}
+
+/*
+ * FUNCTION: attSrvOpReadBlob
+ * USE:      Perform a read blob request
+ * PARAMS:   srv - the server
+ *           to - whom to reply to
+ *           mtu - the mtu to use
+ *           handle - first handle the client cares about
+ *           offset - offset into a long attribute
+ * RETURN:   success
+ * NOTES:    call with srv->lock held for read
+ */
+static bool attSrvOpReadBlob(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t handle, uint16_t offset)
+{
+    //
+    return false;
+}
+
+
+/*
+ * FUNCTION: attSrvOpReadMult
+ * USE:      Perform a read multiple request
+ * PARAMS:   srv - the server
+ *           to - whom to reply to
+ *           mtu - the mtu to use
+ *           s - sg with uint16_t list of handles
+ * RETURN:   success
+ * NOTES:    call with srv->lock held for read
+ */
+static bool attSrvOpReadMult(struct attServer *srv, l2c_handle_t to, uint32_t mtu, sg handles)
+{
+    //
+    return false;
+}
+
+/*
+ * FUNCTION: attSrvOpReadByGrpType
+ * USE:      Perform a read by group type request
+ * PARAMS:   srv - the server
+ *           to - whom to reply to
+ *           mtu - the mtu to use
+ *           s - sg with uint16_t list of handles
+ * RETURN:   success
+ * NOTES:    call with srv->lock held for read
+ */
+static bool attSrvOpReadByGrpType(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t startHandle, uint16_t endHandle, const struct att_uuid *uuid)
+{
+    //
+    return false;
+}
+
+/*
+ * FUNCTION: attSrvOpWrite
+ * USE:      Perform a write request / command
+ * PARAMS:   srv - the server
+ *           to - whom to reply to
+ *           mtu - the mtu to use
+ *           handle - the handle to write
+ *           data - sg with the data to write
+ *           isReq - set if this was a request and needs a reply, else clear
+ * RETURN:   success
+ * NOTES:    call with srv->lock held for read
+ */
+static bool attSrvOpWrite(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t handle, sg data, bool isReq)
+{
+    //
+    return false;
+}
+
+/*
+ * FUNCTION: attSrvOpPrepareWrite
+ * USE:      Perform a prepare write request
+ * PARAMS:   srv - the server
+ *           to - whom to reply to
+ *           mtu - the mtu to use
+ *           handle - the handle to write
+ *           offset - the offset into said attribute
+ *           data - sg with the data to write
+ * RETURN:   success
+ * NOTES:    call with srv->lock held for read
+ */
+static bool attSrvOpPrepareWrite(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t handle, uint16_t offset, sg data)
+{
+    //
+    return false;
+}
+
+/*
+ * FUNCTION: attSrvOpExecuteWrite
+ * USE:      Perform an execute write request
+ * PARAMS:   srv - the server
+ *           to - whom to reply to
+ *           mtu - the mtu to use
+ *           flags - ATT_EXECUTE_WRITE_FLG_*
+ * RETURN:   success
+ * NOTES:    call with srv->lock held for read
+ */
+static bool attSrvOpExecuteWrite(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint8_t flags)
+{
+    //
+    return false;
+}
+
+/*
+ * FUNCTION: attSrvOpHandleValueConf
+ * USE:      Handle a value confirmation
+ * PARAMS:   srv - the server
+ *           to - whom to reply to (if any)
+ *           mtu - the mtu to use
+ * RETURN:   success
+ * NOTES:    call with srv->lock held for read
+ */
+static bool attSrvOpHandleValueConf(struct attServer *srv, l2c_handle_t to, uint32_t mtu)
+{
+    //
+    return false;
+}
+
+/*
+ * FUNCTION: attSrvOpSignedWrite
+ * USE:      Perform a signed write command
+ * PARAMS:   srv - the server
+ *           to - whom to reply to
+ *           mtu - the mtu to use
+ *           handle - the handle to write
+ *           data - sg with the data to write
+ *           isReq - set if this was a request and needs a reply, else clear
+ * RETURN:   success
+ * NOTES:    call with srv->lock held for read
+ */
+static bool attSrvOpSignedWrite(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t handle, const uint8_t *sig, sg data)
+{
+    //
+    return false;
+}
+
+
+/*
  * FUNCTION: attSrvDataRx
  * USE:      Called when data arrives from a given connection
  * PARAMS:   srv - the server
  *           from - whom the data arived from
- *           s - the data 
+ *           s - the data
  * RETURN:   success
  * NOTES:
  */
@@ -1039,9 +1285,9 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
         pthread_rwlock_unlock(&srv->lock);
         pthread_rwlock_wrlock(&srv->lock);
         if (!sgSerializeCutFront(s, &mtuExch, sizeof(mtuExch)))
-            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+            ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else if (sgLength(s))
-            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+            ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else {
             newMtu = utilGetLE16(&mtuExch.mtu);
             mtu = attGetMtu(srv, from, false);
@@ -1055,116 +1301,116 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
 
     case ATT_OPCODE_FIND_INFO_REQ:
         if (!sgSerializeCutFront(s, &findInfoReq, sizeof(findInfoReq)))
-            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+            ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else if (sgLength(s))
-            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+            ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
-            ret = attSrvOpFindInfo(s, from, mtu, utilGetLE16(&findInfoReq.startHandle), utilGetLE16(&findInfoReq.endHandle));
+            ret = attSrvOpFindInfo(srv, from, mtu, utilGetLE16(&findInfoReq.startHandle), utilGetLE16(&findInfoReq.endHandle));
         break;
 
     case ATT_OPCODE_FIND_BY_TYPE_VAL_REQ:
         if (!sgSerializeCutFront(s, &findByTypeValReq, sizeof(findByTypeValReq)))
-            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+            ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else {
             attUuidFromUuid16(&uuid, utilGetLE16(&findByTypeValReq.uuid16));
-            ret = attSrvOpFindByTypeVal(s, from, mtu, utilGetLE16(&findByTypeValReq.startHandle), utilGetLE16(&findByTypeValReq.endHandle), &uuid, s);
+            ret = attSrvOpFindByTypeVal(srv, from, mtu, utilGetLE16(&findByTypeValReq.startHandle), utilGetLE16(&findByTypeValReq.endHandle), &uuid, s);
         }
         break;
 
     case ATT_OPCODE_READ_BY_TYPE_REQ:
         if (!sgSerializeCutFront(s, &readByTypeReq, sizeof(readByTypeReq)) || !attReadUuid(&uuid, s))
-            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+            ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else if (sgLength(s))
-            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+            ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
-            ret = attSrvOpReadByType(s, from, mtu, utilGetLE16(&readByTypeReq.startHandle), utilGetLE16(&readByTypeReq.endHandle), &uuid);
+            ret = attSrvOpReadByType(srv, from, mtu, utilGetLE16(&readByTypeReq.startHandle), utilGetLE16(&readByTypeReq.endHandle), &uuid);
         break;
 
     case ATT_OPCODE_READ_REQ:
         if (!sgSerializeCutFront(s, &readReq, sizeof(readReq)))
-            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+            ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else if (sgLength(s))
-            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+            ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
-            ret = attSrvOpRead(s, from, mtu, utilGetLE16(&readReq.handle));
+            ret = attSrvOpRead(srv, from, mtu, utilGetLE16(&readReq.handle));
         break;
 
     case ATT_OPCODE_READ_BLOB_REQ:
         if (!sgSerializeCutFront(s, &readBlobReq, sizeof(readBlobReq)))
-            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+            ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else if (sgLength(s))
-            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+            ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
-            ret = attSrvOpReadBlob(s, from, mtu, utilGetLE16(&readBlobReq.handle), utilGetLE16(&readBlobReq.offset));
+            ret = attSrvOpReadBlob(srv, from, mtu, utilGetLE16(&readBlobReq.handle), utilGetLE16(&readBlobReq.offset));
         break;
 
     case ATT_OPCODE_READ_MULT_REQ:
         if ((sgLength(s) % sizeof(uint16_t)) || sgLength(s) < sizeof(uint16_t[2])) /* sanity check as per spec */
-            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+            ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
-            ret = attSrvOpReadMult(s, from, mtu, s);
+            ret = attSrvOpReadMult(srv, from, mtu, s);
         break;
 
     case ATT_OPCODE_READ_BY_GRP_TYPE_REQ:
         if (!sgSerializeCutFront(s, &readByGrpType, sizeof(readByGrpType)) || !attReadUuid(&uuid, s))
-            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+            ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
-            ret = attSrvOpReadByGrpType(s, from, mtu, utilGetLE16(&readByGrpType.startHandle), utilGetLE16(&readByGrpType.endHandle), &uuid);
+            ret = attSrvOpReadByGrpType(srv, from, mtu, utilGetLE16(&readByGrpType.startHandle), utilGetLE16(&readByGrpType.endHandle), &uuid);
         break;
 
     case ATT_OPCODE_WRITE_REQ:
         if (!sgSerializeCutFront(s, &writeReq, sizeof(writeReq)))
-            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+            ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
-            ret = attSrvOpWrite(s, from, mtu, utilGetLE16(&writeReq.handle), s, true);
+            ret = attSrvOpWrite(srv, from, mtu, utilGetLE16(&writeReq.handle), s, true);
         break;
 
     case ATT_OPCODE_PREPARE_WRITE_REQ:
         if (!sgSerializeCutFront(s, &prepareWriteReq, sizeof(prepareWriteReq)))
-            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+            ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
-            ret = attSrvOpPrepareWrite(s, from, mtu, utilGetLE16(&prepareWriteReq.handle), utilGetLE16(&prepareWriteReq.offset), s);
+            ret = attSrvOpPrepareWrite(srv, from, mtu, utilGetLE16(&prepareWriteReq.handle), utilGetLE16(&prepareWriteReq.offset), s);
         break;
 
     case ATT_OPCODE_EXECUTE_WRITE_REQ:
         if (!sgSerializeCutFront(s, &execWriteReq, sizeof(execWriteReq)))
-            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+            ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else if (sgLength(s))
-            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+            ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
-            ret = attSrvOpExecuteWrite(s, from, mtu, utilGetLE16(&execWriteReq.flags));
+            ret = attSrvOpExecuteWrite(srv, from, mtu, utilGetLE16(&execWriteReq.flags));
         break;
 
     case ATT_OPCODE_HANDLE_VALUE_CONF:
         if (sgLength(s))
-            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+            ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
-            ret = attSrvOpHandleValueConf(s, from, mtu);
+            ret = attSrvOpHandleValueConf(srv, from, mtu);
         break;
 
     case ATT_OPCODE_WRITE_CMD:
         if (!sgSerializeCutFront(s, &writeCmd, sizeof(writeCmd)))
-            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+            ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
-            ret = attSrvOpWrite(s, from, mtu, utilGetLE16(&writeCmd.handle), s, false);
+            ret = attSrvOpWrite(srv, from, mtu, utilGetLE16(&writeCmd.handle), s, false);
         break;
 
     case ATT_OPCODE_SIGNED_WRITE_CMD:
         if (!sgSerializeCutFront(s, &signedWriteCmd, sizeof(signedWriteCmd)))
-            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+            ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else if (sgLength(s) < ATT_SIG_LEN)
-            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+            ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else {
             uint8_t sig[ATT_SIG_LEN];
             sgSerialize(s, sgLength(s) - ATT_SIG_LEN, ATT_SIG_LEN, sig);
             sgTruncBack(s, ATT_SIG_LEN);
-            ret = attSrvOpSignedWrite(s, from, mtu, utilGetLE16(&signedWriteCmd.handle), sig, s);
+            ret = attSrvOpSignedWrite(srv, from, mtu, utilGetLE16(&signedWriteCmd.handle), sig, s);
         }
         break;
 
     default:
         logw("Unexpected ATT opcode 0x%02X\n", opcode);
-        ret = attSrvSendErrorReply(ATT_ERROR_REQ_NOT_SUPPORTED);
+        ret = attSrvSendErrorReply(srv, from, ATT_ERROR_REQ_NOT_SUPPORTED, opcode, 0);
         break;
     }
 
