@@ -14,9 +14,6 @@
 #include "mt.h"
 
 
-
-
-
 /* ERRORS */
 #define ATT_OPCODE_ERROR                 0x01 /* struct attPduError */
 
@@ -27,7 +24,7 @@
 #define ATT_OPCODE_READ_BY_TYPE_REQ      0x08 /* struct attPduReadByTypeReq */
 #define ATT_OPCODE_READ_REQ              0x0A /* struct attPduReadReq */
 #define ATT_OPCODE_READ_BLOB_REQ         0x0C /* struct attPduReadBlobReq */
-#define ATT_OPCODE_READ_MULT_REQ         0x0E /* uint16_t[] - at least two handles required */ */
+#define ATT_OPCODE_READ_MULT_REQ         0x0E /* uint16_t[] - at least two handles required */
 #define ATT_OPCODE_READ_BY_GRP_TYPE_REQ  0x10 /* struct attPduReadByGrpTypeReq */
 #define ATT_OPCODE_WRITE_REQ             0x12 /* struct attPduWriteReq */
 #define ATT_OPCODE_PREPARE_WRITE_REQ     0x16 /* struct attPduPrepareWriteReq */
@@ -52,7 +49,7 @@
 /* INDICATIONS */
 #define ATT_OPCODE_HANDLE_VALUE_IND      0x1D /* struct attPduHandleValueInd */
 
-/* CONFRATIONS */
+/* CONFIRMATION */
 #define ATT_OPCODE_HANDLE_VALUE_CONF     0x1E /* NO ADDITIONAL DATA SENT */
 
 /* COMMANDS */
@@ -205,7 +202,9 @@ struct attPduSignedWriteCmd {
 struct attConnList {
     uint32_t listCap;
     uint32_t listNum;
-    l2c_handle_t *listItems;
+    l2c_handle_t *conns;
+    uint32_t *mtus;
+    bool hasMtus;
 };
 
 struct attVal {
@@ -217,8 +216,6 @@ struct attVal {
     void *cbkData;
     uint16_t offset;
     uint8_t perms;
-
-    struct attConnList notifs;
 };
 
 struct attRange {
@@ -237,7 +234,8 @@ struct attServer {
     struct attRange *rangesTail;
     pthread_rwlock_t lock;
     attTxCbk txCbk;
-    uint32_t mtu;
+    attMtuCbk mtuCbk;
+    struct attConnList allClients;
 };
 
 
@@ -300,31 +298,53 @@ static bool attUuidToUuid16(uint16_t *dst, const struct att_uuid *uuid128)
 
 /*
  * FUNCTION: attConnListAdd
- * USE:      Add a given connection to a connection list, if it is not yet present there
+ * USE:      Add a given connection to a connection list, if it is not yet present there. update MTU if list has them
  * PARAMS:   list - the list
  *           conn - the connection
+ *           mtu - the mtu to store (or 0 if none or not known)
  * RETURN:   false on error
  * NOTES:    attConnList has no locks itself - please hold the parent data structure's lock when calling
  */
-static bool attConnListAdd(struct attConnList *list, l2c_handle_t conn)
+static bool attConnListAdd(struct attConnList *list, l2c_handle_t conn, uint32_t mtu)
 {
     uint32_t i;
 
-    for (i = 0; i < list->listNum; i++)
-        if (list->listItems[i] == conn)
+    if (!mtu && list->hasMtus) {
+        loge("Adding connection with no MTU to a list with MTUs not supported\n");
+        return false;
+    }
+
+    for (i = 0; i < list->listNum; i++) {
+        if (list->conns[i] == conn) {
+            if (list->hasMtus && mtu)
+                list->mtus[i] = mtu;
             return true;
+        }
+    }
 
     if (list->listCap == list->listNum) {
         uint32_t newCap = list->listCap + ATT_CONN_LIST_GROW_BY;
-        l2c_handle_t *t;
+        l2c_handle_t *conns;
+        uint32_t *mtus;
 
-        t = realloc(list->listItems, sizeof(l2c_handle_t[newCap]));
-        if (!t)
+        conns = realloc(list->conns, sizeof(l2c_handle_t[newCap]));
+        if (!conns)
             return false;
+        list->conns = conns;
+
+        if (list->hasMtus) {
+            mtus = realloc(list->mtus, sizeof(uint32_t[newCap]));
+            if (!mtus)
+                return false;
+            list->mtus = mtus;
+        }
+
         list->listCap = newCap;
-        list->listItems = t;
     }
-    list->listItems[list->listNum++] = conn;
+    list->conns[list->listNum] = conn;
+    if (list->hasMtus)
+        list->mtus[list->listNum] = mtu;
+    list->listNum++;
     return true;
 }
 
@@ -333,20 +353,45 @@ static bool attConnListAdd(struct attConnList *list, l2c_handle_t conn)
  * USE:      Delete a given connection from a connection list, if it is present there
  * PARAMS:   list - the list
  *           conn - the connection
- * RETURN:   false on error
+ * RETURN:   true if deleted
  * NOTES:    attConnList has no locks itself - please hold the parent data structure's lock when calling
  */
-static void attConnListDel(struct attConnList *list, l2c_handle_t conn)
+static bool attConnListDel(struct attConnList *list, l2c_handle_t conn)
 {
     uint32_t i;
 
     for (i = 0; i < list->listNum; i++) {
-        if (list->listItems[i] == conn) {
-            list->listItems[i] = list->listItems[--list->listNum];
-            break;
+        if (list->conns[i] == conn) {
+            list->listNum--;
+            list->conns[i] = list->conns[list->listNum];
+            if (list->hasMtus)
+                list->mtus[i] = list->mtus[list->listNum];
+            return true;
         }
     }
+
+    return false;
 }
+
+/*
+ * FUNCTION: attConnListGetMtu
+ * USE:      Retrieve a given connection's MTU from a connection list, if it is present there
+ * PARAMS:   list - the list
+ *           conn - the connection
+ * RETURN:   the MTU if found, else 0
+ * NOTES:    attConnList has no locks itself - please hold the parent data structure's lock when calling
+ */
+static uint32_t attConnListGetMtu(struct attConnList *list, l2c_handle_t conn)
+{
+    uint32_t i;
+
+    for (i = 0; i < list->listNum; i++)
+        if (list->conns[i] == conn)
+            return list->hasMtus ? list->mtus[i] : 0;
+
+    return 0;
+}
+
 
 /*
  * FUNCTION: attConnListIsEmpty
@@ -369,34 +414,40 @@ static bool attConnListIsEmpty(const struct attConnList *list)
  */
 static void attConnListFree(struct attConnList *list)
 {
-    if (list->listItems)
-        free(list->listItems);
-    list->listItems = NULL;
+    if (list->conns)
+        free(list->conns);
+    if (list->mtus)
+        free(list->mtus);
+    list->conns = NULL;
 }
 
 /*
  * FUNCTION: attSrvCreate
  * USE:      create an ATT server
  * PARAMS:   txF - callback to use to TX data to clients
- *           defaultMtu - default MTU to use
  * RETURN:   the server struct or NULL on error
  * NOTES:
  */
-struct attServer* attSrvCreate(attTxCbk txF, uint32_t defaultMtu)
+struct attServer* attSrvCreate(attTxCbk txF, attMtuCbk mtuF)
 {
     struct attServer *ret = (struct attServer*)calloc(1, sizeof(struct attServer));
 
     if (!ret)
-        return NULL;
+        goto out_alloc;
 
-    if (pthread_rwlock_init(&ret->lock, NULL)) {
-        free(ret);
-        return NULL;
-    }
+    if (pthread_rwlock_init(&ret->lock, NULL))
+        goto out_lock;
 
     ret->txCbk = txF;
-    ret->mtu = defaultMtu;
+    ret->mtuCbk = mtuF;
     return ret;
+
+
+out_lock:
+    free(ret);
+
+out_alloc:
+    return NULL;
 }
 
 /*
@@ -406,7 +457,7 @@ struct attServer* attSrvCreate(attTxCbk txF, uint32_t defaultMtu)
  * RETURN:   NONE
  * NOTES:
  */
-void attSrvDestroy(struct attServer* srv)
+void attSrvDestroy(struct attServer *srv)
 {
     struct attRange *range;
     struct attVal *val;
@@ -416,12 +467,13 @@ void attSrvDestroy(struct attServer* srv)
         for (val = range->valsHead; val; ) {
             struct attVal *t = val;
             val = val->next;
-            attConnListFree(&t->notifs);
             free(t);
         }
         attConnListFree(&range->seenBy);
     }
+    attConnListFree(&srv->allClients);
     pthread_rwlock_unlock(&srv->lock);
+    pthread_rwlock_destroy(&srv->lock);
     free(srv);
 }
 
@@ -440,9 +492,6 @@ static void attRangeDeleteAllVals(struct attRange *range)
     while (val) {
         t = val;
         val = val->next;
-        if (!attConnListIsEmpty(&t->notifs))
-            logw("non-empty notif list in deleted value 0x%04x+0x%04x\n", range->start, t->offset);
-        attConnListFree(&t->notifs);
         free(t);
     }
     range->valsHead = NULL;
@@ -457,7 +506,7 @@ static void attRangeDeleteAllVals(struct attRange *range)
  * RETURN:   NONE
  * NOTES:    call with server's write lock held
  */
-static void attRangeDelete(struct attServer* srv, struct attRange *range)
+static void attRangeDelete(struct attServer *srv, struct attRange *range)
 {
 
     if (range->prev)
@@ -486,7 +535,7 @@ static void attRangeDelete(struct attServer* srv, struct attRange *range)
  * NOTES:    if said connection substribed to notifications, allows us to unsubstribe
  *           them proactively instead of waiting for TX errors
  */
-void attSrvNotifConnClose(struct attServer* srv, l2c_handle_t conn)
+void attSrvNotifConnClose(struct attServer *srv, l2c_handle_t conn)
 {
     struct attRange *range, *t;
     struct attVal *val;
@@ -494,15 +543,13 @@ void attSrvNotifConnClose(struct attServer* srv, l2c_handle_t conn)
 
     pthread_rwlock_wrlock(&srv->lock);
     for (range = srv->rangesHead; range;) {
-        for (val = range->valsHead; val; val = val->next) {
-            attConnListDel(&val->notifs, conn);
-        }
         attConnListDel(&range->seenBy, conn);
         t = range;
         range = range->next;
         if (attConnListIsEmpty(&t->seenBy) && !t->rangeRef) /* delete a disused range after all who knew about it are gone */
             attRangeDelete(srv, t);
     }
+    attConnListDel(&srv->allClients, conn);
     pthread_rwlock_unlock(&srv->lock);
 }
 
@@ -514,7 +561,7 @@ void attSrvNotifConnClose(struct attServer* srv, l2c_handle_t conn)
  * RETURN:   a reference to the handle range or 0 on failure
  * NOTES:
  */
-att_range_t attSrvHandleRangeReserve(struct attServer* srv, uint16_t len)
+att_range_t attSrvHandleRangeReserve(struct attServer *srv, uint16_t len)
 {
     uint32_t searchH = ATT_FIRST_VALID_HANDLE;
     struct attRange *next, *prev = NULL, *newRange;
@@ -567,9 +614,9 @@ out:
  * PARAMS:   srv - the server
  *           rangeRef - the range reference
  * RETURN:   the range struct or NULL if not found
- * NOTES:    call with srv->lock held
+ * NOTES:    call with srv->lock held for read
  */
-static struct attRange* attRangeFind(struct attServer* srv, att_range_t rangeRef)
+static struct attRange* attRangeFind(struct attServer *srv, att_range_t rangeRef)
 {
     struct attRange *range;
 
@@ -584,7 +631,7 @@ static struct attRange* attRangeFind(struct attServer* srv, att_range_t rangeRef
  * PARAMS:   range - the range
  *           offset - the offset
  * RETURN:   the value struct or NULL if not found
- * NOTES:    call with srv->lock held
+ * NOTES:    call with srv->lock held for read
  */
 static struct attVal* attValFind(struct attRange *range, uint16_t offset)
 {
@@ -603,9 +650,9 @@ static struct attVal* attValFind(struct attRange *range, uint16_t offset)
  *           offset - the offset
  *           rangeP - range gets stored here
  * RETURN:   the value struct or NULL if not found
- * NOTES:    call with srv->lock held
+ * NOTES:    call with srv->lock held for read
  */
-static struct attVal* attValRangeFind(struct attServer* srv, att_range_t rangeRef, uint16_t offset, struct attRange **rangeP)
+static struct attVal* attValRangeFind(struct attServer *srv, att_range_t rangeRef, uint16_t offset, struct attRange **rangeP)
 {
     *rangeP = attRangeFind(srv, rangeRef);
     if (*rangeP)
@@ -621,7 +668,7 @@ static struct attVal* attValRangeFind(struct attServer* srv, att_range_t rangeRe
  * RETURN:   NONE
  * NOTES:
  */
-void attSrvHandleRangeRelease(struct attServer* srv, att_range_t rangeRef)
+void attSrvHandleRangeRelease(struct attServer *srv, att_range_t rangeRef)
 {
     struct attRange *range;
 
@@ -654,7 +701,7 @@ void attSrvHandleRangeRelease(struct attServer* srv, att_range_t rangeRef)
  * RETURN:   success
  * NOTES:
  */
-bool attSrvValueRegister(struct attServer* srv, att_range_t rangeRef, uint16_t offset, const struct att_uuid *type, uint8_t perms, attValueReadCbk readF, attValueWriteCbk writeF, void *cbkData)
+bool attSrvValueRegister(struct attServer *srv, att_range_t rangeRef, uint16_t offset, const struct att_uuid *type, uint8_t perms, attValueReadCbk readF, attValueWriteCbk writeF, void *cbkData)
 {
     struct attVal *next, *prev = NULL, *val;
     struct attRange *range;
@@ -724,7 +771,7 @@ out:
  * RETURN:   success
  * NOTES:
  */
-bool attSrvValueUnregister(struct attServer* srv, att_range_t rangeRef, uint16_t offset)
+bool attSrvValueUnregister(struct attServer *srv, att_range_t rangeRef, uint16_t offset)
 {
     struct attRange *range;
     struct attVal *val;
@@ -741,7 +788,6 @@ bool attSrvValueUnregister(struct attServer* srv, att_range_t rangeRef, uint16_t
         goto out;
     }
 
-    attConnListFree(&val->notifs);
     if (val->next)
         val->next->prev = val->prev;
     else
@@ -759,35 +805,64 @@ out:
 }
 
 /*
- * FUNCTION: attSrvValueNotifyRegister
- * USE:      Register a client to be notified of a value's value change
+ * FUNCTION: attGetMtu
+ * USE:      Get the MTU to someone
  * PARAMS:   srv - the server
- *           rangeRef - the range reference
- *           offset - handle's offset from start of the range
- *           conn - the client connection
- * RETURN:   success
- * NOTES:
+ *           to - whom to
+ *           tryDefaults - try to find the default to use?
+ * RETURN:   the mtu to use or 0 on error
+ * NOTES:    call with srv->lock held for read
  */
-bool attSrvValueNotifyRegister(struct attServer* srv, att_range_t rangeRef, uint16_t offset, l2c_handle_t conn)
+static uint32_t attGetMtu(struct attServer *srv, l2c_handle_t to, bool tryDefaults)
 {
-    struct attRange *range;
-    struct attVal *val;
-    bool ret = false;
+    uint32_t mtu;
 
-    pthread_rwlock_wrlock(&srv->lock);
-    val = attValRangeFind(srv, rangeRef, offset, &range);
-    if (!range) {
-        logw("Attempt to subscribe-notify on a value from a non-existent range\n");
-        goto out;
-    }
-    if (!val) {
-        logw("Attempt to subscribe-notify on a non-existent value from a non-existent range (0x%04X+0x%04X)\n", range->start, offset);
-        goto out;
-    }
-    ret = attConnListAdd(&val->notifs, conn);
+    mtu = attConnListGetMtu(&srv->allClients, to);
+    if (!mtu && tryDefaults) {
+        struct bt_addr peer;
 
-out:
-    pthread_rwlock_unlock(&srv->lock);
+        logw("Sending notif with no known MTU\n");
+        if (!l2cApiGetBtAddr(to, &peer)) {
+            logw("Failed to get peer address, not sending notification there\n");
+            return 0;
+        }
+        mtu = BT_ADDR_IS_EDR(peer) ? ATT_MTU_MIN_EDR : ATT_MTU_MIN_LE;
+    }
+
+    return mtu;
+}
+
+/*
+ * FUNCTION: attSrvSend
+ * USE:      Sends an assembled packet to the peer
+ * PARAMS:   srv - the server
+ *           to - whom the data is to be sent to
+ *           preData - first part of the packet
+ *           preLen - length of fais data
+ *           data - the middle of the packet
+ *           postData - last part of the packet
+ *           postLen - length of said data
+ * RETURN:   ATT_TX_RET_*
+ * NOTES:    call with srv->lock held for read
+ */
+static uint8_t attSrvSend(struct attServer *srv, l2c_handle_t to, const void *preData, uint32_t preLen, sg data, const void *postData, uint32_t postLen)
+{
+    uint8_t ret;
+
+    if (preLen && !sgConcatFrontCopy(data, preData, preLen))
+        return ATT_TX_RET_OOM;
+
+    if (postLen && !sgConcatBackCopy(data, preData, preLen)) {
+        sgTruncFront(data, preLen);
+        return ATT_TX_RET_OOM;
+    }
+
+    ret = srv->txCbk(srv, to, data);
+    if (ret == ATT_TX_RET_ACCEPTED)
+        return ret;
+
+    sgTruncBack(data, postLen);
+    sgTruncFront(data, preLen);
     return ret;
 }
 
@@ -796,29 +871,62 @@ out:
  * USE:      Send notifications to all clients who wanted them for this value
  * PARAMS:   srv - the server
  *           range - the range
- *           val - the value
- * RETURN:   NONE
- * NOTES:
+ *           val - the value struct
+ *           to - whom to send to
+ *           data - the value
+ *           notify - send notification (as opposed to indication)
+ * RETURN:   L2C_TX_*
+ * NOTES:    call with srv->lock held for read
  */
-static void attSrvSendNotif(struct attServer* srv, struct attRange *range, struct attVal *val)
+static uint8_t attSrvSendNotif(struct attServer *srv, struct attRange *range, struct attVal *val, l2c_handle_t to, sg data, bool notify)
 {
-    //TODO: go throgh val->notifs and tell eberyone. on failure remove it from all othe rnotifs in server too...
+    uint8_t hdrBuf[sizeof(struct attHdr) + sizeof(struct attPduHandleValueNotif) + sizeof(struct attPduHandleValueInd)]; /* definitely big enoguh to fit the fist and either second or third */
+    struct attHdr *hdr = (struct attHdr*)hdrBuf;
+    struct attPduHandleValueNotif *notifH = (struct attPduHandleValueNotif*)(hdr + 1);
+    struct attPduHandleValueInd *indH = (struct attPduHandleValueInd*)(hdr + 1);
+    uint8_t hdrLen = sizeof(*hdr);
+    uint32_t mtu;
+
+    if (notify) {
+        utilSetLE8(&hdr->opcode, ATT_OPCODE_HANDLE_VALUE_NOTIF);
+        utilSetLE16(&notifH->handle, val->offset + range->start);
+        hdrLen += sizeof(*notifH);
+    } else {
+        utilSetLE8(&hdr->opcode, ATT_OPCODE_HANDLE_VALUE_IND);
+        utilSetLE16(&indH->handle, val->offset + range->start);
+        hdrLen += sizeof(*indH);
+    }
+    
+    mtu = attGetMtu(srv, to, true);
+    if (!mtu)
+        return ATT_TX_RET_ATT_ERROR;
+
+    mtu -= hdrLen;
+    if (sgLength(data) > mtu) {
+        logd("Truncating wanted notif/ind data to %ub\n", mtu);
+        sgTruncBack(data, sgLength(data) - mtu);
+    }
+
+    return attSrvSend(srv, to, hdrBuf, hdrLen, data, NULL, 0);
 }
 
 /*
- * FUNCTION: attSrvValueUnregister
- * USE:      Unregister a given value in a given range
+ * FUNCTION: attSrvValueNotifyChanged
+ * USE:      Sen a notification or an indication
  * PARAMS:   srv - the server
  *           rangeRef - the range reference
  *           offset - handle's offset from start of the range
- * RETURN:   success
+ *           to - whom to send to
+ *           data - the data to send
+ *           notify - send notification (as opposed to indication)
+ * RETURN:   ATT_TX_RET_*
  * NOTES:
  */
-bool attSrvValueNotifyChanged(struct attServer* srv, att_range_t rangeRef, uint16_t offset)
+uint8_t attSrvValueNotifyChanged(struct attServer *srv, att_range_t rangeRef, uint16_t offset, l2c_handle_t to, sg data, bool notify)
 {
     struct attRange *range;
     struct attVal *val;
-    bool ret = false;
+    uint8_t ret = ATT_TX_RET_ATT_ERROR;
     uint32_t i;
 
     pthread_rwlock_rdlock(&srv->lock);
@@ -832,8 +940,82 @@ bool attSrvValueNotifyChanged(struct attServer* srv, att_range_t rangeRef, uint1
         goto out;
     }
 
-    attSrvSendNotif(srv, range, val);
-    ret = true;
+    ret = attSrvSendNotif(srv, range, val, to, data, notify);
+
+out:
+    pthread_rwlock_unlock(&srv->lock);
+    return ret;
+}
+
+/*
+ * FUNCTION: attSrvSetMtu
+ * USE:      Called to set the MTU for an ATT server to a given client
+ * PARAMS:   srv - the server
+ *           to - whom the MTU is to
+ *           mtu - the mtu 
+ * RETURN:   NONE
+ * NOTES:    used by EDR only. LE does its own negotiation
+ */
+void attSrvSetMtu(struct attServer *srv, l2c_handle_t to, uint32_t mtu)
+{
+    pthread_rwlock_wrlock(&srv->lock);
+    attConnListAdd(&srv->allClients, to, mtu);
+    pthread_rwlock_unlock(&srv->lock);
+}
+
+
+/*
+ * FUNCTION: attSrvDataRx
+ * USE:      Called when data arrives from a given connection
+ * PARAMS:   srv - the server
+ *           from - whom the data arived from
+ *           s - the data 
+ * RETURN:   success
+ * NOTES:
+ */
+bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
+{
+    struct attPduMtu mtuExch;
+    struct attHdr hdr;
+    bool ret = false;
+    uint32_t mtu;
+
+    attConnListAdd(&srv->allClients, from, 0);
+    mtu = attGetMtu(srv, from, true);
+
+    if (!sgSerializeCutFront(s, &hdr, sizeof(hdr)))
+        return false;
+
+    switch (hdr.opcode) {
+    case ATT_OPCODE_MTU_EXCH_REQ: {
+        uint32_t newMtu;
+        pthread_rwlock_wrlock(&srv->lock);
+        if (!sgSerializeCutFront(s, &mtuExch, sizeof(mtuExch)))
+            return false;
+        newMtu = utilGetLE16(&mtuExch.mtu);
+        mtu = attGetMtu(srv, from, false);
+        if (!mtu || mtu > newMtu)
+            mtu = newMtu;
+        attConnListAdd(&srv->allClients, from, mtu);
+        utilSetLE16(&mtuExch.mtu, mtu);
+        ret = attSrvSend(srv, from, &mtuExch, sizeof(mtuExch), NULL, NULL, 0);
+        break;
+    }
+    case ATT_OPCODE_FIND_INFO_REQ:
+    case ATT_OPCODE_FIND_BY_TYPE_VAL_REQ:
+    case ATT_OPCODE_READ_BY_TYPE_REQ:
+    case ATT_OPCODE_READ_REQ:
+    case ATT_OPCODE_READ_BLOB_REQ:
+    case ATT_OPCODE_READ_MULT_REQ:
+    case ATT_OPCODE_READ_BY_GRP_TYPE_REQ:
+    case ATT_OPCODE_WRITE_REQ:
+    case ATT_OPCODE_PREPARE_WRITE_REQ:
+    case ATT_OPCODE_EXECUTE_WRITE_REQ:
+    case ATT_OPCODE_HANDLE_VALUE_CONF:
+    case ATT_OPCODE_WRITE_CMD:
+    case ATT_OPCODE_SIGNED_WRITE_CMD:
+        /* todo */;
+    }
 
 out:
     pthread_rwlock_unlock(&srv->lock);
