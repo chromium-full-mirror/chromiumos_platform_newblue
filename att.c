@@ -217,6 +217,7 @@ struct attVal {
     attValueWriteCbk writeF;
     void *cbkData;
     uint16_t offset;
+    uint16_t grpLen;
     uint8_t perms;
 };
 
@@ -726,13 +727,14 @@ void attSrvHandleRangeRelease(struct attServer *srv, att_range_t rangeRef)
  *           offset - handle's offset from start of the range
  *           type - the type of the registered value
  *           perms - permissions (ATT_PERM_*)
+ *           grpLen - if this value is start of a group, how many values the group is (0 if not start of group)
  *           readF - the value read callback (may be NULL if read not supported)
  *           writeF - the value write callback (may be NULL if write not supported)
  *           cbkData - data to pass to readF and writeF when calling them
  * RETURN:   success
  * NOTES:
  */
-bool attSrvValueRegister(struct attServer *srv, att_range_t rangeRef, uint16_t offset, const struct att_uuid *type, uint8_t perms, attValueReadCbk readF, attValueWriteCbk writeF, void *cbkData)
+bool attSrvValueRegister(struct attServer *srv, att_range_t rangeRef, uint16_t offset, const struct att_uuid *type, uint8_t perms, uint16_t grpLen, attValueReadCbk readF, attValueWriteCbk writeF, void *cbkData)
 {
     struct attVal *next, *prev = NULL, *val;
     struct attRange *range;
@@ -754,6 +756,11 @@ bool attSrvValueRegister(struct attServer *srv, att_range_t rangeRef, uint16_t o
         goto out;
     }
 
+    if (offset >= range->len || offset + grpLen > range->len) {
+        logw("Value or group end out of range\n");
+        goto out;
+    }
+
     for (next = range->valsHead; next && next->offset < offset; prev = next, next = next->next);
     /*
      * prev is our prev or NULL if we're first
@@ -762,7 +769,7 @@ bool attSrvValueRegister(struct attServer *srv, att_range_t rangeRef, uint16_t o
      */
 
     if (next->offset == offset) {
-        logw("Attempt to create duplicate-offset value (0x%04X+0x%04X\n", range->start, offset);
+        logw("Attempt to create duplicate-offset value (0x%04X+0x%04X)\n", range->start, offset);
         goto out;
     }
 
@@ -775,6 +782,7 @@ bool attSrvValueRegister(struct attServer *srv, att_range_t rangeRef, uint16_t o
     val->writeF = writeF;
     val->cbkData = cbkData;
     val->offset = offset;
+    val->grpLen = grpLen;
     val->perms = perms;
     val->next = next;
     val->prev = prev;

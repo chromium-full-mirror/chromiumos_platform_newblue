@@ -82,6 +82,8 @@ void attSrvDestroy(struct attServer* srv);
 
 att_range_t attSrvHandleRangeReserve(struct attServer* srv, uint16_t len); /* -> 0 on failure */
 void attSrvHandleRangeRelease(struct attServer* srv, att_range_t rangeRef);
+bool attSrvValueRegister(struct attServer *srv, att_range_t rangeRef, uint16_t offset, const struct att_uuid *type, uint8_t perms, uint16_t grpLen, attValueReadCbk readF, attValueWriteCbk writeF, void *cbkData);
+bool attSrvValueUnregister(struct attServer *srv, att_range_t rangeRef, uint16_t offset);
 uint8_t attSrvValueNotifyChanged(struct attServer* srv, att_range_t rangeRef, uint16_t offset, l2c_handle_t to, sg data, bool notify); /* -> ATT_NOTIF_RET_* */
 bool attSrvDataRx(struct attServer* srv, l2c_handle_t from, sg s);
 
