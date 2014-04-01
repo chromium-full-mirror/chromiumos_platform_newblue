@@ -57,17 +57,20 @@ struct att_uuid {
 #define ATT_LAST_VALID_HANDLE          0xFFFF
 
 
-#define ATT_TX_RET_ACCEPTED         L2C_TX_ACCEPTED
-#define ATT_TX_RET_NO_CONN          L2C_TX_NO_CONN
-#define ATT_TX_RET_TRY_LATER        L2C_TX_TRY_LATER
-#define ATT_TX_RET_L2C_ERR          L2C_TX_ERROR
-#define ATT_TX_RET_OOM              0x20
-#define ATT_TX_RET_ATT_ERROR        0x21
-#define ATT_TX_RET_ATT_BUSY         0x22
+#define ATT_TX_RET_ACCEPTED            L2C_TX_ACCEPTED
+#define ATT_TX_RET_NO_CONN             L2C_TX_NO_CONN
+#define ATT_TX_RET_TRY_LATER           L2C_TX_TRY_LATER
+#define ATT_TX_RET_L2C_ERR             L2C_TX_ERROR
+#define ATT_TX_RET_OOM                 0x20
+#define ATT_TX_RET_ATT_ERROR           0x21
+#define ATT_TX_RET_ATT_BUSY            0x22
+
+
+#define ATT_READ_FOR_FIND_BY_TYPE_VAL  0x01
 
 
 /* att server api */
-typedef uint8_t (*attValueReadCbk)(struct attServer* srv, l2c_handle_t who, void *cbkData, att_range_t range, uint16_t ofst, uint16_t byteOfst, uint16_t *lenP, void *dst); /* -> ATT_ERROR_* lenP: in/out*/
+typedef uint8_t (*attValueReadCbk)(struct attServer* srv, l2c_handle_t who, void *cbkData, att_range_t range, uint16_t ofst, uint16_t byteOfst, uint8_t reason, uint16_t *lenP, void *dst); /* -> ATT_ERROR_* lenP: in/out*/
 typedef uint8_t (*attValueWriteCbk)(struct attServer* srv, l2c_handle_t who, void *cbkData, att_range_t range, uint16_t ofst, uint16_t byteOfst, uint16_t *lenP, const void *dst); /* -> ATT_ERROR_* lenP: in/out*/
 typedef uint8_t (*attTxCbk)(struct attServer* srv, l2c_handle_t to, sg s); /* -> ATT_TX_RET_* */
 typedef void (*attMtuCbk)(struct attServer* srv, l2c_handle_t to, uint32_t mtu);
