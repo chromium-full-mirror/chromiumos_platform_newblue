@@ -4,6 +4,7 @@
 #include "types.h"
 #include "l2cap.h"
 #include "uniq.h"
+#include "sm.h"
 
 typedef uniq_t att_range_t;
 struct attServer;
@@ -11,6 +12,8 @@ struct attServer;
 /* we WILL negotiate, but only this much is ever guaranteed */
 #define ATT_MTU_MIN_EDR                48
 #define ATT_MTU_MIN_LE                 23
+
+#define ATT_SIG_LEN                    SM_SIG_LEN
 
 #define ATT_PERM_READ                  0x01
 #define ATT_PERM_WRITE                 0x02

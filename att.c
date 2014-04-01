@@ -12,6 +12,7 @@
 #include "bt.h"
 #include "sg.h"
 #include "mt.h"
+#include "sm.h"
 
 
 /* ERRORS */
@@ -963,6 +964,32 @@ void attSrvSetMtu(struct attServer *srv, l2c_handle_t to, uint32_t mtu)
     pthread_rwlock_unlock(&srv->lock);
 }
 
+/*
+
+ * FUNCTION: attReadUuid
+ * USE:      Read a UUID-128 or a UUID16 from an sg, if it is the noly thing there
+ * PARAMS:   dst - we store the read UUID here
+ *           s - the data 
+ * RETURN:   success
+ * NOTES:
+ */
+static bool attReadUuid(struct att_uuid *dst, sg s)
+{
+    uint8_t buf[16];
+    struct att_uuid *ru = (struct att_uuid*)buf;
+
+    if (sgLength(s) == sizeof(uint16_t)) {
+        sgSerializeCutFront(s, buf, sizeof(uint16_t));
+        attUuidFromUuid16(dst, utilGetLE16(buf));
+    } else if (sgLength(s) == sizeof(struct att_uuid)) {
+        sgSerializeCutFront(s, buf, sizeof(struct att_uuid));
+        dst->lo = utilGetLE64(&ru->lo);
+        dst->hi = utilGetLE64(&ru->hi);
+    } else
+        return false;
+
+    return true;
+}
 
 /*
  * FUNCTION: attSrvDataRx
@@ -975,66 +1002,176 @@ void attSrvSetMtu(struct attServer *srv, l2c_handle_t to, uint32_t mtu)
  */
 bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
 {
+    struct attPduFindByTypeValReq findByTypeValReq;
+    struct attPduPrepareWriteReq prepareWriteReq;
+    struct attPduReadByGrpTypeReq readByGrpType;
+    struct attPduSignedWriteCmd signedWriteCmd;
+    struct attPduExecuteWriteReq execWriteReq;
+    struct attPduReadByTypeReq readByTypeReq;
+    struct attPduFindInfoReq findInfoReq;
+    struct attPduReadBlobReq readBlobReq;
+    struct attPduWriteReq writeReq;
+    struct attPduWriteCmd writeCmd;
+    struct attPduReadReq readReq;
     struct attPduMtu mtuExch;
+    struct att_uuid uuid;
     struct attHdr hdr;
     bool ret = false;
+    uint32_t newMtu;
+    uint8_t opcode;
     uint32_t mtu;
-
-    attConnListAdd(&srv->allClients, from, 0);
-    mtu = attGetMtu(srv, from, true);
 
     if (!sgSerializeCutFront(s, &hdr, sizeof(hdr)))
         return false;
+    opcode = utilGetLE8(&hdr.opcode);
 
-    switch (hdr.opcode) {
-    case ATT_OPCODE_MTU_EXCH_REQ: {
-        uint32_t newMtu;
+    /* add to known client list */
+    pthread_rwlock_wrlock(&srv->lock);
+    attConnListAdd(&srv->allClients, from, 0);
+    pthread_rwlock_unlock(&srv->lock);
+
+    /* grab MTU and get to work */
+    pthread_rwlock_rdlock(&srv->lock);
+    mtu = attGetMtu(srv, from, true);
+
+    switch (opcode) {
+    case ATT_OPCODE_MTU_EXCH_REQ:
+        pthread_rwlock_unlock(&srv->lock);
         pthread_rwlock_wrlock(&srv->lock);
         if (!sgSerializeCutFront(s, &mtuExch, sizeof(mtuExch)))
-            return false;
-        newMtu = utilGetLE16(&mtuExch.mtu);
-        mtu = attGetMtu(srv, from, false);
-        if (!mtu || mtu > newMtu)
-            mtu = newMtu;
-        attConnListAdd(&srv->allClients, from, mtu);
-        utilSetLE16(&mtuExch.mtu, mtu);
-        ret = attSrvSend(srv, from, &mtuExch, sizeof(mtuExch), NULL, NULL, 0);
+            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+        else if (sgLength(s))
+            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+        else {
+            newMtu = utilGetLE16(&mtuExch.mtu);
+            mtu = attGetMtu(srv, from, false);
+            if (!mtu || mtu > newMtu)
+                mtu = newMtu;
+            attConnListAdd(&srv->allClients, from, mtu);
+            utilSetLE16(&mtuExch.mtu, mtu);
+            ret = attSrvSend(srv, from, &mtuExch, sizeof(mtuExch), NULL, NULL, 0);
+        }
         break;
-    }
+
     case ATT_OPCODE_FIND_INFO_REQ:
+        if (!sgSerializeCutFront(s, &findInfoReq, sizeof(findInfoReq)))
+            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+        else if (sgLength(s))
+            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+        else
+            ret = attSrvOpFindInfo(s, from, mtu, utilGetLE16(&findInfoReq.startHandle), utilGetLE16(&findInfoReq.endHandle));
+        break;
+
     case ATT_OPCODE_FIND_BY_TYPE_VAL_REQ:
+        if (!sgSerializeCutFront(s, &findByTypeValReq, sizeof(findByTypeValReq)))
+            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+        else {
+            attUuidFromUuid16(&uuid, utilGetLE16(&findByTypeValReq.uuid16));
+            ret = attSrvOpFindByTypeVal(s, from, mtu, utilGetLE16(&findByTypeValReq.startHandle), utilGetLE16(&findByTypeValReq.endHandle), &uuid, s);
+        }
+        break;
+
     case ATT_OPCODE_READ_BY_TYPE_REQ:
+        if (!sgSerializeCutFront(s, &readByTypeReq, sizeof(readByTypeReq)) || !attReadUuid(&uuid, s))
+            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+        else if (sgLength(s))
+            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+        else
+            ret = attSrvOpReadByType(s, from, mtu, utilGetLE16(&readByTypeReq.startHandle), utilGetLE16(&readByTypeReq.endHandle), &uuid);
+        break;
+
     case ATT_OPCODE_READ_REQ:
+        if (!sgSerializeCutFront(s, &readReq, sizeof(readReq)))
+            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+        else if (sgLength(s))
+            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+        else
+            ret = attSrvOpRead(s, from, mtu, utilGetLE16(&readReq.handle));
+        break;
+
     case ATT_OPCODE_READ_BLOB_REQ:
+        if (!sgSerializeCutFront(s, &readBlobReq, sizeof(readBlobReq)))
+            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+        else if (sgLength(s))
+            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+        else
+            ret = attSrvOpReadBlob(s, from, mtu, utilGetLE16(&readBlobReq.handle), utilGetLE16(&readBlobReq.offset));
+        break;
+
     case ATT_OPCODE_READ_MULT_REQ:
+        if ((sgLength(s) % sizeof(uint16_t)) || sgLength(s) < sizeof(uint16_t[2])) /* sanity check as per spec */
+            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+        else
+            ret = attSrvOpReadMult(s, from, mtu, s);
+        break;
+
     case ATT_OPCODE_READ_BY_GRP_TYPE_REQ:
+        if (!sgSerializeCutFront(s, &readByGrpType, sizeof(readByGrpType)) || !attReadUuid(&uuid, s))
+            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+        else
+            ret = attSrvOpReadByGrpType(s, from, mtu, utilGetLE16(&readByGrpType.startHandle), utilGetLE16(&readByGrpType.endHandle), &uuid);
+        break;
+
     case ATT_OPCODE_WRITE_REQ:
+        if (!sgSerializeCutFront(s, &writeReq, sizeof(writeReq)))
+            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+        else
+            ret = attSrvOpWrite(s, from, mtu, utilGetLE16(&writeReq.handle), s, true);
+        break;
+
     case ATT_OPCODE_PREPARE_WRITE_REQ:
+        if (!sgSerializeCutFront(s, &prepareWriteReq, sizeof(prepareWriteReq)))
+            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+        else
+            ret = attSrvOpPrepareWrite(s, from, mtu, utilGetLE16(&prepareWriteReq.handle), utilGetLE16(&prepareWriteReq.offset), s);
+        break;
+
     case ATT_OPCODE_EXECUTE_WRITE_REQ:
+        if (!sgSerializeCutFront(s, &execWriteReq, sizeof(execWriteReq)))
+            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+        else if (sgLength(s))
+            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+        else
+            ret = attSrvOpExecuteWrite(s, from, mtu, utilGetLE16(&execWriteReq.flags));
+        break;
+
     case ATT_OPCODE_HANDLE_VALUE_CONF:
+        if (sgLength(s))
+            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+        else
+            ret = attSrvOpHandleValueConf(s, from, mtu);
+        break;
+
     case ATT_OPCODE_WRITE_CMD:
+        if (!sgSerializeCutFront(s, &writeCmd, sizeof(writeCmd)))
+            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+        else
+            ret = attSrvOpWrite(s, from, mtu, utilGetLE16(&writeCmd.handle), s, false);
+        break;
+
     case ATT_OPCODE_SIGNED_WRITE_CMD:
-        /* todo */;
+        if (!sgSerializeCutFront(s, &signedWriteCmd, sizeof(signedWriteCmd)))
+            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+        else if (sgLength(s) < ATT_SIG_LEN)
+            ret = attSrvSendErrorReply(ATT_ERROR_INVALID_PDU);
+        else {
+            uint8_t sig[ATT_SIG_LEN];
+            sgSerialize(s, sgLength(s) - ATT_SIG_LEN, ATT_SIG_LEN, sig);
+            sgTruncBack(s, ATT_SIG_LEN);
+            ret = attSrvOpSignedWrite(s, from, mtu, utilGetLE16(&signedWriteCmd.handle), sig, s);
+        }
+        break;
+
+    default:
+        logw("Unexpected ATT opcode 0x%02X\n", opcode);
+        ret = attSrvSendErrorReply(ATT_ERROR_REQ_NOT_SUPPORTED);
+        break;
     }
 
 out:
     pthread_rwlock_unlock(&srv->lock);
     return ret;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

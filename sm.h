@@ -5,6 +5,7 @@
 
 
 #define SM_BLOCK_LEN      16
+#define SM_SIG_LEN        12
 
 
 
