@@ -3791,7 +3791,7 @@ static void l2cAclConnStructDelete(struct l2cAclConn *conn)
     }
 
     if (conn->next)
-        conn->next = conn->prev;
+        conn->next->prev = conn->prev;
     if (conn->prev)
         conn->prev->next = conn->next;
     else
