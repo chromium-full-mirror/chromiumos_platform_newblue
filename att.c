@@ -3,6 +3,7 @@
 //any transaction (packet requiring response) taking over 30 sec is a timeout and should serve to close the ATT bearer and refuse all further TX until new link is eastablished
 #include <stdlib.h>
 #include <string.h>
+#include "persist.h"
 #include "l2cap.h"
 #include "types.h"
 #include "uniq.h"
@@ -1225,14 +1226,46 @@ static bool attSrvOpHandleValueConf(struct attServer *srv, l2c_handle_t to, uint
  *           to - whom to reply to
  *           mtu - the mtu to use
  *           handle - the handle to write
+ *           rxedSig - the SIG we got
  *           data - sg with the data to write
- *           isReq - set if this was a request and needs a reply, else clear
  * RETURN:   success
  * NOTES:    call with srv->lock held for read
  */
-static bool attSrvOpSignedWrite(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t handle, const uint8_t *sig, sg data)
+static bool attSrvOpSignedWrite(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t handle, const uint8_t *rxedSig, sg data)
 {
-    //
+    uint8_t hdr[sizeof(struct attHdr) + sizeof(struct attPduSignedWriteCmd)];
+    struct attHdr *attHdr = (struct attHdr*)hdr;
+    struct attPduSignedWriteCmd *cmd = (struct attPduSignedWriteCmd*)(hdr + 1);
+    uint8_t calcedSig[ATT_SIG_LEN];
+    uint8_t k[SM_BLOCK_LEN];
+    struct bt_addr addr;
+
+    if (!l2cApiGetBtAddr(to, &addr)) {
+        logw("Cannot get address for signed write. Dropping\n");
+        return true;
+    }
+
+    if (!persistGetDevKey(&addr, KEY_TYPE_CSRK, k)) {
+        logw("Cannot get CSRK for signed write. Dropping\n");
+        return true;
+    }
+
+    /* Signature is over packet header too, but we stripped it. Luckily it is easy to reconstruct temporarily */
+    utilSetLE8(&attHdr->opcode, ATT_OPCODE_SIGNED_WRITE_CMD);
+    utilSetLE16(&cmd->handle, handle);
+    if (!sgConcatFrontCopy(data, hdr, sizeof(hdr)))
+        return false;
+
+    smSignatureCalc(data, k, calcedSig);
+    sgTruncFront(data, sizeof(hdr));
+
+    if (memcmp(calcedSig, rxedSig, ATT_SIG_LEN)) {
+        logw("Sig check failed. Dropping\n");
+        return true;
+    }
+
+    //todo
+
     return false;
 }
 
