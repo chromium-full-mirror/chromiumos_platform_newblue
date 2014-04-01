@@ -1,6 +1,7 @@
 #include "util.h"
 #include "log.h"
 #include "sm.h"
+#include "sg.h"
 
 
 /* fwd decls */
@@ -19,22 +20,26 @@ static void smEncrypt(uint8_t* dst, const uint8_t *src, const uint8_t *key);
  * USE:      Perform the CMAC calculation
  * PARAMS:   dst - where the store the result
  *           macLen - how long of a digest do we want (in bytes)
- *           msg - the message to digest
- *           len - length of said message (in bytes)
- *           k - th ekey to use
+ *           m - the message to digest
+ *           k - the key to use
  *           k1 - subkey 1 (from smCmacPrepare)
  *           k2 - subkey 2 (from smCmacPrepare)
  * RETURN:   NONE
  * NOTES:
  */
-static void smCmacDo(uint8_t *dst, uint8_t macLen, const uint8_t *msg, uint32_t len, const uint8_t *k, const uint8_t *k1, const uint8_t *k2)
+static void smCmacDo(uint8_t *dst, uint8_t macLen, sg m, const uint8_t *k, const uint8_t *k1, const uint8_t *k2)
 {
+    uint32_t len = sgLength(m), pos = 0;
     uint32_t i, nblocks = len ? (len + SM_BLOCK_LEN - 1) / SM_BLOCK_LEN : 1;
     uint8_t tmp1[SM_BLOCK_LEN] = {0,}, tmp2[SM_BLOCK_LEN], j, *in = tmp1, *out = tmp2, *swap;
 
     for (i = 0; i < nblocks; i++) {
-        for(j = 0; j < len && j < SM_BLOCK_LEN; j++)
-            in[j] ^= *msg++;
+        for(j = 0; j < len && j < SM_BLOCK_LEN; j++) {
+            uint8_t byte;
+
+            sgSerialize(m, pos++, sizeof(uint8_t),&byte);
+            in[j] ^= byte;
+        }
         len -= j;
         if (!len) {
             if (j == SM_BLOCK_LEN) {
@@ -79,6 +84,24 @@ static void smCmacPrepare(uint8_t *k1, uint8_t *k2, const uint8_t *k)
             out[15] ^= 0x87;
         out = k2;
     }
+}
+
+/*
+ * FUNCTION: smSignatureCalc
+ * USE:      Perform a CMAC calculation in its entirety
+ * PARAMS:   data - the data to checksum
+ *           len - length of said data
+ *           key - the key
+ *           sig - sig gets stored here
+ * RETURN:   NONE
+ * NOTES:
+ */
+void smSignatureCalc(sg m, const uint8_t *key, uint8_t *sig)
+{
+    uint8_t k1[SM_BLOCK_LEN], k2[SM_BLOCK_LEN];
+
+    smCmacPrepare(k1, k2, key);
+    smCmacDo(sig, SM_SIG_LEN, m, key, k1, k2);
 }
 
 /*
