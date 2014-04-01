@@ -1086,7 +1086,7 @@ static bool attSrvSendPacket(struct attServer *srv, l2c_handle_t to, uint8_t opc
 
     utilSetLE8(&attHdr.opcode, opcode);
 
-    if (!sgConcatFrontCopy(data, hdr, hdrLen))
+    if (hdr && !sgConcatFrontCopy(data, hdr, hdrLen))
         return false;
 
     if (attSrvSend(srv, to, &attHdr, sizeof(attHdr), data, NULL, 0) == ATT_TX_RET_ACCEPTED)
@@ -1215,12 +1215,100 @@ unrecoverable:
  *           uuid - the uuid to find
  *           s - the value to find
  * RETURN:   success
- * NOTES:    call with srv->lock held for read
+ * NOTES:    call with srv->lock held for read. WILL NOT FREE "s". Caller must!
  */
 static bool attSrvOpFindByTypeVal(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t startHandle, uint16_t endHandle, const struct att_uuid *uuid, sg s)
 {
-    //
-    return false;
+    struct attRange *range;
+    struct attVal *val;
+    sg results;
+    void *wantedVal = NULL, *readVal = NULL;
+
+    if (!startHandle || startHandle > endHandle)
+        return attSrvSendErrorReply(srv, to, ATT_ERROR_INVALID_HANDLE, ATT_OPCODE_FIND_BY_TYPE_VAL_REQ, startHandle);
+
+    results = sgNew();
+    if (!results)
+        goto unrecoverable;
+
+    wantedVal = malloc(sgLength(s));
+    if (!wantedVal)
+        goto unrecoverable;
+
+    readVal = malloc(sgLength(s) + 1); /* we try to read one more byte to make sure it only reads length bytes, since else we have a mismatch */
+    if (!readVal)
+        goto unrecoverable;
+
+    sgSerialize(s, 0, sgLength(s), wantedVal);
+    mtu -= sizeof(struct attHdr); /* mtu is now how many bytes we can produce */
+
+    for (range = srv->rangesHead; range; range = range->next) {
+        for (val = range->valsHead; val; val = val->next) {
+            uint16_t handle = range->start + val->offset, len = sgLength(s) + 1;
+            uint16_t effectiveGrpLen = val->grpLen ? val->grpLen : 1;
+            struct attPduFindByTypeValRspItem result;
+            uint8_t readRet;
+
+            if (handle < startHandle)
+                continue;
+            if (handle > endHandle)
+                goto out;
+
+            /* must be readable */
+            if (!(val->perms & ATT_PERM_READ))
+                continue;
+
+            /* must be of a given type */
+            if (!attUuidCmp(&val->type, uuid))
+                continue;
+
+            /* must have correct content length and value */
+            readRet = val->readF(srv, to, val->cbkData, range->rangeRef, val->offset, 0, ATT_READ_FOR_FIND_BY_TYPE_VAL, &len, readVal);
+            if (readRet != ATT_ERROR_NONE || len != sgLength(s) || memcmp(readVal, wantedVal, len))
+                continue;
+
+            /* if we're here, we found a matching value */
+            utilSetLE16(&result.firstHandle, handle);
+            utilSetLE16(&result.groupEndHandle, handle + effectiveGrpLen - 1);
+
+            if (!sgConcatBackCopy(results, &result, sizeof(result)))
+                goto out;
+
+            if (sgLength(results) >= mtu)
+                goto out;
+        }
+    }
+
+out:
+    free(wantedVal);
+    wantedVal = NULL;
+    free(readVal);
+    readVal = NULL;
+
+    /* make sure we do not send too much */
+    while (sgLength(results) > mtu)
+        sgTruncBack(results, sizeof(struct attPduFindByTypeValRspItem));
+
+    /* a lack of results is reported thusly */
+    if (!sgLength(results)) {
+        sgFree(results);
+        return attSrvSendErrorReply(srv, to, ATT_ERROR_ATTRIBUTE_NOT_FOUND, ATT_OPCODE_FIND_BY_TYPE_VAL_REQ, startHandle);
+    }
+
+    /* we're ready to send a reply */
+    if (attSrvSendPacket(srv, to, ATT_OPCODE_FIND_BY_TYPE_VAL_RSP, NULL, 0, results))
+        return true;
+
+    /* if we fall though to here, try to send an error (even if it is unlikely to work) */
+
+unrecoverable:
+    if (results)
+        sgFree(results);
+    if (wantedVal)
+        free(wantedVal);
+    if (readVal)
+        free(readVal);
+    return attSrvSendErrorReply(srv, to, ATT_ERROR_UNLIKELY_ERROR, ATT_OPCODE_FIND_BY_TYPE_VAL_REQ, 0);
 }
 
 /*
@@ -1604,6 +1692,8 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
 
 out:
     pthread_rwlock_unlock(&srv->lock);
+    if (ret)
+        sgFree(s);
     return ret;
 }
 
