@@ -279,9 +279,37 @@ static bool attUuidCmp(const struct att_uuid *a, const struct att_uuid *b)
 }
 
 /*
+ * FUNCTION: attUuidWrite
+ * USE:      Write a UUID-128 (for TX path)
+ * PARAMS:   dst - where to write
+ *           src - where to get the value
+ * RETURN:   true if they are equal
+ * NOTES:
+ */
+static void attUuidWrite(struct att_uuid *dst, const struct att_uuid *src)
+{
+    utilSetLE64(&dst->lo, src->lo);
+    utilSetLE64(&dst->hi, src->hi);
+}
+
+/*
+ * FUNCTION: attUuidRead
+ * USE:      Read a UUID-128 (for RX path)
+ * PARAMS:   dst - where to read to
+ *           src - where to get the value
+ * RETURN:   true if they are equal
+ * NOTES:
+ */
+static void attUuidRead(struct att_uuid *dst, const struct att_uuid *src)
+{
+    dst->lo = utilGetLE64(&src->lo);
+    dst->hi = utilGetLE64(&src->hi);
+}
+
+/*
  * FUNCTION: attUuidToUuid16
  * USE:      try to convert a uuid-128 into a uuid-16
- * PARAMS:   dst - where to store the result
+ * PARAMS:   dst - where to store the result or NULL if we don't need it
  *           uuid128 - the input
  * RETURN:   true if we succeeded
  * NOTES:
@@ -294,7 +322,8 @@ static bool attUuidToUuid16(uint16_t *dst, const struct att_uuid *uuid128)
         return false;
     if ((uuid128->hi ^ base.hi) & 0xFFFF0000FFFFFFFFULL)
         return false;
-    *dst = base.hi >> 32;
+    if (dst)
+        *dst = base.hi >> 32;
     return true;
 }
 
@@ -984,7 +1013,7 @@ void attSrvSetMtu(struct attServer *srv, l2c_handle_t to, uint32_t mtu)
 
 /*
  * FUNCTION: attReadUuid
- * USE:      Read a UUID-128 or a UUID16 from an sg, if it is the noly thing there
+ * USE:      Read a UUID-128 or a UUID16 from an sg, if it is the only thing there
  * PARAMS:   dst - we store the read UUID here
  *           s - the data
  * RETURN:   success
@@ -1000,8 +1029,7 @@ static bool attReadUuid(struct att_uuid *dst, sg s)
         attUuidFromUuid16(dst, utilGetLE16(buf));
     } else if (sgLength(s) == sizeof(struct att_uuid)) {
         sgSerializeCutFront(s, buf, sizeof(struct att_uuid));
-        dst->lo = utilGetLE64(&ru->lo);
-        dst->hi = utilGetLE64(&ru->hi);
+        attUuidRead(dst, ru);
     } else
         return false;
 
@@ -1033,6 +1061,34 @@ static bool attSrvSendErrorReply(struct attServer *srv, l2c_handle_t to, uint8_t
 }
 
 /*
+ * FUNCTION: attSrvSendPacket
+ * USE:      Sends a packet to a client
+ * PARAMS:   srv - the server
+ *           to - whom to send to
+ *           opcode - opcode to send
+ *           hdr - a header to prepend
+ *           hdrLen - length of said header
+ *           data - the data to send
+ * RETURN:   success
+ * NOTES:    call with srv->lock held for read
+ */
+static bool attSrvSendPacket(struct attServer *srv, l2c_handle_t to, uint8_t opcode, const void *hdr, uint32_t hdrLen, sg data)
+{
+    struct attHdr attHdr;
+
+    utilSetLE8(&attHdr.opcode, opcode);
+
+    if (!sgConcatFrontCopy(data, hdr, hdrLen))
+        return false;
+
+    if (attSrvSend(srv, to, &attHdr, sizeof(attHdr), data, NULL, 0) == ATT_TX_RET_ACCEPTED)
+        return true;
+
+    sgTruncFront(data, hdrLen);
+    return false;
+}
+
+/*
  * FUNCTION: attSrvOpFindInfo
  * USE:      Perform a find info request
  * PARAMS:   srv - the server
@@ -1045,8 +1101,99 @@ static bool attSrvSendErrorReply(struct attServer *srv, l2c_handle_t to, uint8_t
  */
 static bool attSrvOpFindInfo(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t startHandle, uint16_t endHandle)
 {
-    //
-    return false;
+    struct attPduFindInfoRsp rsp;
+    bool allUuidsSmall = true;
+    struct attRange *range;
+    struct attVal *val;
+    sg results;
+    bool err = false;
+
+    if (!startHandle || startHandle > endHandle)
+        return attSrvSendErrorReply(srv, to, ATT_ERROR_INVALID_HANDLE, ATT_OPCODE_FIND_INFO_REQ, startHandle);
+
+    results = sgNew();
+
+    if (!results)
+        goto unrecoverable;
+
+    mtu -= sizeof(struct attPduFindInfoRsp) + sizeof(struct attHdr); /* mtu is now how many bytes we can produce */
+
+    for (range = srv->rangesHead; range; range = range->next) {
+        for (val = range->valsHead; val; val = val->next) {
+            uint16_t uuid16, handle = range->start + val->offset;
+
+            if (handle < startHandle)
+                continue;
+            if (handle > endHandle)
+                goto out;
+
+            if (allUuidsSmall && attUuidToUuid16(&uuid16, &val->type)) {
+                struct attPduFindInfoData16 result;
+                uint16_t uuid;
+
+                utilSetLE16(&result.handle, handle);
+                utilSetLE16(&result.uuid16, uuid16);
+                if (!sgConcatBackCopy(results, &result, sizeof(result))) {
+                    err = true;
+                    goto out;
+                }
+            } else {
+                struct attPduFindInfoData128 result;
+                if (allUuidsSmall) { /* need to convert to all-large */
+                    uint32_t numResults = sgLength(results) / sizeof(struct attPduFindInfoData16);
+                    struct attPduFindInfoData16 result16;
+                    struct att_uuid uuid;
+
+                    while(numResults--) {
+                        if (!sgSerializeCutFront(results, &result16, sizeof(result16)))
+                            goto unrecoverable;
+                        utilSetLE16(&result.handle, utilGetLE16(&result16.handle));
+                        attUuidFromUuid16(&uuid, utilGetLE16(&result16.uuid16));
+                        attUuidWrite(&result.uuid128, &uuid);
+                        if (!sgConcatBackCopy(results, &result, sizeof(result)))
+                            goto unrecoverable;
+                    }
+                    allUuidsSmall = false;
+                }
+                utilSetLE16(&result.handle, handle);
+                attUuidWrite(&result.uuid128, &val->type);
+                if (!sgConcatBackCopy(results, &result, sizeof(result))) {
+                    err = true;
+                    goto out;
+                }
+            }
+
+            if (sgLength(results) >= mtu)
+                goto out;
+        }
+    }
+
+out:
+    /* if we have results AND an error, favour sending results */
+    if (!sgLength(results) && err)
+        goto unrecoverable;
+
+    /* make sure we do not send too much */
+    while (sgLength(results) > mtu)
+        sgTruncBack(results, allUuidsSmall ? sizeof(struct attPduFindInfoData16) : sizeof(struct attPduFindInfoData128));
+
+    /* a lack of results is reported thusly */
+    if (!sgLength(results)) {
+        sgFree(results);
+        return attSrvSendErrorReply(srv, to, ATT_ERROR_ATTRIBUTE_NOT_FOUND, ATT_OPCODE_FIND_INFO_REQ, startHandle);
+    }
+
+    /* we're ready to send a reply */
+    utilSetLE8(&rsp.format, allUuidsSmall ? ATT_FIND_INFO_RSP_FMT_16 : ATT_FIND_INFO_RSP_FMT_128);
+    if (attSrvSendPacket(srv, to, ATT_OPCODE_FIND_INFO_RSP, &rsp, sizeof(rsp), results))
+        return true;
+
+    /* if we fall though to here, try to send an error (even if it is unlikely to work) */
+
+unrecoverable:
+    if (results)
+        sgFree(results);
+    return attSrvSendErrorReply(srv, to, ATT_ERROR_UNLIKELY_ERROR, ATT_OPCODE_FIND_INFO_REQ, 0);
 }
 
 /*
