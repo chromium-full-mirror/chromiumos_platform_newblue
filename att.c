@@ -1443,16 +1443,21 @@ unrecoverable:
 
 /*
  * FUNCTION: attSrvOpRead
- * USE:      Perform a read request
+ * USE:      Perform a read/readBlob request
  * PARAMS:   srv - the server
  *           to - whom to reply to
  *           mtu - the mtu to use
  *           wantedHandle - the handle the client cares about
+ *           offsetP - NULL if this is a read req, if readBlob, contains offset to start at
  * RETURN:   success
  * NOTES:    call with srv->lock held for read
  */
-static bool attSrvOpRead(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t wantedHandle)
+static bool attSrvOpRead(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t wantedHandle, uint16_t *offsetP)
 {
+    uint8_t reqOpcode = offsetP ? ATT_OPCODE_READ_BLOB_REQ : ATT_OPCODE_READ_REQ;
+    uint8_t rspOpcode = offsetP ? ATT_OPCODE_READ_BLOB_RSP : ATT_OPCODE_READ_RSP;
+    uint8_t readReason = offsetP ? ATT_READ_FOR_READ_BLOB : ATT_READ_FOR_READ;
+    uint16_t offset = offsetP ? *offsetP : 0;
     struct attRange *range;
     struct attVal *val;
     uint8_t err;
@@ -1478,7 +1483,7 @@ out:
         err = ATT_ERROR_READ_NOT_ALLOWED;
     else {
         uint16_t len = 0;
-        err = val->readF(srv, to, val->cbkData, range->rangeRef, val->offset, 0, ATT_READ_FOR_READ, &len, NULL);
+        err = val->readF(srv, to, val->cbkData, range->rangeRef, val->offset, offset, readReason, &len, NULL);
         if (err == ATT_ERROR_NONE) {
 
             void *data;
@@ -1490,13 +1495,13 @@ out:
             if (!data)
                 err = ATT_ERROR_UNLIKELY_ERROR;
             else {
-                err = val->readF(srv, to, val->cbkData, range->rangeRef, val->offset, 0, ATT_READ_FOR_READ, &len, data);
+                err = val->readF(srv, to, val->cbkData, range->rangeRef, val->offset, offset, readReason, &len, data);
                 if (err == ATT_ERROR_NONE) {
                     sg reply = sgNewWithAllocedData(data, len);
                     if (reply) {
                         data = NULL;
 
-                        if (attSrvSendPacket(srv, to, ATT_OPCODE_READ_RSP, NULL, 0, reply))
+                        if (attSrvSendPacket(srv, to, rspOpcode, NULL, 0, reply))
                             return true;
                         sgFree(reply);
                     }
@@ -1508,26 +1513,8 @@ out:
         }
     }
 
-    return attSrvSendErrorReply(srv, to, err, ATT_OPCODE_READ_REQ, wantedHandle);
+    return attSrvSendErrorReply(srv, to, err, reqOpcode, wantedHandle);
 }
-
-/*
- * FUNCTION: attSrvOpReadBlob
- * USE:      Perform a read blob request
- * PARAMS:   srv - the server
- *           to - whom to reply to
- *           mtu - the mtu to use
- *           handle - first handle the client cares about
- *           offset - offset into a long attribute
- * RETURN:   success
- * NOTES:    call with srv->lock held for read
- */
-static bool attSrvOpReadBlob(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t handle, uint16_t offset)
-{
-    //
-    return false;
-}
-
 
 /*
  * FUNCTION: attSrvOpReadMult
@@ -1774,7 +1761,7 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
         else if (sgLength(s))
             ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
-            ret = attSrvOpRead(srv, from, mtu, utilGetLE16(&readReq.handle));
+            ret = attSrvOpRead(srv, from, mtu, utilGetLE16(&readReq.handle), NULL);
         break;
 
     case ATT_OPCODE_READ_BLOB_REQ:
@@ -1782,8 +1769,10 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
             ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else if (sgLength(s))
             ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
-        else
-            ret = attSrvOpReadBlob(srv, from, mtu, utilGetLE16(&readBlobReq.handle), utilGetLE16(&readBlobReq.offset));
+        else {
+            uint16_t ofst = utilGetLE16(&readBlobReq.offset);
+            ret = attSrvOpRead(srv, from, mtu, utilGetLE16(&readBlobReq.handle), &ofst);
+        }
         break;
 
     case ATT_OPCODE_READ_MULT_REQ:

@@ -70,6 +70,7 @@ struct att_uuid {
 #define ATT_READ_FOR_FIND_BY_TYPE_VAL  0x01
 #define ATT_READ_FOR_READ_BY_TYPE      0x02
 #define ATT_READ_FOR_READ              0x03
+#define ATT_READ_FOR_READ_BLOB         0x04
 
 
 /* att server api */
