@@ -2070,7 +2070,6 @@ static bool attSrvOpHandleValueConf(struct attServer *srv, l2c_handle_t to, uint
     return true;
 }
 
-
 /*
  * FUNCTION: attSrvDataRx
  * USE:      Called when data arrives from a given connection
