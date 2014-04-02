@@ -511,7 +511,7 @@ void attSrvDestroy(struct attServer *srv)
 
 /*
  * FUNCTION: attRangeDelete
- * USE:      delete al values in a given range
+ * USE:      delete all values in a given range
  * PARAMS:   range - the range
  * RETURN:   NONE
  * NOTES:    call with server's write lock held
@@ -1447,14 +1447,68 @@ unrecoverable:
  * PARAMS:   srv - the server
  *           to - whom to reply to
  *           mtu - the mtu to use
- *           handle - first handle the client cares about
+ *           wantedHandle - the handle the client cares about
  * RETURN:   success
  * NOTES:    call with srv->lock held for read
  */
-static bool attSrvOpRead(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t handle)
+static bool attSrvOpRead(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t wantedHandle)
 {
-    //
-    return false;
+    struct attRange *range;
+    struct attVal *val;
+    uint8_t err;
+
+    mtu -= sizeof(struct attHdr); /* mtu is now how many bytes we can produce */
+
+    for (range = srv->rangesHead; range; range = range->next) {
+        for (val = range->valsHead; val; val = val->next) {
+            uint16_t handle = range->start + val->offset;
+
+            if (handle > wantedHandle)
+                val = NULL;
+            if (handle < wantedHandle)
+                continue;
+            goto out;
+        }
+    }
+
+out:
+    if (!val)
+        err = ATT_ERROR_INVALID_HANDLE;
+    else if (!(val->perms & ATT_PERM_READ))
+        err = ATT_ERROR_READ_NOT_ALLOWED;
+    else {
+        uint16_t len = 0;
+        err = val->readF(srv, to, val->cbkData, range->rangeRef, val->offset, 0, ATT_READ_FOR_READ, &len, NULL);
+        if (err == ATT_ERROR_NONE) {
+
+            void *data;
+
+            if (len >= mtu)
+                len = mtu;
+
+            data = malloc(len);
+            if (!data)
+                err = ATT_ERROR_UNLIKELY_ERROR;
+            else {
+                err = val->readF(srv, to, val->cbkData, range->rangeRef, val->offset, 0, ATT_READ_FOR_READ, &len, data);
+                if (err == ATT_ERROR_NONE) {
+                    sg reply = sgNewWithAllocedData(data, len);
+                    if (reply) {
+                        data = NULL;
+
+                        if (attSrvSendPacket(srv, to, ATT_OPCODE_READ_RSP, NULL, 0, reply))
+                            return true;
+                        sgFree(reply);
+                    }
+                    err = ATT_ERROR_UNLIKELY_ERROR;
+                }
+                if (data)
+                    free(data);
+            }
+        }
+    }
+
+    return attSrvSendErrorReply(srv, to, err, ATT_OPCODE_READ_REQ, wantedHandle);
 }
 
 /*
