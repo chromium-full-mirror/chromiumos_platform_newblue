@@ -84,23 +84,25 @@ struct att_uuid {
 
 
 /* att server api */
-typedef uint8_t (*attValueReadCbk)(struct attServer* srv, l2c_handle_t who, void *cbkData, att_range_t range, uint16_t ofst,
+typedef uint8_t (*attSrvValueReadCbk)(struct attServer* srv, l2c_handle_t who, void *cbkData, att_range_t range, uint16_t ofst,
                                    uint16_t byteOfst, uint8_t reason, uint16_t *lenP, void *dst); /* -> ATT_ERROR_* lenP: in/out*/
-typedef uint8_t (*attValueWriteCbk)(struct attServer* srv, l2c_handle_t who, void *cbkData, att_range_t range, uint16_t ofst,
+typedef uint8_t (*attSrvValueWriteCbk)(struct attServer* srv, l2c_handle_t who, void *cbkData, att_range_t range, uint16_t ofst,
                                     uint16_t byteOfst, uint8_t reason, uint16_t *lenP, const void *dst); /* -> ATT_ERROR_* lenP: in/out*/
-typedef uint8_t (*attTxCbk)(struct attServer* srv, l2c_handle_t to, sg s); /* -> ATT_TX_RET_* */
-typedef void (*attMtuCbk)(struct attServer* srv, l2c_handle_t to, uint32_t mtu);
+typedef uint8_t (*attSrvTxCbk)(struct attServer* srv, l2c_handle_t to, sg s); /* -> ATT_TX_RET_* */
+typedef void (*attSrvMtuCbk)(struct attServer* srv, l2c_handle_t to, uint32_t mtu);
+typedef void (*attSrvIndResultCbk)(struct attServer* srv, l2c_handle_t to, void *userData, bool success);
 
-struct attServer* attSrvCreate(attTxCbk txF, attMtuCbk mtuF);
+struct attServer* attSrvCreate(attSrvTxCbk txF, attSrvMtuCbk mtuF, attSrvIndResultCbk indF);
 void attSrvSetMtu(struct attServer* srv, l2c_handle_t to, uint32_t mtu); /* EDR uses this since L2D negotiates MTU */
-void attSrvNotifConnClose(struct attServer* srv, l2c_handle_t conn); /*allows server to no longer try to notify it */
+void attSrvNotifConnClose(struct attServer* srv, l2c_handle_t conn); /* allows server to no longer try to notify it */
 void attSrvDestroy(struct attServer* srv);
 
 att_range_t attSrvHandleRangeReserve(struct attServer* srv, uint16_t len); /* -> 0 on failure */
 void attSrvHandleRangeRelease(struct attServer* srv, att_range_t rangeRef);
-bool attSrvValueRegister(struct attServer *srv, att_range_t rangeRef, uint16_t offset, const struct att_uuid *type, uint8_t perms, uint16_t grpLen, attValueReadCbk readF, attValueWriteCbk writeF, void *cbkData);
+bool attSrvValueRegister(struct attServer *srv, att_range_t rangeRef, uint16_t offset, const struct att_uuid *type, uint8_t perms,
+                         uint16_t grpLen, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF, void *cbkData);
 bool attSrvValueUnregister(struct attServer *srv, att_range_t rangeRef, uint16_t offset);
-uint8_t attSrvValueNotifyChanged(struct attServer* srv, att_range_t rangeRef, uint16_t offset, l2c_handle_t to, sg data, bool notify); /* -> ATT_NOTIF_RET_* */
+uint8_t attSrvValueNotifyChanged(struct attServer* srv, att_range_t rangeRef, uint16_t offset, l2c_handle_t to, sg data, bool notify, void *userData); /* -> ATT_NOTIF_RET_* */
 bool attSrvDataRx(struct attServer* srv, l2c_handle_t from, sg s);
 
 

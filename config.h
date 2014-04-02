@@ -2,6 +2,11 @@
 #define _CONFIG_H_
 
 
+/*
+ * How many milliseconds from sending an indication to deciding it timed out?
+ */
+#define ATT_IND_TIMEOUT                     30000
+
 
 /*
  * AAPI will try to queue this much per socket before shutting off flow

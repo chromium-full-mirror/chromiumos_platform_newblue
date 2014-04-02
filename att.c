@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include "persist.h"
+#include "config.h"
+#include "timer.h"
 #include "l2cap.h"
 #include "types.h"
 #include "uniq.h"
@@ -211,9 +213,11 @@ struct attConnQueuedWrite {
 };
 
 struct attConnExtra {
-    uint32_t mtu;
+    uniq_t indTimer;
+    void *indData;
     struct attConnQueuedWrite *writeQueueHead;
     struct attConnQueuedWrite *writeQueueTail;
+    uint32_t mtu;
 };
 
 struct attConnList {
@@ -228,8 +232,8 @@ struct attVal {
     struct attVal *next;
     struct attVal *prev;
     struct att_uuid type;
-    attValueReadCbk readF;
-    attValueWriteCbk writeF;
+    attSrvValueReadCbk readF;
+    attSrvValueWriteCbk writeF;
     void *cbkData;
     uint16_t offset;
     uint16_t grpLen;
@@ -251,9 +255,11 @@ struct attServer {
     struct attRange *rangesHead;
     struct attRange *rangesTail;
     pthread_rwlock_t lock;
-    attTxCbk txCbk;
-    attMtuCbk mtuCbk;
+    attSrvTxCbk txCbk;
+    attSrvMtuCbk mtuCbk;
+    attSrvIndResultCbk indCbk;
     struct attConnList allClients;
+    bool inTeardown;
 };
 
 
@@ -480,10 +486,12 @@ static void attConnListFree(struct attConnList *list)
  * FUNCTION: attSrvCreate
  * USE:      create an ATT server
  * PARAMS:   txF - callback to use to TX data to clients
+ *           mtuF - callback to tell client of new MTU
+ *           indF - callback to tell client of ind TX progress
  * RETURN:   the server struct or NULL on error
  * NOTES:
  */
-struct attServer* attSrvCreate(attTxCbk txF, attMtuCbk mtuF)
+struct attServer* attSrvCreate(attSrvTxCbk txF, attSrvMtuCbk mtuF, attSrvIndResultCbk indF)
 {
     struct attServer *ret = (struct attServer*)calloc(1, sizeof(struct attServer));
 
@@ -495,6 +503,7 @@ struct attServer* attSrvCreate(attTxCbk txF, attMtuCbk mtuF)
 
     ret->txCbk = txF;
     ret->mtuCbk = mtuF;
+    ret->indCbk = indF;
     return ret;
 
 
@@ -514,10 +523,26 @@ out_alloc:
  */
 void attSrvDestroy(struct attServer *srv)
 {
+    struct attConnExtra *extra;
     struct attRange *range;
     struct attVal *val;
+    uint32_t i;
 
     pthread_rwlock_wrlock(&srv->lock);
+    for (i = 0; i < srv->allClients.listNum; i++) {
+        extra = srv->allClients.extras + i;
+        if (extra->indTimer) {
+            if (timerCancel(extra->indTimer))
+                srv->indCbk(srv, srv->allClients.conns[i], extra->indData, false);
+            extra->indTimer = 0;
+        }
+    }
+    srv->inTeardown = true;
+    /* all uncancelled timers need to be run before we destroy state, so we let them */
+    pthread_rwlock_unlock(&srv->lock);
+    timerSync();
+    pthread_rwlock_wrlock(&srv->lock);
+
     for (range = srv->rangesHead; range; range = range->next) {
         for (val = range->valsHead; val; ) {
             struct attVal *t = val;
@@ -757,7 +782,7 @@ void attSrvHandleRangeRelease(struct attServer *srv, att_range_t rangeRef)
  * RETURN:   success
  * NOTES:
  */
-bool attSrvValueRegister(struct attServer *srv, att_range_t rangeRef, uint16_t offset, const struct att_uuid *type, uint8_t perms, uint16_t grpLen, attValueReadCbk readF, attValueWriteCbk writeF, void *cbkData)
+bool attSrvValueRegister(struct attServer *srv, att_range_t rangeRef, uint16_t offset, const struct att_uuid *type, uint8_t perms, uint16_t grpLen, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF, void *cbkData)
 {
     struct attVal *next, *prev = NULL, *val;
     struct attRange *range;
@@ -987,6 +1012,36 @@ static uint8_t attSrvSend(struct attServer *srv, l2c_handle_t to, const void *pr
 }
 
 /*
+ * FUNCTION: attSrvTimerCbk
+ * USE:      Called when a timeout for a confirmation for a sent notification comes
+ * PARAMS:   which - the timer
+ *           srvRef - the server instance
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void attSrvTimerCbk(uniq_t which,  uint64_t srvRef)
+{
+    struct attServer *srv = (struct attServer*)(uintptr_t)srvRef;
+    struct attConnExtra *extra = NULL;
+    l2c_handle_t conn;
+    uint32_t i;
+
+    pthread_rwlock_wrlock(&srv->lock);
+    /* find the relant conn */
+    for (i = 0; i < srv->allClients.listNum; i++) {
+        if (srv->allClients.extras[i].indTimer == which) {
+            extra = srv->allClients.extras + i;
+            conn = srv->allClients.conns[i];
+            break;
+        }
+    }
+
+    if (extra) /* we found it */
+        srv->indCbk(srv, conn, extra->indData, false);
+    pthread_rwlock_unlock(&srv->lock);
+}
+
+/*
  * FUNCTION: attSrvSendNotif
  * USE:      Send notifications to all clients who wanted them for this value
  * PARAMS:   srv - the server
@@ -995,15 +1050,17 @@ static uint8_t attSrvSend(struct attServer *srv, l2c_handle_t to, const void *pr
  *           to - whom to send to
  *           data - the value
  *           notify - send notification (as opposed to indication)
+ *           userData - gets passed to callback
  * RETURN:   L2C_TX_*
- * NOTES:    call with srv->lock held for read
+ * NOTES:    call with srv->lock held for write
  */
-static uint8_t attSrvSendNotif(struct attServer *srv, struct attRange *range, struct attVal *val, l2c_handle_t to, sg data, bool notify)
+static uint8_t attSrvSendNotif(struct attServer *srv, struct attRange *range, struct attVal *val, l2c_handle_t to, sg data, bool notify, void *userData)
 {
     uint8_t hdrBuf[sizeof(struct attHdr) + sizeof(struct attPduHandleValueNotif) + sizeof(struct attPduHandleValueInd)]; /* definitely big enoguh to fit the fist and either second or third */
     struct attHdr *hdr = (struct attHdr*)hdrBuf;
     struct attPduHandleValueNotif *notifH = (struct attPduHandleValueNotif*)(hdr + 1);
     struct attPduHandleValueInd *indH = (struct attPduHandleValueInd*)(hdr + 1);
+    struct attConnExtra* extra = attConnListGetExtra(&srv->allClients, to);
     uint8_t hdrLen = sizeof(*hdr);
     uint32_t mtu;
 
@@ -1012,6 +1069,12 @@ static uint8_t attSrvSendNotif(struct attServer *srv, struct attRange *range, st
         utilSetLE16(&notifH->handle, val->offset + range->start);
         hdrLen += sizeof(*notifH);
     } else {
+        if (!extra)
+            return ATT_TX_RET_ATT_ERROR;
+
+        if (extra->indTimer)
+            return ATT_TX_RET_ATT_BUSY;
+
         utilSetLE8(&hdr->opcode, ATT_OPCODE_HANDLE_VALUE_IND);
         utilSetLE16(&indH->handle, val->offset + range->start);
         hdrLen += sizeof(*indH);
@@ -1027,6 +1090,11 @@ static uint8_t attSrvSendNotif(struct attServer *srv, struct attRange *range, st
         sgTruncBack(data, sgLength(data) - mtu);
     }
 
+    if (!notify) {
+        extra->indData = userData;
+        extra->indTimer = timerSet(ATT_IND_TIMEOUT, attSrvTimerCbk, (uint64_t)(uintptr_t)srv);
+    }
+
     return attSrvSend(srv, to, hdrBuf, hdrLen, data, NULL, 0);
 }
 
@@ -1039,17 +1107,18 @@ static uint8_t attSrvSendNotif(struct attServer *srv, struct attRange *range, st
  *           to - whom to send to
  *           data - the data to send
  *           notify - send notification (as opposed to indication)
+ *           userData - gets passed to callback
  * RETURN:   ATT_TX_RET_*
- * NOTES:    call with srv->lock held for read
+ * NOTES:
  */
-uint8_t attSrvValueNotifyChanged(struct attServer *srv, att_range_t rangeRef, uint16_t offset, l2c_handle_t to, sg data, bool notify)
+uint8_t attSrvValueNotifyChanged(struct attServer *srv, att_range_t rangeRef, uint16_t offset, l2c_handle_t to, sg data, bool notify, void *userData)
 {
     struct attRange *range;
     struct attVal *val;
     uint8_t ret = ATT_TX_RET_ATT_ERROR;
     uint32_t i;
 
-    pthread_rwlock_rdlock(&srv->lock);
+    pthread_rwlock_wrlock(&srv->lock);
     val = attValRangeFind(srv, rangeRef, offset, &range);
     if (!range) {
         logw("Attempt to notify on a value from a non-existent range\n");
@@ -1060,7 +1129,7 @@ uint8_t attSrvValueNotifyChanged(struct attServer *srv, att_range_t rangeRef, ui
         goto out;
     }
 
-    ret = attSrvSendNotif(srv, range, val, to, data, notify);
+    ret = attSrvSendNotif(srv, range, val, to, data, notify, userData);
 
 out:
     pthread_rwlock_unlock(&srv->lock);
@@ -1985,8 +2054,20 @@ err:
  */
 static bool attSrvOpHandleValueConf(struct attServer *srv, l2c_handle_t to, uint32_t mtu)
 {
-    //
-    return false;
+    struct attConnExtra *extra;
+
+    extra = attConnListGetExtra(&srv->allClients, to);
+    if (!extra)
+        loge("Failed to find extra for confirmation\n");
+    else if (extra->indTimer) { /* we're not late */
+        srv->indCbk(srv, to, extra->indData, true);
+        timerCancel(extra->indTimer);
+        extra->indTimer = 0;
+    } else /* we are late */
+        logw("Confirmation is late\n");
+
+    pthread_rwlock_wrlock(&srv->lock);
+    return true;
 }
 
 
