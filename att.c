@@ -2047,6 +2047,7 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
             attConnMtuSet(srv, from, mtu);
             utilSetLE16(&mtuExch.mtu, mtu);
             ret = attSrvSend(srv, from, &mtuExch, sizeof(mtuExch), NULL, NULL, 0);
+            srv->mtuCbk(srv, from, mtu);
         }
         break;
 
