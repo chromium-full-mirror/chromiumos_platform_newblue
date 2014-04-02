@@ -1113,7 +1113,7 @@ static bool attSrvOpFindInfo(struct attServer *srv, l2c_handle_t to, uint32_t mt
     bool allUuidsSmall = true;
     struct attRange *range;
     struct attVal *val;
-    sg results;
+    sg results = NULL;
     bool err = false;
 
     if (!startHandle || startHandle > endHandle)
@@ -1220,10 +1220,10 @@ unrecoverable:
  */
 static bool attSrvOpFindByTypeVal(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t startHandle, uint16_t endHandle, const struct att_uuid *uuid, sg s)
 {
+    void *wantedVal = NULL, *readVal = NULL;
     struct attRange *range;
     struct attVal *val;
-    sg results;
-    void *wantedVal = NULL, *readVal = NULL;
+    sg results = NULL;
 
     if (!startHandle || startHandle > endHandle)
         return attSrvSendErrorReply(srv, to, ATT_ERROR_INVALID_HANDLE, ATT_OPCODE_FIND_BY_TYPE_VAL_REQ, startHandle);
@@ -1334,7 +1334,7 @@ static bool attSrvOpReadByType(struct attServer *srv, l2c_handle_t to, uint32_t 
     uint8_t itemLen = 0;
     uint32_t itemMaxLen;
     struct attVal *val;
-    sg results;
+    sg results = NULL;
 
     if (!startHandle || startHandle > endHandle)
         return attSrvSendErrorReply(srv, to, ATT_ERROR_INVALID_HANDLE, ATT_OPCODE_READ_BY_TYPE_REQ, startHandle);
@@ -1427,27 +1427,24 @@ unrecoverable:
 }
 
 /*
- * FUNCTION: attSrvOpRead
- * USE:      Perform a read/readBlob request
+ * FUNCTION: attSrvDoRead
+ * USE:      Perform a read of a handle into an sg given a langth and an offset
  * PARAMS:   srv - the server
- *           to - whom to reply to
- *           mtu - the mtu to use
+ *           whomFor - whom read for
+ *           maxLen - maximum bytes to read
  *           wantedHandle - the handle the client cares about
  *           offsetP - NULL if this is a read req, if readBlob, contains offset to start at
- * RETURN:   success
+ *           readReason - read reason to pass to read callback
+ *           errP - error gets stored here
+ * RETURN:   sg that was read or NULL on error (check errP)
  * NOTES:    call with srv->lock held for read
  */
-static bool attSrvOpRead(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t wantedHandle, uint16_t *offsetP)
+static sg attSrvDoRead(struct attServer *srv, l2c_handle_t whomFor, uint32_t maxLen, uint16_t wantedHandle, uint16_t *offsetP, uint8_t readReason, uint8_t *errP)
 {
-    uint8_t reqOpcode = offsetP ? ATT_OPCODE_READ_BLOB_REQ : ATT_OPCODE_READ_REQ;
-    uint8_t rspOpcode = offsetP ? ATT_OPCODE_READ_BLOB_RSP : ATT_OPCODE_READ_RSP;
-    uint8_t readReason = offsetP ? ATT_READ_FOR_READ_BLOB : ATT_READ_FOR_READ;
     uint16_t offset = offsetP ? *offsetP : 0;
     struct attRange *range;
     struct attVal *val;
     uint8_t err;
-
-    mtu -= sizeof(struct attHdr); /* mtu is now how many bytes we can produce */
 
     for (range = srv->rangesHead; range; range = range->next) {
         for (val = range->valsHead; val; val = val->next) {
@@ -1468,34 +1465,63 @@ out:
         err = ATT_ERROR_READ_NOT_ALLOWED;
     else {
         uint16_t len = 0;
-        err = val->readF(srv, to, val->cbkData, range->rangeRef, val->offset, offset, readReason, &len, NULL);
+        err = val->readF(srv, whomFor, val->cbkData, range->rangeRef, val->offset, offset, readReason, &len, NULL);
         if (err == ATT_ERROR_NONE) {
 
             void *data;
 
-            if (len >= mtu)
-                len = mtu;
+            if (len >= maxLen)
+                len = maxLen;
 
             data = malloc(len);
             if (!data)
                 err = ATT_ERROR_UNLIKELY_ERROR;
             else {
-                err = val->readF(srv, to, val->cbkData, range->rangeRef, val->offset, offset, readReason, &len, data);
+                err = val->readF(srv, whomFor, val->cbkData, range->rangeRef, val->offset, offset, readReason, &len, data);
                 if (err == ATT_ERROR_NONE) {
                     sg reply = sgNewWithAllocedData(data, len);
-                    if (reply) {
-                        data = NULL;
+                    if (reply)
+                        return reply;
 
-                        if (attSrvSendPacket(srv, to, rspOpcode, NULL, 0, reply))
-                            return true;
-                        sgFree(reply);
-                    }
                     err = ATT_ERROR_UNLIKELY_ERROR;
                 }
                 if (data)
                     free(data);
             }
         }
+    }
+
+    *errP = err;
+    return NULL;
+}
+
+/*
+ * FUNCTION: attSrvOpRead
+ * USE:      Perform a read/readBlob request
+ * PARAMS:   srv - the server
+ *           to - whom to reply to
+ *           mtu - the mtu to use
+ *           wantedHandle - the handle the client cares about
+ *           offsetP - NULL if this is a read req, if readBlob, contains offset to start at
+ * RETURN:   success
+ * NOTES:    call with srv->lock held for read
+ */
+static bool attSrvOpRead(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t wantedHandle, uint16_t *offsetP)
+{
+    uint8_t reqOpcode = offsetP ? ATT_OPCODE_READ_BLOB_REQ : ATT_OPCODE_READ_REQ;
+    uint8_t rspOpcode = offsetP ? ATT_OPCODE_READ_BLOB_RSP : ATT_OPCODE_READ_RSP;
+    uint8_t readReason = offsetP ? ATT_READ_FOR_READ_BLOB : ATT_READ_FOR_READ;
+    uint8_t err;
+    sg reply;
+
+    mtu -= sizeof(struct attHdr); /* mtu is now how many bytes we can produce */
+
+    reply = attSrvDoRead(srv, to, mtu, wantedHandle, offsetP, readReason, &err);
+    if (reply) {
+        if (attSrvSendPacket(srv, to, rspOpcode, NULL, 0, reply))
+            return true;
+        sgFree(reply);
+        err = ATT_ERROR_UNLIKELY_ERROR;
     }
 
     return attSrvSendErrorReply(srv, to, err, reqOpcode, wantedHandle);
@@ -1513,8 +1539,42 @@ out:
  */
 static bool attSrvOpReadMult(struct attServer *srv, l2c_handle_t to, uint32_t mtu, sg handles)
 {
-    //
-    return false;
+    uint8_t err = ATT_ERROR_UNLIKELY_ERROR;
+    uint16_t wantedHandle = 0;
+    struct attRange *range;
+    struct attVal *val;
+    sg results = NULL;
+
+    results = sgNew();
+    if (!results)
+        goto error;
+
+    mtu -= sizeof(struct attHdr); /* mtu is now how many bytes we can produce */
+
+    while (sgLength(handles) && sgLength(results) < mtu) {
+        sg readBytes;
+
+        sgSerializeCutFront(handles, &wantedHandle, sizeof(wantedHandle));
+        wantedHandle = utilGetLE16(&wantedHandle);
+
+        readBytes = attSrvDoRead(srv, to, mtu - sgLength(results), wantedHandle, NULL, ATT_READ_FOR_READ_MULT, &err);
+        if (!readBytes)
+            goto error;
+
+        sgConcat(results, readBytes);
+    }
+
+    /* make sure we do not send too much */
+    if (sgLength(results) > mtu)
+        sgTruncBack(results, sgLength(results) - mtu);
+
+    if (attSrvSendPacket(srv, to, ATT_OPCODE_READ_MULT_RSP, NULL, 0, results))
+        return true;
+    sgFree(results);
+    err = ATT_ERROR_UNLIKELY_ERROR;
+
+error:
+    return attSrvSendErrorReply(srv, to, err, ATT_OPCODE_READ_MULT_REQ, wantedHandle);
 }
 
 /*
@@ -1761,7 +1821,7 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
         break;
 
     case ATT_OPCODE_READ_MULT_REQ:
-        if ((sgLength(s) % sizeof(uint16_t)) || sgLength(s) < sizeof(uint16_t[2])) /* sanity check as per spec */
+        if ((sgLength(s) % sizeof(uint16_t)) || sgLength(s) < sizeof(uint16_t[ATT_MIN_HANDLES_IN_READ_MULT]))
             ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
             ret = attSrvOpReadMult(srv, from, mtu, s);
