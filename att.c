@@ -169,7 +169,6 @@ struct attPduPrepareWriteReq {
 
 struct attPduPrepareWriteRsp {
     uint16_t handle;
-    uint16_t offset;
     /* data echo */
 } __packed;
 
@@ -201,12 +200,26 @@ struct attPduSignedWriteCmd {
 
 #define ATT_CONN_LIST_GROW_BY     16
 
+struct attConnQueuedWrite {
+    struct attConnQueuedWrite *next;
+    uint16_t handle;
+    uint16_t offset;
+    uint16_t len;
+    uint8_t data[];
+};
+
+struct attConnExtra {
+    uint32_t mtu;
+    struct attConnQueuedWrite *writeQueueHead;
+    struct attConnQueuedWrite *writeQueueTail;
+};
+
 struct attConnList {
     uint32_t listCap;
     uint32_t listNum;
     l2c_handle_t *conns;
-    uint32_t *mtus;
-    bool hasMtus;
+    struct attConnExtra *extras;
+    bool hasExtras;
 };
 
 struct attVal {
@@ -330,54 +343,62 @@ static bool attUuidToUuid16(uint16_t *dst, const struct att_uuid *uuid128)
 
 /*
  * FUNCTION: attConnListAdd
- * USE:      Add a given connection to a connection list, if it is not yet present there. update MTU if list has them
+ * USE:      Add a given connection to a connection list, if it is not yet present there
  * PARAMS:   list - the list
  *           conn - the connection
- *           mtu - the mtu to store (or 0 if none or not known)
  * RETURN:   false on error
  * NOTES:    attConnList has no locks itself - please hold the parent data structure's lock when calling
  */
-static bool attConnListAdd(struct attConnList *list, l2c_handle_t conn, uint32_t mtu)
+static bool attConnListAdd(struct attConnList *list, l2c_handle_t conn)
 {
     uint32_t i;
 
-    if (!mtu && list->hasMtus) {
-        loge("Adding connection with no MTU to a list with MTUs not supported\n");
-        return false;
-    }
-
-    for (i = 0; i < list->listNum; i++) {
-        if (list->conns[i] == conn) {
-            if (list->hasMtus && mtu)
-                list->mtus[i] = mtu;
+    for (i = 0; i < list->listNum; i++)
+        if (list->conns[i] == conn)
             return true;
-        }
-    }
 
     if (list->listCap == list->listNum) {
         uint32_t newCap = list->listCap + ATT_CONN_LIST_GROW_BY;
         l2c_handle_t *conns;
-        uint32_t *mtus;
+        struct attConnExtra *extras;
 
         conns = realloc(list->conns, sizeof(l2c_handle_t[newCap]));
         if (!conns)
             return false;
         list->conns = conns;
 
-        if (list->hasMtus) {
-            mtus = realloc(list->mtus, sizeof(uint32_t[newCap]));
-            if (!mtus)
+        if (list->hasExtras) {
+            extras = realloc(list->extras, sizeof(struct attConnExtra[newCap]));
+            if (!extras)
                 return false;
-            list->mtus = mtus;
+            list->extras = extras;
         }
 
         list->listCap = newCap;
     }
     list->conns[list->listNum] = conn;
-    if (list->hasMtus)
-        list->mtus[list->listNum] = mtu;
+    if (list->hasExtras)
+        memset(list->extras + list->listNum, 0, sizeof(struct attConnExtra));
     list->listNum++;
     return true;
+}
+
+/*
+ * FUNCTION: attConnListFreeExtra
+ * USE:      Free the storage occupied by the "extra" data in a connection list
+ * PARAMS:   extra the extra struct
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void attConnListFreeExtra(struct attConnExtra *extra)
+{
+    struct attConnQueuedWrite *t;
+
+    while (extra->writeQueueHead) {
+        t = extra->writeQueueHead;
+        extra->writeQueueHead = extra->writeQueueHead->next;
+        free(t);
+    }
 }
 
 /*
@@ -396,34 +417,16 @@ static bool attConnListDel(struct attConnList *list, l2c_handle_t conn)
         if (list->conns[i] == conn) {
             list->listNum--;
             list->conns[i] = list->conns[list->listNum];
-            if (list->hasMtus)
-                list->mtus[i] = list->mtus[list->listNum];
+            if (list->hasExtras) {
+                attConnListFreeExtra(list->extras + i);
+                memcpy(list->extras + i, list->extras + list->listNum, sizeof(struct attConnExtra));
+            }
             return true;
         }
     }
 
     return false;
 }
-
-/*
- * FUNCTION: attConnListGetMtu
- * USE:      Retrieve a given connection's MTU from a connection list, if it is present there
- * PARAMS:   list - the list
- *           conn - the connection
- * RETURN:   the MTU if found, else 0
- * NOTES:    attConnList has no locks itself - please hold the parent data structure's lock when calling
- */
-static uint32_t attConnListGetMtu(struct attConnList *list, l2c_handle_t conn)
-{
-    uint32_t i;
-
-    for (i = 0; i < list->listNum; i++)
-        if (list->conns[i] == conn)
-            return list->hasMtus ? list->mtus[i] : 0;
-
-    return 0;
-}
-
 
 /*
  * FUNCTION: attConnListIsEmpty
@@ -448,8 +451,12 @@ static void attConnListFree(struct attConnList *list)
 {
     if (list->conns)
         free(list->conns);
-    if (list->mtus)
-        free(list->mtus);
+    if (list->hasExtras && list->extras) {
+        uint32_t i;
+        for(i = 0; i < list->listNum; i++)
+            attConnListFreeExtra(list->extras + i);
+        free(list->extras);
+    }
     list->conns = NULL;
 }
 
@@ -844,7 +851,26 @@ out:
 }
 
 /*
- * FUNCTION: attGetMtu
+ * FUNCTION: attConnListGetExtra
+ * USE:      Retrieve a given connection's "extra" data from a connection list, if it is present there
+ * PARAMS:   list - the list
+ *           conn - the connection
+ * RETURN:   the extra data pointer or NULL
+ * NOTES:    attConnList has no locks itself - please hold the parent data structure's lock when calling
+ */
+static struct attConnExtra* attConnListGetExtra(struct attConnList *list, l2c_handle_t conn)
+{
+    uint32_t i;
+
+    for (i = 0; i < list->listNum; i++)
+        if (list->conns[i] == conn)
+            return list->hasExtras ? list->extras + i : NULL;
+
+    return NULL;
+}
+
+/*
+ * FUNCTION: attConnMtuGet
  * USE:      Get the MTU to someone
  * PARAMS:   srv - the server
  *           to - whom to
@@ -852,12 +878,12 @@ out:
  * RETURN:   the mtu to use or 0 on error
  * NOTES:    call with srv->lock held for read
  */
-static uint32_t attGetMtu(struct attServer *srv, l2c_handle_t to, bool tryDefaults)
+static uint32_t attConnMtuGet(struct attServer *srv, l2c_handle_t to, bool tryDefaults)
 {
-    uint32_t mtu;
+    struct attConnExtra *extra = attConnListGetExtra(&srv->allClients, to);
+    uint32_t mtu = 0;
 
-    mtu = attConnListGetMtu(&srv->allClients, to);
-    if (!mtu && tryDefaults) {
+    if ((!extra || !(mtu = extra->mtu)) && tryDefaults) {
         struct bt_addr peer;
 
         logw("Sending notif with no known MTU\n");
@@ -869,6 +895,28 @@ static uint32_t attGetMtu(struct attServer *srv, l2c_handle_t to, bool tryDefaul
     }
 
     return mtu;
+}
+
+/*
+ * FUNCTION: attConnMtuSet
+ * USE:      Set the MTU to someone
+ * PARAMS:   srv - the server
+ *           to - whom to
+ *           mtu - the MTU to set
+ * RETURN:   success
+ * NOTES:    call with srv->lock held for write
+ */
+static bool attConnMtuSet(struct attServer *srv, l2c_handle_t to, uint32_t mtu)
+{
+    struct attConnExtra *extra = attConnListGetExtra(&srv->allClients, to);
+
+    if (!extra) {
+        logw("Setting MTU for unknown connection\n");
+        return false;
+    }
+
+    extra->mtu = mtu;
+    return true;
 }
 
 /*
@@ -953,7 +1001,7 @@ static uint8_t attSrvSendNotif(struct attServer *srv, struct attRange *range, st
         hdrLen += sizeof(*indH);
     }
 
-    mtu = attGetMtu(srv, to, true);
+    mtu = attConnMtuGet(srv, to, true);
     if (!mtu)
         return ATT_TX_RET_ATT_ERROR;
 
@@ -1015,7 +1063,7 @@ out:
 void attSrvSetMtu(struct attServer *srv, l2c_handle_t to, uint32_t mtu)
 {
     pthread_rwlock_wrlock(&srv->lock);
-    attConnListAdd(&srv->allClients, to, mtu);
+    attConnMtuSet(srv, to, mtu);
     pthread_rwlock_unlock(&srv->lock);
 }
 
@@ -1843,12 +1891,12 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
 
     /* add to known client list */
     pthread_rwlock_wrlock(&srv->lock);
-    attConnListAdd(&srv->allClients, from, 0);
+    attConnListAdd(&srv->allClients, from);
     pthread_rwlock_unlock(&srv->lock);
 
     /* grab MTU and get to work */
     pthread_rwlock_rdlock(&srv->lock);
-    mtu = attGetMtu(srv, from, true);
+    mtu = attConnMtuGet(srv, from, true);
 
     switch (opcode) {
     case ATT_OPCODE_MTU_EXCH_REQ:
@@ -1860,10 +1908,11 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
             ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else {
             newMtu = utilGetLE16(&mtuExch.mtu);
-            mtu = attGetMtu(srv, from, false);
+            mtu = attConnMtuGet(srv, from, false);
             if (!mtu || mtu > newMtu)
                 mtu = newMtu;
-            attConnListAdd(&srv->allClients, from, mtu);
+            attConnListAdd(&srv->allClients, from);
+            attConnMtuSet(srv, from, mtu);
             utilSetLE16(&mtuExch.mtu, mtu);
             ret = attSrvSend(srv, from, &mtuExch, sizeof(mtuExch), NULL, NULL, 0);
         }
