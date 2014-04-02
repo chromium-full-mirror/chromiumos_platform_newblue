@@ -1411,26 +1411,11 @@ out:
         /* else report the error */
         uint8_t err;
 
-        switch (readRet) {
-        case ATT_ERROR_NONE:
+        if (readRet == ATT_ERROR_NONE) {
             err = ATT_ERROR_ATTRIBUTE_NOT_FOUND;
             handle = startHandle;
-            break;
-
-        case ATT_ERROR_INSUFFICIENT_ATHOR:
-        case ATT_ERROR_INSUFFICIENT_AUTH:
-        case ATT_ERROR_INSUFF_ENCR_KEY_SZ:
-        case ATT_ERROR_INSUFFICIENT_ENCR:
-        case ATT_ERROR_READ_NOT_ALLOWED:
+        } else
             err = readRet;
-            break;
-
-        default:
-            logw("Unexpected error %u while reading for ReadByTypeReq\n", readRet);
-            err = ATT_ERROR_UNLIKELY_ERROR;
-            handle = 0;
-            break;
-        }
 
         return attSrvSendErrorReply(srv, to, err, ATT_OPCODE_READ_BY_TYPE_RSP, handle);
     }
