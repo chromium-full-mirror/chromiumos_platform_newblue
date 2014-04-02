@@ -1314,20 +1314,25 @@ unrecoverable:
 }
 
 /*
- * FUNCTION: attSrvOpReadByType
- * USE:      Perform a read by type request
+ * FUNCTION: attSrvDoReadByType
+ * USE:      Perform a read by type / read by group type request
  * PARAMS:   srv - the server
  *           to - whom to reply to
  *           mtu - the mtu to use
  *           startHandle - first handle the client cares about
  *           endHandle - last handle the client cares about
  *           uuid - the uuid to find
+ *           grpType - is this a "read by group type" request ?
  * RETURN:   success
  * NOTES:    call with srv->lock held for read
  */
-static bool attSrvOpReadByType(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t startHandle, uint16_t endHandle, const struct att_uuid *uuid)
+static bool attSrvDoReadByType(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t startHandle, uint16_t endHandle, const struct att_uuid *uuid, bool grpType)
 {
-    uint8_t valBuf[ATT_MAX_LEN_FOR_READ_BY_TYPE + sizeof(struct attHandleValuePair)];
+    const uint8_t reqOpcode = grpType ? ATT_OPCODE_READ_BY_GRP_TYPE_REQ : ATT_OPCODE_READ_BY_TYPE_REQ;
+    const uint8_t rspOpcode = grpType ? ATT_OPCODE_READ_BY_GRP_TYPE_RSP : ATT_OPCODE_READ_BY_TYPE_RSP;
+    const uint8_t readReason = grpType ? ATT_READ_FOR_READ_BY_GRP_TYPE : ATT_READ_FOR_READ_BY_TYPE;
+    uint8_t valBuf[255 /* guaranteed by the spec and its use of a 8-bit length field */];
+    const uint8_t bufOfst = grpType ? sizeof(struct attGrpValuePair) : sizeof(struct attHandleValuePair);
     uint8_t readRet = ATT_ERROR_NONE;
     uint16_t handle = startHandle;
     struct attRange *range;
@@ -1337,12 +1342,12 @@ static bool attSrvOpReadByType(struct attServer *srv, l2c_handle_t to, uint32_t 
     sg results = NULL;
 
     if (!startHandle || startHandle > endHandle)
-        return attSrvSendErrorReply(srv, to, ATT_ERROR_INVALID_HANDLE, ATT_OPCODE_READ_BY_TYPE_REQ, startHandle);
+        return attSrvSendErrorReply(srv, to, ATT_ERROR_INVALID_HANDLE, reqOpcode, startHandle);
 
     mtu -= sizeof(struct attHdr) + sizeof(struct attPduReadByTypeRsp); /* mtu is now how many bytes we can produce */
     itemMaxLen = mtu - sizeof(uint16_t);
-    if (itemMaxLen > ATT_MAX_LEN_FOR_READ_BY_TYPE)
-        itemMaxLen = ATT_MAX_LEN_FOR_READ_BY_TYPE;
+    if (itemMaxLen > ATT_MAX_LEN_FOR_RD_BY_TYPE)
+        itemMaxLen = ATT_MAX_LEN_FOR_RD_BY_TYPE ;
 
     results = sgNew();
     if (!results)
@@ -1351,6 +1356,8 @@ static bool attSrvOpReadByType(struct attServer *srv, l2c_handle_t to, uint32_t 
     for (range = srv->rangesHead; range; range = range->next) {
         for (val = range->valsHead; val; val = val->next) {
             struct attHandleValuePair *hvp = (struct attHandleValuePair*)valBuf;
+            struct attGrpValuePair *gvp = (struct attGrpValuePair*)valBuf;
+            uint16_t effectiveGrpLen = val->grpLen ? val->grpLen : 1;
             uint16_t len = itemMaxLen;
 
             handle = range->start + val->offset;
@@ -1371,7 +1378,7 @@ static bool attSrvOpReadByType(struct attServer *srv, l2c_handle_t to, uint32_t 
                 continue;
 
             /* do the read, stop on any errors */
-            readRet = val->readF(srv, to, val->cbkData, range->rangeRef, val->offset, 0, ATT_READ_FOR_READ_BY_TYPE, &len, valBuf + sizeof(struct attHandleValuePair));
+            readRet = val->readF(srv, to, val->cbkData, range->rangeRef, val->offset, 0, readReason, &len, valBuf + bufOfst);
             if (readRet != ATT_ERROR_NONE)
                 goto out;
 
@@ -1381,8 +1388,12 @@ static bool attSrvOpReadByType(struct attServer *srv, l2c_handle_t to, uint32_t 
             itemLen = len;
 
             /* prepare the per-item header */
-            len += sizeof(struct attHandleValuePair);
-            utilSetLE16(&hvp->handle, handle);
+            len += bufOfst;
+            if (grpType) {
+                utilSetLE16(&gvp->handle, handle);
+                utilSetLE16(&gvp->groupEndHadle, handle + effectiveGrpLen - 1);
+            } else
+                utilSetLE16(&hvp->handle, handle);
 
             if (!sgConcatBackCopy(results, valBuf, len))
                 goto out;
@@ -1394,19 +1405,35 @@ static bool attSrvOpReadByType(struct attServer *srv, l2c_handle_t to, uint32_t 
     }
 
 out:
-    itemLen += sizeof(struct attHandleValuePair);
+    itemLen += bufOfst;
 
     /* make sure we do not send too much */
     while (sgLength(results) > mtu)
         sgTruncBack(results, itemLen);
 
     if (sgLength(results)) {
-        /* if we have results, send them */
         struct attPduReadByTypeRsp hdr;
+        struct attPduReadByGrpTypeRsp hdrG;
+        void *hdrPtr;
+        uint32_t hdrLen;
 
         utilSetLE8(&hdr.handleValuePairSz, itemLen);
-        if (attSrvSendPacket(srv, to, ATT_OPCODE_READ_BY_TYPE_RSP, &hdr, sizeof(hdr), results))
+        
+
+        /* if we have results, send them */
+        if (grpType) {
+            utilSetLE8(&hdrG.attGrpValuePairSz, itemLen);
+            hdrPtr = &hdrG;
+            hdrLen = sizeof(hdrG);
+        } else {
+            utilSetLE8(&hdr.handleValuePairSz, itemLen);
+            hdrPtr = &hdr;
+            hdrLen = sizeof(hdr);
+        }
+
+        if (attSrvSendPacket(srv, to, rspOpcode, hdrPtr, hdrLen, results))
             return true;
+
     } else {
         /* else report the error */
         uint8_t err;
@@ -1417,13 +1444,13 @@ out:
         } else
             err = readRet;
 
-        return attSrvSendErrorReply(srv, to, err, ATT_OPCODE_READ_BY_TYPE_RSP, handle);
+        return attSrvSendErrorReply(srv, to, err, reqOpcode, handle);
     }
 
 unrecoverable:
     if (results)
         sgFree(results);
-    return attSrvSendErrorReply(srv, to, ATT_ERROR_UNLIKELY_ERROR, ATT_OPCODE_READ_BY_TYPE_REQ, 0);
+    return attSrvSendErrorReply(srv, to, ATT_ERROR_UNLIKELY_ERROR, reqOpcode, 0);
 }
 
 /*
@@ -1508,9 +1535,9 @@ out:
  */
 static bool attSrvOpRead(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t wantedHandle, uint16_t *offsetP)
 {
-    uint8_t reqOpcode = offsetP ? ATT_OPCODE_READ_BLOB_REQ : ATT_OPCODE_READ_REQ;
-    uint8_t rspOpcode = offsetP ? ATT_OPCODE_READ_BLOB_RSP : ATT_OPCODE_READ_RSP;
-    uint8_t readReason = offsetP ? ATT_READ_FOR_READ_BLOB : ATT_READ_FOR_READ;
+    const uint8_t reqOpcode = offsetP ? ATT_OPCODE_READ_BLOB_REQ : ATT_OPCODE_READ_REQ;
+    const uint8_t rspOpcode = offsetP ? ATT_OPCODE_READ_BLOB_RSP : ATT_OPCODE_READ_RSP;
+    const uint8_t readReason = offsetP ? ATT_READ_FOR_READ_BLOB : ATT_READ_FOR_READ;
     uint8_t err;
     sg reply;
 
@@ -1575,22 +1602,6 @@ static bool attSrvOpReadMult(struct attServer *srv, l2c_handle_t to, uint32_t mt
 
 error:
     return attSrvSendErrorReply(srv, to, err, ATT_OPCODE_READ_MULT_REQ, wantedHandle);
-}
-
-/*
- * FUNCTION: attSrvOpReadByGrpType
- * USE:      Perform a read by group type request
- * PARAMS:   srv - the server
- *           to - whom to reply to
- *           mtu - the mtu to use
- *           s - sg with uint16_t list of handles
- * RETURN:   success
- * NOTES:    call with srv->lock held for read
- */
-static bool attSrvOpReadByGrpType(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t startHandle, uint16_t endHandle, const struct att_uuid *uuid)
-{
-    //
-    return false;
 }
 
 /*
@@ -1794,10 +1805,8 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
     case ATT_OPCODE_READ_BY_TYPE_REQ:
         if (!sgSerializeCutFront(s, &readByTypeReq, sizeof(readByTypeReq)) || !attReadUuid(&uuid, s))
             ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
-        else if (!attReadUuid(&uuid, s))
-            ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
-            ret = attSrvOpReadByType(srv, from, mtu, utilGetLE16(&readByTypeReq.startHandle), utilGetLE16(&readByTypeReq.endHandle), &uuid);
+            ret = attSrvDoReadByType(srv, from, mtu, utilGetLE16(&readByTypeReq.startHandle), utilGetLE16(&readByTypeReq.endHandle), &uuid, false);
         break;
 
     case ATT_OPCODE_READ_REQ:
@@ -1831,7 +1840,7 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
         if (!sgSerializeCutFront(s, &readByGrpType, sizeof(readByGrpType)) || !attReadUuid(&uuid, s))
             ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
-            ret = attSrvOpReadByGrpType(srv, from, mtu, utilGetLE16(&readByGrpType.startHandle), utilGetLE16(&readByGrpType.endHandle), &uuid);
+            ret = attSrvDoReadByType(srv, from, mtu, utilGetLE16(&readByGrpType.startHandle), utilGetLE16(&readByGrpType.endHandle), &uuid, true);
         break;
 
     case ATT_OPCODE_WRITE_REQ:
