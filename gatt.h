@@ -7,6 +7,10 @@
 
 typedef uniq_t gatt_svc_t;
 
+#define GATT_PSM                     0x001F
+#define GATT_FIXEDCH                 0x0004
+
+
 /* what other device sees */
 #define GATT_PROP_BROADCAST          0x01
 #define GATT_PROP_READ               0x02
