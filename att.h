@@ -76,10 +76,17 @@ struct att_uuid {
 #define ATT_READ_FOR_READ_MULT         0x05
 #define ATT_READ_FOR_READ_BY_GRP_TYPE  0x06
 
+#define ATT_WRITE_FOR_WRITE_REQ        0x01
+#define ATT_WRITE_FOR_WRITE_CMD        0x02
+#define ATT_WRITE_FOR_SIGNED_WRITE_CMD 0x03
+
+
 
 /* att server api */
-typedef uint8_t (*attValueReadCbk)(struct attServer* srv, l2c_handle_t who, void *cbkData, att_range_t range, uint16_t ofst, uint16_t byteOfst, uint8_t reason, uint16_t *lenP, void *dst); /* -> ATT_ERROR_* lenP: in/out*/
-typedef uint8_t (*attValueWriteCbk)(struct attServer* srv, l2c_handle_t who, void *cbkData, att_range_t range, uint16_t ofst, uint16_t byteOfst, uint16_t *lenP, const void *dst); /* -> ATT_ERROR_* lenP: in/out*/
+typedef uint8_t (*attValueReadCbk)(struct attServer* srv, l2c_handle_t who, void *cbkData, att_range_t range, uint16_t ofst,
+                                   uint16_t byteOfst, uint8_t reason, uint16_t *lenP, void *dst); /* -> ATT_ERROR_* lenP: in/out*/
+typedef uint8_t (*attValueWriteCbk)(struct attServer* srv, l2c_handle_t who, void *cbkData, att_range_t range, uint16_t ofst,
+                                    uint16_t byteOfst, uint8_t reason, uint16_t *lenP, const void *dst); /* -> ATT_ERROR_* lenP: in/out*/
 typedef uint8_t (*attTxCbk)(struct attServer* srv, l2c_handle_t to, sg s); /* -> ATT_TX_RET_* */
 typedef void (*attMtuCbk)(struct attServer* srv, l2c_handle_t to, uint32_t mtu);
 

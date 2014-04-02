@@ -1562,7 +1562,7 @@ static bool attSrvOpRead(struct attServer *srv, l2c_handle_t to, uint32_t mtu, u
  *           mtu - the mtu to use
  *           s - sg with uint16_t list of handles
  * RETURN:   success
- * NOTES:    call with srv->lock held for read
+ * NOTES:    call with srv->lock held for read. WILL NOT FREE "handles". Caller must!
  */
 static bool attSrvOpReadMult(struct attServer *srv, l2c_handle_t to, uint32_t mtu, sg handles)
 {
@@ -1605,21 +1605,70 @@ error:
 }
 
 /*
- * FUNCTION: attSrvOpWrite
+ * FUNCTION: attSrvPerformWrite
  * USE:      Perform a write request / command
  * PARAMS:   srv - the server
  *           to - whom to reply to
  *           mtu - the mtu to use
  *           handle - the handle to write
  *           data - sg with the data to write
- *           isReq - set if this was a request and needs a reply, else clear
+ *           opcode - the opcode the brought us here
+ *           writeReason - the write reason to pass to write callback
  * RETURN:   success
- * NOTES:    call with srv->lock held for read
+ * NOTES:    call with srv->lock held for read.  WILL NOT FREE "data". Caller must!
  */
-static bool attSrvOpWrite(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t handle, sg data, bool isReq)
+static bool attSrvPerformWrite(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t handle, sg data, uint8_t opcode, uint8_t writeReason)
 {
     //
     return false;
+}
+
+/*
+ * FUNCTION: attSrvOpSignedWrite
+ * USE:      Perform a signed write command
+ * PARAMS:   srv - the server
+ *           to - whom to reply to
+ *           mtu - the mtu to use
+ *           handle - the handle to write
+ *           rxedSig - the SIG we got
+ *           data - sg with the data to write
+ * RETURN:   success
+ * NOTES:    call with srv->lock held for read.  WILL NOT FREE "data". Caller must!
+ */
+static bool attSrvOpSignedWrite(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t handle, const uint8_t *rxedSig, sg data)
+{
+    uint8_t hdr[sizeof(struct attHdr) + sizeof(struct attPduSignedWriteCmd)];
+    struct attHdr *attHdr = (struct attHdr*)hdr;
+    struct attPduSignedWriteCmd *cmd = (struct attPduSignedWriteCmd*)(hdr + 1);
+    uint8_t calcedSig[ATT_SIG_LEN];
+    uint8_t k[SM_BLOCK_LEN];
+    struct bt_addr addr;
+
+    if (!l2cApiGetBtAddr(to, &addr)) {
+        logw("Cannot get address for signed write. Dropping\n");
+        return true;
+    }
+
+    if (!persistGetDevKey(&addr, KEY_TYPE_CSRK, k)) {
+        logw("Cannot get CSRK for signed write. Dropping\n");
+        return true;
+    }
+
+    /* Signature is over packet header too, but we stripped it. Luckily it is easy to reconstruct temporarily */
+    utilSetLE8(&attHdr->opcode, ATT_OPCODE_SIGNED_WRITE_CMD);
+    utilSetLE16(&cmd->handle, handle);
+    if (!sgConcatFrontCopy(data, hdr, sizeof(hdr)))
+        return false;
+
+    smSignatureCalc(data, k, calcedSig);
+    sgTruncFront(data, sizeof(hdr));
+
+    if (memcmp(calcedSig, rxedSig, ATT_SIG_LEN)) {
+        logw("Sig check failed. Dropping\n");
+        return true;
+    }
+
+    return attSrvPerformWrite(srv, to, mtu, handle, data, ATT_OPCODE_SIGNED_WRITE_CMD, ATT_WRITE_FOR_SIGNED_WRITE_CMD);
 }
 
 /*
@@ -1668,56 +1717,6 @@ static bool attSrvOpExecuteWrite(struct attServer *srv, l2c_handle_t to, uint32_
 static bool attSrvOpHandleValueConf(struct attServer *srv, l2c_handle_t to, uint32_t mtu)
 {
     //
-    return false;
-}
-
-/*
- * FUNCTION: attSrvOpSignedWrite
- * USE:      Perform a signed write command
- * PARAMS:   srv - the server
- *           to - whom to reply to
- *           mtu - the mtu to use
- *           handle - the handle to write
- *           rxedSig - the SIG we got
- *           data - sg with the data to write
- * RETURN:   success
- * NOTES:    call with srv->lock held for read
- */
-static bool attSrvOpSignedWrite(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t handle, const uint8_t *rxedSig, sg data)
-{
-    uint8_t hdr[sizeof(struct attHdr) + sizeof(struct attPduSignedWriteCmd)];
-    struct attHdr *attHdr = (struct attHdr*)hdr;
-    struct attPduSignedWriteCmd *cmd = (struct attPduSignedWriteCmd*)(hdr + 1);
-    uint8_t calcedSig[ATT_SIG_LEN];
-    uint8_t k[SM_BLOCK_LEN];
-    struct bt_addr addr;
-
-    if (!l2cApiGetBtAddr(to, &addr)) {
-        logw("Cannot get address for signed write. Dropping\n");
-        return true;
-    }
-
-    if (!persistGetDevKey(&addr, KEY_TYPE_CSRK, k)) {
-        logw("Cannot get CSRK for signed write. Dropping\n");
-        return true;
-    }
-
-    /* Signature is over packet header too, but we stripped it. Luckily it is easy to reconstruct temporarily */
-    utilSetLE8(&attHdr->opcode, ATT_OPCODE_SIGNED_WRITE_CMD);
-    utilSetLE16(&cmd->handle, handle);
-    if (!sgConcatFrontCopy(data, hdr, sizeof(hdr)))
-        return false;
-
-    smSignatureCalc(data, k, calcedSig);
-    sgTruncFront(data, sizeof(hdr));
-
-    if (memcmp(calcedSig, rxedSig, ATT_SIG_LEN)) {
-        logw("Sig check failed. Dropping\n");
-        return true;
-    }
-
-    //todo
-
     return false;
 }
 
@@ -1847,7 +1846,7 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
         if (!sgSerializeCutFront(s, &writeReq, sizeof(writeReq)))
             ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
-            ret = attSrvOpWrite(srv, from, mtu, utilGetLE16(&writeReq.handle), s, true);
+            ret = attSrvPerformWrite(srv, from, mtu, utilGetLE16(&writeReq.handle), s, ATT_OPCODE_WRITE_REQ, ATT_WRITE_FOR_WRITE_REQ);
         break;
 
     case ATT_OPCODE_PREPARE_WRITE_REQ:
@@ -1877,7 +1876,7 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
         if (!sgSerializeCutFront(s, &writeCmd, sizeof(writeCmd)))
             ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
-            ret = attSrvOpWrite(srv, from, mtu, utilGetLE16(&writeCmd.handle), s, false);
+            ret = attSrvPerformWrite(srv, from, mtu, utilGetLE16(&writeReq.handle), s, ATT_OPCODE_WRITE_CMD, ATT_WRITE_FOR_WRITE_CMD);
         break;
 
     case ATT_OPCODE_SIGNED_WRITE_CMD:
