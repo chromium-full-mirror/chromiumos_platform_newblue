@@ -169,6 +169,7 @@ struct attPduPrepareWriteReq {
 
 struct attPduPrepareWriteRsp {
     uint16_t handle;
+    uint16_t offset;
     /* data echo */
 } __packed;
 
@@ -1811,16 +1812,76 @@ static bool attSrvOpSignedWrite(struct attServer *srv, l2c_handle_t to, uint32_t
  * PARAMS:   srv - the server
  *           to - whom to reply to
  *           mtu - the mtu to use
- *           handle - the handle to write
+ *           wantedHandle - the handle to write
  *           offset - the offset into said attribute
  *           data - sg with the data to write
  * RETURN:   success
- * NOTES:    call with srv->lock held for read
+ * NOTES:    call with srv->lock held for write
  */
-static bool attSrvOpPrepareWrite(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t handle, uint16_t offset, sg data)
+static bool attSrvOpPrepareWrite(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t wantedHandle, uint16_t offset, sg data)
 {
-    //
-    return false;
+    struct attConnQueuedWrite *wr, *prevTail;
+    uint8_t err = ATT_ERROR_UNLIKELY_ERROR;
+    struct attPduPrepareWriteRsp rsp;
+    struct attConnExtra* extra;
+    struct attRange *range;
+    struct attVal *val;
+
+
+    for (range = srv->rangesHead; range; range = range->next) {
+        for (val = range->valsHead; val; val = val->next) {
+            uint16_t handle = range->start + val->offset;
+
+            if (handle > wantedHandle)
+                val = NULL;
+            if (handle < wantedHandle)
+                continue;
+            goto out;
+        }
+    }
+
+out:
+    if (!val) {
+        err = ATT_ERROR_INVALID_HANDLE;
+        goto err;
+    }
+    if (!(val->perms & ATT_PERM_WRITE)) {
+        err = ATT_ERROR_WRITE_NOT_ALLOWED;
+        goto err;
+    }
+    
+    extra = attConnListGetExtra(&srv->allClients, to);
+    if (!extra)
+        goto err;
+
+    wr = (struct attConnQueuedWrite*)calloc(1, sizeof(struct attConnQueuedWrite) + sgLength(data));
+    if (!wr)
+        goto err;
+
+    sgSerialize(data, 0, sgLength(data), wr + 1);
+    wr->handle = wantedHandle;
+    wr->offset = offset;
+    wr->len = sgLength(data);
+    prevTail = extra->writeQueueTail;
+    if (extra->writeQueueTail)
+         extra->writeQueueTail->next = wr;
+    else
+         extra->writeQueueHead = wr;
+    extra->writeQueueTail = wr;
+
+    utilSetLE16(&rsp.handle, wantedHandle);
+    utilSetLE16(&rsp.offset, offset);
+
+    if (attSrvSendPacket(srv, to, ATT_OPCODE_PREPARE_WRITE_RSP, &rsp, sizeof(rsp), data))
+        return true;
+
+    /* on send failure, undo what we did and fall through to try to send an error message */
+    extra->writeQueueTail = prevTail;
+    extra->writeQueueHead = wr->next;
+    free(wr);
+
+err:
+    return attSrvSendErrorReply(srv, to, err, ATT_OPCODE_PREPARE_WRITE_REQ, wantedHandle);
 }
 
 /*
@@ -1831,7 +1892,7 @@ static bool attSrvOpPrepareWrite(struct attServer *srv, l2c_handle_t to, uint32_
  *           mtu - the mtu to use
  *           flags - ATT_EXECUTE_WRITE_FLG_*
  * RETURN:   success
- * NOTES:    call with srv->lock held for read
+ * NOTES:    call with srv->lock held for write
  */
 static bool attSrvOpExecuteWrite(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint8_t flags)
 {
@@ -1846,7 +1907,7 @@ static bool attSrvOpExecuteWrite(struct attServer *srv, l2c_handle_t to, uint32_
  *           to - whom to reply to (if any)
  *           mtu - the mtu to use
  * RETURN:   success
- * NOTES:    call with srv->lock held for read
+ * NOTES:    call with srv->lock held for write
  */
 static bool attSrvOpHandleValueConf(struct attServer *srv, l2c_handle_t to, uint32_t mtu)
 {
@@ -1894,14 +1955,11 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
     attConnListAdd(&srv->allClients, from);
     pthread_rwlock_unlock(&srv->lock);
 
-    /* grab MTU and get to work */
-    pthread_rwlock_rdlock(&srv->lock);
-    mtu = attConnMtuGet(srv, from, true);
 
     switch (opcode) {
     case ATT_OPCODE_MTU_EXCH_REQ:
-        pthread_rwlock_unlock(&srv->lock);
         pthread_rwlock_wrlock(&srv->lock);
+        mtu = attConnMtuGet(srv, from, true);
         if (!sgSerializeCutFront(s, &mtuExch, sizeof(mtuExch)))
             ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else if (sgLength(s))
@@ -1919,6 +1977,8 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
         break;
 
     case ATT_OPCODE_FIND_INFO_REQ:
+        pthread_rwlock_rdlock(&srv->lock);
+        mtu = attConnMtuGet(srv, from, true);
         if (!sgSerializeCutFront(s, &findInfoReq, sizeof(findInfoReq)))
             ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else if (sgLength(s))
@@ -1928,6 +1988,8 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
         break;
 
     case ATT_OPCODE_FIND_BY_TYPE_VAL_REQ:
+        pthread_rwlock_rdlock(&srv->lock);
+        mtu = attConnMtuGet(srv, from, true);
         if (!sgSerializeCutFront(s, &findByTypeValReq, sizeof(findByTypeValReq)))
             ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else {
@@ -1937,6 +1999,8 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
         break;
 
     case ATT_OPCODE_READ_BY_TYPE_REQ:
+        pthread_rwlock_rdlock(&srv->lock);
+        mtu = attConnMtuGet(srv, from, true);
         if (!sgSerializeCutFront(s, &readByTypeReq, sizeof(readByTypeReq)) || !attReadUuid(&uuid, s))
             ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
@@ -1944,6 +2008,8 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
         break;
 
     case ATT_OPCODE_READ_REQ:
+        pthread_rwlock_rdlock(&srv->lock);
+        mtu = attConnMtuGet(srv, from, true);
         if (!sgSerializeCutFront(s, &readReq, sizeof(readReq)))
             ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else if (sgLength(s))
@@ -1953,6 +2019,8 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
         break;
 
     case ATT_OPCODE_READ_BLOB_REQ:
+        pthread_rwlock_rdlock(&srv->lock);
+        mtu = attConnMtuGet(srv, from, true);
         if (!sgSerializeCutFront(s, &readBlobReq, sizeof(readBlobReq)))
             ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else if (sgLength(s))
@@ -1964,6 +2032,8 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
         break;
 
     case ATT_OPCODE_READ_MULT_REQ:
+        pthread_rwlock_rdlock(&srv->lock);
+        mtu = attConnMtuGet(srv, from, true);
         if ((sgLength(s) % sizeof(uint16_t)) || sgLength(s) < sizeof(uint16_t[ATT_MIN_HANDLES_IN_READ_MULT]))
             ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
@@ -1971,6 +2041,8 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
         break;
 
     case ATT_OPCODE_READ_BY_GRP_TYPE_REQ:
+        pthread_rwlock_rdlock(&srv->lock);
+        mtu = attConnMtuGet(srv, from, true);
         if (!sgSerializeCutFront(s, &readByGrpType, sizeof(readByGrpType)) || !attReadUuid(&uuid, s))
             ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
@@ -1978,6 +2050,8 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
         break;
 
     case ATT_OPCODE_WRITE_REQ:
+        pthread_rwlock_rdlock(&srv->lock);
+        mtu = attConnMtuGet(srv, from, true);
         if (!sgSerializeCutFront(s, &writeReq, sizeof(writeReq)))
             ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
@@ -1985,6 +2059,8 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
         break;
 
     case ATT_OPCODE_PREPARE_WRITE_REQ:
+        pthread_rwlock_wrlock(&srv->lock);
+        mtu = attConnMtuGet(srv, from, true);
         if (!sgSerializeCutFront(s, &prepareWriteReq, sizeof(prepareWriteReq)))
             ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
@@ -1992,6 +2068,8 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
         break;
 
     case ATT_OPCODE_EXECUTE_WRITE_REQ:
+        pthread_rwlock_wrlock(&srv->lock);
+        mtu = attConnMtuGet(srv, from, true);
         if (!sgSerializeCutFront(s, &execWriteReq, sizeof(execWriteReq)))
             ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else if (sgLength(s))
@@ -2001,6 +2079,8 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
         break;
 
     case ATT_OPCODE_HANDLE_VALUE_CONF:
+        pthread_rwlock_wrlock(&srv->lock);
+        mtu = attConnMtuGet(srv, from, true);
         if (sgLength(s))
             ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
@@ -2008,6 +2088,8 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
         break;
 
     case ATT_OPCODE_WRITE_CMD:
+        pthread_rwlock_rdlock(&srv->lock);
+        mtu = attConnMtuGet(srv, from, true);
         if (!sgSerializeCutFront(s, &writeCmd, sizeof(writeCmd)))
             ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
@@ -2015,6 +2097,8 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
         break;
 
     case ATT_OPCODE_SIGNED_WRITE_CMD:
+        pthread_rwlock_rdlock(&srv->lock);
+        mtu = attConnMtuGet(srv, from, true);
         if (!sgSerializeCutFront(s, &signedWriteCmd, sizeof(signedWriteCmd)))
             ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else if (sgLength(s) < ATT_SIG_LEN)
@@ -2028,6 +2112,7 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
         break;
 
     default:
+        pthread_rwlock_rdlock(&srv->lock);
         logw("Unexpected ATT opcode 0x%02X\n", opcode);
         ret = attSrvSendErrorReply(srv, from, ATT_ERROR_REQ_NOT_SUPPORTED, opcode, 0);
         break;
