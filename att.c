@@ -768,6 +768,26 @@ void attSrvHandleRangeRelease(struct attServer *srv, att_range_t rangeRef)
 }
 
 /*
+ * FUNCTION: attSrvHandleRangeGetBase
+ * USE:      Get the actual handle value of the first handle in a range
+ * PARAMS:   srv - the server
+ *           rangeRef - the range reference
+ * RETURN:   handle value or 0 on error
+ * NOTES:
+ */
+uint16_t attSrvHandleRangeGetBase(struct attServer* srv, att_range_t rangeRef)
+{
+    struct attRange *range;
+    uint16_t ret;
+
+    pthread_rwlock_rdlock(&srv->lock);
+    range = attRangeFind(srv, rangeRef);
+    ret = range ? range->start : 0;
+    pthread_rwlock_unlock(&srv->lock);
+    return ret;
+}
+
+/*
  * FUNCTION: attSrvValueRegister
  * USE:      Register a given value in a given range
  * PARAMS:   srv - the server
