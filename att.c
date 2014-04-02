@@ -1171,6 +1171,7 @@ static bool attSrvOpFindInfo(struct attServer *srv, l2c_handle_t to, uint32_t mt
                 }
             }
 
+            /* keep length in check */
             if (sgLength(results) >= mtu)
                 goto out;
         }
@@ -1274,6 +1275,7 @@ static bool attSrvOpFindByTypeVal(struct attServer *srv, l2c_handle_t to, uint32
             if (!sgConcatBackCopy(results, &result, sizeof(result)))
                 goto out;
 
+            /* keep length in check */
             if (sgLength(results) >= mtu)
                 goto out;
         }
@@ -1325,8 +1327,118 @@ unrecoverable:
  */
 static bool attSrvOpReadByType(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t startHandle, uint16_t endHandle, const struct att_uuid *uuid)
 {
-    //
-    return false;
+    uint8_t valBuf[ATT_MAX_LEN_FOR_READ_BY_TYPE + sizeof(struct attHandleValuePair)];
+    uint8_t readRet = ATT_ERROR_NONE;
+    uint16_t handle = startHandle;
+    struct attRange *range;
+    uint8_t itemLen = 0;
+    uint32_t itemMaxLen;
+    struct attVal *val;
+    sg results;
+
+    if (!startHandle || startHandle > endHandle)
+        return attSrvSendErrorReply(srv, to, ATT_ERROR_INVALID_HANDLE, ATT_OPCODE_READ_BY_TYPE_REQ, startHandle);
+
+    mtu -= sizeof(struct attHdr) + sizeof(struct attPduReadByTypeRsp); /* mtu is now how many bytes we can produce */
+    itemMaxLen = mtu - sizeof(uint16_t);
+    if (itemMaxLen > ATT_MAX_LEN_FOR_READ_BY_TYPE)
+        itemMaxLen = ATT_MAX_LEN_FOR_READ_BY_TYPE;
+
+    results = sgNew();
+    if (!results)
+        goto unrecoverable;
+
+    for (range = srv->rangesHead; range; range = range->next) {
+        for (val = range->valsHead; val; val = val->next) {
+            struct attHandleValuePair *hvp = (struct attHandleValuePair*)valBuf;
+            uint16_t len = itemMaxLen;
+
+            handle = range->start + val->offset;
+
+            if (handle < startHandle)
+                continue;
+            if (handle > endHandle)
+                goto out;
+
+            /* we will never call read calabck on things higher layer said are nto treadable, so we handle this one for them */
+            if (!(val->perms & ATT_PERM_READ)) {
+                readRet = ATT_ERROR_READ_NOT_ALLOWED;
+                goto out;
+            }
+
+            /* must be of a given type */
+            if (!attUuidCmp(&val->type, uuid))
+                continue;
+
+            /* do the read, stop on any errors */
+            readRet = val->readF(srv, to, val->cbkData, range->rangeRef, val->offset, 0, ATT_READ_FOR_READ_BY_TYPE, &len, valBuf + sizeof(struct attHandleValuePair));
+            if (readRet != ATT_ERROR_NONE)
+                goto out;
+
+            /* if we already have results and lengths aren't the same, bail out */
+            if (sgLength(results) && len != itemLen)
+                goto out;
+            itemLen = len;
+
+            /* prepare the per-item header */
+            len += sizeof(struct attHandleValuePair);
+            utilSetLE16(&hvp->handle, handle);
+
+            if (!sgConcatBackCopy(results, valBuf, len))
+                goto out;
+
+            /* keep length in check */
+            if (sgLength(results) >= mtu)
+                goto out;
+        }
+    }
+
+out:
+    itemLen += sizeof(struct attHandleValuePair);
+
+    /* make sure we do not send too much */
+    while (sgLength(results) > mtu)
+        sgTruncBack(results, itemLen);
+
+    if (sgLength(results)) {
+        /* if we have results, send them */
+        struct attPduReadByTypeRsp hdr;
+
+        utilSetLE8(&hdr.handleValuePairSz, itemLen);
+        if (attSrvSendPacket(srv, to, ATT_OPCODE_READ_BY_TYPE_RSP, &hdr, sizeof(hdr), results))
+            return true;
+    } else {
+        /* else report the error */
+        uint8_t err;
+
+        switch (readRet) {
+        case ATT_ERROR_NONE:
+            err = ATT_ERROR_ATTRIBUTE_NOT_FOUND;
+            handle = startHandle;
+            break;
+
+        case ATT_ERROR_INSUFFICIENT_ATHOR:
+        case ATT_ERROR_INSUFFICIENT_AUTH:
+        case ATT_ERROR_INSUFF_ENCR_KEY_SZ:
+        case ATT_ERROR_INSUFFICIENT_ENCR:
+        case ATT_ERROR_READ_NOT_ALLOWED:
+            err = readRet;
+            break;
+
+        default:
+            logw("Unexpected error %u while reading for ReadByTypeReq\n", readRet);
+            err = ATT_ERROR_UNLIKELY_ERROR;
+            handle = 0;
+            break;
+        }
+
+        return attSrvSendErrorReply(srv, to, err, ATT_OPCODE_READ_BY_TYPE_RSP, handle);
+    }
+
+unrecoverable:
+    if (results)
+        sgFree(results);
+    return attSrvSendErrorReply(srv, to, ATT_ERROR_UNLIKELY_ERROR, ATT_OPCODE_READ_BY_TYPE_REQ, 0);
 }
 
 /*
@@ -1596,7 +1708,7 @@ bool attSrvDataRx(struct attServer *srv, l2c_handle_t from, sg s)
     case ATT_OPCODE_READ_BY_TYPE_REQ:
         if (!sgSerializeCutFront(s, &readByTypeReq, sizeof(readByTypeReq)) || !attReadUuid(&uuid, s))
             ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
-        else if (sgLength(s))
+        else if (!attReadUuid(&uuid, s))
             ret = attSrvSendErrorReply(srv, from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
             ret = attSrvOpReadByType(srv, from, mtu, utilGetLE16(&readByTypeReq.startHandle), utilGetLE16(&readByTypeReq.endHandle), &uuid);

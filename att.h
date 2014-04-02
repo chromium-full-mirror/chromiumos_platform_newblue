@@ -22,6 +22,7 @@ struct attServer;
 /* "need athorization" shall be handled bu higher layer code */
 
 #define ATT_ATTR_MAX_LEN               512
+#define ATT_MAX_LEN_FOR_READ_BY_TYPE   253 /* no more than this many bytes of an att will ever be returned for a ReadByType request */
 
 
 #define ATT_ERROR_NONE                 0x00
@@ -67,6 +68,7 @@ struct att_uuid {
 
 
 #define ATT_READ_FOR_FIND_BY_TYPE_VAL  0x01
+#define ATT_READ_FOR_READ_BY_TYPE      0x02
 
 
 /* att server api */
