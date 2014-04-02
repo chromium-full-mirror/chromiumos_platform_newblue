@@ -79,6 +79,7 @@ struct att_uuid {
 #define ATT_WRITE_FOR_WRITE_REQ        0x01
 #define ATT_WRITE_FOR_WRITE_CMD        0x02
 #define ATT_WRITE_FOR_SIGNED_WRITE_CMD 0x03
+#define ATT_WRITE_FOR_PREPARED         0x04
 
 
 

@@ -1,6 +1,7 @@
 //note: not allowed to sign packets on encrypted links
 //commands an dnotifications can be dropped due to overflowing buffers and cannot be treated as reliable
 //any transaction (packet requiring response) taking over 30 sec is a timeout and should serve to close the ATT bearer and refuse all further TX until new link is eastablished
+//TODO: we enforce readbility/writablity perms, we can also easily enforce encrypt/auth perms. we should, to avoid higher layer bothering
 #include <stdlib.h>
 #include <string.h>
 #include "persist.h"
@@ -385,13 +386,13 @@ static bool attConnListAdd(struct attConnList *list, l2c_handle_t conn)
 }
 
 /*
- * FUNCTION: attConnListFreeExtra
- * USE:      Free the storage occupied by the "extra" data in a connection list
- * PARAMS:   extra the extra struct
+ * FUNCTION: attConnListFreeWriteQueue
+ * USE:      Free the queued write queue for a given "extra" struct for a given connection
+ * PARAMS:   extra - the extra struct
  * RETURN:   NONE
  * NOTES:
  */
-static void attConnListFreeExtra(struct attConnExtra *extra)
+static void attConnListFreeWriteQueue(struct attConnExtra *extra)
 {
     struct attConnQueuedWrite *t;
 
@@ -400,6 +401,20 @@ static void attConnListFreeExtra(struct attConnExtra *extra)
         extra->writeQueueHead = extra->writeQueueHead->next;
         free(t);
     }
+    extra->writeQueueTail = NULL;
+}
+
+/*
+ * FUNCTION: attConnListFreeExtra
+ * USE:      Free the storage occupied by the "extra" data in a connection list
+ * PARAMS:   extra the extra struct
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void attConnListFreeExtra(struct attConnExtra *extra)
+{
+    attConnListFreeWriteQueue(extra);
+    /* future extra freeing steps here */
 }
 
 /*
@@ -1896,8 +1911,67 @@ err:
  */
 static bool attSrvOpExecuteWrite(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint8_t flags)
 {
-    //
-    return false;
+    uint8_t err = ATT_ERROR_UNLIKELY_ERROR;
+    struct attConnExtra* extra;
+    bool ret = ATT_ERROR_NONE;
+
+    extra = attConnListGetExtra(&srv->allClients, to);
+    if (!extra)
+        goto err;
+    else if (flags == ATT_EXECUTE_WRITE_FLG_CANCEL)
+        attConnListFreeWriteQueue(extra);
+    else if (flags == ATT_EXECUTE_WRITE_FLG_EXECUTE) {
+        struct attConnQueuedWrite *t, *q = extra->writeQueueHead;
+        bool perform = true;
+
+        extra->writeQueueHead = NULL;
+        extra->writeQueueTail = NULL;
+
+        while (q) {
+            t = q;
+            q = q->next;
+
+            if (perform) {
+                struct attRange *range;
+                struct attVal *val = NULL;
+
+                for (range = srv->rangesHead; range; range = range->next) {
+                    for (val = range->valsHead; val; val = val->next) {
+                        uint16_t handle = range->start + val->offset;
+
+                        if (handle > q->handle)
+                            val = NULL;
+                        if (handle < q->handle)
+                            continue;
+                        goto out;
+                    }
+                }
+
+out:
+                if (!val)
+                    ret = ATT_ERROR_INVALID_HANDLE;
+                else if (!(val->perms & ATT_PERM_WRITE))
+                    ret = ATT_ERROR_WRITE_NOT_ALLOWED;
+                else
+                    ret = val->writeF(srv, to, val->cbkData, range->rangeRef, val->offset, q->offset, ATT_WRITE_FOR_PREPARED, &q->len, q + 1);
+
+                if (ret != ATT_ERROR_NONE)
+                    perform = false;
+            }
+            free(t);
+        }
+
+    } else {
+        err = ATT_ERROR_INVALID_PDU;
+        goto err;
+    }
+
+    if (ret == ATT_ERROR_NONE && attSrvSendEmptyPacket(srv, to, ATT_OPCODE_EXECUTE_WRITE_RSP))
+        return true;
+    /* if we fail to send, fall through and try to signal an error */
+
+err:
+    return attSrvSendErrorReply(srv, to, ret, ATT_OPCODE_EXECUTE_WRITE_REQ, 0);
 }
 
 /*
