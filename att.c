@@ -41,7 +41,7 @@
 #define ATT_OPCODE_READ_BLOB_RSP         0x0D /* uint8_t[] */
 #define ATT_OPCODE_READ_MULT_RSP         0x0F /* uint8_t[] - values concatenated together */
 #define ATT_OPCODE_READ_BY_GRP_TYPE_RSP  0x11 /* struct attPduReadByGrpTypeRsp */
-#define ATT_OPCODE_WRITE_RSP             0x13 /* struct attPduWriteRsp */
+#define ATT_OPCODE_WRITE_RSP             0x13 /* NO ADDITIONAL DATA SENT */
 #define ATT_OPCODE_PREPARE_WRITE_RSP     0x17 /* struct attPduPrepareWriteRsp */
 #define ATT_OPCODE_EXECUTE_WRITE_RSP     0x19 /* NO ADDITIONAL DATA SENT */
 
@@ -1076,7 +1076,7 @@ static bool attSrvSendErrorReply(struct attServer *srv, l2c_handle_t to, uint8_t
  *           opcode - opcode to send
  *           hdr - a header to prepend
  *           hdrLen - length of said header
- *           data - the data to send
+ *           data - the data to send (NOT NULL)
  * RETURN:   success
  * NOTES:    call with srv->lock held for read
  */
@@ -1093,6 +1093,25 @@ static bool attSrvSendPacket(struct attServer *srv, l2c_handle_t to, uint8_t opc
         return true;
 
     sgTruncFront(data, hdrLen);
+    return false;
+}
+
+/*
+ * FUNCTION: attSrvSendEmptyPacket
+ * USE:      Sends an empy packet to a client
+ * PARAMS:   srv - the server
+ *           to - whom to send to
+ *           opcode - opcode to send
+ * RETURN:   success
+ * NOTES:    call with srv->lock held for read
+ */
+static bool attSrvSendEmptyPacket(struct attServer *srv, l2c_handle_t to, uint8_t opcode)
+{
+    sg empty = sgNew();
+    if (empty && attSrvSendPacket(srv, to, opcode, NULL, 0, empty))
+        return true;
+
+    sgFree(empty);
     return false;
 }
 
@@ -1605,22 +1624,89 @@ error:
 }
 
 /*
+ * FUNCTION: attSrvCallWriteCbk
+ * USE:      Call a write callback for an attribute using an SG as the data
+ * PARAMS:   srv - the server
+ *           from - whom the request was from
+ *           range - the range struct
+ *           val - the val struct
+ *           byteOfst - the byte offset
+ *           data - the data
+ *           reason - ATT_WRITE_FOR_*
+ * RETURN:   ATT_ERROR_*
+ * NOTES:    call with srv->lock held for read. WILL NOT FREE "data". Caller must!
+ */
+static uint8_t attSrvCallWriteCbk(struct attServer *srv, l2c_handle_t from, struct attRange *range, struct attVal *val, uint16_t byteOfst, sg data, uint8_t reason)
+{
+    uint16_t len = sgLength(data);
+    const void *dataPtr = NULL;
+    bool needFree = false;
+    uint8_t ret;
+    void *iter;
+
+    /* Basic premise: if the SG is contiguous, we do not need to allocate a new chunk and copy the data into it. */
+    iter = sgIterStart(data);
+    if (!len || (iter && sgIterCurLen(iter) == len))
+        dataPtr = sgIterCurData(iter);
+    else {
+        dataPtr = malloc(len);
+        if (!dataPtr)
+            return ATT_ERROR_UNLIKELY_ERROR;
+
+        sgSerialize(data, 0, len, (void*)dataPtr);
+        needFree = true;
+    }
+
+    ret = val->writeF(srv, from, val->cbkData, range->rangeRef, val->offset, byteOfst, reason, &len, dataPtr);
+    if (needFree)
+        free((void*)dataPtr);
+
+    return ret;
+}
+
+/*
  * FUNCTION: attSrvPerformWrite
  * USE:      Perform a write request / command
  * PARAMS:   srv - the server
  *           to - whom to reply to
  *           mtu - the mtu to use
- *           handle - the handle to write
+ *           wantedHandle - the handle to write
  *           data - sg with the data to write
  *           opcode - the opcode the brought us here
  *           writeReason - the write reason to pass to write callback
  * RETURN:   success
  * NOTES:    call with srv->lock held for read.  WILL NOT FREE "data". Caller must!
  */
-static bool attSrvPerformWrite(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t handle, sg data, uint8_t opcode, uint8_t writeReason)
+static bool attSrvPerformWrite(struct attServer *srv, l2c_handle_t to, uint32_t mtu, uint16_t wantedHandle, sg data, uint8_t opcode, uint8_t writeReason)
 {
-    //
-    return false;
+    struct attRange *range;
+    struct attVal *val;
+    uint8_t err;
+
+    for (range = srv->rangesHead; range; range = range->next) {
+        for (val = range->valsHead; val; val = val->next) {
+            uint16_t handle = range->start + val->offset;
+
+            if (handle > wantedHandle)
+                val = NULL;
+            if (handle < wantedHandle)
+                continue;
+            goto out;
+        }
+    }
+
+out:
+    if (!val)
+        err = ATT_ERROR_INVALID_HANDLE;
+    else if (!(val->perms & ATT_PERM_WRITE))
+        err = ATT_ERROR_WRITE_NOT_ALLOWED;
+    else
+        err = attSrvCallWriteCbk(srv, to, range, val, 0, data, writeReason);
+
+    if (opcode != ATT_OPCODE_WRITE_REQ || attSrvSendEmptyPacket(srv, to, ATT_OPCODE_WRITE_RSP))
+        return true;
+
+    return attSrvSendErrorReply(srv, to, err, ATT_OPCODE_WRITE_REQ, wantedHandle);
 }
 
 /*

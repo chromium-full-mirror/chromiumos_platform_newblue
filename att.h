@@ -107,7 +107,7 @@ bool attSrvDataRx(struct attServer* srv, l2c_handle_t from, sg s);
 //TODO
 
 
-//todo: PS: 0x1F. channel: 0x0004
+//todo: PSM: 0x1F. channel: 0x0004
 //mtu negotioation only over LE! l2c mtu negotiation is used ov er edr
 
 #endif
