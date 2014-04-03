@@ -3313,6 +3313,16 @@ static bool hciSetManyEventPersistentHandlers(const uint8_t *evtTypes, const uin
     return true;
 }
 
+bool hciGetLocalAddress(uint8_t *addr)
+{
+    struct hciCmplReadBdAddr evt;
+
+    if (hciReadBdAddrSync(&evt))
+        return false;
+
+    memcpy(addr, evt.mac, BT_MAC_LEN);
+    return true;
+}
 
 /*
  * FUNCTION: hciBtStackUp
