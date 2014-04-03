@@ -24,7 +24,7 @@ struct gattConnState {
 };
 
 struct gattWorkItem {
-    uint8_t workType;
+    uint8_t type;
     /* work data here */
 };
 
@@ -35,6 +35,7 @@ static uint32_t mSdpHandle;
 static struct attServer* mAttSrv;
 static struct sendQ* mSendQ;
 static struct workQueue* mWorkQ;
+static pthread_t mWorker;
 
 static pthread_mutex_t mConnsLock = PTHREAD_MUTEX_INITIALIZER;
 static struct gattConnState *mConns;
@@ -332,6 +333,39 @@ static void gattWorkQueueFreeItem(void *item)
 }
 
 /*
+ * FUNCTION: gattWorker
+ * USE:      Worker thread for calls to higher layer
+ * PARAMS:   param - unused
+ * RETURN:   unused
+ * NOTES:
+ */
+static void* gattWorker(void *param)
+{
+    struct gattWorkItem *wi;
+    int status;
+
+    pthread_setname_np(pthread_self(), "gatt_worker");
+
+    while(1) {
+        status = workQueueGet(mWorkQ, (void**)&wi);
+
+        /* The only one thing we use the work queue status for - exiting */
+        if (status)
+            break;
+
+        switch (wi->type) {
+        default:
+            loge("Unknown work type %d\n", wi->type);
+            break;
+        }
+        free(wi);
+    }
+
+    logd("GATT worker exiting\n");
+    return NULL;
+}
+
+/*
  * FUNCTION: gattProfileInit
  * USE:      Initialize GATT
  * PARAMS:   NONE
@@ -360,6 +394,11 @@ bool gattProfileInit(void)
     if (!mWorkQ) {
         loge("Failed create a workQ\n");
         goto out_workq;
+    }
+
+    if (pthread_create(&mWorker, NULL, gattWorker, NULL)) {
+        loge("Failed create worker\n");
+        goto out_thread;
     }
 
     mSendQ = sendQueueAlloc(8);
@@ -397,6 +436,10 @@ out_psm:
     sendQueueFree(mSendQ);
 
 out_sendq:
+    workQueueWakeAll(mWorkQ, 1);
+    pthread_join(mWorker, NULL);
+
+out_thread:
     workQueueFree(mWorkQ, gattWorkQueueFreeItem);
 
 out_workq:
@@ -419,6 +462,8 @@ void gattProfileDeinit(void)
     l2cApiServiceFixedChUnregister(GATT_FIXEDCH, NULL, 0);
     l2cApiServicePsmUnregister(GATT_PSM, NULL, 0);
     attSrvDestroy(mAttSrv);
+    workQueueWakeAll(mWorkQ, 1);
+    pthread_join(mWorker, NULL);
     workQueueFree(mWorkQ, gattWorkQueueFreeItem);
     sendQueueFree(mSendQ);
 }
