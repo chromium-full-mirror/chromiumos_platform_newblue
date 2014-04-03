@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "l2cap.h"
+#include "sendQ.h"
 #include "gatt.h"
 #include "att.h"
 #include "sdp.h"
@@ -26,6 +27,7 @@ struct gattConnState {
 /* our state */
 static uint32_t mSdpHandle;
 static struct attServer* mAttSrv;
+static struct sendQ* mSendQ;
 
 static pthread_mutex_t mConnsLock = PTHREAD_MUTEX_INITIALIZER;
 static struct gattConnState *mConns;
@@ -80,8 +82,7 @@ static void gattConnStructDelete(struct gattConnState *state)
  */
 static uint8_t gattAttSrvTxCbk(struct attServer* srv, l2c_handle_t who, sg s)
 {
-    //TODO
-    return ATT_TX_RET_L2C_ERR;
+    return sendQueueTx(mSendQ, who, s) ? ATT_TX_RET_ACCEPTED : ATT_TX_RET_L2C_ERR;
 }
 
 /*
@@ -180,6 +181,7 @@ static void gattConnEvt(void *userData, void *instance, uint8_t evt, const void 
 
     case L2C_STATE_CLOSED:
         attSrvNotifConnClose(mAttSrv, state->conn);
+        sendQueueDelPackets(mSendQ, state->conn);
         pthread_mutex_lock(&mConnsLock);
         gattConnStructDelete(state);
         pthread_mutex_unlock(&mConnsLock);
@@ -332,6 +334,12 @@ bool gattProfileInit(void)
         goto out_att;
     }
 
+    mSendQ = sendQueueAlloc(8);
+    if (!mSendQ) {
+        loge("Failed create a sendQ\n");
+        goto out_sendq;
+    }
+
     if (!l2cApiServicePsmRegister(GATT_PSM, &gattPsm)) {
         loge("Failed to register GATT PSM\n");
         goto out_psm;
@@ -358,6 +366,9 @@ out_fixed:
     l2cApiServicePsmUnregister(GATT_PSM, NULL, 0);
 
 out_psm:
+    sendQueueFree(mSendQ);
+
+out_sendq:
     attSrvDestroy(mAttSrv);
 
 out_att:
@@ -377,6 +388,7 @@ void gattProfileDeinit(void)
     l2cApiServiceFixedChUnregister(GATT_FIXEDCH, NULL, 0);
     l2cApiServicePsmUnregister(GATT_PSM, NULL, 0);
     attSrvDestroy(mAttSrv);
+    sendQueueFree(mSendQ);
 }
 
 
