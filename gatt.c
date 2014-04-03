@@ -1,5 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
+#include "workQueue.h"
+#include "config.h"
 #include "l2cap.h"
 #include "sendQ.h"
 #include "gatt.h"
@@ -21,6 +23,10 @@ struct gattConnState {
     /* more here later */
 };
 
+struct gattWorkItem {
+    uint8_t workType;
+    /* work data here */
+};
 
 
 
@@ -28,6 +34,7 @@ struct gattConnState {
 static uint32_t mSdpHandle;
 static struct attServer* mAttSrv;
 static struct sendQ* mSendQ;
+static struct workQueue* mWorkQ;
 
 static pthread_mutex_t mConnsLock = PTHREAD_MUTEX_INITIALIZER;
 static struct gattConnState *mConns;
@@ -310,6 +317,21 @@ static uint32_t gattSdpInit(uint16_t genericAttrProfileHandle, uint16_t genericA
 }
 
 /*
+ * FUNCTION: gattWorkQueueFreeItem
+ * USE:      Called to free a workQ item at workQ delete time
+ * PARAMS:   item - the work item
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void gattWorkQueueFreeItem(void *item)
+{
+    struct gattWorkItem *wi = (struct gattWorkItem*)item;
+
+    /* future free steps go here */
+    free(wi);
+}
+
+/*
  * FUNCTION: gattProfileInit
  * USE:      Initialize GATT
  * PARAMS:   NONE
@@ -332,6 +354,12 @@ bool gattProfileInit(void)
     if (!mAttSrv) {
         loge("Failed create an ATT server\n");
         goto out_att;
+    }
+
+    mWorkQ = workQueueAlloc(GATT_WORK_Q_SIZE);
+    if (!mWorkQ) {
+        loge("Failed create a workQ\n");
+        goto out_workq;
     }
 
     mSendQ = sendQueueAlloc(8);
@@ -369,6 +397,9 @@ out_psm:
     sendQueueFree(mSendQ);
 
 out_sendq:
+    workQueueFree(mWorkQ, gattWorkQueueFreeItem);
+
+out_workq:
     attSrvDestroy(mAttSrv);
 
 out_att:
@@ -388,6 +419,7 @@ void gattProfileDeinit(void)
     l2cApiServiceFixedChUnregister(GATT_FIXEDCH, NULL, 0);
     l2cApiServicePsmUnregister(GATT_PSM, NULL, 0);
     attSrvDestroy(mAttSrv);
+    workQueueFree(mWorkQ, gattWorkQueueFreeItem);
     sendQueueFree(mSendQ);
 }
 

@@ -3,10 +3,14 @@
 
 
 /*
+ * How many items fit in the GATT work Q
+ */
+#define GATT_WORK_Q_SIZE                    64
+
+/*
  * How many milliseconds from sending an indication to deciding it timed out?
  */
 #define ATT_IND_TIMEOUT                     30000
-
 
 /*
  * AAPI will try to queue this much per socket before shutting off flow
