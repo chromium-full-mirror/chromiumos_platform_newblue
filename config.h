@@ -13,6 +13,11 @@
 #define ATT_IND_TIMEOUT                     30000
 
 /*
+ * How many items fit in the ATT work Q
+ */
+#define ATT_WORK_Q_SIZE                     128
+
+/*
  * AAPI will try to queue this much per socket before shutting off flow
  * Due to latencies in shutting off slow, the real amount queued could be
  * more.

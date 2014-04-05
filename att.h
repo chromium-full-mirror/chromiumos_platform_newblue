@@ -7,7 +7,15 @@
 #include "sm.h"
 
 typedef uniq_t att_range_t;
-struct attServer;
+
+/*
+ * ATT itself does not use a worker to call callbacks, so do NOT block in ATT callbacks.
+ * This is a safe choice since only GATT builds on ATT, and it uses a worker to call higher layers.
+ * We do not use uniq_t for transaction IDs since higher layer (android java api) needs ints
+ * so we might as well do it. It is wrong and shortsighted, but sadly we must comply with the
+ * existing API first and foremost. This is the same reason why our "connID" is an integer
+ */
+
 
 /* we WILL negotiate, but only this much is ever guaranteed */
 #define ATT_MTU_MIN_EDR                48
@@ -79,32 +87,40 @@ struct att_uuid {
 #define ATT_WRITE_FOR_WRITE_REQ        0x01
 #define ATT_WRITE_FOR_WRITE_CMD        0x02
 #define ATT_WRITE_FOR_SIGNED_WRITE_CMD 0x03
-#define ATT_WRITE_FOR_PREPARED         0x04
+#define ATT_WRITE_FOR_PREPARE          0x04
 
 
+/* att common api */
+bool attInit(void);
+void attDeinit(void);
+bool attSync(void); /* verifies all pending att work before now is finished. Use this after deleting things to make sure all refs to them are gone */
 
 /* att server api */
-typedef uint8_t (*attSrvValueReadCbk)(struct attServer* srv, l2c_handle_t who, void *cbkData, att_range_t range, uint16_t ofst,
-                                   uint16_t byteOfst, uint8_t reason, uint16_t *lenP, void *dst); /* -> ATT_ERROR_* lenP: in/out*/
-typedef uint8_t (*attSrvValueWriteCbk)(struct attServer* srv, l2c_handle_t who, void *cbkData, att_range_t range, uint16_t ofst,
-                                    uint16_t byteOfst, uint8_t reason, uint16_t *lenP, const void *dst); /* -> ATT_ERROR_* lenP: in/out*/
-typedef uint8_t (*attSrvTxCbk)(struct attServer* srv, l2c_handle_t to, sg s); /* -> ATT_TX_RET_* */
-typedef void (*attSrvMtuCbk)(struct attServer* srv, l2c_handle_t to, uint32_t mtu);
-typedef void (*attSrvIndResultCbk)(struct attServer* srv, l2c_handle_t to, void *userData, bool success);
 
-struct attServer* attSrvCreate(attSrvTxCbk txF, attSrvMtuCbk mtuF, attSrvIndResultCbk indF);
-void attSrvSetMtu(struct attServer* srv, l2c_handle_t to, uint32_t mtu); /* EDR uses this since L2D negotiates MTU */
-void attSrvNotifConnClose(struct attServer* srv, l2c_handle_t conn); /* allows server to no longer try to notify it */
-void attSrvDestroy(struct attServer* srv);
+/* these callbacks call attSrvReadCbkReply/attSrvWriteCbkReply on completion of actual work */
+typedef bool (*attSrvValueReadCbk)(l2c_handle_t who, att_range_t range, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t maxLen);
+typedef bool (*attSrvValueWriteCbk)(l2c_handle_t who, att_range_t range, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data);
+typedef bool (*attSrvValueExecWrite)(l2c_handle_t who, int transId, bool exec);
 
-att_range_t attSrvHandleRangeReserve(struct attServer* srv, uint16_t len); /* -> 0 on failure */
-void attSrvHandleRangeRelease(struct attServer* srv, att_range_t rangeRef);
-uint16_t attSrvHandleRangeGetBase(struct attServer* srv, att_range_t rangeRef); /* -> 0 on failure */
-bool attSrvValueRegister(struct attServer *srv, att_range_t rangeRef, uint16_t offset, const struct att_uuid *type, uint8_t perms,
-                         uint16_t grpLen, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF, void *cbkData);
-bool attSrvValueUnregister(struct attServer *srv, att_range_t rangeRef, uint16_t offset);
-uint8_t attSrvValueNotifyChanged(struct attServer* srv, att_range_t rangeRef, uint16_t offset, l2c_handle_t to, sg data, bool notify, void *userData); /* -> ATT_NOTIF_RET_* */
-bool attSrvDataRx(struct attServer* srv, l2c_handle_t from, sg s);
+typedef uint8_t (*attSrvTxCbk)(l2c_handle_t to, sg s); /* -> ATT_TX_RET_* */
+typedef void (*attSrvMtuCbk)(l2c_handle_t to, uint32_t mtu);
+typedef void (*attSrvIndResultCbk)(l2c_handle_t to, att_range_t rangeRef, uint16_t offset, bool success, uint64_t ref);
+
+bool attSrvCreate(attSrvTxCbk txF, attSrvMtuCbk mtuF, attSrvIndResultCbk indF, attSrvValueExecWrite execF);
+void attSrvSetMtu(l2c_handle_t to, uint32_t mtu); /* EDR uses this since L2C negotiates MTU */
+void attSrvNotifConnClose(l2c_handle_t conn); /* allows server to no longer try to notify it */
+void attSrvDestroy(void);
+
+att_range_t attSrvHandleRangeReserve(uint16_t len); /* -> 0 on failure */
+void attSrvHandleRangeRelease(att_range_t rangeRef);
+uint16_t attSrvHandleRangeGetBase(att_range_t rangeRef); /* -> 0 on failure */
+bool attSrvValueRegister(att_range_t rangeRef, uint16_t offset, const struct att_uuid *type, uint8_t perms,
+                         uint16_t grpLen, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF);
+bool attSrvValueUnregister(att_range_t rangeRef, uint16_t offset);
+uint8_t attSrvValueNotifyChanged(att_range_t rangeRef, uint16_t offset, l2c_handle_t to, sg data, bool notify, uint64_t ref); /* -> ATT_NOTIF_RET_* */
+bool attSrvDataRx(l2c_handle_t from, sg s);
+
+void attSrvCbkReply(int cid, int transId, uint16_t handle, uint8_t err, const void *data, uint16_t len); /* err is ATT_ERROR_* */
 
 
 /* att client api */
