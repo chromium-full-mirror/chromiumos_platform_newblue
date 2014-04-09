@@ -34,6 +34,8 @@ static int mFdCmdOut;
 static int mFdEvtIn;
 static int mFdAclIn;
 static int mFdAclOut;
+static int mFdScoIn;
+static int mFdScoOut;
 static bool mCbkResult;
 static sem_t mInitSem;
 static pthread_t mWorkerThread;
@@ -47,6 +49,7 @@ static bool mChipAwake;
 static bool mNeedsCompleteWrites;
 static bool mKnowAboutCompleWrites;
 static bool mHaveLpm;
+static bool mNeedTypeBytes;
 
 static pthread_mutex_t mTxLock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -257,8 +260,13 @@ static void* vendorWorker(void *pipeFdP)
         exitPipeIdx = numfds++;
 
         /* add others */
-        if (mFdAclIn) {
+        if (mFdAclIn != -1) {
             pollfds[numfds].fd = mFdAclIn;
+            pollfds[numfds].events = POLLIN;
+            numfds++;
+        }
+        if (mFdScoIn != mFdAclIn) {
+            pollfds[numfds].fd = mFdScoIn;
             pollfds[numfds].events = POLLIN;
             numfds++;
         }
@@ -294,8 +302,19 @@ static void* vendorWorker(void *pipeFdP)
             if (!pollfds[i].revents)
                 continue;
 
+            if (!mNeedTypeBytes) {
+                if (pollfds[i].fd == mFdEvtIn)
+                    buf[0] = HCI_PKT_TYP_EVT;
+                else if (pollfds[i].fd == mFdAclIn)
+                    buf[0] = HCI_PKT_TYP_ACL;
+                else if (pollfds[i].fd == mFdScoIn)
+                    buf[0] = HCI_PKT_TYP_SCO;
+                else
+                    loge("Unknown FD\n");
+            }
+
             /* read the packet */
-            if (!mNeedsCompleteWrites && r_read(pollfds[i].fd, buf, 1)){
+            if (!mNeedsCompleteWrites && (!mNeedTypeBytes || r_read(pollfds[i].fd, buf, 1))){
 
                 switch (buf[0]) {
                 case HCI_PKT_TYP_ACL:
@@ -339,6 +358,8 @@ static void* vendorWorker(void *pipeFdP)
                     continue;
                 }
             } else if (mNeedsCompleteWrites || errno == ENOMEM) { /* maybe they want us to read the entire packet at once */
+                uint32_t readBufOffst = mNeedTypeBytes ? 0 : 1;
+
                 int bytesAvail = -1;
                 if (ioctl(pollfds[i].fd, FIONREAD, &bytesAvail)) {
                     loge("ioctl.FIONREAD failed too: %d\n", errno);
@@ -348,16 +369,23 @@ static void* vendorWorker(void *pipeFdP)
                     loge("ioctl.FIONREAD told us there are %u bytes\n", bytesAvail);
                     continue;
                 }
-                packet = (uint8_t*)malloc(bytesAvail);
+                packet = (uint8_t*)malloc(bytesAvail + readBufOffst);
                 if (!packet) {
                     loge("alloc(%u) fails\n", bytesAvail);
                     continue;
                 }
-                if (!r_read(pollfds[i].fd, packet, bytesAvail)) {
+
+                if (!r_read(pollfds[i].fd, packet + readBufOffst, bytesAvail)) {
                     free(packet);
                     loge("second read fails: %d\n", errno);
                     continue;
                 }
+
+                if (!mNeedTypeBytes) {
+                    mNeedTypeBytes++;
+                    packet[0] = buf[0];
+                }
+
                 switch (packet[0]) {
                 case HCI_PKT_TYP_ACL:
                     hdrSz = 4;
@@ -477,6 +505,8 @@ bool vendorOpen(void)
     mFdEvtIn = -1;
     mFdAclIn = -1;
     mFdAclOut = -1;
+    mFdScoIn = -1;
+    mFdScoOut = -1;
     mCmdCompleteWaiting = 0;
     mKeepAwake = true;
     mChipAwake = false;
@@ -538,7 +568,7 @@ out:
 bool vendorUp(const uint8_t *addr, vendorCbkChipUp chipUpCbk, vendorCbkRx dataRxCbk, void *chipCbkData)
 {
     uint8_t tv8;
-    int ret, tmp, fds[CH_MAX], pipeFds[2];
+    int ret, tmp, fds[CH_MAX], pipeFds[2], freeFds[CH_MAX], nfds;
     static unsigned char local_addr[BT_MAC_LEN];
     static const bt_vendor_callbacks_t vendorCbks = {
         .size      = sizeof(bt_vendor_callbacks_t),
@@ -604,25 +634,40 @@ bool vendorUp(const uint8_t *addr, vendorCbkChipUp chipUpCbk, vendorCbkRx dataRx
     chipUpCbk(chipCbkData, false, true);
 
     logd("vendor->op(BT_VND_OP_USERIAL_OPEN)\n");
-    ret = mVendorIface->op(BT_VND_OP_USERIAL_OPEN, &fds);
-    logd("nfds %d\n", ret);
-    if (ret == 1) {
+    nfds = mVendorIface->op(BT_VND_OP_USERIAL_OPEN, &fds);
+    logd("nfds %d\n", nfds);
+    mNeedTypeBytes = false;
+    if (nfds == 1) {
         mFdCmdOut = fds[CH_CMD];
         mFdEvtIn = fds[CH_CMD];
         mFdAclIn = fds[CH_CMD];
         mFdAclOut = fds[CH_CMD];
-    } else if (ret == 2) {
+        mFdScoIn = fds[CH_CMD];
+        mFdScoOut = fds[CH_CMD];
+        freeFds[0] = fds[CH_CMD];
+        mNeedTypeBytes = true;
+    } else if (nfds == 2) {
         mFdCmdOut = fds[CH_CMD];
         mFdEvtIn = fds[CH_CMD];
         mFdAclOut = fds[CH_ACL_OUT];
         mFdAclIn = fds[CH_ACL_OUT];
-    } else if (ret == 4) {
+        mFdScoIn = -1; /* SCO cannot be supported in this configuration */
+        mFdScoOut = -1;
+        freeFds[0] = fds[CH_CMD];
+        freeFds[1] = fds[CH_ACL_OUT];
+    } else if (nfds == 4) {
         mFdCmdOut = fds[CH_CMD];
         mFdEvtIn = fds[CH_EVT];
         mFdAclOut = fds[CH_ACL_OUT];
         mFdAclIn = fds[CH_ACL_IN];
+        mFdScoIn = -1; /* SCO cannot be supported in this configuration */
+        mFdScoOut = -1;
+        freeFds[0] = fds[CH_CMD];
+        freeFds[1] = fds[CH_EVT];
+        freeFds[2] = fds[CH_ACL_IN];
+        freeFds[3] = fds[CH_ACL_OUT];
     } else {
-        loge("iface userial open failed with code %d\n", ret);
+        loge("iface userial open failed with code %d\n", nfds);
         goto out_need_powerdown;
     }
 
@@ -687,6 +732,8 @@ out_need_pipe_close:
     close(pipeFds[1]);
 
 out_need_userial_close:
+    while (nfds)
+        close(freeFds[--nfds]);
     mVendorIface->op(BT_VND_OP_USERIAL_CLOSE, NULL);
 
 out_need_powerdown:
@@ -735,7 +782,7 @@ bool vendorTx(uint8_t typ, sg data, bool expectReply)
         logd("%s\n", line);
     }
 
-    if (!sgConcatFrontCopy(data, &typ, 1)) {
+    if (mNeedTypeBytes && !sgConcatFrontCopy(data, &typ, 1)) {
         loge("TX type concat fail\n");
         goto out;
     }
@@ -818,6 +865,17 @@ void vendorDown(void)
     logi("Waiting for epilog\n");
     r_sem_wait(&mInitSem);
     logi("epilog done\n");
+    close(mFdCmdOut);
+    if (mFdEvtIn != mFdCmdOut)
+        close(mFdEvtIn);
+    if (mFdAclIn != mFdCmdOut)
+        close(mFdAclIn);
+    if (mFdAclOut != mFdAclIn)
+        close(mFdAclOut);
+    if (mFdScoIn != mFdAclIn)
+        close(mFdScoIn);
+    if (mFdScoOut != mFdScoIn)
+        close(mFdScoOut);
     mVendorIface->op(BT_VND_OP_USERIAL_CLOSE, NULL);
 
     ret = write(mWorkerClosePipe, &ret, 1);
