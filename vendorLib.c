@@ -19,7 +19,11 @@
 #include "sg.h"
 #include "mt.h"
 
+#ifdef ANDROID
 #define BT_VENDOR_LIB_NAME       "/vendor/lib/libbt-vendor.so"
+#else
+#define BT_VENDOR_LIB_NAME       "usb-hci/libbt-vendor.so"
+#endif
 #define BT_VENDOR_INFACE_STRUCT  "BLUETOOTH_VENDOR_LIB_INTERFACE"
 
 
@@ -515,7 +519,7 @@ bool vendorOpen(void)
     mSleepTimer = 0;
 
 
-    mVendorLibHandle = dlopen(BT_VENDOR_LIB_NAME, 0);
+    mVendorLibHandle = dlopen(BT_VENDOR_LIB_NAME, RTLD_NOW);
     if (!mVendorLibHandle) {
         loge("Failed to open vendor lib\n");
         goto out;
