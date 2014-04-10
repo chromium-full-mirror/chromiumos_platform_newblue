@@ -8,14 +8,6 @@
 
 typedef uniq_t att_range_t;
 
-/*
- * ATT itself does not use a worker to call callbacks, so do NOT block in ATT callbacks.
- * This is a safe choice since only GATT builds on ATT, and it uses a worker to call higher layers.
- * We do not use uniq_t for transaction IDs since higher layer (android java api) needs ints
- * so we might as well do it. It is wrong and shortsighted, but sadly we must comply with the
- * existing API first and foremost. This is the same reason why our "connID" is an integer
- */
-
 
 /* we WILL negotiate, but only this much is ever guaranteed */
 #define ATT_MTU_MIN_EDR                48
