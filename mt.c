@@ -10,6 +10,21 @@
 #include "log.h"
 #include "mt.h"
 
+#ifndef ANDROID
+#include <linux/unistd.h>
+inline int gettid() { return syscall(__NR_gettid); }
+
+int pthread_cond_timeout_np(pthread_cond_t *c, pthread_mutex_t *m, unsigned msec) {
+    struct timeval tv;
+    struct timespec ts;
+
+    gettimeofday(&tv, NULL);
+    ts.tv_sec = tv.tv_sec + msec / 1000;
+    ts.tv_nsec = (tv.tv_usec + (msec % 1000) * 1000L) * 1000L;
+    return pthread_cond_timedwait(c, m, &ts);
+}
+#endif
+
 /* the utility things */
 
 int r_sem_wait(sem_t* sem)

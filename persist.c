@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <fcntl.h>
+#include <errno.h>
 #include <time.h>
 #include "persist.h"
 #include "config.h"

@@ -1,9 +1,28 @@
 #ifndef _AAPI_H_
 #define _AAPI_H_
 
-#include <hardware/bluetooth.h>
 #include "types.h"
 #include "bt.h"
+
+#ifdef ANDROID
+#include <hardware/bluetooth.h>
+#else
+typedef int bt_status_t;
+typedef int bt_property_t;
+
+/** Bluetooth SSP Bonding Variant */
+typedef enum {
+    BT_SSP_VARIANT_PASSKEY_CONFIRMATION,
+    BT_SSP_VARIANT_PASSKEY_ENTRY,
+    BT_SSP_VARIANT_CONSENT,
+    BT_SSP_VARIANT_PASSKEY_NOTIFICATION
+} bt_ssp_variant_t;
+
+/** Bluetooth Address */
+typedef struct {
+    uint8_t address[6];
+} __attribute__((packed))bt_bdaddr_t;
+#endif
 
 #define AAPI_BOND_STATE_FAILED     0
 #define AAPI_BOND_STATE_INPROGRESS 1

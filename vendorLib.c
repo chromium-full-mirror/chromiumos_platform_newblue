@@ -6,6 +6,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <poll.h>
+#include <sys/ioctl.h>
 #include "bt_vendor_lib.h"
 #include "vendorLib.h"
 #include "config.h"

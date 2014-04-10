@@ -22,7 +22,11 @@
  * Due to latencies in shutting off slow, the real amount queued could be
  * more.
  */
+#ifdef ANDROID
 #define PREF_PATH                           "/data/data/com.android.bluetooth/bt.newblue.prefs"
+#else
+#define PREF_PATH                           "bt.newblue.prefs"
+#endif
 
 /*
  * AAPI will try to queue this much per socket before shutting off flow
