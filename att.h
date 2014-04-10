@@ -4,6 +4,7 @@
 #include "types.h"
 #include "l2cap.h"
 #include "uniq.h"
+#include "uuid.h"
 #include "sm.h"
 
 typedef uniq_t att_range_t;
@@ -50,12 +51,7 @@ typedef uniq_t att_range_t;
 #define ATT_ERROR_COMMON_FIRST         0xE0
 #define ATT_ERROR_COMMON_LAST          0xFF
 
-struct att_uuid {
-    uint64_t lo;
-    uint64_t hi;
-} __packed;
 
-#define ATT_UUID_BASE                  {0x800000805F9B34FBULL, 0x0000000000001000ULL}
 #define ATT_FIRST_VALID_HANDLE         0x0001
 #define ATT_LAST_VALID_HANDLE          0xFFFF
 
@@ -106,7 +102,7 @@ void attSrvDestroy(void);
 att_range_t attSrvHandleRangeReserve(uint16_t len); /* -> 0 on failure */
 void attSrvHandleRangeRelease(att_range_t rangeRef);
 uint16_t attSrvHandleRangeGetBase(att_range_t rangeRef); /* -> 0 on failure */
-bool attSrvValueRegister(att_range_t rangeRef, uint16_t offset, const struct att_uuid *type, uint8_t perms,
+bool attSrvValueRegister(att_range_t rangeRef, uint16_t offset, const struct uuid *type, uint8_t perms,
                          uint16_t grpLen, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF);
 bool attSrvValueUnregister(att_range_t rangeRef, uint16_t offset);
 uint8_t attSrvValueNotifyChanged(att_range_t rangeRef, uint16_t offset, l2c_handle_t to, sg data, bool notify, uint64_t ref); /* -> ATT_NOTIF_RET_* */

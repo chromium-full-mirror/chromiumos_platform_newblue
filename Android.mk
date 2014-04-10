@@ -2,7 +2,7 @@ LOCAL_PATH := $(my-dir)
 include $(CLEAR_VARS)
 
 
-LOCAL_SRC_FILES := sg.c hci.c l2cap.c timer.c uniq.c vendorLib.c workQueue.c multiNotif.c sdp.c sendQ.c rfcomm.c mt.c sm.c persist.c att.c gatt.c
+LOCAL_SRC_FILES := sg.c hci.c l2cap.c timer.c uniq.c vendorLib.c workQueue.c multiNotif.c sdp.c sendQ.c rfcomm.c mt.c sm.c persist.c uuid.c att.c gatt.c
 LOCAL_MODULE_TAGS := optional
 LOCAL_CFLAGS += -Wno-unused-parameter -DANDROID -DSG_DEBUG -DRFC_DEBUG #-DMT_DEBUG -DSDP_DBG -DTEST_DEBUG
 LOCAL_SHARED_LIBRARIES := libdl

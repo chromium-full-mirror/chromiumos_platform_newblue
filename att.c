@@ -102,7 +102,7 @@ struct attPduFindInfoData16 {
 
 struct attPduFindInfoData128 {
     uint16_t handle;
-    struct att_uuid uuid128;
+    struct uuid uuid128;
 } __packed;
 
 struct attPduFindInfoRsp {
@@ -221,13 +221,13 @@ struct attSrvPendingOp { /* an op we have an outstanding callback for */
 
     union {
         struct {
-            struct att_uuid  uuid;
+            struct uuid      uuid;
             void            *wantedVal;
             uint16_t         wantedLen;
             uint16_t         valGrpLen;
         } findByTypeValue;
         struct {
-            struct att_uuid  uuid;
+            struct uuid      uuid;
             bool             grpType;
             uint16_t         valGrpLen;
             uint16_t         itemLen;
@@ -267,7 +267,7 @@ struct attConnList {
 struct attSrvVal {
     struct attSrvVal *next;
     struct attSrvVal *prev;
-    struct att_uuid type;
+    struct uuid type;
     attSrvValueReadCbk readF;
     attSrvValueWriteCbk writeF;
     uint16_t offset;
@@ -354,83 +354,7 @@ static pthread_t mWorker;
 
 
 
-/*
- * FUNCTION: attUuidFromUuid16
- * USE:      convert a uuid-16 into a uuid-128
- * PARAMS:   dst - where to store the resulting uuid-128
- *           uuid16 - the incoming uuid16
- * RETURN:   NONE
- * NOTES:
- */
-static void attUuidFromUuid16(struct att_uuid *dst, uint16_t uuid16)
-{
-    const struct att_uuid base = ATT_UUID_BASE;
 
-    dst->lo = base.lo;
-    dst->hi = base.hi + (((uint64_t)uuid16) << 32);
-}
-
-/*
- * FUNCTION: attUuidCmp
- * USE:      compare two uuid-128 values
- * PARAMS:   a - one value
- *           b - the other value
- * RETURN:   true if they are equal
- * NOTES:
- */
-static bool attUuidCmp(const struct att_uuid *a, const struct att_uuid *b)
-{
-    return a->lo == b->lo && a->hi == b->hi;
-}
-
-/*
- * FUNCTION: attUuidWrite
- * USE:      Write a UUID-128 (for TX path)
- * PARAMS:   dst - where to write
- *           src - where to get the value
- * RETURN:   true if they are equal
- * NOTES:
- */
-static void attUuidWrite(struct att_uuid *dst, const struct att_uuid *src)
-{
-    utilSetLE64(&dst->lo, src->lo);
-    utilSetLE64(&dst->hi, src->hi);
-}
-
-/*
- * FUNCTION: attUuidRead
- * USE:      Read a UUID-128 (for RX path)
- * PARAMS:   dst - where to read to
- *           src - where to get the value
- * RETURN:   true if they are equal
- * NOTES:
- */
-static void attUuidRead(struct att_uuid *dst, const struct att_uuid *src)
-{
-    dst->lo = utilGetLE64(&src->lo);
-    dst->hi = utilGetLE64(&src->hi);
-}
-
-/*
- * FUNCTION: attUuidToUuid16
- * USE:      try to convert a uuid-128 into a uuid-16
- * PARAMS:   dst - where to store the result or NULL if we don't need it
- *           uuid128 - the input
- * RETURN:   true if we succeeded
- * NOTES:
- */
-static bool attUuidToUuid16(uint16_t *dst, const struct att_uuid *uuid128)
-{
-    const struct att_uuid base = ATT_UUID_BASE;
-
-    if (uuid128->lo ^ base.lo)
-        return false;
-    if ((uuid128->hi ^ base.hi) & 0xFFFF0000FFFFFFFFULL)
-        return false;
-    if (dst)
-        *dst = base.hi >> 32;
-    return true;
-}
 
 /*
  * FUNCTION: attWorkItemAlloc
@@ -1186,7 +1110,7 @@ uint16_t attSrvHandleRangeGetBase(att_range_t rangeRef)
  * RETURN:   success
  * NOTES:
  */
-bool attSrvValueRegister(att_range_t rangeRef, uint16_t offset, const struct att_uuid *type, uint8_t perms, uint16_t grpLen, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF)
+bool attSrvValueRegister(att_range_t rangeRef, uint16_t offset, const struct uuid *type, uint8_t perms, uint16_t grpLen, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF)
 {
     struct attSrvVal *next, *prev = NULL, *val;
     struct attSrvRange *range;
@@ -1538,17 +1462,17 @@ void attSrvSetMtu(l2c_handle_t to, uint32_t mtu)
  * RETURN:   success
  * NOTES:
  */
-static bool attReadUuid(struct att_uuid *dst, sg s)
+static bool attReadUuid(struct uuid *dst, sg s)
 {
     uint8_t buf[16];
-    struct att_uuid *ru = (struct att_uuid*)buf;
+    struct uuid *ru = (struct uuid*)buf;
 
     if (sgLength(s) == sizeof(uint16_t)) {
         sgSerializeCutFront(s, buf, sizeof(uint16_t));
-        attUuidFromUuid16(dst, utilGetLE16(buf));
-    } else if (sgLength(s) == sizeof(struct att_uuid)) {
-        sgSerializeCutFront(s, buf, sizeof(struct att_uuid));
-        attUuidRead(dst, ru);
+        uuidFromUuid16(dst, utilGetLE16(buf));
+    } else if (sgLength(s) == sizeof(struct uuid)) {
+        sgSerializeCutFront(s, buf, sizeof(struct uuid));
+        uuidReadLE(dst, ru);
     } else
         return false;
 
@@ -1669,7 +1593,7 @@ static bool attSrvOpFindInfo(l2c_handle_t to, uint32_t mtu, uint16_t startHandle
             if (handle > endHandle)
                 goto out;
 
-            if (allUuidsSmall && attUuidToUuid16(&uuid16, &val->type)) {
+            if (allUuidsSmall && uuidToUuid16(&uuid16, &val->type)) {
                 struct attPduFindInfoData16 result;
                 uint16_t uuid;
 
@@ -1684,21 +1608,21 @@ static bool attSrvOpFindInfo(l2c_handle_t to, uint32_t mtu, uint16_t startHandle
                 if (allUuidsSmall) { /* need to convert to all-large */
                     uint32_t numResults = sgLength(results) / sizeof(struct attPduFindInfoData16);
                     struct attPduFindInfoData16 result16;
-                    struct att_uuid uuid;
+                    struct uuid uuid;
 
                     while(numResults--) {
                         if (!sgSerializeCutFront(results, &result16, sizeof(result16)))
                             goto unrecoverable;
                         utilSetLE16(&result.handle, utilGetLE16(&result16.handle));
-                        attUuidFromUuid16(&uuid, utilGetLE16(&result16.uuid16));
-                        attUuidWrite(&result.uuid128, &uuid);
+                        uuidFromUuid16(&uuid, utilGetLE16(&result16.uuid16));
+                        uuidWriteLE(&result.uuid128, &uuid);
                         if (!sgConcatBackCopy(results, &result, sizeof(result)))
                             goto unrecoverable;
                     }
                     allUuidsSmall = false;
                 }
                 utilSetLE16(&result.handle, handle);
-                attUuidWrite(&result.uuid128, &val->type);
+                uuidWriteLE(&result.uuid128, &val->type);
                 if (!sgConcatBackCopy(results, &result, sizeof(result))) {
                     err = true;
                     goto out;
@@ -1811,7 +1735,7 @@ static bool attSrvOpFindByTypeValContinue(struct attSrvConnExtra *extra, l2c_han
                 continue;
 
             /* must be of a given type */
-            if (!attUuidCmp(&val->type, &extra->penOp.findByTypeValue.uuid))
+            if (!uuidCmp(&val->type, &extra->penOp.findByTypeValue.uuid))
                 continue;
 
             /* we found a falue to read - schedule it */
@@ -1856,7 +1780,7 @@ done:
  * RETURN:   success
  * NOTES:    call with mSrvLock held
  */
-static bool attSrvOpFindByTypeValStart(l2c_handle_t to, uint32_t mtu, uint16_t startHandle, uint16_t endHandle, const struct att_uuid *uuid, sg s)
+static bool attSrvOpFindByTypeValStart(l2c_handle_t to, uint32_t mtu, uint16_t startHandle, uint16_t endHandle, const struct uuid *uuid, sg s)
 {
     struct attSrvConnExtra *extra = attConnListGetExtra(&mAllClients, to);
     uint8_t err = ATT_ERROR_INSUFFICIENT_RSRCS;
@@ -2024,7 +1948,7 @@ static bool attSrvOpReadByTypeContinue(struct attSrvConnExtra *extra, l2c_handle
                 continue;
 
             /* must be of a given type */
-            if (!attUuidCmp(&val->type, &extra->penOp.readByType.uuid))
+            if (!uuidCmp(&val->type, &extra->penOp.readByType.uuid))
                 continue;
 
             /* we found a falue to read - schedule it */
@@ -2068,7 +1992,7 @@ done:
  * RETURN:   success
  * NOTES:    call with mSrvLock help
  */
-static bool attSrvOpReadByTypeStart(l2c_handle_t to, uint32_t mtu, uint16_t startHandle, uint16_t endHandle, const struct att_uuid *uuid, bool grpType)
+static bool attSrvOpReadByTypeStart(l2c_handle_t to, uint32_t mtu, uint16_t startHandle, uint16_t endHandle, const struct uuid *uuid, bool grpType)
 {
     const uint8_t reqOpcode = grpType ? ATT_OPCODE_READ_BY_GRP_TYPE_REQ : ATT_OPCODE_READ_BY_TYPE_REQ;
     const uint8_t rspOpcode = grpType ? ATT_OPCODE_READ_BY_GRP_TYPE_RSP : ATT_OPCODE_READ_BY_TYPE_RSP;
@@ -2602,7 +2526,7 @@ bool attSrvDataRx(l2c_handle_t from, sg s)
     struct attPduWriteCmd writeCmd;
     struct attPduReadReq readReq;
     struct attPduMtu mtuExch;
-    struct att_uuid uuid;
+    struct uuid uuid;
     struct attHdr hdr;
     bool ret = false;
     uint32_t newMtu;
@@ -2652,7 +2576,7 @@ bool attSrvDataRx(l2c_handle_t from, sg s)
         if (!sgSerializeCutFront(s, &findByTypeValReq, sizeof(findByTypeValReq)))
             ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else {
-            attUuidFromUuid16(&uuid, utilGetLE16(&findByTypeValReq.uuid16));
+            uuidFromUuid16(&uuid, utilGetLE16(&findByTypeValReq.uuid16));
             ret = attSrvOpFindByTypeValStart(from, mtu, utilGetLE16(&findByTypeValReq.startHandle), utilGetLE16(&findByTypeValReq.endHandle), &uuid, s);
         }
         break;
