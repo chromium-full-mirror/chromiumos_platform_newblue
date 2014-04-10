@@ -31,7 +31,8 @@ struct gattWorkItem {
 
 
 /* our state */
-static uint32_t mSdpHandle;
+static uint32_t mSdpHandleGatt;
+static uint32_t mSdpHandleGap;
 static struct sendQ* mSendQ;
 static struct workQueue* mWorkQ;
 static pthread_t mWorker;
@@ -295,21 +296,21 @@ static uint8_t gattFixedChSvcAlloc(void *userData, l2c_handle_t handle, void **i
 
 /*
  * FUNCTION: gattSdpInit
- * USE:      Called to add GATT to SDP
+ * USE:      Called to add a GATT profile to SDP
  * PARAMS:   genericAttrProfileHandle - start handle for generic attribute profile
  *           genericAttrProfileLen - length of generic attribute profile
  * RETURN:   sdp handle or 0 on error
  * NOTES:
  */
-static uint32_t gattSdpInit(uint16_t genericAttrProfileHandle, uint16_t genericAttrProfileLen)
+static uint32_t gattSdpAdd(uint16_t uuid16, uint16_t profileAttHandle, uint16_t profileAttLen)
 {
-    uint16_t genericAttrProfileEnd = genericAttrProfileHandle + genericAttrProfileLen - 1;
+    uint16_t profileAttEnd = profileAttHandle + profileAttLen - 1;
 
     uint8_t sdpDescrGatt[] = {
         //service class ID list
         SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(SDP_ATTR_SVC_CLS_ID_LIST),
         SDP_ITEM_DESC(SDP_TYPE_ARRAY, SDP_SZ_u8), 3,
-            SDP_ITEM_DESC(SDP_TYPE_UUID, SDP_SZ_2), SDP_U16(SDP_SVC_CLASS_GATT),
+            SDP_ITEM_DESC(SDP_TYPE_UUID, SDP_SZ_2), SDP_U16(uuid16),
 
         //ProtocolDescriptorList
         SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(SDP_ATTR_PROTOCOL_DESCR_LIST),
@@ -319,8 +320,8 @@ static uint32_t gattSdpInit(uint16_t genericAttrProfileHandle, uint16_t genericA
                 SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(GATT_PSM),
             SDP_ITEM_DESC(SDP_TYPE_ARRAY, SDP_SZ_u8), 9,
                 SDP_ITEM_DESC(SDP_TYPE_UUID, SDP_SZ_2), SDP_U16(SDP_PROTO_ATT),
-                SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(genericAttrProfileHandle),
-                SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(genericAttrProfileEnd),
+                SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(profileAttHandle),
+                SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(profileAttEnd),
 
         //browse group list
         SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(SDP_ATTR_BROWSE_GRP_LIST),
@@ -430,16 +431,28 @@ bool gattProfileInit(void)
         goto out_fixed;
     }
 
-    /* todo: create generic attr profile, so we do not pass zeroes here: */
-    mSdpHandle = gattSdpInit(0, 0);
-    if (!mSdpHandle) {
-        loge("Failed to register GATT with SDP\n");
-        goto out_sdp;
+    /* todo: create the profile, so we do not pass zeroes here  */
+    mSdpHandleGatt = gattSdpAdd(SDP_SVC_CLASS_GATT, 0, 0);
+    if (!mSdpHandleGatt) {
+        loge("Failed to register ATT-GATT with SDP\n");
+        goto out_sdp_gatt;
     }
+
+    /* todo: create the profile, so we do not pass zeroes here  */
+    mSdpHandleGatt = gattSdpAdd(SDP_SVC_CLASS_GAP, 0, 0);
+    if (!mSdpHandleGatt) {
+        loge("Failed to register ATT-GAP with SDP\n");
+        goto out_sdp_gap;
+    }
+
+
 
     return true;
 
-out_sdp:
+out_sdp_gap:
+    sdpServiceDescriptorDel(mSdpHandleGatt);
+
+out_sdp_gatt:
     l2cApiServiceFixedChUnregister(GATT_FIXEDCH, NULL, 0);
 
 out_fixed:
@@ -471,7 +484,8 @@ out_att:
  */
 void gattProfileDeinit(void)
 {
-    sdpServiceDescriptorDel(mSdpHandle);
+    sdpServiceDescriptorDel(mSdpHandleGap);
+    sdpServiceDescriptorDel(mSdpHandleGatt);
     l2cApiServiceFixedChUnregister(GATT_FIXEDCH, NULL, 0);
     l2cApiServicePsmUnregister(GATT_PSM, NULL, 0);
     attSrvDestroy();

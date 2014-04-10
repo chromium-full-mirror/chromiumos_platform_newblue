@@ -47,7 +47,8 @@
 #define SDP_PROTO_RFCOMM                 0x0003 /* expects param uint8_t dlci */
 #define SDP_PROTO_ATT                    0x0007 /* expects 2 uint16 params (start and end handles for GAP service) */
 #define SDP_SVC_CLASS_SPP                0x1101
-#define SDP_SVC_CLASS_GATT               0x1801 /* XXX: ?? assigned numbers doc is unclear about this ?? */
+#define SDP_SVC_CLASS_GAP                0x1800
+#define SDP_SVC_CLASS_GATT               0x1801
 #define SDP_ATTR_SPP_NAME                0x0100
 
 #define SDP_U16(v)                       (uint8_t)((v) >> 8),(uint8_t)(v)
