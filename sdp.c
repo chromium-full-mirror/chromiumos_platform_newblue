@@ -3,6 +3,7 @@
 #include "l2cap.h"
 #include "sendQ.h"
 #include "uniq.h"
+#include "uuid.h"
 #include "util.h"
 #include "sdp.h"
 #include "log.h"
@@ -59,10 +60,6 @@ struct sdpInst {
     };
 };
 
-struct uuid {
-    uint64_t hi;
-    uint64_t lo;
-};
 
 struct sdpPdu {
     uint8_t  pduType;
@@ -80,7 +77,6 @@ struct sdpCont {
     uniq_t   contVal;
 } __packed;
 
-static const struct uuid sdpBaseUuid = {0x0000000000001000ULL, 0x800000805F9B34FBULL};
 
 /* our global state */
 
@@ -91,32 +87,6 @@ static uint32_t mNextHandle;
 static struct sendQ *mSendQ;
 
 
-/*
- * FUNCTION: sdpUuidEq
- * USE:      Check two uuids to see if they are equal
- * PARAMS:   lhs - one of the UUIDs to compare
- *           rhs - another UUID to compare
- * RETURN:   true if they are equal
- * NOTES:
- */
-static bool sdpUuidEq(const struct uuid *lhs, const struct uuid *rhs)
-{
-    return lhs->hi == rhs->hi && lhs->lo == rhs->lo;
-}
-
-/*
- * FUNCTION: sdpIntToUUID
- * USE:      Converts a SDP short UUID to a full UUID
- * PARAMS:   dst - where to store the result
- *           intVal - the SDP short uuid (16 or 32 bit)
- * RETURN:   NONE
- * NOTES:
- */
-static void sdpIntToUUID(struct uuid* dst, uint32_t intVal)
-{
-    dst->hi = sdpBaseUuid.hi + (((uint64_t)intVal) << 32);
-    dst->lo = sdpBaseUuid.lo;
-}
 
 /*
  * FUNCTION: sdpServiceFindByHandle
@@ -384,19 +354,17 @@ static uint16_t sdpGetSearchReq(sg req, struct uuid *uuids, uint8_t *numUuidsP)
         case SDP_SZ_2:
             if (!sgSerializeCutFront(req, buf, 2))
                 return SDP_ERR_Invalid_Request_Syntax;
-            sdpIntToUUID(uuids + numUuids++, utilGetBE16(buf));
+            uuidFromUuid16(uuids + numUuids++, utilGetBE16(buf));
             break;
         case SDP_SZ_4:
             if (!sgSerializeCutFront(req, buf, 4))
                 return SDP_ERR_Invalid_Request_Syntax;
-            sdpIntToUUID(uuids + numUuids++, utilGetBE32(buf));
+            uuidFromUuid32(uuids + numUuids++, utilGetBE32(buf));
             break;
         case SDP_SZ_16:
             if (!sgSerializeCutFront(req, buf, 16))
                 return SDP_ERR_Invalid_Request_Syntax;
-            uuids[numUuids].hi = utilGetBE64(buf + 0);
-            uuids[numUuids].lo = utilGetBE64(buf + 8);
-            numUuids++;
+            uuidReadBE(uuids + numUuids++, (const struct uuid*)buf);
             break;
         default:
             return SDP_ERR_Invalid_Request_Syntax;
@@ -544,17 +512,16 @@ static uint16_t sdpDoSearch(struct sdpInst *inst, const struct uuid *uuids, uint
 
             if (SDP_ITEM_GET_TYPE(t) == SDP_TYPE_UUID) { /* uuid? - check for match */
                 if (sz == 2)
-                    sdpIntToUUID(&uuid, utilGetBE16(ptr));
+                    uuidFromUuid16(&uuid, utilGetBE16(ptr));
                 else if (sz == 4)
-                    sdpIntToUUID(&uuid, utilGetBE32(ptr));
-                else if (sz == 16) {
-                    uuid.hi = utilGetBE64(ptr + 0);
-                    uuid.lo = utilGetBE64(ptr + 8);
-                } else
+                    uuidFromUuid32(&uuid, utilGetBE32(ptr));
+                else if (sz == 16)
+                    uuidReadBE(&uuid, (const struct uuid*)ptr);
+                else
                     loge("weird uuid sz %ud\n", sz);
 
                 for (i = 0; i < numUuids; i++)
-                    if (sdpUuidEq(&uuid, uuids + i))
+                    if (uuidCmp(&uuid, uuids + i))
                         haveMask |= 1 << i;
             } else if (SDP_ITEM_GET_TYPE(t) == SDP_TYPE_ARRAY || SDP_ITEM_GET_TYPE(t) == SDP_TYPE_OR_LIST) /* list? - look inside */
                 sz = 0;

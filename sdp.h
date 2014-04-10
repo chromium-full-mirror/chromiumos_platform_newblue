@@ -52,7 +52,9 @@
 #define SDP_ATTR_SPP_NAME                0x0100
 
 #define SDP_U16(v)                       (uint8_t)((v) >> 8),(uint8_t)(v)
-#define SDP_U32(v)                       (uint8_t)((v) >> 24),(uint8_t)((v) >> 26),(uint8_t)((v) >> 8),(uint8_t)(v)
+#define SDP_U32(v)                       SDP_U16(v >> 16),SDP_U16(v)
+#define SDP_U64(v)                       SDP_U32(v >> 16),SDP_U32(v)
+#define SDP_UUID128(uuid)                 SDP_U64(uuid.hi),SDP_U64(uuid.lo)
 
 
 /* init the profile */

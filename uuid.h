@@ -13,8 +13,10 @@ struct uuid {
 
 
 void uuidFromUuid16(struct uuid *dst, uint16_t uuid16);
-bool uuidCmp(const struct uuid *a, const struct uuid *b);
 bool uuidToUuid16(uint16_t *dst, const struct uuid *uuid128);
+void uuidFromUuid32(struct uuid *dst, uint32_t uuid32);
+bool uuidToUuid32(uint32_t *dst, const struct uuid *uuid128);
+bool uuidCmp(const struct uuid *a, const struct uuid *b);
 void uuidWriteLE(struct uuid *dst, const struct uuid *src);
 void uuidReadLE(struct uuid *dst, const struct uuid *src);
 void uuidWriteBE(struct uuid *dst, const struct uuid *src);
