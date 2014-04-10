@@ -32,7 +32,6 @@ struct gattWorkItem {
 
 /* our state */
 static uint32_t mSdpHandle;
-static struct attServer* mAttSrv;
 static struct sendQ* mSendQ;
 static struct workQueue* mWorkQ;
 static pthread_t mWorker;
@@ -82,13 +81,12 @@ static void gattConnStructDelete(struct gattConnState *state)
 /*
  * FUNCTION: gattAttSrvTxCbk
  * USE:      ATT calls this to TX to a client
- * PARAMS:   srv - the pertinent ATT server (unused)
- *           who - whom to send to
+ * PARAMS:   who - whom to send to
  *           s - the data to send
  * RETURN:   ATT_TX_RET_*
  * NOTES:    
  */
-static uint8_t gattAttSrvTxCbk(struct attServer* srv, l2c_handle_t who, sg s)
+static uint8_t gattAttSrvTxCbk(l2c_handle_t who, sg s)
 {
     return sendQueueTx(mSendQ, who, s) ? ATT_TX_RET_ACCEPTED : ATT_TX_RET_L2C_ERR;
 }
@@ -96,28 +94,44 @@ static uint8_t gattAttSrvTxCbk(struct attServer* srv, l2c_handle_t who, sg s)
 /*
  * FUNCTION: gattAttSrvIndCbk
  * USE:      ATT calls this with results of sending an indication/notification
- * PARAMS:   srv - the pertinent ATT server (unused)
- *           who - whom the indidation/notification was sent to
- *           userData - the notified value's userData
+ * PARAMS:   who - whom the indidation/notification was sent to
+ *           rangeRef - the range this is related to
+ *           offset - the value in the range
+ *           success - did we get confirmation?
+ *           ref - the reference passed to attSrvValueNotifyChanged() initially
  *           success - did we succeed?
  * RETURN:   NONE
  * NOTES:
  */
-static void gattAttSrvIndCbk(struct attServer* srv, l2c_handle_t who, void *userData, bool success)
+static void gattAttSrvIndCbk(l2c_handle_t to, att_range_t rangeRef, uint16_t offset, bool success, uint64_t ref)
 {
     //TODO
 }
 
 /*
+ * FUNCTION: gattAttExecWriteCbk
+ * USE:      ATT calls this when client asks us to execute a write
+ * PARAMS:   who - whom the indidation/notification was sent to
+ *           transId - the transcationID
+ *           exec - exceute or dump data?
+ * RETURN:   NONE
+ * NOTES:
+ */
+static bool gattAttExecWriteCbk(l2c_handle_t who, int transId, bool exec)
+{
+    //TODO
+    return false;
+}
+
+/*
  * FUNCTION: gattAttSrvMtuCbk
  * USE:      ATT calls this with results of MTU negotiation
- * PARAMS:   srv - the pertinent ATT server (unused)
- *           who - whom the MTU is to
+ * PARAMS:   who - whom the MTU is to
  *           mtu - the mtu to the client
  * RETURN:   NONE
  * NOTES:
  */
-static void gattAttSrvMtuCbk(struct attServer* srv, l2c_handle_t who, uint32_t mtu)
+static void gattAttSrvMtuCbk(l2c_handle_t who, uint32_t mtu)
 {
     struct gattConnState* state;
 
@@ -167,8 +181,8 @@ static void gattConnEvt(void *userData, void *instance, uint8_t evt, const void 
             break;
         }
         mtu = *(uint16_t*)data;
-        attSrvSetMtu(mAttSrv, state->conn, mtu);
-        gattAttSrvMtuCbk(mAttSrv, state->conn, mtu);
+        attSrvSetMtu(state->conn, mtu);
+        gattAttSrvMtuCbk(state->conn, mtu);
         break;
 
     case L2C_STATE_ENCR:
@@ -181,14 +195,14 @@ static void gattConnEvt(void *userData, void *instance, uint8_t evt, const void 
             break;
         }
         s = *(sg*)data;
-        if (attSrvDataRx(mAttSrv, state->conn, s))
+        if (attSrvDataRx(state->conn, s))
             break;
         logw("Incoming GATT message was not accepted by ATT\n");
         sgFree(s);
         break;
 
     case L2C_STATE_CLOSED:
-        attSrvNotifConnClose(mAttSrv, state->conn);
+        attSrvNotifConnClose(state->conn);
         sendQueueDelPackets(mSendQ, state->conn);
         pthread_mutex_lock(&mConnsLock);
         gattConnStructDelete(state);
@@ -384,8 +398,7 @@ bool gattProfileInit(void)
         .serviceFixedChStateCbk = gattConnEvt,
     };
 
-    mAttSrv = attSrvCreate(gattAttSrvTxCbk, gattAttSrvMtuCbk, gattAttSrvIndCbk);
-    if (!mAttSrv) {
+    if (!attSrvCreate(gattAttSrvTxCbk, gattAttSrvMtuCbk, gattAttSrvIndCbk, gattAttExecWriteCbk)) {
         loge("Failed create an ATT server\n");
         goto out_att;
     }
@@ -443,7 +456,7 @@ out_thread:
     workQueueFree(mWorkQ, gattWorkQueueFreeItem);
 
 out_workq:
-    attSrvDestroy(mAttSrv);
+    attSrvDestroy();
 
 out_att:
     return false;
@@ -461,7 +474,7 @@ void gattProfileDeinit(void)
     sdpServiceDescriptorDel(mSdpHandle);
     l2cApiServiceFixedChUnregister(GATT_FIXEDCH, NULL, 0);
     l2cApiServicePsmUnregister(GATT_PSM, NULL, 0);
-    attSrvDestroy(mAttSrv);
+    attSrvDestroy();
     workQueueWakeAll(mWorkQ, 1);
     pthread_join(mWorker, NULL);
     workQueueFree(mWorkQ, gattWorkQueueFreeItem);
