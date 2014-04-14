@@ -1104,13 +1104,12 @@ uint16_t attSrvHandleRangeGetBase(att_range_t rangeRef)
  *           offset - handle's offset from start of the range
  *           type - the type of the registered value
  *           perms - permissions (ATT_PERM_*)
- *           grpLen - if this value is start of a group, how many values the group is (0 if not start of group)
  *           readF - the value read callback (may be NULL if read not supported)
  *           writeF - the value write callback (may be NULL if write not supported)
  * RETURN:   success
  * NOTES:
  */
-bool attSrvValueRegister(att_range_t rangeRef, uint16_t offset, const struct uuid *type, uint8_t perms, uint16_t grpLen, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF)
+bool attSrvValueRegister(att_range_t rangeRef, uint16_t offset, const struct uuid *type, uint8_t perms, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF)
 {
     struct attSrvVal *next, *prev = NULL, *val;
     struct attSrvRange *range;
@@ -1132,7 +1131,7 @@ bool attSrvValueRegister(att_range_t rangeRef, uint16_t offset, const struct uui
         goto out;
     }
 
-    if (offset >= range->len || offset + grpLen > range->len) {
+    if (offset >= range->len) {
         logw("Value or group end out of range\n");
         goto out;
     }
@@ -1157,7 +1156,6 @@ bool attSrvValueRegister(att_range_t rangeRef, uint16_t offset, const struct uui
     val->readF = readF;
     val->writeF = writeF;
     val->offset = offset;
-    val->grpLen = grpLen;
     val->perms = perms;
     val->next = next;
     val->prev = prev;
@@ -1177,10 +1175,83 @@ out:
 }
 
 /*
+ * FUNCTION: attSrvValueGetGrpLen
+ * USE:      Get a given value's "group length" parameter
+ * PARAMS:   rangeRef - the range reference
+ *           offset - handle's offset from start of the range)
+ *           grpLenP - the group length gets stored here
+ * RETURN:   success
+ * NOTES:
+ */
+bool attSrvValueGetGrpLen(att_range_t rangeRef, uint16_t offset, uint16_t *grpLenP)
+{
+    struct attSrvRange *range;
+    struct attSrvVal *val;
+    bool ret = false;
+
+    pthread_mutex_lock(&mSrvLock);
+    val = attSrvValRangeFind(rangeRef, offset, &range);
+    if (!range) {
+        logw("Attempt to set group len on a value from a non-existent range\n");
+        goto out;
+    }
+    if (!val) {
+        logw("Attempt to set group len on a non-existent value from a non-existent range (0x%04X+0x%04X)\n", range->start, offset);
+        goto out;
+    }
+
+    if (grpLenP)
+        *grpLenP = val->grpLen;
+    ret = true;
+
+out:
+    pthread_mutex_unlock(&mSrvLock);
+    return ret;
+}
+/*
+ * FUNCTION: attSrvValueSetGrpLen
+ * USE:      Set a given value's "group length" parameter
+ * PARAMS:   rangeRef - the range reference
+ *           offset - handle's offset from start of the range)
+ *           grpLen - the group length to set
+ * RETURN:   success
+ * NOTES:
+ */
+bool attSrvValueSetGrpLen(att_range_t rangeRef, uint16_t offset, uint16_t grpLen)
+{
+    struct attSrvRange *range;
+    struct attSrvVal *val;
+    bool ret = false;
+
+    pthread_mutex_lock(&mSrvLock);
+    val = attSrvValRangeFind(rangeRef, offset, &range);
+    if (!range) {
+        logw("Attempt to set group len on a value from a non-existent range\n");
+        goto out;
+    }
+    if (!val) {
+        logw("Attempt to set group len on a non-existent value from a non-existent range (0x%04X+0x%04X)\n", range->start, offset);
+        goto out;
+    }
+
+    if (offset + grpLen > range->len) {
+        logw("Group end out of range\n");
+        goto out;
+    }
+
+    val->grpLen = grpLen;
+    ret = true;
+
+out:
+    pthread_mutex_unlock(&mSrvLock);
+    return ret;
+}
+
+/*
  * FUNCTION: attSrvValueUnregister
  * USE:      Unregister a given value in a given range
  * PARAMS:   rangeRef - the range reference
- *           offset - handle's offset from start of the rangeted)
+ *           offset - handle's offset from start of the range)
  * RETURN:   success
  * NOTES:
  */

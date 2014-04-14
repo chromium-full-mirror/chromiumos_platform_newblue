@@ -102,8 +102,9 @@ void attSrvDestroy(void);
 att_range_t attSrvHandleRangeReserve(uint16_t len); /* -> 0 on failure */
 void attSrvHandleRangeRelease(att_range_t rangeRef);
 uint16_t attSrvHandleRangeGetBase(att_range_t rangeRef); /* -> 0 on failure */
-bool attSrvValueRegister(att_range_t rangeRef, uint16_t offset, const struct uuid *type, uint8_t perms,
-                         uint16_t grpLen, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF);
+bool attSrvValueRegister(att_range_t rangeRef, uint16_t offset, const struct uuid *type, uint8_t perms, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF);
+bool attSrvValueSetGrpLen(att_range_t rangeRef, uint16_t offset, uint16_t grpLen);
+bool attSrvValueGetGrpLen(att_range_t rangeRef, uint16_t offset, uint16_t *grpLenP);
 bool attSrvValueUnregister(att_range_t rangeRef, uint16_t offset);
 uint8_t attSrvValueNotifyChanged(att_range_t rangeRef, uint16_t offset, l2c_handle_t to, sg data, bool notify, uint64_t ref); /* -> ATT_NOTIF_RET_* */
 bool attSrvDataRx(l2c_handle_t from, sg s);
