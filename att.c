@@ -366,7 +366,7 @@ static pthread_t mWorker;
  */
 static struct attWorkItem* attWorkItemAlloc(uint8_t type, uint32_t extraSz)
 {
-    struct attWorkItem *wi = calloc(1, sizeof(struct attWorkItem) + extraSz);
+    struct attWorkItem *wi = (struct attWorkItem*)calloc(1, sizeof(struct attWorkItem) + extraSz);
     if (wi)
         wi->type = type;
 
@@ -702,13 +702,13 @@ static bool attConnListAdd(struct attConnList *list, l2c_handle_t conn)
         l2c_handle_t *conns;
         struct attSrvConnExtra *extras;
 
-        conns = realloc(list->conns, sizeof(l2c_handle_t[newCap]));
+        conns = (l2c_handle_t*)realloc(list->conns, sizeof(l2c_handle_t[newCap]));
         if (!conns)
             return false;
         list->conns = conns;
 
         if (list->hasExtras) {
-            extras = realloc(list->extras, sizeof(struct attSrvConnExtra[newCap]));
+            extras = (struct attSrvConnExtra*)realloc(list->extras, sizeof(struct attSrvConnExtra[newCap]));
             if (!extras)
                 return false;
             list->extras = extras;
