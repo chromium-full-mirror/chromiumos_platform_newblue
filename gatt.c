@@ -4,6 +4,7 @@
 #include "config.h"
 #include "l2cap.h"
 #include "sendQ.h"
+#include "uuid.h"
 #include "gatt.h"
 #include "att.h"
 #include "sdp.h"
@@ -12,6 +13,12 @@
 #include "bt.h"
 
 
+#define GATT_ITEM_TYPE_INCLUDE     1
+#define GATT_ITEM_TYPE_CHAR_DECL   2
+#define GATT_ITEM_TYPE_CHAR_VAL    3
+#define GATT_ITEM_TYPE_CHAR_DESCR  4
+
+#define GATT_HDR_HANDLES           1 /* handles required for a service header */
 
 struct gattConnState {
     struct gattConnState *next;
@@ -21,6 +28,46 @@ struct gattConnState {
     uint32_t     mtu;
     bool         encr;
     /* more here later */
+};
+
+struct gattService;
+
+struct gattItem { /* a list of these exists in a a gett service */
+    struct gattItem    *next;
+    struct gattItem    *prev;
+    uint8_t             type;
+    union {
+        struct{
+            struct gattService *incl;
+        } include;
+        struct {
+            struct uuid         uuid;
+            uint8_t             charProps;
+        } charDecl;
+        struct {
+            uint32_t            valPerms;
+        } charVal;
+        struct {
+            struct uuid         uuid;
+            uint32_t            descrValPerms;
+        } descriptor;
+    };
+};
+
+struct gattService {
+    struct gattService *next;
+    struct gattService *prev;
+    struct uuid         uuid;
+    att_range_t         attRange;
+    uint16_t            numItems;
+    uint16_t            maxItems;
+    int                 svcRef;
+    uint32_t            sdpHandle; /* zero if no current SDP record exists (not online) */
+    struct gattItem    *itemsHead;
+    struct gattItem    *itemsTail;
+    uint16_t            useCount; /* how many services include this one */
+    bool                primary;
+    bool                online;
 };
 
 struct gattWorkItem {
@@ -37,9 +84,9 @@ static struct sendQ* mSendQ;
 static struct workQueue* mWorkQ;
 static pthread_t mWorker;
 
-static pthread_mutex_t mConnsLock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t mGattLock = PTHREAD_MUTEX_INITIALIZER;
 static struct gattConnState *mConns;
-
+static struct gattService *mSvcs;
 
 
 /*
@@ -47,7 +94,7 @@ static struct gattConnState *mConns;
  * USE:      find a per-connection structure for a given l2c handle
  * PARAMS:   conn - the l2c connection handle
  * RETURN:   connection structure or NULL if not found
- * NOTES:    call with mConnsLock held
+ * NOTES:    call with mGattLock held
  */
 static struct gattConnState* gattConnFind(l2c_handle_t conn)
 {
@@ -64,7 +111,7 @@ static struct gattConnState* gattConnFind(l2c_handle_t conn)
  * USE:      Delete and unlink a connection struct
  * PARAMS:   state - said struct
  * RETURN:   NONE
- * NOTES:    call with mConnsLock held
+ * NOTES:    call with mGattLock held
  */
 static void gattConnStructDelete(struct gattConnState *state)
 {
@@ -77,6 +124,40 @@ static void gattConnStructDelete(struct gattConnState *state)
 
     /* future free steps here */
     free(state);
+}
+
+/*
+ * FUNCTION: gattServiceFindByUuid
+ * USE:      Find a gatt service by uuid
+ * PARAMS:   uuid - the uuid
+ * RETURN:   service struct or NULL if not found
+ * NOTES:    call with mGattLock held
+ */
+static struct gattService *gattServiceFindByUuid(const struct uuid *uuid)
+{
+    struct gattService *svc = mSvcs;
+
+    while (svc && !uuidCmp(uuid, &svc->uuid))
+        svc = svc->next;
+
+    return svc;
+}
+
+/*
+ * FUNCTION: gattServiceFindByHandle
+ * USE:      Find a gatt service by handle
+ * PARAMS:   svcRef - the service reference
+ * RETURN:   service struct or NULL if not found
+ * NOTES:    call with mGattLock held
+ */
+static struct gattService *gattServiceFindByHandle(int svcRef)
+{
+    struct gattService *svc = mSvcs;
+
+    while (svc && svcRef != svc->svcRef)
+        svc = svc->next;
+
+    return svc;
 }
 
 /*
@@ -110,11 +191,50 @@ static void gattAttSrvIndCbk(l2c_handle_t to, att_range_t rangeRef, uint16_t off
 }
 
 /*
+ * FUNCTION: gattSvrReadCbk
+ * USE:      ATT calls this to read an attribute
+ * PARAMS:   who - whom the indidation/notification was sent to
+ *           rangeRef - the range this is related to
+ *           ofst - the value in the range
+ *           transId - transaction ID
+ *           byteOfst - how mnay bytes into the characteristic we want to read
+ *           reason - read reason (ATT_READ_FOR_*)
+ *           maxLen - max bytes to return
+ * RETURN:   false on immediate failure
+ * NOTES:    when read completes, a call to attSrvCbkReply(() should be made
+ */
+static bool gattSvrReadCbk(l2c_handle_t who, att_range_t rangeRef, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t maxLen)
+{
+    //TODO
+    return false;
+}
+
+/*
+ * FUNCTION: gattSvrWriteCbk
+ * USE:      ATT calls this to write an attribute
+ * PARAMS:   who - whom the indidation/notification was sent to
+ *           rangeRef - the range this is related to
+ *           ofst - the value in the range
+ *           transId - transaction ID
+ *           byteOfst - how mnay bytes into the characteristic we want to write
+ *           reason - read reason (ATT_WRITE_FOR_*)
+ *           len - bytes to write
+ *           data - the data
+ * RETURN:   false on immediate failure
+ * NOTES:    when write completes, a call to attSrvCbkReply(() should be made
+ */
+static bool gattSvrWriteCbk(l2c_handle_t who, att_range_t range, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
+{
+    //TODO
+    return false;
+}
+
+/*
  * FUNCTION: gattAttExecWriteCbk
  * USE:      ATT calls this when client asks us to execute a write
  * PARAMS:   who - whom the indidation/notification was sent to
  *           transId - the transcationID
- *           exec - exceute or dump data?
+ *           exec - execute or dump data?
  * RETURN:   NONE
  * NOTES:
  */
@@ -136,7 +256,7 @@ static void gattAttSrvMtuCbk(l2c_handle_t who, uint32_t mtu)
 {
     struct gattConnState* state;
 
-    pthread_mutex_lock(&mConnsLock);
+    pthread_mutex_lock(&mGattLock);
     state = gattConnFind(who);
     if (!state)
         loge("Unknown connection for MTU change event\n");
@@ -144,7 +264,7 @@ static void gattAttSrvMtuCbk(l2c_handle_t who, uint32_t mtu)
         loge("MTU decrease not allowed\n");
     else
        state->mtu = mtu;
-    pthread_mutex_unlock(&mConnsLock);
+    pthread_mutex_unlock(&mGattLock);
 }
 
 /*
@@ -205,9 +325,9 @@ static void gattConnEvt(void *userData, void *instance, uint8_t evt, const void 
     case L2C_STATE_CLOSED:
         attSrvNotifConnClose(state->conn);
         sendQueueDelPackets(mSendQ, state->conn);
-        pthread_mutex_lock(&mConnsLock);
+        pthread_mutex_lock(&mGattLock);
         gattConnStructDelete(state);
-        pthread_mutex_unlock(&mConnsLock);
+        pthread_mutex_unlock(&mGattLock);
         break;
     default:
         logd("unknown L2C event %u\n", evt);
@@ -226,7 +346,7 @@ static void gattConnEvt(void *userData, void *instance, uint8_t evt, const void 
  */
 static uint8_t gattStateAlloc(l2c_handle_t conn, void **instanceP, bool isLE)
 {
-    struct gattConnState *state = calloc(1, sizeof(struct gattConnState));
+    struct gattConnState *state = (struct gattConnState*)calloc(1, sizeof(struct gattConnState));
 
     if (!state)
         return SVC_ALLOC_FAIL_OTHER;
@@ -235,12 +355,12 @@ static uint8_t gattStateAlloc(l2c_handle_t conn, void **instanceP, bool isLE)
     state->mtu = isLE ? ATT_MTU_MIN_LE : ATT_MTU_MIN_EDR;
     /* any other init here */
 
-    pthread_mutex_lock(&mConnsLock);
+    pthread_mutex_lock(&mGattLock);
     state->next = mConns;
     if (mConns)
         mConns->prev = state;
     mConns = state;
-    pthread_mutex_unlock(&mConnsLock);
+    pthread_mutex_unlock(&mGattLock);
 
     *instanceP = state;
     return SVC_ALLOC_SUCCESS;
@@ -494,6 +614,463 @@ void gattProfileDeinit(void)
     workQueueFree(mWorkQ, gattWorkQueueFreeItem);
     sendQueueFree(mSendQ);
 }
+
+/*
+ * FUNCTION: gattServiceCreate
+ * USE:      Create a public-facing GATT service
+ * PARAMS:   uuid - the uuid to use
+ *           primary - primary or secondary service?
+ *           numHandles - how many handles we expect this service to occupy
+ *           readF - read callback for the values
+ *           writeF - write callback for the values
+ *           indF - callback to be notified of confirmations of indications
+ * RETURN:   service reference or 0 on error
+ * NOTES:
+ */
+int gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles, gattSrvValueReadCbk readF, gattSrvValueWriteCbk writeF, gattSrvIndCbk indF)
+{
+    struct gattService *svc;
+    int svcRef = 0;
+
+    if (numHandles < GATT_HDR_HANDLES) {
+        loge("Service with %u handles is impossible (%u min)\n", numHandles, GATT_HDR_HANDLES);
+        return 0;
+    }
+
+    pthread_mutex_lock(&mGattLock);
+    if (gattServiceFindByUuid(uuid)) {
+        loge("Service ("UUIDFMT") already exists!\n", UUIDCONV(*uuid));
+        goto out;
+    }
+    svc = (struct gattService*)calloc(1, sizeof(struct gattService));
+    if (!svc)
+        goto out;
+
+    /* get a handle */
+    svc->svcRef = mSvcs ? mSvcs->svcRef : 1;
+    while (gattServiceFindByHandle(svc->svcRef)) {
+        svc->svcRef++;
+        if (svc->svcRef <= 0)
+            svc->svcRef = 1;
+    }
+
+    /* grab a range */
+    svc->attRange = attSrvHandleRangeReserve(numHandles);
+    if (!svc->attRange) {
+        loge("Failed to reserve %u-handle range\n", numHandles);
+        goto out_att;
+    }
+
+    svc->maxItems = numHandles;
+    svc->primary = primary;
+    svcRef = svc->svcRef;
+    goto out;
+
+out_att:
+    free(svc);
+
+out:
+    pthread_mutex_unlock(&mGattLock);
+    return svcRef;
+}
+
+/*
+ * FUNCTION: gattServiceOnline
+ * USE:      Online a service
+ * PARAMS:   svc - the service struct
+ * RETURN:   success
+ * NOTES:    call with mGattLock held
+ */
+static bool gattServiceOnline(struct gattService *svc)
+{
+    struct gattItem *gi;
+    uint16_t ofst = 0;
+    struct uuid uuid;
+    uint8_t perms = 0;
+
+    if (svc->online) {
+        logw("Cannot online an online service\n");
+        goto out;
+    }
+
+    uuidFromUuid16(&uuid, svc->primary ? GATT_UUID_SVC_PRIMARY : GATT_UUID_SVC_SECONDARY);
+    if (!attSrvValueRegister(svc->attRange, ofst++, &uuid, ATT_PERM_READ, gattSvrReadCbk, gattSvrWriteCbk)) {
+        loge("Failed to add service header\n");
+        goto out;
+    }
+
+    gi = svc->itemsHead;
+    while (gi) {
+        switch (gi->type) {
+        case GATT_ITEM_TYPE_INCLUDE:
+            uuidFromUuid16(&uuid, GATT_UUID_INCLUDE);
+            perms = ATT_PERM_READ;
+            break;
+        case GATT_ITEM_TYPE_CHAR_DECL:
+            uuidFromUuid16(&uuid, GATT_UUID_CHARACTERISTIC);
+            perms = ATT_PERM_READ;
+            break;
+        case GATT_ITEM_TYPE_CHAR_VAL:
+            if (gi->prev && gi->prev->type == GATT_ITEM_TYPE_CHAR_DECL)
+                memcpy(&uuid, &gi->prev->charDecl.uuid, sizeof(uuid));
+            else {
+                loge("Char value not following a char descr\n");
+                goto out_dereg;
+            }
+            //todo: create perms from gi->charVal.perms
+            break;
+        case GATT_ITEM_TYPE_CHAR_DESCR:
+            memcpy(&uuid, &gi->descriptor.uuid, sizeof(uuid));
+            //todo: create perms from gi->descriptor.perms
+            break;
+        default:
+            loge("Unknown item type %u\n", gi->type);
+            goto out_dereg;
+        }
+
+        if (!attSrvValueRegister(svc->attRange, ofst++, &uuid, perms, gattSvrReadCbk, gattSvrWriteCbk)) {
+            loge("Failed to item at offset %u\n", ofst);
+            goto out_dereg;
+        }
+        gi = gi->next;
+        ofst++;
+    }
+
+    svc->online = true;
+    return true;
+
+out_dereg:
+    while (ofst)
+        attSrvValueUnregister(svc->attRange, --ofst);
+
+out:
+    return false;
+}
+
+/*
+ * FUNCTION: gattServiceOffline
+ * USE:      Offline a service
+ * PARAMS:   svc - the service struct
+ * RETURN:   NONE
+ * NOTES:    call with mGattLock held
+ */
+static void gattServiceOffline(struct gattService *svc)
+{
+    uint16_t i;
+
+    if (!svc->online) {
+        loge("Cannot offline an offlined service\n");
+        return;
+    }
+    svc->online = false;
+
+    for (i = 0; i < svc->maxItems; i++)
+        if (!attSrvValueUnregister(svc->attRange, i))
+            logw("Failed to unredister a value (ofst %u) for offlining!\n", i);
+}
+
+/*
+ * FUNCTION: gattServiceDelete
+ * USE:      Delete a service
+ * PARAMS:   svc - the service struct
+ * RETURN:   NONE
+ * NOTES:    call with mGattLock held
+ */
+static void gattServiceDelete(struct gattService *svc)
+{
+    struct gattItem *gi, *t;
+
+    if (svc->online) {
+        loge("Cannot delete an online service\n");
+        return;
+    }
+
+    if (svc->prev)
+        svc->prev->next = svc->next;
+    else
+        mSvcs = svc->next;
+    if (svc->next)
+        svc->next->prev = svc->prev;
+
+    gi = svc->itemsHead;
+    while (gi) {
+        t = gi;
+        gi = gi->next;
+
+        if (t->type == GATT_ITEM_TYPE_INCLUDE)
+            t->include.incl->useCount--;
+
+        free(t);
+    }
+    free(svc);
+}
+
+/*
+ * FUNCTION: gattServiceDestroy
+ * USE:      Destroy a public-facing GATT service
+ * PARAMS:   svcRef - the service reference
+ * RETURN:   success
+ * NOTES:
+ */
+bool gattServiceDestroy(int svcRef)
+{
+    struct gattService *svc;
+
+    pthread_mutex_lock(&mGattLock);
+    svc = gattServiceFindByHandle(svcRef);
+    if (svc) {
+        if (svc->useCount)
+            loge("Refusing to destroy service included elsewhere (%u times)\n", svc->useCount);
+        else {
+            if (svc->online) {
+                logw("Destroying an online service\n");
+                gattServiceOffline(svc);
+            }
+            gattServiceDelete(svc);
+        }
+    }
+    pthread_mutex_unlock(&mGattLock);
+
+    return !!svc;
+}
+
+/*
+ * FUNCTION: gattServiceStart
+ * USE:      Online a service
+ * PARAMS:   svcRef - the service reference
+ * RETURN:   success
+ * NOTES:
+ */
+bool gattServiceStart(int svcRef)
+{
+    struct gattService *svc;
+    bool ret = false;
+
+    pthread_mutex_lock(&mGattLock);
+    svc = gattServiceFindByHandle(svcRef);
+    if (svc)
+        ret = gattServiceOnline(svc);
+    pthread_mutex_unlock(&mGattLock);
+
+    return ret;
+}
+
+/*
+ * FUNCTION: gattServiceStop
+ * USE:      Offline a service
+ * PARAMS:   svcRef - the service reference
+ * RETURN:   success
+ * NOTES:
+ */
+bool gattServiceStop(int svcRef)
+{
+    struct gattService *svc;
+    bool ret = false;
+
+    pthread_mutex_lock(&mGattLock);
+    svc = gattServiceFindByHandle(svcRef);
+    if (svc) {
+        gattServiceOffline(svc);
+        ret = true;
+    }
+    pthread_mutex_unlock(&mGattLock);
+
+    return ret;
+}
+
+/*
+ * FUNCTION: gattServiceGetHandleBase
+ * USE:      Get the base handle for a service given its UUID. Only works for online services
+ * PARAMS:   uuid - the desired uuid
+ * RETURN:   handle value or 0 on error
+ * NOTES:
+ */
+uint16_t gattServiceGetHandleBase(const struct uuid *uuid)
+{
+    struct gattService *svc;
+    uint16_t handle = 0;
+
+    pthread_mutex_lock(&mGattLock);
+    svc = gattServiceFindByUuid(uuid);
+    if (!svc)
+        loge("Cannot get base for not-found service\n");
+    else if (!svc->online)
+        loge("Non-online services have no base\n");
+    else
+        handle = attSrvHandleRangeGetBase(svc->attRange);
+    pthread_mutex_unlock(&mGattLock);
+
+    return handle;
+}
+
+/*
+ * FUNCTION: gattSeerviceItemAppend
+ * USE:      Append an item to a service
+ * PARAMS:   svc - service struct
+ *           gi - the item
+ * RETURN:   offset from range start
+ * NOTES:    probably want to tall this with the lock held
+ */
+static uint16_t gattServiceItemAppend(struct gattService *svc, struct gattItem *gi)
+{
+    gi->prev = svc->itemsTail;
+    if (svc->itemsTail)
+        svc->itemsTail->next = gi;
+    else
+        svc->itemsHead = gi;
+    svc->itemsTail = gi;
+    return svc->numItems++;
+}
+
+/*
+ * FUNCTION: gattServiceAddIncludedService
+ * USE:      Append an "included service" to a service
+ * PARAMS:   svcRef - the service we're operating on
+ *           uuid - the service to include
+ * RETURN:   handle or 0 on error
+ * NOTES:
+ */
+uint16_t gattServiceAddIncludedService(int svcRef, const struct uuid *uuid)
+{
+    struct gattService *svc, *included;
+    struct gattItem *gi;
+    uint16_t handle = 0;
+
+    pthread_mutex_lock(&mGattLock);
+    svc = gattServiceFindByHandle(svcRef);
+    if (!svc) {
+        loge("Failed to find service %d\n", svcRef);
+        goto out;
+    }
+    included = gattServiceFindByUuid(uuid);
+    if (!included) {
+        loge("Failed to find included service "UUIDFMT"n", UUIDCONV(*uuid));
+        goto out;
+    }
+    if (svc->numItems >= svc->maxItems - GATT_HDR_HANDLES) {
+        loge("No space left in the service\n");
+        goto out;
+    }
+
+    gi = (struct gattItem*)calloc(1, sizeof(struct gattItem));
+    if (!gi) {
+        loge("Failed to allocate new item for include\n");
+        goto out;
+    }
+
+    gi->type = GATT_ITEM_TYPE_INCLUDE;
+    gi->include.incl = included;
+    handle = gattServiceItemAppend(svc, gi) + attSrvHandleRangeGetBase(svc->attRange) + GATT_HDR_HANDLES;
+    included->useCount++;
+
+out:
+    pthread_mutex_unlock(&mGattLock);
+    return handle;
+}
+
+/*
+ * FUNCTION: gattServiceAddChar
+ * USE:      Append a "characteristic" to a service
+ * PARAMS:   svcRef - the service we're operating on
+ *           uuid - the uuid of the value
+ *           props - the value properties to show
+ *           perms - actual permissions for the value
+ * RETURN:   handle or 0 on error
+ * NOTES:
+ */
+uint16_t gattServiceAddChar(int svcRef, const struct uuid *uuid, uint8_t props, uint32_t perms)
+{
+    struct gattItem *giDecl, *giVal;
+    struct gattService *svc;
+    uint16_t handle = 0;
+
+    pthread_mutex_lock(&mGattLock);
+    svc = gattServiceFindByHandle(svcRef);
+    if (!svc) {
+        loge("Failed to find service %d\n", svcRef);
+        goto out;
+    }
+    if (svc->numItems + 1 >= svc->maxItems - GATT_HDR_HANDLES) {
+        loge("No space left in the service\n");
+        goto out;
+    }
+
+    giDecl = (struct gattItem*)calloc(1, sizeof(struct gattItem));
+    if (!giDecl) {
+        loge("Failed to allocate new item for chat decl\n");
+        goto out;
+    }
+
+    giVal = (struct gattItem*)calloc(1, sizeof(struct gattItem));
+    if (!giVal) {
+        free(giDecl);
+        loge("Failed to allocate new item for char val\n");
+        goto out;
+    }
+
+    giDecl->type = GATT_ITEM_TYPE_CHAR_DECL;
+    giDecl->charDecl.charProps = props;
+    memcpy(&giDecl->charDecl.uuid, uuid, sizeof(giDecl->charDecl.uuid));
+
+    giVal->type = GATT_ITEM_TYPE_CHAR_VAL;
+    giVal->charVal.valPerms = perms;
+
+    handle = gattServiceItemAppend(svc, giDecl) + attSrvHandleRangeGetBase(svc->attRange) + GATT_HDR_HANDLES;
+    gattServiceItemAppend(svc, giVal);
+
+out:
+    pthread_mutex_unlock(&mGattLock);
+    return handle;
+}
+
+/*
+ * FUNCTION: gattServiceAddCharDescr
+ * USE:      Append a "characteristic descriptor" to a service
+ * PARAMS:   svcRef - the service we're operating on
+ *           uuid - the uuid of the descriptor
+ *           perms - actual permissions for the descriptor's value
+ * RETURN:   handle or 0 on error
+ * NOTES:
+ */
+uint16_t gattServiceAddCharDescr(int svcRef, const struct uuid *uuid, uint32_t perms)
+{
+    struct gattService *svc;
+    struct gattItem *gi;
+    uint16_t handle = 0;
+
+    pthread_mutex_lock(&mGattLock);
+    svc = gattServiceFindByHandle(svcRef);
+    if (!svc) {
+        loge("Failed to find service %d\n", svcRef);
+        goto out;
+    }
+    if (svc->numItems >= svc->maxItems - GATT_HDR_HANDLES) {
+        loge("No space left in the service\n");
+        goto out;
+    }
+    gi = (struct gattItem*)calloc(1, sizeof(struct gattItem));
+    if (!gi) {
+        loge("Failed to allocate new item for char descriptor\n");
+        goto out;
+    }
+
+    gi->type = GATT_ITEM_TYPE_CHAR_DESCR;
+    memcpy(&gi->descriptor.uuid, uuid, sizeof(gi->descriptor.uuid));
+    gi->descriptor.descrValPerms = perms;
+    handle = gattServiceItemAppend(svc, gi) + attSrvHandleRangeGetBase(svc->attRange) + GATT_HDR_HANDLES;
+
+out:
+    pthread_mutex_unlock(&mGattLock);
+    return handle;
+}
+
+
+
+
+
+
+
+
 
 
 
