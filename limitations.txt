@@ -33,3 +33,9 @@ sniff mode for sleep mode?
 dont bother name discovering if EIR nas name
 
 
+
+
+
+
+idea: sdp socket: open, write length, write record. till closed record is visible :)
+
