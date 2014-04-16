@@ -14,6 +14,7 @@
 #include "timer.h"
 #include "l2cap.h"
 #include "types.h"
+#include "uuid.h"
 #include "uniq.h"
 #include "util.h"
 #include "log.h"
@@ -268,8 +269,6 @@ struct attSrvVal {
     struct attSrvVal *next;
     struct attSrvVal *prev;
     struct uuid type;
-    attSrvValueReadCbk readF;
-    attSrvValueWriteCbk writeF;
     uint16_t offset;
     uint16_t grpLen;
     uint8_t perms;
@@ -293,7 +292,6 @@ struct attWorkItem {
 
     union {
         struct {
-            attSrvValueReadCbk   readF;
             att_range_t          range;
             uint16_t             ofst;
             int                  transId;
@@ -302,7 +300,6 @@ struct attWorkItem {
             uint8_t              reason;
         } read;
         struct {
-            attSrvValueWriteCbk  writeF;
             att_range_t          range;
             uint16_t             ofst;
             int                  transId;
@@ -346,6 +343,8 @@ static attSrvTxCbk mTxCbk;
 static attSrvMtuCbk mMtuCbk;
 static attSrvIndResultCbk mIndCbk;
 static attSrvValueExecWrite mExecCbk;
+static attSrvValueReadCbk mReadCbk;
+static attSrvValueWriteCbk mWriteCbk;
 static struct attConnList mAllClients;
 static bool mInTeardown;
 static struct workQueue *mWorkQ;
@@ -439,7 +438,6 @@ static bool attSrvSchedReadCbk(struct attSrvRange *range, struct attSrvVal* val,
 
     wi->who = who;
     wi->cid = extra->cid;
-    wi->read.readF = val->readF;
     wi->read.range = range->rangeRef;
     wi->read.ofst = val->offset;
     wi->read.transId = tid;
@@ -491,7 +489,6 @@ static bool attSrvSchedWriteCbk(struct attSrvRange *range, struct attSrvVal* val
 
     wi->who = who;
     wi->cid = extra->cid;
-    wi->write.writeF = val->writeF;
     wi->write.range = range->rangeRef;
     wi->write.ofst = val->offset;
     wi->write.transId = tid;
@@ -808,10 +805,12 @@ static void attConnListFree(struct attConnList *list)
  *           mtuF - callback to tell client of new MTU
  *           indF - callback to tell client of ind TX progress
  *           execF - callback to execute or cancel pending writes
+ *           readF - read callback
+ *           writeF - write callback
  * RETURN:   success
  * NOTES:
  */
-bool attSrvCreate(attSrvTxCbk txF, attSrvMtuCbk mtuF, attSrvIndResultCbk indF, attSrvValueExecWrite execF)
+bool attSrvCreate(attSrvTxCbk txF, attSrvMtuCbk mtuF, attSrvIndResultCbk indF, attSrvValueExecWrite execF, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF)
 {
     bool ret = false;
 
@@ -823,6 +822,8 @@ bool attSrvCreate(attSrvTxCbk txF, attSrvMtuCbk mtuF, attSrvIndResultCbk indF, a
         mMtuCbk = mtuF;
         mIndCbk = indF;
         mExecCbk = execF;
+        mReadCbk = readF;
+        mWriteCbk = writeF;
         ret = true;
     }
     pthread_mutex_unlock(&mSrvLock);
@@ -1104,25 +1105,15 @@ uint16_t attSrvHandleRangeGetBase(att_range_t rangeRef)
  *           offset - handle's offset from start of the range
  *           type - the type of the registered value
  *           perms - permissions (ATT_PERM_*)
- *           readF - the value read callback (may be NULL if read not supported)
- *           writeF - the value write callback (may be NULL if write not supported)
  * RETURN:   success
  * NOTES:
  */
-bool attSrvValueRegister(att_range_t rangeRef, uint16_t offset, const struct uuid *type, uint8_t perms, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF)
+bool attSrvValueRegister(att_range_t rangeRef, uint16_t offset, const struct uuid *type, uint8_t perms)
 {
     struct attSrvVal *next, *prev = NULL, *val;
     struct attSrvRange *range;
     bool ret = false;
 
-    if ((perms & ATT_PERM_READ) && !readF) {
-        logw("Cannot add a readable value with no read callback\n");
-        return false;
-    }
-    if ((perms & ATT_PERM_WRITE) && !writeF) {
-        logw("Cannot add a writeable value with no write callback\n");
-        return false;
-    }
 
     pthread_mutex_lock(&mSrvLock);
     range = attSrvRangeFind(rangeRef);
@@ -1153,8 +1144,6 @@ bool attSrvValueRegister(att_range_t rangeRef, uint16_t offset, const struct uui
         goto out;
 
     memcpy(&val->type, type, sizeof(val->type));
-    val->readF = readF;
-    val->writeF = writeF;
     val->offset = offset;
     val->perms = perms;
     val->next = next;
@@ -2845,22 +2834,22 @@ static void* attWorker(void *unused)
 
         switch (wi->type) {
         case WORK_TYPE_READ_CALL:
-            if (!wi->read.readF(wi->who, wi->read.range, wi->read.ofst, wi->read.transId, wi->read.byteOfst, wi->read.reason, wi->read.maxLen))
+            if (!mReadCbk(wi->who, wi->cid, wi->read.range, wi->read.ofst, wi->read.transId, wi->read.byteOfst, wi->read.reason, wi->read.maxLen))
                 attSrvCbkReply(wi->cid, wi->read.transId, 0, ATT_ERROR_UNLIKELY_ERROR, NULL, 0);
             break;
 
         case WORK_TYPE_WRITE_CALL:
-            if (!wi->write.writeF(wi->who, wi->write.range, wi->write.ofst, wi->write.transId, wi->write.byteOfst, wi->write.reason, wi->write.len, wi + 1))
+            if (!mWriteCbk(wi->who, wi->cid, wi->write.range, wi->write.ofst, wi->write.transId, wi->write.byteOfst, wi->write.reason, wi->write.len, wi + 1))
                 attSrvCbkReply(wi->cid, wi->write.transId, 0, ATT_ERROR_UNLIKELY_ERROR, NULL, 0);
             break;
 
         case WORK_TYPE_EXEC_WRITE_CALL:
-            if (!mExecCbk(wi->who, wi->execWrite.transId, wi->execWrite.exec))
+            if (!mExecCbk(wi->who, wi->cid, wi->execWrite.transId, wi->execWrite.exec))
                 attSrvCbkReply(wi->cid, wi->execWrite.transId, 0, ATT_ERROR_UNLIKELY_ERROR, NULL, 0);
             break;
 
         case WORK_TYPE_IND_RESULT:
-            mIndCbk(wi->who, wi->indResult.range, wi->indResult.ofst, wi->indResult.success, wi->indResult.ref);
+            mIndCbk(wi->who, wi->cid, wi->indResult.range, wi->indResult.ofst, wi->indResult.success, wi->indResult.ref);
             break;
 
         case WORK_TYPE_MTU_INFO:

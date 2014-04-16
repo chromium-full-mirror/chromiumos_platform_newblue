@@ -5,6 +5,7 @@
 #include "l2cap.h"
 #include "sendQ.h"
 #include "uuid.h"
+#include "util.h"
 #include "gatt.h"
 #include "att.h"
 #include "sdp.h"
@@ -161,6 +162,23 @@ static struct gattService *gattServiceFindByHandle(int svcRef)
 }
 
 /*
+ * FUNCTION: gattServiceFindByRangeRef
+ * USE:      Find a gatt service by att range reference
+ * PARAMS:   svcRef - the service reference
+ * RETURN:   service struct or NULL if not found
+ * NOTES:    call with mGattLock held
+ */
+static struct gattService *gattServiceFindByRangeRef(att_range_t rangeRef)
+{
+    struct gattService *svc = mSvcs;
+
+    while (svc && rangeRef != svc->attRange)
+        svc = svc->next;
+
+    return svc;
+}
+
+/*
  * FUNCTION: gattAttSrvTxCbk
  * USE:      ATT calls this to TX to a client
  * PARAMS:   who - whom to send to
@@ -177,6 +195,7 @@ static uint8_t gattAttSrvTxCbk(l2c_handle_t who, sg s)
  * FUNCTION: gattAttSrvIndCbk
  * USE:      ATT calls this with results of sending an indication/notification
  * PARAMS:   who - whom the indidation/notification was sent to
+ *           cid - the connection Id to pass back to ATT
  *           rangeRef - the range this is related to
  *           offset - the value in the range
  *           success - did we get confirmation?
@@ -185,7 +204,7 @@ static uint8_t gattAttSrvTxCbk(l2c_handle_t who, sg s)
  * RETURN:   NONE
  * NOTES:
  */
-static void gattAttSrvIndCbk(l2c_handle_t to, att_range_t rangeRef, uint16_t offset, bool success, uint64_t ref)
+static void gattAttSrvIndCbk(l2c_handle_t to, int cid, att_range_t rangeRef, uint16_t offset, bool success, uint64_t ref)
 {
     //TODO
 }
@@ -195,18 +214,57 @@ static void gattAttSrvIndCbk(l2c_handle_t to, att_range_t rangeRef, uint16_t off
  * USE:      ATT calls this to read an attribute
  * PARAMS:   who - whom the indidation/notification was sent to
  *           rangeRef - the range this is related to
+ *           cid - the connection Id to pass back to ATT
  *           ofst - the value in the range
  *           transId - transaction ID
- *           byteOfst - how mnay bytes into the characteristic we want to read
+ *           byteOfst - how mnay bytes into the characteristic we want to readsrvcre
  *           reason - read reason (ATT_READ_FOR_*)
  *           maxLen - max bytes to return
  * RETURN:   false on immediate failure
- * NOTES:    when read completes, a call to attSrvCbkReply(() should be made
+ * NOTES:    when read completes, a call to attSrvCbkReply() should be made
  */
-static bool gattSvrReadCbk(l2c_handle_t who, att_range_t rangeRef, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t maxLen)
+static bool gattSvrReadCbk(l2c_handle_t who, int cid, att_range_t rangeRef, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t maxLen)
 {
-    //TODO
-    return false;
+    uint8_t err = ATT_ERROR_NONE;
+    struct gattConnState *conn;
+    struct gattService *svc;
+    void * ptr = NULL;
+    uint16_t len = 0;
+    uint16_t uuid16;
+    uint8_t buf[32];
+
+    pthread_mutex_lock(&mGattLock);
+    svc = gattServiceFindByRangeRef(rangeRef);
+    conn = gattConnFind(who);
+    if (!svc) {
+        logw("Failed to find service for read\n");
+        err = ATT_ERROR_INVALID_HANDLE;
+        goto out;
+    }
+    if (!conn) {
+        logw("Failed to find/allocate client for read\n");
+        err = ATT_ERROR_INSUFFICIENT_RSRCS;
+        goto out;
+    }
+
+    if (!ofst) { /* service header */
+        if (uuidToUuid16(&uuid16, &svc->uuid)) { /* fits in 16 bits? */
+            utilSetLE16(buf, uuid16);
+            ptr = buf;
+            len = sizeof(uint16_t);
+        } else {
+            uuidWriteLE(buf, &svc->uuid);
+            ptr = buf;
+            len = sizeof(struct uuid);
+        }
+    }
+
+out:
+    pthread_mutex_unlock(&mGattLock);
+
+    if (err != ATT_ERROR_NONE)
+        attSrvCbkReply(cid, transId, 0, err, NULL, 0);
+    return true;
 }
 
 /*
@@ -214,6 +272,7 @@ static bool gattSvrReadCbk(l2c_handle_t who, att_range_t rangeRef, uint16_t ofst
  * USE:      ATT calls this to write an attribute
  * PARAMS:   who - whom the indidation/notification was sent to
  *           rangeRef - the range this is related to
+ *           cid - the connection Id to pass back to ATT
  *           ofst - the value in the range
  *           transId - transaction ID
  *           byteOfst - how mnay bytes into the characteristic we want to write
@@ -221,9 +280,9 @@ static bool gattSvrReadCbk(l2c_handle_t who, att_range_t rangeRef, uint16_t ofst
  *           len - bytes to write
  *           data - the data
  * RETURN:   false on immediate failure
- * NOTES:    when write completes, a call to attSrvCbkReply(() should be made
+ * NOTES:    when write completes, a call to attSrvCbkReply() should be made
  */
-static bool gattSvrWriteCbk(l2c_handle_t who, att_range_t range, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
+static bool gattSvrWriteCbk(l2c_handle_t who, int cid, att_range_t range, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
 {
     //TODO
     return false;
@@ -233,12 +292,13 @@ static bool gattSvrWriteCbk(l2c_handle_t who, att_range_t range, uint16_t ofst, 
  * FUNCTION: gattAttExecWriteCbk
  * USE:      ATT calls this when client asks us to execute a write
  * PARAMS:   who - whom the indidation/notification was sent to
+ *           cid - the connection Id to pass back to ATT
  *           transId - the transcationID
  *           exec - execute or dump data?
  * RETURN:   NONE
  * NOTES:
  */
-static bool gattAttExecWriteCbk(l2c_handle_t who, int transId, bool exec)
+static bool gattAttExecWriteCbk(l2c_handle_t who, int cid, int transId, bool exec)
 {
     //TODO
     return false;
@@ -519,7 +579,7 @@ bool gattProfileInit(void)
         .serviceFixedChStateCbk = gattConnEvt,
     };
 
-    if (!attSrvCreate(gattAttSrvTxCbk, gattAttSrvMtuCbk, gattAttSrvIndCbk, gattAttExecWriteCbk)) {
+    if (!attSrvCreate(gattAttSrvTxCbk, gattAttSrvMtuCbk, gattAttSrvIndCbk, gattAttExecWriteCbk, gattSvrReadCbk, gattSvrWriteCbk)) {
         loge("Failed create an ATT server\n");
         goto out_att;
     }
@@ -675,6 +735,25 @@ out:
 }
 
 /*
+ * FUNCTION: gattPermToAttPerm
+ * USE:      Convert our 32-bit permissions mask to something we can pass to att with its simple 2-flag setup
+ * PARAMS:   gattPerms - bitmask of GATT_PERM_*
+ * RETURN:   bitmask of ATT_PERM_*
+ * NOTES:
+ */
+static uint8_t gattPermToAttPerm(uint32_t gattPerms)
+{
+    uint8_t ret = 0;
+
+    if (gattPerms & (GATT_PERM_READ | GATT_PERM_READ_ENCR | GATT_PERM_READ_ENCR_MITM))
+        ret |= ATT_PERM_READ;
+    if (gattPerms & (GATT_PERM_WRITE | GATT_PERM_WRITE_ENCR | GATT_PERM_WRITE_ENCR_MITM | GATT_PERM_WRITE_SIGNED | GATT_PERM_WRITE_SIGNED_MITM))
+        ret |= ATT_PERM_WRITE;
+
+    return ret;
+}
+
+/*
  * FUNCTION: gattServiceOnline
  * USE:      Online a service
  * PARAMS:   svc - the service struct
@@ -694,7 +773,7 @@ static bool gattServiceOnline(struct gattService *svc)
     }
 
     uuidFromUuid16(&uuid, svc->primary ? GATT_UUID_SVC_PRIMARY : GATT_UUID_SVC_SECONDARY);
-    if (!attSrvValueRegister(svc->attRange, ofst++, &uuid, ATT_PERM_READ, gattSvrReadCbk, gattSvrWriteCbk)) {
+    if (!attSrvValueRegister(svc->attRange, ofst++, &uuid, ATT_PERM_READ)) {
         loge("Failed to add service header\n");
         goto out;
     }
@@ -717,18 +796,18 @@ static bool gattServiceOnline(struct gattService *svc)
                 loge("Char value not following a char descr\n");
                 goto out_dereg;
             }
-            //todo: create perms from gi->charVal.perms
+            perms = gattPermToAttPerm(gi->charVal.valPerms);
             break;
         case GATT_ITEM_TYPE_CHAR_DESCR:
             memcpy(&uuid, &gi->descriptor.uuid, sizeof(uuid));
-            //todo: create perms from gi->descriptor.perms
+            perms = gattPermToAttPerm(gi->descriptor.descrValPerms);
             break;
         default:
             loge("Unknown item type %u\n", gi->type);
             goto out_dereg;
         }
 
-        if (!attSrvValueRegister(svc->attRange, ofst++, &uuid, perms, gattSvrReadCbk, gattSvrWriteCbk)) {
+        if (!attSrvValueRegister(svc->attRange, ofst++, &uuid, perms)) {
             loge("Failed to item at offset %u\n", ofst);
             goto out_dereg;
         }

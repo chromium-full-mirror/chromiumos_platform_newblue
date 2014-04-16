@@ -18,9 +18,7 @@ typedef uniq_t att_range_t;
 
 #define ATT_PERM_READ                  0x01
 #define ATT_PERM_WRITE                 0x02
-#define ATT_PERM_NEED_ENCR             0x04
-#define ATT_PERM_NEED_AUTH             0x08
-/* "need athorization" shall be handled bu higher layer code */
+/* other permissions shall be handled by higher-layer code */
 
 #define ATT_ATTR_MAX_LEN               512
 #define ATT_MAX_LEN_FOR_RD_BY_TYPE     253 /* no more than this many bytes of an att will ever be returned for a ReadByType request */
@@ -86,15 +84,15 @@ bool attSync(void); /* verifies all pending att work before now is finished. Use
 /* att server api */
 
 /* these callbacks call attSrvReadCbkReply/attSrvWriteCbkReply on completion of actual work */
-typedef bool (*attSrvValueReadCbk)(l2c_handle_t who, att_range_t range, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t maxLen);
-typedef bool (*attSrvValueWriteCbk)(l2c_handle_t who, att_range_t range, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data);
-typedef bool (*attSrvValueExecWrite)(l2c_handle_t who, int transId, bool exec);
+typedef bool (*attSrvValueReadCbk)(l2c_handle_t who, int cid, att_range_t range, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t maxLen);
+typedef bool (*attSrvValueWriteCbk)(l2c_handle_t who, int cid, att_range_t range, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data);
+typedef bool (*attSrvValueExecWrite)(l2c_handle_t who, int cid, int transId, bool exec);
 
 typedef uint8_t (*attSrvTxCbk)(l2c_handle_t to, sg s); /* -> ATT_TX_RET_* */
 typedef void (*attSrvMtuCbk)(l2c_handle_t to, uint32_t mtu);
-typedef void (*attSrvIndResultCbk)(l2c_handle_t to, att_range_t rangeRef, uint16_t offset, bool success, uint64_t ref);
+typedef void (*attSrvIndResultCbk)(l2c_handle_t to, int cid, att_range_t rangeRef, uint16_t offset, bool success, uint64_t ref);
 
-bool attSrvCreate(attSrvTxCbk txF, attSrvMtuCbk mtuF, attSrvIndResultCbk indF, attSrvValueExecWrite execF);
+bool attSrvCreate(attSrvTxCbk txF, attSrvMtuCbk mtuF, attSrvIndResultCbk indF, attSrvValueExecWrite execF, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF);
 void attSrvSetMtu(l2c_handle_t to, uint32_t mtu); /* EDR uses this since L2C negotiates MTU */
 void attSrvNotifConnClose(l2c_handle_t conn); /* allows server to no longer try to notify it */
 void attSrvDestroy(void);
@@ -102,7 +100,7 @@ void attSrvDestroy(void);
 att_range_t attSrvHandleRangeReserve(uint16_t len); /* -> 0 on failure */
 void attSrvHandleRangeRelease(att_range_t rangeRef);
 uint16_t attSrvHandleRangeGetBase(att_range_t rangeRef); /* -> 0 on failure */
-bool attSrvValueRegister(att_range_t rangeRef, uint16_t offset, const struct uuid *type, uint8_t perms, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF);
+bool attSrvValueRegister(att_range_t rangeRef, uint16_t offset, const struct uuid *type, uint8_t perms);
 bool attSrvValueSetGrpLen(att_range_t rangeRef, uint16_t offset, uint16_t grpLen);
 bool attSrvValueGetGrpLen(att_range_t rangeRef, uint16_t offset, uint16_t *grpLenP);
 bool attSrvValueUnregister(att_range_t rangeRef, uint16_t offset);
