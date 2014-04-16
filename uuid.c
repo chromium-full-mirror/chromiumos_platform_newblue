@@ -101,10 +101,12 @@ bool uuidToUuid32(uint32_t *dst, const struct uuid *uuid128)
  * RETURN:   NONE
  * NOTES:
  */
-void uuidWriteLE(struct uuid *dst, const struct uuid *src)
+void uuidWriteLE(void *dst, const struct uuid *src)
 {
-    utilSetLE64(&dst->lo, src->lo);
-    utilSetLE64(&dst->hi, src->hi);
+    struct uuid *dstP = (struct uuid*)dst;
+
+    utilSetLE64(&dstP->lo, src->lo);
+    utilSetLE64(&dstP->hi, src->hi);
 }
 
 /*
@@ -115,10 +117,12 @@ void uuidWriteLE(struct uuid *dst, const struct uuid *src)
  * RETURN:   true if they are equal
  * NOTES:
  */
-void uuidReadLE(struct uuid *dst, const struct uuid *src)
+void uuidReadLE(struct uuid *dst, const void *src)
 {
-    dst->lo = utilGetLE64(&src->lo);
-    dst->hi = utilGetLE64(&src->hi);
+    const struct uuid *srcP = (const struct uuid*)src;
+
+    dst->lo = utilGetLE64(&srcP->lo);
+    dst->hi = utilGetLE64(&srcP->hi);
 }
 
 
@@ -130,10 +134,12 @@ void uuidReadLE(struct uuid *dst, const struct uuid *src)
  * RETURN:   NONE
  * NOTES:
  */
-void uuidWriteBE(struct uuid *dst, const struct uuid *src)
+void uuidWriteBE(void *dst, const struct uuid *src)
 {
-    utilSetLE64(&dst->lo, src->hi);
-    utilSetLE64(&dst->hi, src->lo);
+    struct uuid *dstP = (struct uuid*)dst;
+
+    utilSetLE64(&dstP->lo, src->hi);
+    utilSetLE64(&dstP->hi, src->lo);
 }
 
 /*
@@ -144,10 +150,12 @@ void uuidWriteBE(struct uuid *dst, const struct uuid *src)
  * RETURN:   true if they are equal
  * NOTES:
  */
-void uuidReadBE(struct uuid *dst, const struct uuid *src)
+void uuidReadBE(struct uuid *dst, const void *src)
 {
-    dst->hi = utilGetLE64(&src->lo);
-    dst->lo = utilGetLE64(&src->hi);
+    const struct uuid *srcP = (const struct uuid*)src;
+
+    dst->hi = utilGetLE64(&srcP->lo);
+    dst->lo = utilGetLE64(&srcP->hi);
 }
 
 
