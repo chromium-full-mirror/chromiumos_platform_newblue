@@ -364,7 +364,7 @@ static uint16_t sdpGetSearchReq(sg req, struct uuid *uuids, uint8_t *numUuidsP)
         case SDP_SZ_16:
             if (!sgSerializeCutFront(req, buf, 16))
                 return SDP_ERR_Invalid_Request_Syntax;
-            uuidReadBE(uuids + numUuids++, (const struct uuid*)buf);
+            uuidReadBE(uuids + numUuids++, buf);
             break;
         default:
             return SDP_ERR_Invalid_Request_Syntax;
@@ -516,7 +516,7 @@ static uint16_t sdpDoSearch(struct sdpInst *inst, const struct uuid *uuids, uint
                 else if (sz == 4)
                     uuidFromUuid32(&uuid, utilGetBE32(ptr));
                 else if (sz == 16)
-                    uuidReadBE(&uuid, (const struct uuid*)ptr);
+                    uuidReadBE(&uuid, ptr);
                 else
                     loge("weird uuid sz %ud\n", sz);
 
