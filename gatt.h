@@ -56,9 +56,9 @@ void gattProfileDeinit(void);
 
 
 /* callbacks */
-typedef uint8_t (*gattSrvValueReadCbk)(int svc, l2c_handle_t who, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t *lenP, void *dst); /* -> ATT_ERROR_* lenP: in/out*/
-typedef uint8_t (*gattSrvValueWriteCbk)(int svc, l2c_handle_t who, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t *lenP, const void *dst); /* -> ATT_ERROR_* lenP: in/out*/
-typedef void (*gattSrvIndCbk)(int svc, l2c_handle_t who, uint16_t handle, uint8_t evt); /* GATT_SRV_EVT_* */
+typedef uint8_t (*gattSrvValueReadCbk)(int svc, l2c_handle_t who, int cid, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len); /* -> ATT_ERROR_* */
+typedef uint8_t (*gattSrvValueWriteCbk)(int svc, l2c_handle_t who, int cid, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data); /* -> ATT_ERROR_* */
+typedef void (*gattSrvIndCbk)(int svc, l2c_handle_t who, int cid, uint16_t handle, uint8_t evt); /* GATT_SRV_EVT_* */
 
 /* service lifecycle */
 int gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles, gattSrvValueReadCbk readF, gattSrvValueWriteCbk writeF, gattSrvIndCbk indF);

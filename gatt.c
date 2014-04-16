@@ -21,6 +21,18 @@
 
 #define GATT_HDR_HANDLES           1 /* handles required for a service header */
 
+struct gattIncludeDefHdr {
+    uint16_t startHandle;
+    uint16_t endHandle;
+    /* uuid here if it is a uuid-16 */
+} __packed;
+
+struct gattCharDefHdr {
+    uint8_t charProps;
+    uint16_t valHandle;
+    /* uuid here */
+} __packed;
+
 struct gattConnState {
     struct gattConnState *next;
     struct gattConnState *prev;
@@ -56,19 +68,24 @@ struct gattItem { /* a list of these exists in a a gett service */
 };
 
 struct gattService {
-    struct gattService *next;
-    struct gattService *prev;
-    struct uuid         uuid;
-    att_range_t         attRange;
-    uint16_t            numItems;
-    uint16_t            maxItems;
-    int                 svcRef;
-    uint32_t            sdpHandle; /* zero if no current SDP record exists (not online) */
-    struct gattItem    *itemsHead;
-    struct gattItem    *itemsTail;
-    uint16_t            useCount; /* how many services include this one */
-    bool                primary;
-    bool                online;
+    struct gattService  *next;
+    struct gattService  *prev;
+    struct uuid          uuid;
+    att_range_t          attRange;
+    uint16_t             numItems;
+    uint16_t             maxItems;
+    int                  svcRef;
+    uint32_t             sdpHandle; /* zero if no current SDP record exists (not online) */
+
+    gattSrvValueReadCbk  readF;
+    gattSrvValueWriteCbk writeF;
+    gattSrvIndCbk        indF;
+
+    struct gattItem     *itemsHead;
+    struct gattItem     *itemsTail;
+    uint16_t             useCount; /* how many services include this one */
+    bool                 primary;
+    bool                 online;
 };
 
 struct gattWorkItem {
@@ -228,9 +245,10 @@ static bool gattSvrReadCbk(l2c_handle_t who, int cid, att_range_t rangeRef, uint
     uint8_t err = ATT_ERROR_NONE;
     struct gattConnState *conn;
     struct gattService *svc;
-    void * ptr = NULL;
+    struct gattItem *gi;
+    uint8_t *ptr = NULL;
     uint16_t len = 0;
-    uint16_t uuid16;
+    uint16_t tmp;
     uint8_t buf[32];
 
     pthread_mutex_lock(&mGattLock);
@@ -248,22 +266,92 @@ static bool gattSvrReadCbk(l2c_handle_t who, int cid, att_range_t rangeRef, uint
     }
 
     if (!ofst) { /* service header */
-        if (uuidToUuid16(&uuid16, &svc->uuid)) { /* fits in 16 bits? */
-            utilSetLE16(buf, uuid16);
+        if (uuidToUuid16(&tmp, &svc->uuid)) { /* if it fits in 16 bits, do that */
+            utilSetLE16(buf, tmp);
             ptr = buf;
             len = sizeof(uint16_t);
-        } else {
+        } else {                                 /* else, send the entire 16-bute uuid */
             uuidWriteLE(buf, &svc->uuid);
             ptr = buf;
             len = sizeof(struct uuid);
         }
+    } else if (ofst < GATT_HDR_HANDLES) {
+        logw("Unexpected offset %u after header and before handles!\n", ofst);
+        err = ATT_ERROR_INVALID_HANDLE;
+        goto out;
+    } else {
+        gi = svc->itemsHead;
+        ofst -= GATT_HDR_HANDLES;
+        while (gi && ofst--)
+            gi = gi->next;
+
+        if (!gi) {
+            logw("Handle list ended abruptly with %u handles to go\n", ofst);
+            err = ATT_ERROR_INVALID_HANDLE;
+            goto out;
+        }
+
+        if (gi->type == GATT_ITEM_TYPE_INCLUDE) {
+            struct gattIncludeDefHdr *hdr = (struct gattIncludeDefHdr*)buf;
+            struct gattService *incl = gi->include.incl;
+            uint16_t start;
+
+            start = attSrvHandleRangeGetBase(incl->attRange);
+
+            if (!attSrvValueGetGrpLen(incl->attRange, 0, &tmp)) {
+                loge("Failed to get service len for included service\n");
+                err = ATT_ERROR_UNLIKELY_ERROR;
+                goto out;
+            }
+            utilSetLE16(&hdr->startHandle, start);
+            utilSetLE16(&hdr->endHandle, start + tmp - 1);
+            ptr = buf;
+            len = sizeof(struct gattIncludeDefHdr);
+
+            if (uuidToUuid16(&tmp, &incl->uuid)) { /* fits into a uuid-16 */
+                utilSetLE16(hdr + 1, tmp);
+                len += sizeof(uint16_t);
+            }
+
+        } else if (gi->type == GATT_ITEM_TYPE_CHAR_DECL) {
+            struct gattCharDefHdr *hdr = (struct gattCharDefHdr*)buf;
+
+            utilSetLE8(&hdr->charProps, gi->charDecl.charProps);
+            utilSetLE16(&hdr->valHandle, ofst + attSrvHandleRangeGetBase(svc->attRange) + 1); /* always next */
+            ptr = buf;
+            len = sizeof(struct gattCharDefHdr);
+
+            if (uuidToUuid16(&tmp, &gi->charDecl.uuid)) { /* fits into a uuid-16 */
+                utilSetLE16(hdr + 1, tmp);
+                len += sizeof(uint16_t);
+            } else {
+                uuidWriteLE(hdr + 1, &gi->charDecl.uuid);
+                len += sizeof(struct uuid);
+            }
+
+        } else { /* in this case call to the higher layer for the read */
+
+            //TODO: this should be in a worker thread and not here...
+            err = svc->readF(svc->svcRef, who, cid, ofst + attSrvHandleRangeGetBase(svc->attRange), byteOfst, reason, maxLen);
+            goto out;
+        }
+    }
+
+    if (!ptr) {
+        loge("No data to send at end of read callback\n");
+        err = ATT_ERROR_UNLIKELY_ERROR;
+    } else if (byteOfst > len)
+        err = ATT_ERROR_INVALID_OFFSET;
+    else {
+        len -= byteOfst;
+        ptr += byteOfst;
     }
 
 out:
     pthread_mutex_unlock(&mGattLock);
 
-    if (err != ATT_ERROR_NONE)
-        attSrvCbkReply(cid, transId, 0, err, NULL, 0);
+    if (len || err != ATT_ERROR_NONE)
+        attSrvCbkReply(cid, transId, 0, err, ptr, len);
     return true;
 }
 
@@ -721,6 +809,10 @@ int gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles
         goto out_att;
     }
 
+    svc->readF = readF;
+    svc->writeF = writeF;
+    svc->indF = indF;
+
     svc->maxItems = numHandles;
     svc->primary = primary;
     svcRef = svc->svcRef;
@@ -763,7 +855,7 @@ static uint8_t gattPermToAttPerm(uint32_t gattPerms)
 static bool gattServiceOnline(struct gattService *svc)
 {
     struct gattItem *gi;
-    uint16_t ofst = 0;
+    uint16_t ofst = 0, charOfst = 0;
     struct uuid uuid;
     uint8_t perms = 0;
 
@@ -780,6 +872,8 @@ static bool gattServiceOnline(struct gattService *svc)
 
     gi = svc->itemsHead;
     while (gi) {
+        bool updateGrp = false;
+
         switch (gi->type) {
         case GATT_ITEM_TYPE_INCLUDE:
             uuidFromUuid16(&uuid, GATT_UUID_INCLUDE);
@@ -788,6 +882,7 @@ static bool gattServiceOnline(struct gattService *svc)
         case GATT_ITEM_TYPE_CHAR_DECL:
             uuidFromUuid16(&uuid, GATT_UUID_CHARACTERISTIC);
             perms = ATT_PERM_READ;
+            charOfst = ofst;
             break;
         case GATT_ITEM_TYPE_CHAR_VAL:
             if (gi->prev && gi->prev->type == GATT_ITEM_TYPE_CHAR_DECL)
@@ -797,22 +892,33 @@ static bool gattServiceOnline(struct gattService *svc)
                 goto out_dereg;
             }
             perms = gattPermToAttPerm(gi->charVal.valPerms);
+            updateGrp = true;
             break;
         case GATT_ITEM_TYPE_CHAR_DESCR:
             memcpy(&uuid, &gi->descriptor.uuid, sizeof(uuid));
             perms = gattPermToAttPerm(gi->descriptor.descrValPerms);
+            updateGrp = true;
             break;
         default:
             loge("Unknown item type %u\n", gi->type);
             goto out_dereg;
         }
 
-        if (!attSrvValueRegister(svc->attRange, ofst++, &uuid, perms)) {
-            loge("Failed to item at offset %u\n", ofst);
+        if (!attSrvValueRegister(svc->attRange, ofst, &uuid, perms)) {
+            loge("Failed to item at offset %u\n", ofst - 1);
+            goto out_dereg;
+        }
+        ofst++;
+        if (updateGrp && !attSrvValueSetGrpLen(svc->attRange, charOfst, ofst - charOfst)) {
+            loge("Failed to set group length for characteristic\n");
             goto out_dereg;
         }
         gi = gi->next;
-        ofst++;
+    }
+
+    if (!attSrvValueSetGrpLen(svc->attRange, 0, ofst)) {
+        loge("Failed to set group length for service\n");
+        goto out_dereg;
     }
 
     svc->online = true;
