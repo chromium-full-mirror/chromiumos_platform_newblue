@@ -1,7 +1,7 @@
-#include <stdint.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <time.h>
+#include "types.h"
 #include "timer.h"
 #include "util.h"
 #include "uniq.h"

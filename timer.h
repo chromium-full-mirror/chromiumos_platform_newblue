@@ -1,7 +1,6 @@
 #ifndef _TIMER_H_
 #define _TIMER_H_
 
-#include <stdint.h>
 #include "types.h"
 #include "uniq.h"
 
