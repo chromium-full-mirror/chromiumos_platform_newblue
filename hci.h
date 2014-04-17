@@ -143,6 +143,7 @@ bool hciInfoAclBufSizeLe(uint16_t *bufSz, uint16_t *bufNum); //false if no LE su
 bool hciGetLocalAddress(uint8_t *addr);
 
 /* misc api. False on error, true if expect callback */
+bool hciSetAdvertiseEnable(bool on, hciOpDoneCbk cbkDone, void *cbkData);
 bool hciSetLocalName(const char *name, hciOpDoneCbk cbkDone, void *cbkData);
 bool hciSetDeviceClass(uint32_t cls, hciOpDoneCbk cbkDone, void *cbkData);
 bool hciSetEirData(const uint8_t *data, uint8_t dlen, bool fecRequired, hciOpDoneCbk cbkDone, void *cbkData); /* EIR for EDR */

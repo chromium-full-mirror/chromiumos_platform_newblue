@@ -1810,6 +1810,29 @@ static bool hciCmdSubmitSimpleWithStatusSync(uint8_t ogf, uint16_t ocf, const vo
 }
 
 /*
+ * FUNCTION: hciSetAdvertiseEnable
+ * USE:      Enable or disable LE advertsement
+ * PARAMS:   on - enable ro disable it?
+ *           cbkDone - callback to call when operation completes
+ *           cbkData - data to pass to the callback
+ * RETURN:   false on error, true if you should expect callback call
+ * NOTES:
+ */
+bool hciSetAdvertiseEnable(bool on, hciOpDoneCbk cbkDone, void *cbkData)
+{
+    struct hciLeSetAdvEnable cmd = {0,};
+
+    if (!mHaveLe) {
+        loge("Refusing LE adv with no LE support\n");
+        return false;
+    }
+
+    utilSetLE8(&cmd.advOn, on ? 1 : 0);
+
+    return hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_LE, HCI_CMD_LE_Set_Advertise_Enable, &cmd, sizeof(cmd), cbkDone, cbkData);
+}
+
+/*
  * FUNCTION: hciSetLocalName
  * USE:      Set local device name
  * PARAMS:   name - the name (up to 248 non-NULL chars, NULL-terminated)
