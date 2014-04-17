@@ -992,6 +992,7 @@ int gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles
         goto out_att;
     }
 
+    memcpy(&svc->uuid, uuid, sizeof(svc->uuid));
     svc->readF = readF;
     svc->writeF = writeF;
     svc->indF = indF;
