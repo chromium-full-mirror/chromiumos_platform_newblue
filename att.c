@@ -2637,7 +2637,6 @@ bool attSrvDataRx(l2c_handle_t from, sg s)
             mtu = attConnMtuGet(from, false);
             if (!mtu || mtu > newMtu)
                 mtu = newMtu;
-            attConnListAdd(&mAllClients, from);
             attConnMtuSet(from, mtu);
             utilSetLE16(&mtuExch.mtu, mtu);
             ret = attSrvSendPacket(from, ATT_OPCODE_MTU_EXCH_RSP, &mtuExch, sizeof(mtuExch), NULL);
@@ -2931,6 +2930,7 @@ bool attInit(void)
         goto fail_thread;
     }
 
+    mAllClients.hasExtras = true;
 
     return true;
 
