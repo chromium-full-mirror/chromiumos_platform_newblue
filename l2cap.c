@@ -4214,7 +4214,7 @@ static void l2cConnRequestClose(struct l2cAclConn* acl, struct l2cConn *conn, bo
     }
 
     if (!numConnsOnThisAcl) {
-        loge("Unexpected number of connections %d on acl "HCI_CONN_FMT"x. Fixing to 1\n", numConnsOnThisAcl, HCI_CONN_CONV(acl->conn));
+        loge("Number of in-use connections on acl "HCI_CONN_FMT"x: %u\n", HCI_CONN_CONV(acl->conn), numConnsOnThisAcl);
         numConnsOnThisAcl = 1;
     }
 
@@ -5410,7 +5410,7 @@ void l2cAclLinkUp(hci_conn_t aclConnID, const struct bt_addr* addr, bool isMaste
                 /* See if a conn is already pending. If so we'll not instantiate the service.
                  * This may seem strange, but unlike PSM world, here we cannot have two FixedCh
                  * connections at the same time */
-                struct l2cConn *conn = mConns;
+                struct l2cConn *conn = mConns;///aaa
                 while (conn && (conn->acl != aclConn->handle || conn->psm || conn->localCh != svc->chan))
                     conn = conn->next;
 
@@ -5426,8 +5426,15 @@ void l2cAclLinkUp(hci_conn_t aclConnID, const struct bt_addr* addr, bool isMaste
                 }
 
                 conn->inUse = 0; /* until actually used */
-                if (!l2cSvcWorkScheduleFixedChAlloc(svc->chan, conn->handle))
+                if (l2cSvcWorkScheduleFixedChAlloc(svc->chan, conn->handle)) {
+                    conn->next = mConns;
+                    if (mConns)
+                        mConns->prev = conn;
+                    mConns = conn;
+                } else {
                     loge("Failed to schedule FixedCh alloc for ch %d\n", svc->chan);
+                    free(conn);
+                }
             }
             svc = svc->next;
         }
