@@ -2910,28 +2910,17 @@ static bool l2cAdvFrameRxI(struct l2cConn *conn, uint8_t sar, uint16_t reqSeq, b
 static bool l2cHandleCompleteDataFrameRx(struct l2cAclConn *aclConn, struct l2cFrmHdr *frm, sg payload)
 {
     uint16_t cid = utilGetLE16(&frm->cid);
-    struct l2cConn *iter, *cur = NULL;
+    struct l2cConn *cur = NULL;
     bool ret = false;
 
-    iter = mConns;
-    while (iter) {
-        cur = iter;
-        iter = iter->next;
-
-        if (cur->acl != aclConn->handle) /* wrong ACL connection */
-            continue;
-
-        if (cur->localCh != cid) /* wrong channel */
-            continue;
-
-        if (cur->state != L2C_CONN_STATE_ESTABLISHED) { /* not open yet */
-            logw("Got data for a not-yet-open channel\n");
-            continue;
-        }
-
-        break;
+    cur = mConns;
+    while (cur) {
+        if (cur->acl == aclConn->handle && cur->localCh == cid && cur->state == L2C_CONN_STATE_ESTABLISHED)
+            break;
+        cur = cur->next;
     }
 
+found:
     if (cur) {
         if (!cur->inUse) {
             logd("Marking conn "HANDLEFMT" as in use due to RX\n", HANDLECNV(cur->handle));
