@@ -890,8 +890,8 @@ bool gattProfileInit(void)
     }
 
     /* todo: create the profile, so we do not pass zeroes here  */
-    mSdpHandleGatt = gattSdpAdd(SDP_SVC_CLASS_GAP, 0, 0);
-    if (!mSdpHandleGatt) {
+    mSdpHandleGap = gattSdpAdd(SDP_SVC_CLASS_GAP, 0, 0);
+    if (!mSdpHandleGap) {
         loge("Failed to register ATT-GAP with SDP\n");
         goto out_sdp_gap;
     }
