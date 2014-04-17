@@ -1134,7 +1134,7 @@ bool attSrvValueRegister(att_range_t rangeRef, uint16_t offset, const struct uui
      * If this is a duplication, next is the item we're trying to duplicate
      */
 
-    if (next->offset == offset) {
+    if (next && next->offset == offset) {
         logw("Attempt to create duplicate-offset value (0x%04X+0x%04X)\n", range->start, offset);
         goto out;
     }
