@@ -5335,7 +5335,6 @@ void l2cAclLinkUp(hci_conn_t aclConnID, const struct bt_addr* addr, bool isMaste
         }
         memcpy(&aclConn->addr, addr, sizeof(aclConn->addr));
         aclConn->ident = 1;
-        aclConn->state = L2C_ACL_STATE_CFG;
         aclConn->teardownTimer = 0;
         aclConn->isMaster = isMaster ? 1 : 0;
         aclConn->connectionlessMtu = L2C_MIN_CONNECTIONLESS_MTU;
@@ -5344,12 +5343,16 @@ void l2cAclLinkUp(hci_conn_t aclConnID, const struct bt_addr* addr, bool isMaste
         aclConn->conn = aclConnID;
         aclConn->encrypted = isEncrypted;
 
-        /* send an info req */
-        aclConn->reqIdent = l2cSigSendInfoReq(aclConn, L2C_SIG_INFO_TYPE_UNCONN_MTU);
-        if (!aclConn->reqIdent) {
+        /* send an info req if EDR */
+        if (BT_ADDR_IS_EDR(*addr)) {
+            aclConn->state = L2C_ACL_STATE_CFG;
+            aclConn->reqIdent = l2cSigSendInfoReq(aclConn, L2C_SIG_INFO_TYPE_UNCONN_MTU);
+            if (!aclConn->reqIdent) {
+                aclConn->state = L2C_ACL_STATE_ESTABLISHED;
+                logw("Failed to send req for connectionless mtu for acl "HCI_CONN_FMT"x. It will not be known\n", HCI_CONN_CONV(aclConn->conn));
+            }
+        } else
             aclConn->state = L2C_ACL_STATE_ESTABLISHED;
-            logw("Failed to send req for connectionless mtu for acl "HCI_CONN_FMT"x. It will not be known\n", HCI_CONN_CONV(aclConn->conn));
-        }
 
         /* handle all pending-open connections */
         connIter = mConns;
