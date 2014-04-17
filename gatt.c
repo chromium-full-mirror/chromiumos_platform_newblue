@@ -999,6 +999,12 @@ int gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles
     svc->maxItems = numHandles;
     svc->primary = primary;
     svcRef = svc->svcRef;
+
+    svc->next = mSvcs;
+    if (mSvcs)
+        mSvcs->prev = svc;
+    mSvcs = svc;
+
     goto out;
 
 out_att:
