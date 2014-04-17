@@ -75,6 +75,11 @@ typedef uniq_t att_range_t;
 #define ATT_WRITE_FOR_SIGNED_WRITE_CMD 0x03
 #define ATT_WRITE_FOR_PREPARE          0x04
 
+/* ind/notif srv events */
+#define ATT_SRV_EVT_NOTIF_SENT         1
+#define ATT_SRV_EVT_IND_ACKED          2
+#define ATT_SRV_EVT_IND_TIMEOUT        3
+#define ATT_SRV_EVT_IND_SRV_DESTROYED  4 /* could happen before a timeout */
 
 /* att common api */
 bool attInit(void);
@@ -90,12 +95,14 @@ typedef bool (*attSrvValueExecWrite)(l2c_handle_t who, int cid, int transId, boo
 
 typedef uint8_t (*attSrvTxCbk)(l2c_handle_t to, sg s); /* -> ATT_TX_RET_* */
 typedef void (*attSrvMtuCbk)(l2c_handle_t to, uint32_t mtu);
-typedef void (*attSrvIndResultCbk)(l2c_handle_t to, int cid, att_range_t rangeRef, uint16_t offset, bool success, uint64_t ref);
+typedef void (*attSrvIndResultCbk)(l2c_handle_t to, int cid, att_range_t rangeRef, uint16_t offset, uint8_t evt, uint64_t ref);
 
 bool attSrvCreate(attSrvTxCbk txF, attSrvMtuCbk mtuF, attSrvIndResultCbk indF, attSrvValueExecWrite execF, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF);
 void attSrvSetMtu(l2c_handle_t to, uint32_t mtu); /* EDR uses this since L2C negotiates MTU */
 void attSrvNotifConnClose(l2c_handle_t conn); /* allows server to no longer try to notify it */
 void attSrvDestroy(void);
+
+l2c_handle_t attSrvCidResolve(int cid); //or 0 on failure
 
 att_range_t attSrvHandleRangeReserve(uint16_t len); /* -> 0 on failure */
 void attSrvHandleRangeRelease(att_range_t rangeRef);
@@ -104,7 +111,7 @@ bool attSrvValueRegister(att_range_t rangeRef, uint16_t offset, const struct uui
 bool attSrvValueSetGrpLen(att_range_t rangeRef, uint16_t offset, uint16_t grpLen);
 bool attSrvValueGetGrpLen(att_range_t rangeRef, uint16_t offset, uint16_t *grpLenP);
 bool attSrvValueUnregister(att_range_t rangeRef, uint16_t offset);
-uint8_t attSrvValueNotifyChanged(att_range_t rangeRef, uint16_t offset, l2c_handle_t to, sg data, bool notify, uint64_t ref); /* -> ATT_NOTIF_RET_* */
+uint8_t attSrvValueNotifyChanged(att_range_t rangeRef, uint16_t offset, int cid, sg data, bool notify, uint64_t ref); /* -> ATT_NOTIF_RET_* */
 bool attSrvDataRx(l2c_handle_t from, sg s);
 
 void attSrvCbkReply(int cid, int transId, uint16_t handle, uint8_t err, const void *data, uint16_t len); /* err is ATT_ERROR_* */

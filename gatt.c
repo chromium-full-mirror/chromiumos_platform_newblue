@@ -91,7 +91,37 @@ struct gattService {
 struct gattWorkItem {
     uint8_t type;
     /* work data here */
+    union {
+        struct {
+            l2c_handle_t             who;
+            union {
+                gattSrvValueReadCbk  readF;
+                gattSrvValueWriteCbk writeF;
+            };
+            int                      svcRef;
+            int                      cid;
+            int                      transId;
+            uint16_t                 handle;
+            uint16_t                 byteOfst;
+            uint16_t                 len;
+            uint8_t                  reason;
+            /* data here, if write */
+        } rwCall;
+        struct {
+            uint64_t                 ref;
+            l2c_handle_t             who;
+            gattSrvIndCbk            indF;
+            int                      svcRef;
+            int                      cid;
+            uint16_t                 handle;
+            uint8_t                  evt;
+        } indCall;
+    };
 };
+
+#define GATT_WORK_TYPE_READ_CALL      0
+#define GATT_WORK_TYPE_WRITE_CALL     1
+#define GATT_WORK_TYPE_IND_CALL       2
 
 
 
@@ -209,25 +239,151 @@ static uint8_t gattAttSrvTxCbk(l2c_handle_t who, sg s)
 }
 
 /*
+ * FUNCTION: gattEnqueueRwCall
+ * USE:      Enqueue a work item to make a call to the higher layer for a read or a write
+ * PARAMS:   workType - read or write?
+ *           svc - the relevant service
+ *           who - whom the connection is to
+ *           cid - ATT's connection ID
+ *           transId - ATT's transaction ID
+ *           handle - handle 
+ *           byteOfst - byte offset for the read/write
+ *           reason - ATT_READ_FOR_* or ATT_WRITE_FOR_*
+ *           len - requested length
+ *           data - NULL for read, data for write
+ * RETURN:   false on immediate failure
+ * NOTES:    call with mGattLock held
+ */
+static bool gattEnqueueRwCall(uint8_t workType, struct gattService *svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
+{
+    struct gattWorkItem *wi = (struct gattWorkItem*)calloc(1, sizeof(struct gattWorkItem) + (data ? len : 0));
+
+    if (wi) {
+        wi->type = workType;
+        wi->rwCall.who = who;
+        wi->rwCall.svcRef = svc->svcRef;
+        wi->rwCall.cid = cid;
+        wi->rwCall.transId = transId;
+        wi->rwCall.handle = handle;
+        wi->rwCall.byteOfst = byteOfst;
+        wi->rwCall.len = len;
+        wi->rwCall.reason = reason;
+        if (workType == GATT_WORK_TYPE_READ_CALL)
+            wi->rwCall.readF = svc->readF;
+        else {
+            wi->rwCall.writeF = svc->writeF;
+            memcpy(wi + 1, data, len);
+        }
+
+        if (workQueuePut(mWorkQ, wi))
+            return true;
+
+        free(wi);
+    }
+    return false;
+}
+
+/*
+ * FUNCTION: gattEnqueueReadCall
+ * USE:      Enqueue a work item to make a call to the higher layer for a read
+ * PARAMS:   svc - the relevant service
+ *           who - whom the connection is to
+ *           cid - ATT's connection ID
+ *           transId - ATT's transaction ID
+ *           handle - handle 
+ *           byteOfst - byte offset for the read
+ *           reason - ATT_READ_FOR_*
+ *           len - requested length
+ * RETURN:   false on immediate failure
+ * NOTES:    call with mGattLock held
+ */
+static bool gattEnqueueReadCall(struct gattService *svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t maxLen)
+{
+    return gattEnqueueRwCall(GATT_WORK_TYPE_READ_CALL, svc, who, cid, transId, handle, byteOfst, reason, maxLen, NULL);
+}
+
+/*
+ * FUNCTION: gattEnqueueWriteCall
+ * USE:      Enqueue a work item to make a call to the higher layer for a write
+ * PARAMS:   svc - the relevant service
+ *           who - whom the connection is to
+ *           cid - ATT's connection ID
+ *           transId - ATT's transaction ID
+ *           handle - handle 
+ *           byteOfst - byte offset for the write
+ *           reason - ATT_WRITE_FOR_*
+ *           len - requested length
+ *           data - data to write
+ * RETURN:   false on immediate failure
+ * NOTES:    call with mGattLock held
+ */
+static bool gattEnqueueWriteCall(struct gattService *svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
+{
+    return gattEnqueueRwCall(GATT_WORK_TYPE_WRITE_CALL, svc, who, cid, transId, handle, byteOfst, reason, len, data);
+}
+
+/*
+ * FUNCTION: gattEnqueueIndCall
+ * USE:      Enqueue a work item to make a call to the higher layer for a result of sending an indication/notification
+ * PARAMS:   svc - the relevant service
+ *           who - whom the connection is to
+ *           cid - ATT's connection ID
+ *           handle - handle 
+ *           evt - what happened
+ *           ref - the value to pass to callback
+ * RETURN:   false on immediate failure
+ * NOTES:    call with mGattLock held
+ */
+static bool gattEnqueueIndCall(struct gattService *svc, l2c_handle_t who, int cid, uint16_t handle, uint8_t evt, uint64_t ref)
+{
+    struct gattWorkItem *wi = (struct gattWorkItem*)calloc(1, sizeof(struct gattWorkItem));
+
+    if (wi) {
+        wi->type = GATT_WORK_TYPE_IND_CALL;
+        wi->indCall.who = who;
+        wi->indCall.svcRef = svc->svcRef;
+        wi->indCall.cid = cid;
+        wi->indCall.handle = handle;
+        wi->indCall.evt = evt;
+        wi->indCall.ref = ref;
+
+        if (workQueuePut(mWorkQ, wi))
+            return true;
+
+        free(wi);
+    }
+    return false;
+}
+
+/*
  * FUNCTION: gattAttSrvIndCbk
  * USE:      ATT calls this with results of sending an indication/notification
  * PARAMS:   who - whom the indidation/notification was sent to
  *           cid - the connection Id to pass back to ATT
  *           rangeRef - the range this is related to
  *           offset - the value in the range
- *           success - did we get confirmation?
+ *           evt - ATT_SRV_EVT_NOTIF_*
  *           ref - the reference passed to attSrvValueNotifyChanged() initially
  *           success - did we succeed?
  * RETURN:   NONE
  * NOTES:
  */
-static void gattAttSrvIndCbk(l2c_handle_t to, int cid, att_range_t rangeRef, uint16_t offset, bool success, uint64_t ref)
+static void gattAttSrvIndCbk(l2c_handle_t to, int cid, att_range_t rangeRef, uint16_t offset, uint8_t evt, uint64_t ref)
 {
-    //TODO
+    uint8_t err = ATT_ERROR_NONE;
+    struct gattService *svc;
+
+    pthread_mutex_lock(&mGattLock);
+    svc = gattServiceFindByRangeRef(rangeRef);
+    if (!svc)
+        logw("Failed to find service for read\n");
+    else if (!gattEnqueueIndCall(svc, to, cid, offset + attSrvHandleRangeGetBase(svc->attRange), evt, ref))
+        loge("Failed to forward notif event up\n");
+    pthread_mutex_unlock(&mGattLock);
 }
 
 /*
- * FUNCTION: gattSvrReadCbk
+ * FUNCTION: gattAttSvrReadCbk
  * USE:      ATT calls this to read an attribute
  * PARAMS:   who - whom the indidation/notification was sent to
  *           rangeRef - the range this is related to
@@ -240,7 +396,7 @@ static void gattAttSrvIndCbk(l2c_handle_t to, int cid, att_range_t rangeRef, uin
  * RETURN:   false on immediate failure
  * NOTES:    when read completes, a call to attSrvCbkReply() should be made
  */
-static bool gattSvrReadCbk(l2c_handle_t who, int cid, att_range_t rangeRef, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t maxLen)
+static bool gattAttSvrReadCbk(l2c_handle_t who, int cid, att_range_t rangeRef, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t maxLen)
 {
     uint8_t err = ATT_ERROR_NONE;
     struct gattConnState *conn;
@@ -330,9 +486,8 @@ static bool gattSvrReadCbk(l2c_handle_t who, int cid, att_range_t rangeRef, uint
             }
 
         } else { /* in this case call to the higher layer for the read */
-
-            //TODO: this should be in a worker thread and not here...
-            err = svc->readF(svc->svcRef, who, cid, ofst + attSrvHandleRangeGetBase(svc->attRange), byteOfst, reason, maxLen);
+            if (!gattEnqueueReadCall(svc, who, cid, transId, ofst + attSrvHandleRangeGetBase(svc->attRange), byteOfst, reason, maxLen))
+                err = ATT_ERROR_UNLIKELY_ERROR;
             goto out;
         }
     }
@@ -356,7 +511,7 @@ out:
 }
 
 /*
- * FUNCTION: gattSvrWriteCbk
+ * FUNCTION: gattAttSvrWriteCbk
  * USE:      ATT calls this to write an attribute
  * PARAMS:   who - whom the indidation/notification was sent to
  *           rangeRef - the range this is related to
@@ -370,7 +525,7 @@ out:
  * RETURN:   false on immediate failure
  * NOTES:    when write completes, a call to attSrvCbkReply() should be made
  */
-static bool gattSvrWriteCbk(l2c_handle_t who, int cid, att_range_t range, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
+static bool gattAttSvrWriteCbk(l2c_handle_t who, int cid, att_range_t range, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
 {
     //TODO
     return false;
@@ -616,6 +771,23 @@ static void gattWorkQueueFreeItem(void *item)
 }
 
 /*
+ * FUNCTION: gattSrvCbkReply
+ * USE:      Called from higher layer as a reply to us calling for a read/write
+ * PARAMS:   cid - conenction ID from ATT
+ *           transId - transaction ID from ATT
+ *           handle - handle on which an error occured (unused for read & write)
+ *           err - ATT_ERROR_*
+ *           data - the read data
+ *           len - the read len
+ * RETURN:   unused
+ * NOTES:
+ */
+void gattSrvCbkReply(int cid, int transId, uint16_t handle, uint8_t err, const void *data, uint16_t len)
+{
+    attSrvCbkReply(cid, transId, handle, err, data, len);
+}
+
+/*
  * FUNCTION: gattWorker
  * USE:      Worker thread for calls to higher layer
  * PARAMS:   param - unused
@@ -637,6 +809,17 @@ static void* gattWorker(void *param)
             break;
 
         switch (wi->type) {
+        case GATT_WORK_TYPE_READ_CALL:
+            if (!wi->rwCall.readF(wi->rwCall.svcRef, wi->rwCall.who, wi->rwCall.cid, wi->rwCall.transId, wi->rwCall.handle, wi->rwCall.byteOfst, wi->rwCall.reason, wi->rwCall.len))
+                gattSrvCbkReply(wi->rwCall.cid, wi->rwCall.transId, 0, ATT_ERROR_UNLIKELY_ERROR, NULL, 0);
+            break;
+        case GATT_WORK_TYPE_WRITE_CALL:
+            if (!wi->rwCall.writeF(wi->rwCall.svcRef, wi->rwCall.who, wi->rwCall.cid, wi->rwCall.transId, wi->rwCall.handle, wi->rwCall.byteOfst, wi->rwCall.reason, wi->rwCall.len, wi + 1))
+                gattSrvCbkReply(wi->rwCall.cid, wi->rwCall.transId, 0, ATT_ERROR_UNLIKELY_ERROR, NULL, 0);
+            break;
+        case GATT_WORK_TYPE_IND_CALL:
+            wi->indCall.indF(wi->indCall.svcRef, wi->indCall.who, wi->indCall.cid, wi->indCall.handle, wi->indCall.evt, wi->indCall.ref);
+            break;
         default:
             loge("Unknown work type %d\n", wi->type);
             break;
@@ -667,7 +850,7 @@ bool gattProfileInit(void)
         .serviceFixedChStateCbk = gattConnEvt,
     };
 
-    if (!attSrvCreate(gattAttSrvTxCbk, gattAttSrvMtuCbk, gattAttSrvIndCbk, gattAttExecWriteCbk, gattSvrReadCbk, gattSvrWriteCbk)) {
+    if (!attSrvCreate(gattAttSrvTxCbk, gattAttSrvMtuCbk, gattAttSrvIndCbk, gattAttExecWriteCbk, gattAttSvrReadCbk, gattAttSvrWriteCbk)) {
         loge("Failed create an ATT server\n");
         goto out_att;
     }
@@ -1249,6 +1432,56 @@ out:
     return handle;
 }
 
+/*
+ * FUNCTION: gattServiceSendInd
+ * USE:      Send an indication or a notification
+ * PARAMS:   svcRef - the reference to a service
+ *           cid - ATT's connection Id
+ *           handle - the handle to notify/indicate on
+ *           buf - the data to send
+ *           len - length of said data
+ *           withConfirm - use an indication?
+ *           ref - passed to callback later. unused by GATT
+ * RETURN:   fals eon immediate failure
+ * NOTES:
+ */
+bool gattServiceSendInd(int svcRef, int cid, uint16_t handle, const void *buf, uint16_t len, bool withConfirm, uint64_t ref)
+{
+    uint8_t ret = L2C_TX_ERROR;
+    struct gattService *svc;
+    uint16_t base;
+    sg data;
+
+    pthread_mutex_lock(&mGattLock);
+    svc = gattServiceFindByHandle(svcRef);
+    if (!svc) {
+        loge("Failed to find service %d\n", svcRef);
+        goto out;
+    }
+
+    base = attSrvHandleRangeGetBase(svc->attRange);
+    if (handle < base || handle >= base + svc->maxItems) {
+        logd("Refusing to send notif for handle 0x%04X not in range 0x%04X+0x%04X\n", handle, base, svc->maxItems);
+        goto out;
+    }
+
+    data = sgNewWithCopyData(buf, len);
+    if (!data) {
+        loge("Failed to contrust an SG\n");
+        goto out;
+    }
+
+    ret = attSrvValueNotifyChanged(svc->attRange, handle - base, cid, data, !withConfirm, ref);
+    if (ret == L2C_TX_ACCEPTED) {
+        if (!withConfirm && !gattEnqueueIndCall(svc, attSrvCidResolve(cid), cid, handle, ATT_SRV_EVT_NOTIF_SENT, ref))
+            loge("Failed to notify caller of notif TX\n");
+    } else
+        sgFree(data);
+
+out:
+    pthread_mutex_unlock(&mGattLock);
+    return ret;
+}
 
 
 

@@ -44,21 +44,18 @@
 #define GATT_PERM_WRITE_SIGNED       0x00000080
 #define GATT_PERM_WRITE_SIGNED_MITM  0x00000100
 
-/* ind/notif srv events */
-#define GATT_SRV_EVT_NOTIF_SENT      1
-#define GATT_SRV_EVT_IND_SENT        2
-#define GATT_SRV_EVT_IND_ACKED       3
-#define GATT_SRV_EVT_IND_TIMEOUT     4
 
 /* profile init/deinit */
 bool gattProfileInit(void);
 void gattProfileDeinit(void);
 
+/* replies to callbacks */
+void gattSrvCbkReply(int cid, int transId, uint16_t handle, uint8_t err, const void *data, uint16_t len); /* err is ATT_ERROR_* */
 
 /* callbacks */
-typedef uint8_t (*gattSrvValueReadCbk)(int svc, l2c_handle_t who, int cid, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len); /* -> ATT_ERROR_* */
-typedef uint8_t (*gattSrvValueWriteCbk)(int svc, l2c_handle_t who, int cid, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data); /* -> ATT_ERROR_* */
-typedef void (*gattSrvIndCbk)(int svc, l2c_handle_t who, int cid, uint16_t handle, uint8_t evt); /* GATT_SRV_EVT_* */
+typedef bool (*gattSrvValueReadCbk)(int svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len);
+typedef bool (*gattSrvValueWriteCbk)(int svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data);
+typedef void (*gattSrvIndCbk)(int svc, l2c_handle_t who, int cid, uint16_t handle, uint8_t evt, uint64_t ref); /* GATT_SRV_EVT_* */
 
 /* service lifecycle */
 int gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles, gattSrvValueReadCbk readF, gattSrvValueWriteCbk writeF, gattSrvIndCbk indF);
@@ -75,7 +72,7 @@ uint16_t gattServiceAddChar(int svc, const struct uuid *uuid, uint8_t props, uin
 uint16_t gattServiceAddCharDescr(int svc, const struct uuid *uuid, uint32_t perms);
 
 /* TX path */
-bool gattServiceSendInd(int svc, l2c_handle_t to, uint16_t handle, const void *data, uint32_t len, bool withConfirm);
+bool gattServiceSendInd(int svc, int cid, uint16_t handle, const void *data, uint16_t len, bool withConfirm, uint64_t ref);
 
 
 #endif

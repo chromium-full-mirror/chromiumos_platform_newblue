@@ -316,7 +316,7 @@ struct attWorkItem {
             att_range_t          range;
             uint16_t             ofst;
             uint64_t             ref;
-            bool                 success;
+            uint8_t              evt;
         } indResult;
         struct {
             uint16_t             mtu;
@@ -544,12 +544,12 @@ static bool attSrvSchedExecCbk(l2c_handle_t who, bool exec)
  * PARAMS:   rangeRef - the range reference
  *           offst - the value offset in the range
  *           who - whom the connection is to
- *           success - was it a success
+ *           evt - what happened?
  *           ref - the reference value provided by the higher layer
  * RETURN:   success
  * NOTES:    call with mSrvLock held Do not release the lock until all state in extra->penOp is set up
  */
-static bool attSrvSchedIndResultCbk(att_range_t rangeRef, uint16_t offst, l2c_handle_t who, bool success, uint64_t ref)
+static bool attSrvSchedIndResultCbk(att_range_t rangeRef, uint16_t offst, l2c_handle_t who, uint8_t evt, uint64_t ref)
 {
     struct attSrvConnExtra* extra = attConnListGetExtra(&mAllClients, who);
     struct attWorkItem *wi;
@@ -566,7 +566,7 @@ static bool attSrvSchedIndResultCbk(att_range_t rangeRef, uint16_t offst, l2c_ha
     wi->indResult.range = rangeRef;
     wi->indResult.ofst = offst;
     wi->indResult.ref = ref;
-    wi->indResult.success = success;
+    wi->indResult.evt = evt;
 
     if (workQueuePut(mWorkQ, wi))
         return true;
@@ -849,7 +849,7 @@ void attSrvDestroy(void)
         extra = mAllClients.extras + i;
         if (extra->indTimer) {
             if (timerCancel(extra->indTimer))
-                attSrvSchedIndResultCbk(extra->indRangeRef, extra->indOffset, mAllClients.conns[i], false, extra->indRef);
+                attSrvSchedIndResultCbk(extra->indRangeRef, extra->indOffset, mAllClients.conns[i], ATT_SRV_EVT_IND_SRV_DESTROYED, extra->indRef);
             extra->indTimer = 0;
         }
     }
@@ -1400,7 +1400,7 @@ static void attSrvTimerCbk(uniq_t which,  uint64_t userData)
     }
 
     if (extra) /* we found it */
-        attSrvSchedIndResultCbk(extra->indRangeRef, extra->indOffset, conn, false, extra->indRef);
+        attSrvSchedIndResultCbk(extra->indRangeRef, extra->indOffset, conn, ATT_SRV_EVT_IND_TIMEOUT, extra->indRef);
     pthread_mutex_unlock(&mSrvLock);
 }
 
@@ -1467,21 +1467,27 @@ static uint8_t attSrvSendNotif(struct attSrvRange *range, struct attSrvVal *val,
  * USE:      Sen a notification or an indication
  * PARAMS:   rangeRef - the range reference
  *           offset - handle's offset from start of the range
- *           to - whom to send to
+ *           cid - the connection id
  *           data - the data to send
  *           notify - send notification (as opposed to indication)
  *           ref - pased to callbacks so you know which notif/ind they are tellking you about
  * RETURN:   ATT_TX_RET_*
  * NOTES:
  */
-uint8_t attSrvValueNotifyChanged(att_range_t rangeRef, uint16_t offset, l2c_handle_t to, sg data, bool notify, uint64_t ref)
+uint8_t attSrvValueNotifyChanged(att_range_t rangeRef, uint16_t offset, int cid, sg data, bool notify, uint64_t ref)
 {
+    uint8_t ret = ATT_TX_RET_ATT_ERROR;
     struct attSrvRange *range;
     struct attSrvVal *val;
-    uint8_t ret = ATT_TX_RET_ATT_ERROR;
+    l2c_handle_t who;
     uint32_t i;
 
     pthread_mutex_lock(&mSrvLock);
+    if (!attConnListFindByCid(&mAllClients, cid, &who, NULL)) {
+        loge("Got notif request reply for unknown connection\n");
+        goto out;
+    }
+
     val = attSrvValRangeFind(rangeRef, offset, &range);
     if (!range) {
         logw("Attempt to notify on a value from a non-existent range\n");
@@ -1492,9 +1498,28 @@ uint8_t attSrvValueNotifyChanged(att_range_t rangeRef, uint16_t offset, l2c_hand
         goto out;
     }
 
-    ret = attSrvSendNotif(range, val, to, data, notify, ref);
+    ret = attSrvSendNotif(range, val, who, data, notify, ref);
 
 out:
+    pthread_mutex_unlock(&mSrvLock);
+    return ret;
+}
+
+/*
+ * FUNCTION: attSrvCidResolve
+ * USE:      Attempt to resolve a CID to a L2C connection ID
+ * PARAMS:   cid - the cid
+ * RETURN:   conenction ID or 0 on failure
+ * NOTES:
+ */
+l2c_handle_t attSrvCidResolve(int cid)
+{
+    l2c_handle_t ret = 0;
+    struct attSrvRange *range;
+
+    pthread_mutex_lock(&mSrvLock);
+    if (!attConnListFindByCid(&mAllClients, cid, &ret, NULL))
+        ret = 0;
     pthread_mutex_unlock(&mSrvLock);
     return ret;
 }
@@ -2554,7 +2579,7 @@ static bool attSrvOpHandleValueConf(l2c_handle_t to, uint32_t mtu)
     if (!extra)
         loge("Failed to find extra for confirmation\n");
     else if (extra->indTimer) { /* we're not late */
-        attSrvSchedIndResultCbk(extra->indRangeRef, extra->indOffset, to, true, extra->indRef);
+        attSrvSchedIndResultCbk(extra->indRangeRef, extra->indOffset, to, ATT_SRV_EVT_IND_ACKED, extra->indRef);
         timerCancel(extra->indTimer);
         extra->indTimer = 0;
     } else /* we are late */
@@ -2849,7 +2874,7 @@ static void* attWorker(void *unused)
             break;
 
         case WORK_TYPE_IND_RESULT:
-            mIndCbk(wi->who, wi->cid, wi->indResult.range, wi->indResult.ofst, wi->indResult.success, wi->indResult.ref);
+            mIndCbk(wi->who, wi->cid, wi->indResult.range, wi->indResult.ofst, wi->indResult.evt, wi->indResult.ref);
             break;
 
         case WORK_TYPE_MTU_INFO:
