@@ -9,6 +9,9 @@
 #include "l2cap.h"
 #include "aapi.h"
 #include "util.h"
+#include "uuid.h"
+#include "gatt.h"
+#include "att.h"
 #include "hci.h"
 #include "log.h"
 #include "sdp.h"
@@ -232,12 +235,79 @@ static void testRfcEvtF(void *userData, void *instance, uint8_t evt, sg data)
     }
 }
 
+uint16_t mGattHandleCurTime = 0;
+uint16_t mGattHandleCurTimeCfg = 0;
+uint16_t mGattHandleLocalTimeInfo = 0;
+uint16_t mGattHandleReferenceTimeInfo = 0;
+
+static bool testGattSrvValueReadCbk(int svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len)
+{
+    return false;
+}
+
+static bool testGattSrvValueWriteCbk(int svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
+{
+    return false;
+}
+
+static void testGattSrvIndCbk(int svc, l2c_handle_t who, int cid, uint16_t handle, uint8_t evt, uint64_t ref)
+{
+    //todo
+}
+
+//sets up time service service as a sample
+static int gattSetup(void)
+{
+    struct uuid uuid;
+    int svc;
+
+    uuidFromUuid16(&uuid, 0x1805); //"current time" service
+    svc = gattServiceCreate(&uuid, true, 8, testGattSrvValueReadCbk, testGattSrvValueWriteCbk, testGattSrvIndCbk);
+    if (!svc) {
+        loge("failed to alloc svc\n");
+        goto out;
+    }
+
+    uuidFromUuid16(&uuid, 0x2A2B); //"current time" characteristic
+    mGattHandleCurTime = gattServiceAddChar(svc, &uuid, GATT_PROP_READ | GATT_PROP_NOTIFY, GATT_PERM_READ | GATT_PERM_READ_ENCR | GATT_PERM_READ_ENCR_MITM);
+    if (!mGattHandleCurTime) {
+        loge("Failed to add cur time char\n");
+        goto out;
+    }
+
+    uuidFromUuid16(&uuid, GATT_UUID_CHAR_CLI_CHAR_CFG); //char config descriptor
+    mGattHandleCurTimeCfg = gattServiceAddCharDescr(svc, &uuid, GATT_PERM_READ | GATT_PERM_READ_ENCR | GATT_PERM_READ_ENCR_MITM);
+    if (!mGattHandleCurTimeCfg) {
+        loge("Failed to add cur time char cfg\n");
+        goto out;
+    }
+
+    uuidFromUuid16(&uuid, 0x2A0F); //"local time info" characteristic
+    mGattHandleLocalTimeInfo = gattServiceAddChar(svc, &uuid, GATT_PROP_READ, GATT_PERM_READ | GATT_PERM_READ_ENCR | GATT_PERM_READ_ENCR_MITM);
+    if (!mGattHandleLocalTimeInfo) {
+        loge("Failed to add local time info char\n");
+        goto out;
+    }
+
+    uuidFromUuid16(&uuid, 0x2A14); //"reference time info" characteristic
+    mGattHandleReferenceTimeInfo = gattServiceAddChar(svc, &uuid, GATT_PROP_READ, GATT_PERM_READ | GATT_PERM_READ_ENCR | GATT_PERM_READ_ENCR_MITM);
+    if (!mGattHandleReferenceTimeInfo) {
+        loge("Failed to add reference time info char\n");
+        goto out;
+    }
+
+
+out:
+    return svc;
+}
+
 int main(int argc, char** argv)
 {
     static const uint8_t mac[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
     const bool vTrue = true;
     const bool vFalse = false;
     unsigned i;
+    int svc;
     sem_t sem;
     uniq_t h;
 
@@ -378,11 +448,47 @@ int main(int argc, char** argv)
   //  struct bt_addr addr = {{0xf3, 0xdb, 0x56, 0xf4, 0x2c, 0x40}, BT_ADDR_TYPE_EDR};
   //  logi("conn=%d\n", rfcConnect(&addr, 1, testRfcEvtF, NULL, testRfcAllocF(NULL, &addr, 3))); /* true if you shoudl expect callback(s) */
 
+    if (!attInit())
+        loge("Failed to init ATT\n");
+    if (!gattProfileInit())
+        loge("Failed to init GATT\n");
+
+    svc = gattSetup();
+
+
+    gattServiceStart(svc);
+
+    static const uint8_t data[] = {
+		2, HCI_EIR_TYPE_FLAGS, 2, /* flags - general discoverable */
+		5, HCI_EIR_TYPE_FULL_NAME, 'N', 'B', '.', 't', /* name - "NB.t" */
+                3, HCI_EIR_TYPE_INCOMPL_LIST_UUID16, 0x05, 0x18, /* incomplete uuid list - {time service} */
+                5, HCI_EIR_FLAVE_CONN_INTS, 0x80, 0x00, 0xff, 0x00, /* relatively large range of relatively large connection intervals accepted */
+    };
+    if (!hciSetAdvData(data, sizeof(data), opDoneCbk, &sem))
+        loge("Failed to set LE adv data\n");
+    r_sem_wait(&sem);
+    if(gStatus)
+        loge("Failed to set adv data. Sta = %d\n", gStatus);
+
+
+    logi("enabling LE adv\n");
+    if (!hciSetAdvertiseEnable(true, opDoneCbk, &sem))
+        loge("Failed to try to enable advertising\n");
+    r_sem_wait(&sem);
+    if(gStatus)
+        loge("Failed to enable advertising. Sta = %d\n", gStatus);
+
     logi("waiting...press a key\n");
     getchar();
 
 
+    if (svc) {
+        gattServiceStop(svc);
+        gattServiceDestroy(svc);
+    }
     logi("bringing down\n");
+    gattProfileDeinit();
+    attDeinit();
     rfcDeinit();
     sdpDeinit();
     l2cDeinit();
