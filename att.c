@@ -1293,9 +1293,8 @@ static uint32_t attConnMtuGet(l2c_handle_t to, bool tryDefaults)
     if ((!extra || !(mtu = extra->mtu)) && tryDefaults) {
         struct bt_addr peer;
 
-        logw("Sending notif with no known MTU\n");
         if (!l2cApiGetBtAddr(to, &peer)) {
-            logw("Failed to get peer address, not sending notification there\n");
+            logw("Failed to get peer address\n");
             return 0;
         }
         mtu = BT_ADDR_IS_EDR(peer) ? ATT_MTU_MIN_EDR : ATT_MTU_MIN_LE;
@@ -2641,7 +2640,7 @@ bool attSrvDataRx(l2c_handle_t from, sg s)
             attConnListAdd(&mAllClients, from);
             attConnMtuSet(from, mtu);
             utilSetLE16(&mtuExch.mtu, mtu);
-            ret = attSrvSend(from, &mtuExch, sizeof(mtuExch), NULL, NULL, 0);
+            ret = attSrvSendPacket(from, ATT_OPCODE_MTU_EXCH_RSP, &mtuExch, sizeof(mtuExch), NULL);
             attSrvSchedMtuCbk(from, mtu);
         }
         break;
