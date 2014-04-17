@@ -4463,15 +4463,19 @@ bool l2cApiServiceFixedChUnregister(uint16_t chan, void (*doneCbk)(void*), void*
     do {
          anythingDone = false;
          conn = mConns;
-         if (!conn->psm && conn->localCh == chan && !conn->weOpened) {
+         while(conn) {
+             if (!conn->psm && conn->localCh == chan && !conn->weOpened) {
 
-             if (conn->instance)
-                 l2cSvcWorkScheduleStateCall(conn, L2C_STATE_CLOSED, NULL, 0);
-             else {
-                 logw("no instance found for fixed ch %d while unregistering\n", chan);
-                 l2cConnStructDelete(conn);
+                 if (conn->instance)
+                     l2cSvcWorkScheduleStateCall(conn, L2C_STATE_CLOSED, NULL, 0);
+                 else {
+                     logw("no instance found for fixed ch %d while unregistering\n", chan);
+                     l2cConnStructDelete(conn);
+                 }
+                 anythingDone = true;
+                 break;
              }
-             anythingDone = true;
+             conn = conn->next;
          }
 
     } while(anythingDone);
