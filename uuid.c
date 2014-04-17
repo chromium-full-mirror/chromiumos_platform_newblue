@@ -51,7 +51,7 @@ bool uuidToUuid16(uint16_t *dst, const struct uuid *uuid128)
     if ((uuid128->hi ^ base.hi) & 0xFFFF0000FFFFFFFFULL)
         return false;
     if (dst)
-        *dst = base.hi >> 32;
+        *dst = uuid128->hi >> 32;
     return true;
 }
 
@@ -89,7 +89,7 @@ bool uuidToUuid32(uint32_t *dst, const struct uuid *uuid128)
     if ((uuid128->hi ^ base.hi) & 0x00000000FFFFFFFFULL)
         return false;
     if (dst)
-        *dst = base.hi >> 32;
+        *dst = uuid128->hi >> 32;
     return true;
 }
 
