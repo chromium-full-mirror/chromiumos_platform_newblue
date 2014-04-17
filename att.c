@@ -2037,7 +2037,7 @@ static bool attSrvOpReadByTypeContinue(struct attSrvConnExtra *extra, l2c_handle
 
             /* we found a falue to read - schedule it */
             extra->penOp.startHandle = handle;
-            extra->penOp.readByType.grpType = effectiveGrpLen;
+            extra->penOp.readByType.valGrpLen = effectiveGrpLen;
             if (attSrvSchedReadCbk(range, val, to, readReason, 0, itemMaxLen))
                 return true;
 
@@ -2056,8 +2056,22 @@ done:
         /* a lack of results is reported thusly */
         err = ATT_ERROR_ATTRIBUTE_NOT_FOUND;
         startHandle = extra->penOp.origStartHandle;
-    } else if (attSrvSendPacket(to, rspOpcode, NULL, 0, results))
-        return true;
+    } else {
+        struct attPduReadByTypeRsp rbt;
+        struct attPduReadByGrpTypeRsp gtr;
+        void *hdr;
+
+        if (grpType) {
+            hdr = &gtr;
+            utilSetLE8(&gtr.attGrpValuePairSz, extra->penOp.readByType.itemLen + sizeof(struct attGrpValuePair));
+        } else {
+            hdr = &rbt;
+            utilSetLE8(&rbt.handleValuePairSz, extra->penOp.readByType.itemLen + sizeof(struct attHandleValuePair));
+        }
+
+        if (attSrvSendPacket(to, rspOpcode, hdr, packetHdrSz, results))
+            return true;
+    }
 
     /* if we fall though to here, try to send an error (even if it is unlikely to work) */
     sgFree(results);
