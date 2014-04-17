@@ -1353,7 +1353,7 @@ static uint8_t attSrvSend(l2c_handle_t to, const void *preData, uint32_t preLen,
         return ATT_TX_RET_OOM;
     }
 
-    if (postLen && !sgConcatBackCopy(data, preData, preLen)) {
+    if (postLen && !sgConcatBackCopy(data, postData, postLen)) {
         if (tmpData)
             sgFree(tmpData);
         else
