@@ -34,7 +34,7 @@ void l2cDeinit(void);
 
 
 /* callbacks for connections */
-struct l2cEncrState{
+struct l2cEncrState {
     bool isEncr;
     bool isMitmSafe;
 };
