@@ -1150,9 +1150,12 @@ static void gattServiceOffline(struct gattService *svc)
     }
     svc->online = false;
 
-    for (i = 0; i < svc->maxItems; i++)
-        if (!attSrvValueUnregister(svc->attRange, i))
-            logw("Failed to unredister a value (ofst %u) for offlining!\n", i);
+    for (i = 0; i < svc->numItems; i++)
+        if (!attSrvValueUnregister(svc->attRange, i + GATT_HDR_HANDLES))
+            logw("Failed to unregister a value (ofst %u) for offlining!\n", i + GATT_HDR_HANDLES);
+
+    if (!attSrvValueUnregister(svc->attRange, 0))
+        logw("Failed to unregister a header value for offlining!\n");
 }
 
 /*
