@@ -2075,7 +2075,7 @@ done:
 
     /* if we fall though to here, try to send an error (even if it is unlikely to work) */
     sgFree(results);
-    return attSrvSendErrorReply(to, err, reqOpcode, 0);
+    return attSrvSendErrorReply(to, err, reqOpcode, startHandle);
 }
 
 /*
@@ -2343,7 +2343,7 @@ done:
     /* if we fall though to here, try to send an error (even if it is unlikely to work) */
     sgFree(results);
     sgFree(handles);
-    return attSrvSendErrorReply(to, err, ATT_OPCODE_READ_MULT_REQ, 0);
+    return attSrvSendErrorReply(to, err, ATT_OPCODE_READ_MULT_REQ, wantedHandle);
 }
 
 /*
