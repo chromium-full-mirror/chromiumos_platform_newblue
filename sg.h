@@ -7,6 +7,15 @@ struct sgbuf;
 typedef struct sgbuf *sg;
 
 
+/*
+ * THE USUAL SEMANTICS OF SG BUFFERS:
+ * - if a function has no return type, it is assumed to take over the ownership of any and all SGs passed to it
+ * - if a function returns a bool signifying success, it shall retain ovwenership of any SGs passed to it in case of success, and NOT own them in case of failure
+ * - if a function returns an integer-like value to indicate error, it shall retain ownership of the SG if it is successful, and not otherwise
+ * - in all other cases the function shall have comments explaining its interactions with any SGs passed ot it (avoid this case please!)
+ */
+
+
 
 //create a new empty sg -> null on error
 sg sgNew(void);
