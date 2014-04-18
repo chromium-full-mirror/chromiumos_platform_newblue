@@ -245,8 +245,8 @@ struct attSrvConnExtra {
 
     uint32_t mtu;
     int cid; /* for higher layer */
-    bool isEncr; /* XXX: set this */
-    bool isMitmProtected; /* XXX: set this */
+    bool isEncr;
+    bool isMitmProtected;
 
     int nextTransId;
     struct attSrvPendingOp penOp;
@@ -714,11 +714,20 @@ static bool attConnListAdd(struct attConnList *list, l2c_handle_t conn)
     /* init the item */
     list->conns[list->listNum] = conn;
     if (list->hasExtras) {
-        memset(list->extras + list->listNum, 0, sizeof(struct attSrvConnExtra));
-        list->extras[list->listNum].cid = list->listNum ? list->extras[list->listNum - 1].cid : 1;
-        while (attConnListFindByCid(list, list->extras[list->listNum].cid, NULL, NULL))
-            if (++list->extras[list->listNum].cid < 0)
-                list->extras[list->listNum].cid = 1;
+        struct attSrvConnExtra *extra = list->extras + list->listNum;
+
+        /* zero-init the extra struct */
+        memset(extra, 0, sizeof(struct attSrvConnExtra));
+
+        /* find a free CID */
+        extra->cid = list->listNum ? list->extras[list->listNum - 1].cid : 1;
+        while (attConnListFindByCid(list, extra->cid, NULL, NULL))
+            if (++extra->cid < 0)
+                extra->cid = 1;
+
+        /* get initial encr and mitm state */
+        extra->isEncr = l2cApiIsConnEncrypted(conn);
+        extra->isMitmProtected = l2cApiIsConnMitmSafe(conn);
     }
     list->listNum++;
     return true;
@@ -793,6 +802,32 @@ static void attConnListFree(struct attConnList *list)
         free(list->extras);
     }
     list->conns = NULL;
+}
+
+/*
+ * FUNCTION: attSrvEncrAuthUpdate
+ * USE:      Update the ATT server about a change in a connection to a client pertaining to auth/encr
+ * PARAMS:   who - the connection to the client
+ *           encr - is it now encrypted?
+ *           mitmSafe - is it now mitm-safe?
+ * RETURN:   success
+ * NOTES:
+ */
+bool attSrvEncrAuthUpdate(l2c_handle_t who, bool encr, bool mitmSafe)
+{
+    struct attSrvConnExtra *extra;
+    bool ret = false;
+
+    pthread_mutex_lock(&mSrvLock);
+    extra = attConnListGetExtra(&mAllClients, who);
+    if (extra) {
+        extra->isEncr = encr;
+        extra->isMitmProtected = mitmSafe;
+        ret = true;
+    }
+    pthread_mutex_unlock(&mSrvLock);
+
+    return true;
 }
 
 /*

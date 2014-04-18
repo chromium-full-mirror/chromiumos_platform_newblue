@@ -119,6 +119,7 @@ bool attSrvValueGetGrpLen(att_range_t rangeRef, uint16_t offset, uint16_t *grpLe
 bool attSrvValueUnregister(att_range_t rangeRef, uint16_t offset);
 uint8_t attSrvValueNotifyChanged(att_range_t rangeRef, uint16_t offset, int cid, sg data, bool notify, uint64_t ref); /* -> ATT_NOTIF_RET_* */
 void attSrvDataRx(l2c_handle_t from, sg s);
+bool attSrvEncrAuthUpdate(l2c_handle_t who, bool encr, bool mitmSafe);
 
 void attSrvCbkReply(int cid, int transId, uint16_t handle, uint8_t err, const void *data, uint16_t len); /* err is ATT_ERROR_* */
 
