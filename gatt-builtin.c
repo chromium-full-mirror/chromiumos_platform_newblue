@@ -232,7 +232,7 @@ void gattBuiltinDeinit(void)
  */
 void gattBuiltinSetDevName(const char *name)
 {
-    uint8_t len = strnlen(name, sizeof(HCI_DEV_NAME_LEN));
+    uint8_t len = strnlen(name, HCI_DEV_NAME_LEN);
 
     pthread_mutex_lock(&mGattBuiltinLock);
     memcpy(mGapName, name, len);
