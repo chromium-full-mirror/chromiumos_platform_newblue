@@ -611,7 +611,11 @@ static void gattConnEvt(void *userData, void *instance, uint8_t evt, const void 
         break;
 
     case L2C_STATE_ENCR:
-        state->encr = true;
+        if (len != sizeof(struct l2cEncrState)) {
+            loge("invalid length for encr event\n");
+            break;
+        }
+        attSrvEncrAuthUpdate(state->conn, ((struct l2cEncrState*)data)->isEncr, ((struct l2cEncrState*)data)->isMitmSafe);
         break;
 
     case L2C_STATE_RX:
