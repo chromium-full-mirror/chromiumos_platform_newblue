@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include "gatt-builtin.h"
 #include "vendorLib.h"
 #include "persist.h"
 #include "rfcomm.h"
@@ -269,28 +270,28 @@ static int gattSetup(void)
     }
 
     uuidFromUuid16(&uuid, 0x2A2B); //"current time" characteristic
-    mGattHandleCurTime = gattServiceAddChar(svc, &uuid, GATT_PROP_READ | GATT_PROP_NOTIFY, GATT_PERM_READ | GATT_PERM_READ_ENCR | GATT_PERM_READ_ENCR_MITM);
+    mGattHandleCurTime = gattServiceAddChar(svc, &uuid, GATT_PROP_READ | GATT_PROP_NOTIFY, GATT_PERM_ALL_READ);
     if (!mGattHandleCurTime) {
         loge("Failed to add cur time char\n");
         goto out;
     }
 
     uuidFromUuid16(&uuid, GATT_UUID_CHAR_CLI_CHAR_CFG); //char config descriptor
-    mGattHandleCurTimeCfg = gattServiceAddCharDescr(svc, &uuid, GATT_PERM_READ | GATT_PERM_READ_ENCR | GATT_PERM_READ_ENCR_MITM);
+    mGattHandleCurTimeCfg = gattServiceAddCharDescr(svc, &uuid, GATT_PERM_ALL_READ | GATT_PERM_ALL_WRITE);
     if (!mGattHandleCurTimeCfg) {
         loge("Failed to add cur time char cfg\n");
         goto out;
     }
 
     uuidFromUuid16(&uuid, 0x2A0F); //"local time info" characteristic
-    mGattHandleLocalTimeInfo = gattServiceAddChar(svc, &uuid, GATT_PROP_READ, GATT_PERM_READ | GATT_PERM_READ_ENCR | GATT_PERM_READ_ENCR_MITM);
+    mGattHandleLocalTimeInfo = gattServiceAddChar(svc, &uuid, GATT_PROP_READ, GATT_PERM_ALL_READ);
     if (!mGattHandleLocalTimeInfo) {
         loge("Failed to add local time info char\n");
         goto out;
     }
 
     uuidFromUuid16(&uuid, 0x2A14); //"reference time info" characteristic
-    mGattHandleReferenceTimeInfo = gattServiceAddChar(svc, &uuid, GATT_PROP_READ, GATT_PERM_READ | GATT_PERM_READ_ENCR | GATT_PERM_READ_ENCR_MITM);
+    mGattHandleReferenceTimeInfo = gattServiceAddChar(svc, &uuid, GATT_PROP_READ, GATT_PERM_ALL_READ);
     if (!mGattHandleReferenceTimeInfo) {
         loge("Failed to add reference time info char\n");
         goto out;
@@ -452,11 +453,17 @@ int main(int argc, char** argv)
         loge("Failed to init ATT\n");
     if (!gattProfileInit())
         loge("Failed to init GATT\n");
+    if (!gattBuiltinInit())
+        loge("Failed to init GATT services\n");
 
     svc = gattSetup();
 
-
     gattServiceStart(svc);
+
+    gattBuiltinSetDevName("SuperLongDeviceNameThatWillProbablyNotFitIntoASinglePacketEver");
+    gattBuiltinSetPreferredConnParamsWhenSlave(20, 30, 40, 400);
+    gattBuiltinSetAppearance(GAP_APPEAR_GENERIC_WATCH);
+
 
     static const uint8_t data[] = {
 		2, HCI_EIR_TYPE_FLAGS, 2, /* flags - general discoverable */
@@ -487,6 +494,7 @@ int main(int argc, char** argv)
         gattServiceDestroy(svc);
     }
     logi("bringing down\n");
+    gattBuiltinDeinit();
     gattProfileDeinit();
     attDeinit();
     rfcDeinit();
