@@ -175,7 +175,7 @@ uint8_t hciTryToTx(hci_conn_t aclConn, sg data, uint8_t boundary);
 /* LE connection update */
 bool hciUpdateLeParams(hci_conn_t aclConn, uint16_t minInt, uint16_t maxInt, uint16_t lat, uint16_t to);
 /* request encryption */
-bool hciDemandEncr(hci_conn_t aclConn);
+bool hciDemandEncr(hci_conn_t aclConn, bool demandMitmSafe);
 
 /* connection request handling */
 bool hciConnRequestReplyYes(const struct bt_addr *addr, bool becomeMaster);

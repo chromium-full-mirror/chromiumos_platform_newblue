@@ -298,6 +298,7 @@ struct l2cAclConn {
     uint8_t            state;
     uint8_t            isMaster  : 1;
     uint8_t            encrypted : 1;
+    uint8_t            mitmSafe  : 1;
 
     uint8_t            reqIdent; /* ident for an outstanding request */
 
@@ -368,6 +369,7 @@ struct l2cSvcWork {
         } connUpdt;
         struct {
             hci_conn_t aclConnID;
+            bool demandMitmSafe;
         } demandEncr;
         struct {
             bool useLeBuffers;
@@ -468,7 +470,7 @@ struct l2cConn {
 #define L2C_CONN_STATE_CONN_WAIT       0 /* waiting for ACL link up */
 #define L2C_CONN_STATE_RX_OPEN_SVC     1 /* call to service in pipeline */
 #define L2C_CONN_STATE_TX_OPEN_TXED    2 /* request sent to other side */
-#define L2C_CONN_STATE_AUTH_WAIT       3 /* waiting for auth */
+#define L2C_CONN_STATE_ENCR_WAIT       3 /* waiting for encr/auth */
 #define L2C_CONN_STATE_ATHORIZ_WAIT    4 /* waiting for user athorization */
 #define L2C_CONN_STATE_CFG             5 /* configuration ongoing */
 #define L2C_CONN_STATE_ESTABLISHED     6 /* connected */
@@ -946,16 +948,18 @@ static bool l2cSvcWorkScheduleAclConnUpdt(hci_conn_t aclConnID, uint16_t minInt,
  * FUNCTION: l2cSvcWorkScheduleAclDemandEncr
  * USE:      Schedule a connection encryption request
  * PARAMS:   aclConnID - the connection ID
+ *           demandMitmSafe - demand authentication too?
  * RETURN:   NONE
  * NOTES:    actual call will happen in the worker thread.
  */
-static bool l2cSvcWorkScheduleAclDemandEncr(hci_conn_t aclConnID)
+static bool l2cSvcWorkScheduleAclDemandEncr(hci_conn_t aclConnID, bool demandMitmSafe)
 {
     struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_ACL_DEMAND_ENCR, 0);
     if (!w)
         return false;
 
     w->demandEncr.aclConnID = aclConnID;
+    w->demandEncr.demandMitmSafe = demandMitmSafe;
 
     if (workQueuePut(mServiceWork, w))
         return true;
@@ -1026,7 +1030,7 @@ static void l2cConnTimeout(uniq_t timerH,  uint64_t connH)
         case L2C_CONN_STATE_CFG:
             logi("Connection configuration timeout for "HANDLEFMT" - closing connection\n", HANDLECNV(connH));
             break;
-        case L2C_CONN_STATE_AUTH_WAIT:
+        case L2C_CONN_STATE_ENCR_WAIT:
             logi("Connection open after auth timeout for "HANDLEFMT" - closing connection\n", HANDLECNV(connH));
             break;
         default:
@@ -1861,13 +1865,13 @@ out:
 }
 
 /*
- * FUNCTION: l2cApiDemandEncryption
- * USE:      Demand a connection be encrypted
+ * FUNCTION: l2cApiIsConnMitmSafe
+ * USE:      Check if connection is encrypted using a MITM-safe key
  * PARAMS:   handle - the handle
- * RETURN:   true if request taken or already encrypted, false else
+ * RETURN:   true if exists and encrypted, false else
  * NOTES:    NONE
  */
-bool l2cApiDemandEncryption(l2c_handle_t handle)
+bool l2cApiIsConnMitmSafe(l2c_handle_t handle)
 {
     struct l2cConn *conn;
     struct l2cAclConn *aclConn;
@@ -1887,8 +1891,45 @@ bool l2cApiDemandEncryption(l2c_handle_t handle)
         goto out;
     }
 
-    if (!aclConn->encrypted && !l2cSvcWorkScheduleAclDemandEncr(aclConn->conn)) {
-        loge("Failed to demand encryption by api call\n");
+    ret = aclConn->mitmSafe;
+
+out:
+    pthread_mutex_unlock(&mConnsLock);
+    return ret;
+}
+
+/*
+ * FUNCTION: l2cApiDemandEncryption
+ * USE:      Demand a connection be encrypted
+ * PARAMS:   handle - the handle
+ *           demandMitmSafe - shoudl it be MITM-safe?
+ * RETURN:   true if request taken or already encrypted, false else
+ * NOTES:    NONE
+ */
+bool l2cApiDemandEncryption(l2c_handle_t handle, bool demandMitmSafe)
+{
+    struct l2cConn *conn;
+    struct l2cAclConn *aclConn;
+    bool ret = false;
+
+    pthread_mutex_lock(&mConnsLock);
+
+    conn = l2cConnFindByHandle(handle);
+    if (!conn) {
+        loge("Connection not found\n");
+        goto out;
+    }
+
+    aclConn = l2cAclConnFindByHandle(conn->acl);
+    if (!aclConn) {
+        loge("ACL link not found\n");
+        goto out;
+    }
+
+    if (aclConn->encrypted && (aclConn->mitmSafe || !demandMitmSafe))
+        logd("Ignoring redundant encr request\n");
+    else if (!l2cSvcWorkScheduleAclDemandEncr(aclConn->conn, demandMitmSafe)) {
+        loge("Failed to demand encryption/authentication by api call\n");
         goto out;
     }
 
@@ -3226,21 +3267,21 @@ static void l2cPsmSvcInstAllocDone(psm_t psm, l2cStateCbk stateCbk, void *userDa
         goto out;
     }
 
-    if (result == SVC_ALLOC_DEMAND_ENCR) {
+    if (result == SVC_ALLOC_DEMAND_ENCR || result == SVC_ALLOC_DEMAND_AUTH) {
         if (!l2cSigSendConnectionRsp(aclConn, conn->ident, 0, conn->remCh, L2C_SIG_CONN_RSP_PEND, L2C_SIG_CONN_PEND_AUTH)) {
             loge("Failed to sent pending.auth connection request response frame\n");
             l2cConnRequestClose(aclConn, conn, false);
             goto out;
         }
-        conn->state = L2C_CONN_STATE_AUTH_WAIT;
-        if (aclConn->encrypted) {
-            logi("Link acl "HCI_CONN_FMT"x already encrypted\n", HCI_CONN_CONV(aclConn->conn));
+        conn->state = L2C_CONN_STATE_ENCR_WAIT;
+        if (aclConn->encrypted && (aclConn->mitmSafe || result != SVC_ALLOC_DEMAND_AUTH)) {
+            logi("Link acl "HCI_CONN_FMT"x already encrypted to the requested level\n", HCI_CONN_CONV(aclConn->conn));
             if (!l2cSvcWorkSchedulePsmAlloc(psm, handle))
                 loge("Failed to re-enquque PSM alloc\n");
         } else {
-            if (!l2cSvcWorkScheduleAclDemandEncr(aclConn->conn))
-                loge("Failed to demand encryption\n");
-            logd("Demanded encryption on acl "HCI_CONN_FMT"x\n", HCI_CONN_CONV(aclConn->conn));
+            if (!l2cSvcWorkScheduleAclDemandEncr(aclConn->conn, result == SVC_ALLOC_DEMAND_AUTH))
+                loge("Failed to demand encr/auth\n");
+            logd("Demanded encr/auth on acl "HCI_CONN_FMT"x\n", HCI_CONN_CONV(aclConn->conn));
         }
         goto out;
     }
@@ -3319,22 +3360,22 @@ static void l2cFixedChSvcInstAllocDone(uint16_t chan, l2cStateCbk stateCbk, void
     if (conn->state != L2C_CONN_STATE_RX_OPEN_SVC)
         logw("Unexpected FixedCh conn state %d after alloc\n", conn->state);
 
-    if (result == SVC_ALLOC_DEMAND_ENCR) {
-        if (aclConn->encrypted) {
-            logi("Link acl "HCI_CONN_FMT"x already encrypted\n", HCI_CONN_CONV(aclConn->conn));
+    if (result == SVC_ALLOC_DEMAND_ENCR || result == SVC_ALLOC_DEMAND_AUTH) {
+        if (aclConn->encrypted && (aclConn->mitmSafe || result != SVC_ALLOC_DEMAND_AUTH)) {
+            logi("Link acl "HCI_CONN_FMT"x already encrypted to the requested level\n", HCI_CONN_CONV(aclConn->conn));
             if (!l2cSvcWorkScheduleFixedChAlloc(chan, handle)) {
-                loge("Failed to re-enquque fixed alloc\n");
+                loge("Failed to re-enqueue fixed alloc\n");
                 l2cConnRequestClose(aclConn, conn, false);
                 goto out;
             }
         } else {
-            if (!l2cSvcWorkScheduleAclDemandEncr(aclConn->conn)) {
+            if (!l2cSvcWorkScheduleAclDemandEncr(aclConn->conn, result == SVC_ALLOC_DEMAND_AUTH)) {
                 loge("Failed to demand encryption\n");
                 l2cConnRequestClose(aclConn, conn, false);
                 goto out;
             }
             logd("Demanded encryption on acl "HCI_CONN_FMT"x\n", HCI_CONN_CONV(aclConn->conn));
-            conn->state = L2C_CONN_STATE_AUTH_WAIT;
+            conn->state = L2C_CONN_STATE_ENCR_WAIT;
         }
         goto out;
     }
@@ -3507,7 +3548,7 @@ static void* l2cSvcWorker(void* unused)
                 loge("HCI refused to update LE params\n");
             break;
         case L2C_WORK_ACL_DEMAND_ENCR:
-            if (!hciDemandEncr(work->demandEncr.aclConnID))
+            if (!hciDemandEncr(work->demandEncr.aclConnID, work->demandEncr.demandMitmSafe))
                 loge("HCI refused to encrypt\n");
             break;
         case L2C_WORK_TRY_HCI_TX:
@@ -4228,7 +4269,7 @@ static void l2cConnRequestClose(struct l2cAclConn* acl, struct l2cConn *conn, bo
         destroyStruct = true;
         break;
 
-    case L2C_CONN_STATE_AUTH_WAIT:
+    case L2C_CONN_STATE_ENCR_WAIT:
         tellOurSide = false; /* nodody to tell to */
     case L2C_CONN_STATE_ATHORIZ_WAIT:
     case L2C_CONN_STATE_CFG:
@@ -5171,29 +5212,33 @@ out:
 }
 
 /*
- * FUNCTION: l2cAclConnTeardownTimerCbk
- * USE:      Timer callback for ACL link down
- * PARAMS:   which - timer handle
- *           cbkData - the callback data
+ * FUNCTION: l2cAclLinkEncrChangeInt
+ * USE:      Called to change an ACL link's encr settings
+ * PARAMS:   aclConn - the ACL link at hand
+ *           isEncrypted - is it now encrypted?
+ *           isMitmSafe - is it now MITM-safe?
  * RETURN:   NONE
  * NOTES:    Call with mConnsLock held
  */
-static void l2cAclLinkEncrChangeInt(struct l2cAclConn *aclConn, bool isEncrypted)
+static void l2cAclLinkEncrChangeInt(struct l2cAclConn *aclConn, bool isEncrypted, bool isMitmSafe)
 {
     struct l2cConn *iter = mConns, *conn;
+    struct l2cEncrState es;
+    bool changed;
 
-    if (aclConn->encrypted && isEncrypted) {
-        logi("l2cAclLinkEncrChangeInt with no change (still %d)\n", isEncrypted);
+    changed = (!aclConn->encrypted != !isEncrypted) || (!aclConn->mitmSafe != !isMitmSafe);
+    if (!changed) {
+        logd("Unchanged encr call\n");
         return;
     }
-    if (!isEncrypted) {
-        /* encryption failed - is there anyone we need to tell? */
-        logi("Encryption failed for acl "HCI_CONN_FMT"x\n", HCI_CONN_CONV(aclConn->conn));
-        return;
-    }
-    aclConn->encrypted = true;
 
-    /* at this point we're sure connection just became encrypted. inform everyone */
+    aclConn->encrypted = isEncrypted;
+    aclConn->mitmSafe = isMitmSafe;
+    es.isEncr = isEncrypted;
+    es.isMitmSafe = isMitmSafe;
+
+
+    /* at this point we're sure connection encryption status changed - inform everyone */
     while (iter) {
         conn = iter;
         iter = iter->next;
@@ -5203,7 +5248,7 @@ static void l2cAclLinkEncrChangeInt(struct l2cAclConn *aclConn, bool isEncrypted
             continue;
 
         /* handle connections waiting for encryption */
-        if (conn->state == L2C_CONN_STATE_AUTH_WAIT) {
+        if (conn->state == L2C_CONN_STATE_ENCR_WAIT) {
 
             if (conn->psm) {
                 /* handle PSM connections */
@@ -5217,7 +5262,7 @@ static void l2cAclLinkEncrChangeInt(struct l2cAclConn *aclConn, bool isEncrypted
 
         /* notify existing connections */
         if (conn->state == L2C_CONN_STATE_ESTABLISHED)
-           l2cSvcWorkScheduleStateCall(conn, L2C_STATE_ENCR, NULL, 0);
+           l2cSvcWorkScheduleStateCall(conn, L2C_STATE_ENCR, &es, sizeof(es));
     }
 }
 
@@ -5284,10 +5329,13 @@ static void l2cAclDownTimerStop(struct l2cAclConn *aclConn)
  * USE:      Called when a new ACL link comes up
  * PARAMS:   aclConn - the conection ID
  *           addr - the peer address
+ *           isMaster - are we the master on the link?
+ *           isEncrypted - is link encrypted?
+ *           isMitmSafe - is link MITM safe?
  * RETURN:   NONE
  * NOTES:
  */
-void l2cAclLinkUp(hci_conn_t aclConnID, const struct bt_addr* addr, bool isMaster, bool isEncrypted)
+void l2cAclLinkUp(hci_conn_t aclConnID, const struct bt_addr* addr, bool isMaster, bool isEncrypted, bool isMitmSafe)
 {
     struct l2cAclConn *aclConn;
     struct l2cConn *connIter;
@@ -5335,6 +5383,7 @@ void l2cAclLinkUp(hci_conn_t aclConnID, const struct bt_addr* addr, bool isMaste
         aclConn->nextChan = L2C_NUM_FIXED_CHANNELS;
         aclConn->conn = aclConnID;
         aclConn->encrypted = isEncrypted;
+        aclConn->mitmSafe = isMitmSafe;
 
         /* send an info req if EDR */
         if (BT_ADDR_IS_EDR(*addr)) {
@@ -5519,20 +5568,22 @@ void l2cAclLinkDown(hci_conn_t aclConnID)
  * FUNCTION: l2cAclLinkEncrChange
  * USE:      Called when a new ACL encryption changed
  * PARAMS:   aclConn - the conection ID
+ *           isEncrypted - is link now encrypted?
+ *           isMitmSafe - is link now MITM-safe?
  * RETURN:   NONE
  * NOTES:
  */
-void l2cAclLinkEncrChange(hci_conn_t aclConnID, bool isEncrypted)
+void l2cAclLinkEncrChange(hci_conn_t aclConnID, bool isEncrypted, bool isMitmSafe)
 {
     struct l2cAclConn *aclConn;
 
-    logd("l2cAclLinkEncrChange(acl "HCI_CONN_FMT"x, %d)\n", HCI_CONN_CONV(aclConnID), isEncrypted);
+    logd("l2cAclLinkEncrChange(acl "HCI_CONN_FMT"x, %d, %d)\n", HCI_CONN_CONV(aclConnID), isEncrypted, isMitmSafe);
 
     pthread_mutex_lock(&mConnsLock);
     aclConn = l2cAclConnFindById(aclConnID);
     if (aclConn) {
-        logd("Link acl "HCI_CONN_FMT"x encr change to %d. Handling\n", HCI_CONN_CONV(aclConn->conn), isEncrypted);
-        l2cAclLinkEncrChangeInt(aclConn, isEncrypted);
+        logd("Link acl "HCI_CONN_FMT"x encr change to %d,%d. Handling\n", HCI_CONN_CONV(aclConn->conn), isEncrypted,isMitmSafe);
+        l2cAclLinkEncrChangeInt(aclConn, isEncrypted, isMitmSafe);
     } else
         logd("Link acl "HCI_CONN_FMT"x not found. Encr change ignored.\n", HCI_CONN_CONV(aclConnID));
     pthread_mutex_unlock(&mConnsLock);

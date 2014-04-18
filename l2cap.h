@@ -34,20 +34,26 @@ void l2cDeinit(void);
 
 
 /* callbacks for connections */
+struct l2cEncrState{
+    bool isEncr;
+    bool isMitmSafe;
+};
+
 #define L2C_STATE_OPEN       0 /* dataPtr points to l2c_handle_t */
 #define L2C_STATE_MTU        1 /* dataPtr points to a uint16_t mtu */
-#define L2C_STATE_ENCR       2 /* dataPtr points nowhere, connection became encrypted */
+#define L2C_STATE_ENCR       2 /* dataPtr points l2cEncrState */
 #define L2C_STATE_RX         3 /* dataPtr points to an sg */
 #define L2C_STATE_CLOSED     4 /* dataPtr points nowhere, or error on openining */ 
 typedef void (*l2cStateCbk)(void *userData, void *instance, uint8_t state, const void *data, uint32_t len);
 
 #define SVC_ALLOC_SUCCESS             0 /* must alloc state, success */
-#define SVC_ALLOC_DEMAND_ENCR         1 /* return this instead of calling l2cApiDemandEncryption(). do not allocate - you will be called again */
-#define SVC_ALLOC_FAIL_SECURITY       2 /* not secure enough connection */
-#define SVC_ALLOC_FAIL_BEING_REMOVED  3 /* being deallocated */
-#define SVC_ALLOC_FAIL_NO_CONNS       4 /* do not support conns */
-#define SVC_ALLOC_WAIT_FOR_AUTHORIZ   5 /* must alloc state but need user's OK. Standby */
-#define SVC_ALLOC_FAIL_OTHER          6 /* some other failure */
+#define SVC_ALLOC_DEMAND_ENCR         1 /* return this instead of calling l2cApiDemandEncryption(...,false). do not allocate - you will be called again */
+#define SVC_ALLOC_DEMAND_AUTH         2 /* return this instead of calling l2cApiDemandEncryption(..., true). do not allocate - you will be called again */
+#define SVC_ALLOC_FAIL_SECURITY       3 /* not secure enough connection */
+#define SVC_ALLOC_FAIL_BEING_REMOVED  4 /* being deallocated */
+#define SVC_ALLOC_FAIL_NO_CONNS       5 /* do not support conns */
+#define SVC_ALLOC_WAIT_FOR_AUTHORIZ   6 /* must alloc state but need user's OK. Standby */
+#define SVC_ALLOC_FAIL_OTHER          7 /* some other failure */
 
 /* a PSM-based service is described thusly */
 struct l2cServicePsmDescriptor {
@@ -108,8 +114,11 @@ bool l2cApiGetBtAddr(l2c_handle_t handle, struct bt_addr *addrP);
 /* external code can use this to see if a connection is encrypted */
 bool l2cApiIsConnEncrypted(l2c_handle_t handle);
 
+/* external code can use this to see if a connection is encrypted using a mitm-protected ket */
+bool l2cApiIsConnMitmSafe(l2c_handle_t handle);
+
 /* external code can use this to demand encrypted be used */
-bool l2cApiDemandEncryption(l2c_handle_t handle);
+bool l2cApiDemandEncryption(l2c_handle_t handle, bool demandMitmSafe);
 
 /* external code can use this to notify other size of athorization (only if your svc alloc returned SVC_ALLOC_WAIT_FOR_AUTHORIZ). */
 bool l2cApiUserAthorizNotify(l2c_handle_t handle, bool authorized);
@@ -134,7 +143,7 @@ uint8_t l2cApiConnectionlessDataTx(const struct bt_addr *addr, psm_t psm, sg dat
 /* LOWER LAYER INTERFACE API */
 
 /* lower layer calls this when new ACL link is up */
-void l2cAclLinkUp(hci_conn_t aclConn, const struct bt_addr *addr, bool isMaster, bool isEncrypted);
+void l2cAclLinkUp(hci_conn_t aclConn, const struct bt_addr *addr, bool isMaster, bool isEncrypted, bool isMitmSafe);
 /* lower layer calls this when an ACL link is down */
 void l2cAclLinkDown(hci_conn_t aclConn);
 /* lower layer calls this when new ACL data arrives */
@@ -144,7 +153,7 @@ void l2cAclCreditAvail(bool le);
 /* lower layer calls this when connection parameters change */
 void l2cAclLinkParamsChange(hci_conn_t aclConn, bool success, uint16_t interval, uint16_t latency, uint16_t timeout);
 /* lower layer calls this when connection encryption changes. called with FALSE if encr failed since BT cannot realyl go from encrypted to not */
-void l2cAclLinkEncrChange(hci_conn_t aclConn, bool isEncrypted);
+void l2cAclLinkEncrChange(hci_conn_t aclConn, bool isEncrypted, bool isMitmSafe);
 
 
 #endif

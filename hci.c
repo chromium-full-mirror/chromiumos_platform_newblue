@@ -182,6 +182,7 @@ struct hciCbkWorkItem {
             struct bt_addr                addr;
             bool                          isMaster;
             bool                          isEncrypted;
+            bool                          isMitmSafe;
         } connUp;
 
         struct {
@@ -199,6 +200,7 @@ struct hciCbkWorkItem {
         struct {
             hci_conn_t                    conn;
             bool                          nowEncrypted;
+            bool                          isMitmSafe;
         } encrChange;
 
         struct {
@@ -233,6 +235,7 @@ struct hciAclConn {
     uint16_t           id;
     bool               isMaster;
     bool               encrypted;
+    bool               mitmSafe;
     uint8_t            state; /* CONN_STATE_* */
     bool               pinPending;
     bool               sspPending;
@@ -329,7 +332,7 @@ static uint8_t mInquiryState = 0;
 
 /* fwd declarations */
 static bool hciBtStackUp(void);
-static bool hciScheduleConnUpNotif(hci_conn_t conn, const struct bt_addr *addr, bool isMaster, bool isEncrypted);
+static bool hciScheduleConnUpNotif(hci_conn_t conn, const struct bt_addr *addr, bool isMaster, bool isEncrypted, bool isMitmSafe);
 static bool hciScheduleConnDownNotif(hci_conn_t conn);
 static bool hciScheduleConnDataRx(hci_conn_t conn, sg packet, bool first);
 static bool hciCmdSubmitSimpleWithStatusWithDoneCbk(uint8_t ogf, uint16_t ocf, const void* paramData, uint8_t paramLen, hciOpDoneCbk cbk, void *cbkData);
@@ -337,6 +340,7 @@ static void hciHandleConnAclDown(uint16_t cid, uint8_t reason);
 static bool hciHandleConnAclEdrUp(uint8_t status, uint16_t id, const uint8_t *mac, bool encrypted);
 static bool hciHandleConnAclLeUp(uint8_t status, uint16_t id, bool isMaster, const uint8_t *mac, bool addrRandom, uint16_t interval, uint16_t latency, uint16_t timeout, uint8_t mca);
 static bool hciHandleConnAclEncr(uint16_t cid, bool encrOn);
+static bool hciHandleConnAclAuth(uint16_t cid, bool authOn);
 static bool hciHandleConnAclRoleChange(const uint8_t* mac, bool amSlave);
 static bool hciHandleConnAclLeUpdate(uint8_t status, uint16_t cid, uint16_t interval, uint16_t latency, uint16_t timeout);
 static bool hciConnUpdate(uint16_t cid, uint16_t minInt, uint16_t maxInt, uint16_t latency, uint16_t timeout);
@@ -958,7 +962,7 @@ static void* hciCbkWorker(void *unused)
             sem_post(w->flush.sem);
             break;
         case CBK_WORK_CONN_UP:
-            l2cAclLinkUp(w->connUp.conn, &w->connUp.addr, w->connUp.isMaster, w->connUp.isEncrypted);
+            l2cAclLinkUp(w->connUp.conn, &w->connUp.addr, w->connUp.isMaster, w->connUp.isEncrypted, w->connUp.isMitmSafe);
             break;
         case CBK_WORK_CONN_DOWN:
             l2cAclLinkDown(w->connDown.conn);
@@ -967,7 +971,7 @@ static void* hciCbkWorker(void *unused)
             l2cAclLinkParamsChange(w->leParamChange.conn, w->leParamChange.success, w->leParamChange.interval, w->leParamChange.latency, w->leParamChange.timeout);
             break;
         case CBK_WORK_ENCR_CHANGE:
-            l2cAclLinkEncrChange(w->leParamChange.conn, w->encrChange.nowEncrypted);
+            l2cAclLinkEncrChange(w->encrChange.conn, w->encrChange.nowEncrypted, w->encrChange.isMitmSafe);
             break;
         case CBK_WORK_ACL_DATA:
             l2cAclDataRx(w->aclDataRx.conn, w->aclDataRx.packet, w->aclDataRx.first);
@@ -1105,10 +1109,11 @@ static bool hciWorkFlush(void)
  *           addr - peer address
  *           isMaster - are we master on the link
  *           isEncrypted - is the link encrypted
+ *           isMitmSafe - is th elink MITM-safe?
  * RETURN:   true if enqueued, false else
  * NOTES:
  */
-static bool hciScheduleConnUpNotif(hci_conn_t conn, const struct bt_addr *addr, bool isMaster, bool isEncrypted)
+static bool hciScheduleConnUpNotif(hci_conn_t conn, const struct bt_addr *addr, bool isMaster, bool isEncrypted, bool isMitmSafe)
 {
     struct hciCbkWorkItem *w;
 
@@ -1193,10 +1198,11 @@ static bool hciScheduleConnParamChange(hci_conn_t conn, bool success, uint16_t i
  * USE:      Enqueue a call to the connection encr change notif
  * PARAMS:   conn - the conenction
  *           nowEncrypted - are we now encrypted?
+ *           isMitmSafe - are we now MITM-safe?
  * RETURN:   true if enqueued, false else
  * NOTES:
  */
-static bool hciScheduleConnEncrChange(hci_conn_t conn, bool nowEncrypted)
+static bool hciScheduleConnEncrChange(hci_conn_t conn, bool nowEncrypted, bool isMitmSafe)
 {
     struct hciCbkWorkItem *w;
 
@@ -3131,11 +3137,19 @@ static bool hciConnEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evt
         struct hciEvtEncrChange *encr = (struct hciEvtEncrChange*)(evt + 1);
         uint8_t status = utilGetLE8(&encr->status);
         uint16_t cid = utilGetLE16(&encr->conn);
-        bool encrOn = !!utilGetLE8(&encr->encrOn);
+        bool encrOn = !status && utilGetLE8(&encr->encrOn);
 
         logd("ACL conn %d encr %d with status %d\n", cid, encrOn, status);
         if (!hciHandleConnAclEncr(cid, encrOn))
             loge("Failed to handle conn encr\n");
+    } else if (evtType == HCI_EVT_Authentication_Complete) {
+        struct hciEvtEncrChange *encr = (struct hciEvtEncrChange*)(evt + 1);
+        uint8_t status = utilGetLE8(&encr->status);
+        uint16_t cid = utilGetLE16(&encr->conn);
+
+        logd("ACL conn %d auth with status %d\n", cid, status);
+        if (!hciHandleConnAclAuth(cid, !status))
+            loge("Failed to handle conn auth\n");
     } else if (evtType == HCI_EVT_Role_Change) {
         struct hciEvtRoleChange *role = (struct hciEvtRoleChange*)(evt + 1);
         uint8_t status = utilGetLE8(&role->status);
@@ -3612,9 +3626,9 @@ static bool hciBtStackUp(void)
 
     /* set event handlers for connection states */
     {
-        static const uint8_t connEvtTypes[] = {HCI_EVT_Connection_Request, HCI_EVT_Connection_Complete, HCI_EVT_Disconnection_Complete,
-                                               HCI_EVT_Encryption_Change, HCI_EVT_Role_Change, HCI_EVT_LE_Meta, HCI_EVT_LE_Meta, 0};
-        static const uint16_t connEvtExtras[] = {0, 0, 0, 0, 0, HCI_EVTLE_Connection_Complete, HCI_EVTLE_Connection_Update_Complete};
+        static const uint8_t connEvtTypes[] = {HCI_EVT_Connection_Request, HCI_EVT_Connection_Complete, HCI_EVT_Disconnection_Complete, HCI_EVT_Encryption_Change,
+                                               HCI_EVT_Authentication_Complete, HCI_EVT_Role_Change, HCI_EVT_LE_Meta, HCI_EVT_LE_Meta, 0};
+        static const uint16_t connEvtExtras[] = {0, 0, 0, 0, 0, 0, HCI_EVTLE_Connection_Complete, HCI_EVTLE_Connection_Update_Complete};
 
         if (!hciSetManyEventPersistentHandlers(connEvtTypes, connEvtExtras, hciConnEvtCbk, NULL)) {
             ret = -2;
@@ -4059,10 +4073,11 @@ static bool hciConnectEdr(const uint8_t *mac)
  * FUNCTION: hciConnEncryptLe
  * USE:      Start an encryption attempt for an LE connection
  * PARAMS:   conn - the connection
+ *           demandMitmSafe - do we want mitm-safety?
  * RETURN:   true if attempt will be made
  * NOTES:    call with mConnsLock held
  */
-static bool hciConnEncryptLe(struct hciAclConn *conn)
+static bool hciConnEncryptLe(struct hciAclConn *conn, bool demandMitmSafe)
 {
     if (!(mLocalLeFtrs & HCI_LE_FTR_ENCRYPTION)) {
         loge("Encryption not supported\n");
@@ -4083,12 +4098,14 @@ static bool hciConnEncryptLe(struct hciAclConn *conn)
  * FUNCTION: hciConnEncryptEdr
  * USE:      Start an encryption attempt for an EDR connection
  * PARAMS:   conn - the connection
+ *           demandMitmSafe - do we want mitm-safety?
  * RETURN:   true if attempt will be made
  * NOTES:    call with mConnsLock held
  */
-static bool hciConnEncryptEdr(struct hciAclConn *conn)
+static bool hciConnEncryptEdr(struct hciAclConn *conn, bool demandMitmSafe)
 {
-    struct hciSetConnectionEncryption cmd;
+    struct hciSetConnectionEncryption cmdEncr;
+    struct hciAuthRequested cmdAuth;
 
     if (!(mLocalFtrs[0] & HCI_LMP_FTR_ENCRYPTION)) {
         loge("Encryption not supported locally\n");
@@ -4100,11 +4117,19 @@ static bool hciConnEncryptEdr(struct hciAclConn *conn)
         return false;
     }
     
-    utilSetLE16(&cmd.conn, conn->id);
-    utilSetLE8(&cmd.encrOn, 1);
-    if (!hciCmdSubmitSimpleWithStatusWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Set_Connection_Encryption, &cmd, sizeof(cmd), hciCmdStatusCbk, NULL)) {
-        logi("Failed to request encr to cid %d\n", conn->id);
-        return false;
+    utilSetLE16(&cmdEncr.conn, conn->id);
+    utilSetLE8(&cmdEncr.encrOn, 1);
+    utilSetLE16(&cmdAuth.conn, conn->id);
+    if (demandMitmSafe) {
+        if (!hciCmdSubmitSimpleWithStatusWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Authentication_Requested, &cmdAuth, sizeof(cmdAuth), hciCmdStatusCbk, NULL)) {
+            logi("Failed to request encr to cid %d\n", conn->id);
+            return false;
+        }
+    } else {
+        if (!hciCmdSubmitSimpleWithStatusWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Set_Connection_Encryption, &cmdEncr, sizeof(cmdEncr), hciCmdStatusCbk, NULL)) {
+            logi("Failed to request encr to cid %d\n", conn->id);
+            return false;
+        }
     }
     return true;
 }
@@ -4335,7 +4360,7 @@ bool hciUpdateLeParams(hci_conn_t aclConn, uint16_t minInt, uint16_t maxInt, uin
  * RETURN:   true if attempt will be made
  * NOTES:
  */
-bool hciDemandEncr(hci_conn_t aclConn)
+bool hciDemandEncr(hci_conn_t aclConn, bool demandMitmSafe)
 {
     struct hciAclConn* conn;
     bool ret = false;
@@ -4346,12 +4371,12 @@ bool hciDemandEncr(hci_conn_t aclConn)
         logw("Conection for encrypt not found\n");
     else if (conn->state != CONN_STATE_RUNNING)
         logw("Cannot update encryption for not-yet-established connection\n");
-    else if (conn->encrypted)
-        logw("Connection already encrypted\n");
+    else if (conn->encrypted && (conn->mitmSafe || !demandMitmSafe))
+        logw("Connection already encrypted up to requested level\n");
     else if (BT_ADDR_IS_LE(conn->addr))
-        ret = hciConnEncryptLe(conn);
+        ret = hciConnEncryptLe(conn, demandMitmSafe);
     else
-        ret = hciConnEncryptEdr(conn);
+        ret = hciConnEncryptEdr(conn, demandMitmSafe);
     pthread_mutex_unlock(&mConnsLock);
 
     return !!conn;
@@ -4732,7 +4757,7 @@ static void hciConnCfg(struct hciAclConn *c, uint32_t step, uint32_t aux)
     /* if we got here, the configuration step ended and it is time to proceed */
     if (success) {
         c->state = CONN_STATE_RUNNING; 
-        if (hciScheduleConnUpNotif(c->handle, &c->addr, c->isMaster, c->encrypted)) {
+        if (hciScheduleConnUpNotif(c->handle, &c->addr, c->isMaster, c->encrypted, c->mitmSafe)) {
             /* if there are any backlogged RX messages, queue them up too */
             while (c->rxBacklog) {
                 struct hciBacklogItemHdr itemHdr;
@@ -4912,7 +4937,33 @@ static bool hciHandleConnAclEncr(uint16_t cid, bool encrOn)
     if (c) {
         logd("cid %d was %sencrypted\n", cid, c->encrypted ? "" : "not ");
         c->encrypted = encrOn;
-        ret = hciScheduleConnEncrChange(c->handle, encrOn);
+        ret = hciScheduleConnEncrChange(c->handle, c->encrypted, c->mitmSafe);
+    }
+    pthread_mutex_unlock(&mConnsLock);
+    return ret;
+}
+
+/*
+ * FUNCTION: hciHandleConnAclAuth
+ * USE:      Notify all interested in authentication change
+ * PARAMS:   cid - the connection id
+ *           authOn - is auth on
+ * RETURN:   true on success
+ * NOTES:
+ */
+static bool hciHandleConnAclAuth(uint16_t cid, bool authOn)
+{
+    struct hciAclConn *c;
+    bool ret = false;
+
+    logd("cid %d now %sauthed\n", cid, authOn ? "" : "not ");
+
+    pthread_mutex_lock(&mConnsLock);
+    c = hciConnFindById(cid);
+    if (c) {
+        logd("cid %d was %sauthed\n", cid, c->mitmSafe ? "" : "not ");
+        c->mitmSafe = authOn;
+        ret = hciScheduleConnEncrChange(c->handle, c->encrypted, c->mitmSafe);
     }
     pthread_mutex_unlock(&mConnsLock);
     return ret;
