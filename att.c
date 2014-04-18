@@ -1742,6 +1742,35 @@ unrecoverable:
     return attSrvSendErrorReply(to, ATT_ERROR_UNLIKELY_ERROR, ATT_OPCODE_FIND_INFO_REQ, 0);
 }
 
+/*
+ * FUNCTION: attValIsReadableBy
+ * USE:      Decide if a given value is readable by a given connection
+ * PARAMS:   range -the value's range
+ *           val - the value
+ *           who - who is asking
+ *           extra - per-connection state for this connection
+ * RETURN:   true if allowed to read, false else
+ * NOTES:    call with mSrvLock held
+ */
+static bool attValIsReadableBy(struct attSrvRange *range, struct attSrvVal *val, l2c_handle_t who, struct attSrvConnExtra *extra)
+{
+    return !!(val->perms & ATT_PERM_READ);
+}
+
+/*
+ * FUNCTION: attValIsWriteableBy
+ * USE:      Decide if a given value is writeable by a given connection
+ * PARAMS:   range -the value's range
+ *           val - the value
+ *           who - who is asking
+ *           extra - per-connection state for this connection
+ * RETURN:   true if allowed to write, false else
+ * NOTES:    call with mSrvLock held
+ */
+static bool attValIsWriteableBy(struct attSrvRange *range, struct attSrvVal *val, l2c_handle_t who, struct attSrvConnExtra *extra)
+{
+    return !!(val->perms & ATT_PERM_WRITE);
+}
 
 /*
  * FUNCTION: attSrvOpFindByTypeValContinue
@@ -1810,7 +1839,7 @@ static bool attSrvOpFindByTypeValContinue(struct attSrvConnExtra *extra, l2c_han
                 goto done;
 
             /* must be readable */
-            if (!(val->perms & ATT_PERM_READ))
+            if (!attValIsReadableBy(range, val, to, extra))
                 continue;
 
             /* must be of a given type */
@@ -2033,7 +2062,7 @@ static bool attSrvOpReadByTypeContinue(struct attSrvConnExtra *extra, l2c_handle
                 goto done;
 
             /* must be readable */
-            if (!(val->perms & ATT_PERM_READ))
+            if (!attValIsReadableBy(range, val, to, extra))
                 continue;
 
             /* must be of a given type */
@@ -2225,7 +2254,7 @@ static bool attSrvOpReadStart(l2c_handle_t to, uint32_t mtu, uint16_t wantedHand
                 }
 
                 /* must be readable */
-                if (!(val->perms & ATT_PERM_READ)) {
+                if (!attValIsReadableBy(range, val, to, extra)) {
                     err = ATT_ERROR_READ_NOT_ALLOWED;
                     goto done;
                 }
@@ -2315,7 +2344,7 @@ static bool attSrvOpReadMultContinue(struct attSrvConnExtra *extra, l2c_handle_t
             extra->penOp.readMult.lastReadHandle = wantedHandle;
 
             /* must be readable */
-            if (!(val->perms & ATT_PERM_READ)) {
+            if (!attValIsReadableBy(range, val, to, extra)) {
                 err = ATT_ERROR_READ_NOT_ALLOWED;
                 goto error;
             }
@@ -2455,7 +2484,7 @@ static bool attSrvWriteStart(l2c_handle_t to, uint32_t mtu, uint16_t wantedHandl
 out:
         if (!val)
             err = ATT_ERROR_INVALID_HANDLE;
-        else if (!(val->perms & ATT_PERM_WRITE))
+        else if (!attValIsWriteableBy(range, val, to, extra))
             err = ATT_ERROR_WRITE_NOT_ALLOWED;
         else {
             extra->penOp.origOpcode = opcode;
