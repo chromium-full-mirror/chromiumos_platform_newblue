@@ -436,13 +436,14 @@ static bool gattAttSvrReadCbk(l2c_handle_t who, int cid, att_range_t rangeRef, u
         err = ATT_ERROR_INVALID_HANDLE;
         goto out;
     } else {
+        uint16_t ctr = ofst;
         gi = svc->itemsHead;
-        ofst -= GATT_HDR_HANDLES;
-        while (gi && ofst--)
+        ctr -= GATT_HDR_HANDLES;
+        while (gi && ctr--)
             gi = gi->next;
 
         if (!gi) {
-            logw("Handle list ended abruptly with %u handles to go\n", ofst);
+            logw("Handle list ended abruptly with %u handles to go\n", ctr);
             err = ATT_ERROR_INVALID_HANDLE;
             goto out;
         }
