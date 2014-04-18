@@ -1027,10 +1027,20 @@ static uint8_t gattPermToAttPerm(uint32_t gattPerms)
 {
     uint8_t ret = 0;
 
-    if (gattPerms & GATT_PERM_ALL_READ)
+    if (gattPerms & GATT_PERM_READ)
         ret |= ATT_PERM_READ;
-    if (gattPerms & GATT_PERM_ALL_WRITE)
+    if (gattPerms & GATT_PERM_READ_ENCR)
+        ret |= ATT_PERM_READ_ENCR;
+    if (gattPerms & GATT_PERM_READ_ENCR_MITM)
+        ret |= ATT_PERM_READ_ENCR_MITM;
+    if (gattPerms & GATT_PERM_WRITE)
         ret |= ATT_PERM_WRITE;
+    if (gattPerms & GATT_PERM_WRITE_ENCR)
+        ret |= ATT_PERM_WRITE_ENCR;
+    if (gattPerms & GATT_PERM_WRITE_ENCR_MITM)
+        ret |= ATT_PERM_WRITE_ENCR_MITM;
+    if (gattPerms & (GATT_PERM_WRITE_SIGNED | GATT_PERM_WRITE_SIGNED_MITM))
+        ret |= ATT_PERM_WRITE_SIGNED;
 
     return ret;
 }
@@ -1044,8 +1054,9 @@ static uint8_t gattPermToAttPerm(uint32_t gattPerms)
  */
 static bool gattServiceOnline(struct gattService *svc)
 {
-    struct gattItem *gi;
+    static const uint8_t attAllReadPerms = ATT_PERM_READ | ATT_PERM_READ_ENCR | ATT_PERM_READ_ENCR_MITM;
     uint16_t ofst = 0, charOfst = 0;
+    struct gattItem *gi;
     struct uuid uuid;
     uint8_t perms = 0;
 
@@ -1055,7 +1066,7 @@ static bool gattServiceOnline(struct gattService *svc)
     }
 
     uuidFromUuid16(&uuid, svc->primary ? GATT_UUID_SVC_PRIMARY : GATT_UUID_SVC_SECONDARY);
-    if (!attSrvValueRegister(svc->attRange, ofst++, &uuid, ATT_PERM_READ)) {
+    if (!attSrvValueRegister(svc->attRange, ofst++, &uuid, attAllReadPerms)) {
         loge("Failed to add service header\n");
         goto out;
     }
@@ -1067,11 +1078,11 @@ static bool gattServiceOnline(struct gattService *svc)
         switch (gi->type) {
         case GATT_ITEM_TYPE_INCLUDE:
             uuidFromUuid16(&uuid, GATT_UUID_INCLUDE);
-            perms = ATT_PERM_READ;
+            perms = attAllReadPerms;
             break;
         case GATT_ITEM_TYPE_CHAR_DECL:
             uuidFromUuid16(&uuid, GATT_UUID_CHARACTERISTIC);
-            perms = ATT_PERM_READ;
+            perms = attAllReadPerms;
             charOfst = ofst;
             break;
         case GATT_ITEM_TYPE_CHAR_VAL:
