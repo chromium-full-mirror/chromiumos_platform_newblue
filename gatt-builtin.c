@@ -142,7 +142,7 @@ bool gattBuiltinInit(void)
 
     /* make "GATT" service */
     uuidFromUuid16(&uuid, GATT_UUID_SVC_GATT_SVR);
-    mSvcGatt = gattServiceCreate(&uuid, true, 4, gattBuiltinReadF, gattBuiltinWriteF, gattBuiltinIndF);
+    mSvcGatt = gattServiceCreate(&uuid, true, 1, gattBuiltinReadF, gattBuiltinWriteF, gattBuiltinIndF);
     if (!mSvcGatt) {
         loge("Failed to register GATT.GATT\n");
         goto out_fail;
