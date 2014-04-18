@@ -5,6 +5,7 @@
 #include "uuid.h"
 #include "uniq.h"
 #include "att.h"
+#include "sdp.h"
 
 /* sadly android interface stop sus from using uniq_t for handles here */
 
@@ -12,17 +13,22 @@
 #define GATT_FIXEDCH                 0x0004
 
 
-/* UUIDs */
+/* UUIDs & other GATT defines */
+#define GATT_UUID_SVC_GAP            SDP_SVC_CLASS_GAP
+#define GATT_UUID_SVC_GATT_SVR       SDP_SVC_CLASS_GATT
 #define GATT_UUID_SVC_PRIMARY        0x2800
 #define GATT_UUID_SVC_SECONDARY      0x2801
 #define GATT_UUID_INCLUDE            0x2802
 #define GATT_UUID_CHARACTERISTIC     0x2803
 #define GATT_UUID_CHAR_EXTD_PROPS    0x2900
 #define GATT_UUID_CHAR_USER_DESCR    0x2901
-#define GATT_UUID_CHAR_CLI_CHAR_CFG  0x2902
+#define GATT_UUID_CHAR_CLI_CHAR_CFG  0x2902 /* uint16_t, see GATT_CLI_CFG_BIT_* */
 #define GATT_UUID_CHAR_SVR_CHAR_CFG  0x2903
 #define GATT_UUID_CHAR_PRES_FMT      0x2904
 #define GATT_UUID_CHAR_AGGR_FMT      0x2905
+
+#define GATT_CLI_CFG_BIT_NOTIFS      0x0001
+#define GATT_CLI_CFG_BIT_INDS        0x0002
 
 /* what other device sees */
 #define GATT_PROP_BROADCAST          0x01
@@ -43,6 +49,8 @@
 #define GATT_PERM_WRITE_ENCR_MITM    0x00000040
 #define GATT_PERM_WRITE_SIGNED       0x00000080
 #define GATT_PERM_WRITE_SIGNED_MITM  0x00000100
+#define GATT_PERM_ALL_READ           (GATT_PERM_READ | GATT_PERM_READ_ENCR | GATT_PERM_READ_ENCR_MITM)
+#define GATT_PERM_ALL_WRITE          (GATT_PERM_WRITE | GATT_PERM_WRITE_ENCR | GATT_PERM_WRITE_ENCR_MITM | GATT_PERM_WRITE_SIGNED | GATT_PERM_WRITE_SIGNED_MITM)
 
 
 /* profile init/deinit */
@@ -60,7 +68,8 @@ typedef void (*gattSrvIndCbk)(int svc, l2c_handle_t who, int cid, uint16_t handl
 /* service lifecycle */
 int gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles, gattSrvValueReadCbk readF, gattSrvValueWriteCbk writeF, gattSrvIndCbk indF);
 bool gattServiceDestroy(int svc);
-uint16_t gattServiceGetHandleBase(const struct uuid *uuid); /* or 0 on error */
+uint16_t gattServiceGetHandleBaseByUuid(const struct uuid *uuid); /* or 0 on error */
+uint16_t gattServiceGetHandleBaseBySvc(int svc); /* or 0 on error */
 
 /* service control */
 bool gattServiceStart(int svc);

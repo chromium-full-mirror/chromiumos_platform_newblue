@@ -39,3 +39,15 @@ dont bother name discovering if EIR nas name
 
 idea: sdp socket: open, write length, write record. till closed record is visible :)
 
+
+
+
+current gatt server api is unclear on how cross-service queued writes work. whom do you notify about execution?
+or perhaps we need to keep track and notify all? but them how do we maintain atomicity?
+
+
+
+[!!!]
+The Client Characteristic Configuration descriptor
+shall be persistent across connections for bonded devices. It is unique for each client.
+

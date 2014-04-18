@@ -1027,9 +1027,9 @@ static uint8_t gattPermToAttPerm(uint32_t gattPerms)
 {
     uint8_t ret = 0;
 
-    if (gattPerms & (GATT_PERM_READ | GATT_PERM_READ_ENCR | GATT_PERM_READ_ENCR_MITM))
+    if (gattPerms & GATT_PERM_ALL_READ)
         ret |= ATT_PERM_READ;
-    if (gattPerms & (GATT_PERM_WRITE | GATT_PERM_WRITE_ENCR | GATT_PERM_WRITE_ENCR_MITM | GATT_PERM_WRITE_SIGNED | GATT_PERM_WRITE_SIGNED_MITM))
+    if (gattPerms & GATT_PERM_ALL_WRITE)
         ret |= ATT_PERM_WRITE;
 
     return ret;
@@ -1254,13 +1254,13 @@ bool gattServiceStop(int svcRef)
 }
 
 /*
- * FUNCTION: gattServiceGetHandleBase
+ * FUNCTION: gattServiceGetHandleBaseByUuid
  * USE:      Get the base handle for a service given its UUID. Only works for online services
  * PARAMS:   uuid - the desired uuid
  * RETURN:   handle value or 0 on error
  * NOTES:
  */
-uint16_t gattServiceGetHandleBase(const struct uuid *uuid)
+uint16_t gattServiceGetHandleBaseByUuid(const struct uuid *uuid)
 {
     struct gattService *svc;
     uint16_t handle = 0;
@@ -1271,6 +1271,29 @@ uint16_t gattServiceGetHandleBase(const struct uuid *uuid)
         loge("Cannot get base for not-found service\n");
     else if (!svc->online)
         loge("Non-online services have no base\n");
+    else
+        handle = attSrvHandleRangeGetBase(svc->attRange);
+    pthread_mutex_unlock(&mGattLock);
+
+    return handle;
+}
+
+/*
+ * FUNCTION: gattServiceGetHandleBaseBySvc///aaa
+ * USE:      Get the base handle for a service given its service ref
+ * PARAMS:   uuid - the desired uuid
+ * RETURN:   handle value or 0 on error
+ * NOTES:
+ */
+uint16_t gattServiceGetHandleBaseBySvc(int svcRef)
+{
+    struct gattService *svc;
+    uint16_t handle = 0;
+
+    pthread_mutex_lock(&mGattLock);
+    svc = gattServiceFindByHandle(svcRef);
+    if (!svc)
+        loge("Cannot get base for not-found service\n");
     else
         handle = attSrvHandleRangeGetBase(svc->attRange);
     pthread_mutex_unlock(&mGattLock);
