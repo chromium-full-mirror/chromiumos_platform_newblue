@@ -1374,7 +1374,7 @@ out:
  *           uuid - the uuid of the value
  *           props - the value properties to show
  *           perms - actual permissions for the value
- * RETURN:   handle or 0 on error
+ * RETURN:   handle of the value attribute (not of the descriptor attribute which is first) or 0 on error
  * NOTES:
  */
 uint16_t gattServiceAddChar(int svcRef, const struct uuid *uuid, uint8_t props, uint32_t perms)
@@ -1414,8 +1414,8 @@ uint16_t gattServiceAddChar(int svcRef, const struct uuid *uuid, uint8_t props, 
     giVal->type = GATT_ITEM_TYPE_CHAR_VAL;
     giVal->charVal.valPerms = perms;
 
-    handle = gattServiceItemAppend(svc, giDecl) + attSrvHandleRangeGetBase(svc->attRange) + GATT_HDR_HANDLES;
-    gattServiceItemAppend(svc, giVal);
+    gattServiceItemAppend(svc, giDecl);
+    handle = gattServiceItemAppend(svc, giVal) + attSrvHandleRangeGetBase(svc->attRange) + GATT_HDR_HANDLES;
 
 out:
     pthread_mutex_unlock(&mGattLock);
