@@ -245,6 +245,8 @@ struct attSrvConnExtra {
 
     uint32_t mtu;
     int cid; /* for higher layer */
+    bool isEncr; /* XXX: set this */
+    bool isMitmProtected; /* XXX: set this */
 
     int nextTransId;
     struct attSrvPendingOp penOp;
@@ -1754,7 +1756,16 @@ unrecoverable:
  */
 static bool attValIsReadableBy(struct attSrvRange *range, struct attSrvVal *val, l2c_handle_t who, struct attSrvConnExtra *extra)
 {
-    return !!(val->perms & ATT_PERM_READ);
+    if (extra->isEncr && extra->isMitmProtected && (val->perms & ATT_PERM_READ_ENCR_MITM))
+        return true;
+
+    if (extra->isEncr && !extra->isMitmProtected && (val->perms & ATT_PERM_READ_ENCR))
+        return true;
+
+    if (!extra->isEncr && (val->perms & ATT_PERM_READ))
+        return true;
+
+    return false;
 }
 
 /*
@@ -1764,12 +1775,25 @@ static bool attValIsReadableBy(struct attSrvRange *range, struct attSrvVal *val,
  *           val - the value
  *           who - who is asking
  *           extra - per-connection state for this connection
+ *           isSigned - is this a signed write?
  * RETURN:   true if allowed to write, false else
  * NOTES:    call with mSrvLock held
  */
-static bool attValIsWriteableBy(struct attSrvRange *range, struct attSrvVal *val, l2c_handle_t who, struct attSrvConnExtra *extra)
+static bool attValIsWriteableBy(struct attSrvRange *range, struct attSrvVal *val, l2c_handle_t who, struct attSrvConnExtra *extra, bool isSigned)
 {
-    return !!(val->perms & ATT_PERM_WRITE);
+    if (!extra->isEncr && isSigned && (val->perms & ATT_PERM_WRITE_SIGNED))
+        return true;
+
+    if (!isSigned && extra->isEncr && extra->isMitmProtected && (val->perms & ATT_PERM_WRITE_ENCR_MITM))
+        return true;
+
+    if (!isSigned && extra->isEncr && !extra->isMitmProtected && (val->perms & ATT_PERM_WRITE_ENCR))
+        return true;
+
+    if (!isSigned && !extra->isEncr && (val->perms & ATT_PERM_WRITE))
+        return true;
+
+    return false;
 }
 
 /*
@@ -2484,7 +2508,7 @@ static bool attSrvWriteStart(l2c_handle_t to, uint32_t mtu, uint16_t wantedHandl
 out:
         if (!val)
             err = ATT_ERROR_INVALID_HANDLE;
-        else if (!attValIsWriteableBy(range, val, to, extra))
+        else if (!attValIsWriteableBy(range, val, to, extra, writeReason == ATT_WRITE_FOR_SIGNED_WRITE_CMD))
             err = ATT_ERROR_WRITE_NOT_ALLOWED;
         else {
             extra->penOp.origOpcode = opcode;

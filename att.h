@@ -17,7 +17,13 @@ typedef uniq_t att_range_t;
 #define ATT_SIG_LEN                    SM_SIG_LEN
 
 #define ATT_PERM_READ                  0x01
-#define ATT_PERM_WRITE                 0x02
+#define ATT_PERM_READ_ENCR             0x02
+#define ATT_PERM_READ_ENCR_MITM        0x04
+#define ATT_PERM_WRITE                 0x08
+#define ATT_PERM_WRITE_ENCR            0x10
+#define ATT_PERM_WRITE_ENCR_MITM       0x20
+#define ATT_PERM_WRITE_SIGNED          0x40
+
 /* other permissions shall be handled by higher-layer code */
 
 #define ATT_ATTR_MAX_LEN               512
