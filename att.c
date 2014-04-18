@@ -2452,13 +2452,14 @@ out:
             err = ATT_ERROR_INVALID_HANDLE;
         else if (!(val->perms & ATT_PERM_WRITE))
             err = ATT_ERROR_WRITE_NOT_ALLOWED;
-
-        extra->penOp.origOpcode = opcode;
-        extra->penOp.mtu = mtu;
-        extra->penOp.startHandle = wantedHandle;
-        if (attSrvSchedWriteCbk(range, val, to, writeReason, 0, data))
-            return true;
-        extra->penOp.origOpcode = 0;
+        else {
+            extra->penOp.origOpcode = opcode;
+            extra->penOp.mtu = mtu;
+            extra->penOp.startHandle = wantedHandle;
+            if (attSrvSchedWriteCbk(range, val, to, writeReason, 0, data))
+                return true;
+            extra->penOp.origOpcode = 0;
+        }
     }
 
     return attSrvSendErrorReply(to, err, ATT_OPCODE_WRITE_REQ, wantedHandle);
