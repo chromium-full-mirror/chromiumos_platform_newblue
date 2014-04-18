@@ -1,11 +1,4 @@
-//note: not allowed to sign packets on encrypted links
-//commands an dnotifications can be dropped due to overflowing buffers and cannot be treated as reliable
-//any transaction (packet requiring response) taking over 30 sec is a timeout and should serve to close the ATT bearer and refuse all further TX until new link is eastablished
 //TODO: we enforce readbility/writablity perms, we can also easily enforce encrypt/auth perms. we should, to avoid higher layer bothering
-//todo: replace instances of unlikely error with insufficient resources error where appropriate
-//todo: audit all uses of SG to make sure return codes are consistent with sg ownership!
-//execF may be null if pending write snot supported. we shoudl; avoid queueing writes in that case!
-//todo: actualyl track transaction IDs and enforce them...
 #include <stdlib.h>
 #include <string.h>
 #include "workQueue.h"
@@ -496,8 +489,10 @@ static bool attSrvSchedWriteCbk(struct attSrvRange *range, struct attSrvVal* val
     wi->write.len = len;
     wi->write.reason = reason;
 
-    if (workQueuePut(mWorkQ, wi))
+    if (workQueuePut(mWorkQ, wi)) {
+        sgFree(data);
         return true;
+    }
 
     free(wi);
     return false;
@@ -1664,7 +1659,7 @@ static bool attSrvOpFindInfo(l2c_handle_t to, uint32_t mtu, uint16_t startHandle
     results = sgNew();
 
     if (!results)
-        goto unrecoverable;
+        return attSrvSendErrorReply(to, ATT_ERROR_INSUFFICIENT_RSRCS, ATT_OPCODE_FIND_INFO_REQ, startHandle);
 
     mtu -= sizeof(struct attPduFindInfoRsp) + sizeof(struct attHdr); /* mtu is now how many bytes we can produce */
 
@@ -1869,9 +1864,12 @@ static bool attSrvOpFindByTypeValStart(l2c_handle_t to, uint32_t mtu, uint16_t s
     struct attSrvConnExtra *extra = attConnListGetExtra(&mAllClients, to);
     uint8_t err = ATT_ERROR_INSUFFICIENT_RSRCS;
     sg results = NULL;
+    bool ret;
 
-    if (!startHandle || startHandle > endHandle)
-        return attSrvSendErrorReply(to, ATT_ERROR_INVALID_HANDLE, ATT_OPCODE_FIND_BY_TYPE_VAL_REQ, startHandle);
+    if (!startHandle || startHandle > endHandle) {
+        ret = attSrvSendErrorReply(to, ATT_ERROR_INVALID_HANDLE, ATT_OPCODE_FIND_BY_TYPE_VAL_REQ, startHandle);
+        goto out;
+    }
 
     if (!extra)
         loge("No extra found for connection\n");
@@ -1897,8 +1895,10 @@ static bool attSrvOpFindByTypeValStart(l2c_handle_t to, uint32_t mtu, uint16_t s
                 extra->penOp.findByTypeValue.wantedLen = sgLength(s);
                 extra->penOp.findByTypeValue.valGrpLen = 0;
 
-                if (attSrvOpFindByTypeValContinue(extra, to, NULL, 0, ATT_FIRST_CONTINUE_CALL))
+                if (attSrvOpFindByTypeValContinue(extra, to, NULL, 0, ATT_FIRST_CONTINUE_CALL)) {
+                    sgFree(s);
                     return true;
+                }
 
                 err = ATT_ERROR_UNLIKELY_ERROR;
                 extra->penOp.origOpcode = 0;
@@ -1909,7 +1909,12 @@ static bool attSrvOpFindByTypeValStart(l2c_handle_t to, uint32_t mtu, uint16_t s
         }
     }
 
-    return attSrvSendErrorReply(to, err, ATT_OPCODE_FIND_BY_TYPE_VAL_REQ, startHandle);
+    ret = attSrvSendErrorReply(to, err, ATT_OPCODE_FIND_BY_TYPE_VAL_REQ, startHandle);
+
+out:
+    if (ret)
+        sgFree(s);
+    return ret;
 }
 
 /*
@@ -2462,7 +2467,11 @@ out:
         }
     }
 
-    return attSrvSendErrorReply(to, err, ATT_OPCODE_WRITE_REQ, wantedHandle);
+    if (attSrvSendErrorReply(to, err, ATT_OPCODE_WRITE_REQ, wantedHandle)) {
+        sgFree(data);
+        return true;
+    }
+    return false;
 }
 
 /*
@@ -2487,12 +2496,14 @@ static bool attSrvOpSignedWrite(l2c_handle_t to, uint32_t mtu, uint16_t handle, 
 
     if (!l2cApiGetBtAddr(to, &addr)) {
         logw("Cannot get address for signed write. Dropping\n");
+        sgFree(data);
         return true;
     }
 
     /* XXX: may need to resolve address first */
     if (!persistGetDevKey(&addr, KEY_TYPE_CSRK, k)) {
         logw("Cannot get CSRK for signed write. Dropping\n");
+        sgFree(data);
         return true;
     }
 
@@ -2507,6 +2518,7 @@ static bool attSrvOpSignedWrite(l2c_handle_t to, uint32_t mtu, uint16_t handle, 
 
     if (memcmp(calcedSig, rxedSig, ATT_SIG_LEN)) {
         logw("Sig check failed. Dropping\n");
+        sgFree(data);
         return true;
     }
 
@@ -2608,10 +2620,10 @@ static bool attSrvOpHandleValueConf(l2c_handle_t to, uint32_t mtu)
  * USE:      Called when data arrives from a given connection
  * PARAMS:   from - whom the data arived from
  *           s - the data
- * RETURN:   success
+ * RETURN:   NONE
  * NOTES:
  */
-bool attSrvDataRx(l2c_handle_t from, sg s)
+void attSrvDataRx(l2c_handle_t from, sg s)
 {
     struct attPduFindByTypeValReq findByTypeValReq;
     struct attPduPrepareWriteReq prepareWriteReq;
@@ -2632,8 +2644,11 @@ bool attSrvDataRx(l2c_handle_t from, sg s)
     uint8_t opcode;
     uint32_t mtu;
 
-    if (!sgSerializeCutFront(s, &hdr, sizeof(hdr)))
-        return false;
+    if (!sgSerializeCutFront(s, &hdr, sizeof(hdr))) {
+        loge("ATT cannot find header\n");
+        return;
+    }
+
     opcode = utilGetLE8(&hdr.opcode);
 
     /* add to known client list */
@@ -2712,7 +2727,7 @@ bool attSrvDataRx(l2c_handle_t from, sg s)
         if ((sgLength(s) % sizeof(uint16_t)) || sgLength(s) < sizeof(uint16_t[ATT_MIN_HANDLES_IN_READ_MULT]))
             ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
-            ret = attSrvOpReadMultStart(from, mtu, s);
+            ret = attSrvOpReadMultStart(from, mtu, s);///aaa
         break;
 
     case ATT_OPCODE_READ_BY_GRP_TYPE_REQ:
@@ -2766,6 +2781,11 @@ bool attSrvDataRx(l2c_handle_t from, sg s)
         break;
 
     case ATT_OPCODE_SIGNED_WRITE_CMD:
+        if (l2cApiIsConnEncrypted(from)) {
+            sgFree(s);
+            ret = true;
+            break;
+        }
         mtu = attConnMtuGet(from, true);
         if (!sgSerializeCutFront(s, &signedWriteCmd, sizeof(signedWriteCmd)))
             ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
@@ -2787,9 +2807,10 @@ bool attSrvDataRx(l2c_handle_t from, sg s)
 
 out:
     pthread_mutex_unlock(&mSrvLock);
-    if (ret)
+    if (!ret) {
+        loge("ATT failed to handle this message\n");
         sgFree(s);
-    return ret;
+    }
 }
 
 /*

@@ -620,8 +620,7 @@ static void gattConnEvt(void *userData, void *instance, uint8_t evt, const void 
             break;
         }
         s = *(sg*)data;
-        if (attSrvDataRx(state->conn, s))
-            break;
+        attSrvDataRx(state->conn, s);
         logw("Incoming GATT message was not accepted by ATT\n");
         sgFree(s);
         break;
