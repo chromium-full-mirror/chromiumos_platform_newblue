@@ -1986,7 +1986,7 @@ bool hciSetEirData(const uint8_t *data, uint8_t dlen, bool fecRequired, hciOpDon
  */
 bool hciSetAdvData(const uint8_t *data, uint8_t dlen, hciOpDoneCbk cbkDone, void *cbkData)
 {
-    struct hciLeSetAdvData cmd;
+    struct hciLeSetAdvData cmd = {0,};
 
     if (!mHaveLe) {
         loge("Refusing adv data setting with no EDR support\n");
