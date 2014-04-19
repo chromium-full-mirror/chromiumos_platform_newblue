@@ -86,8 +86,8 @@ struct gattService {
     uint16_t             useCount; /* how many services include this one */
     bool                 primary;
     bool                 online;
-    bool                 supportLE;
-    bool                 supportEDR;
+    bool                 allowLE;
+    bool                 allowEDR;
 };
 
 struct gattWorkItem {
@@ -128,8 +128,6 @@ struct gattWorkItem {
 
 
 /* our state */
-static uint32_t mSdpHandleGatt;
-static uint32_t mSdpHandleGap;
 static struct sendQ* mSendQ;
 static struct workQueue* mWorkQ;
 static pthread_t mWorker;
@@ -726,21 +724,28 @@ static uint8_t gattFixedChSvcAlloc(void *userData, l2c_handle_t handle, void **i
 /*
  * FUNCTION: gattSdpInit
  * USE:      Called to add a GATT profile to SDP
- * PARAMS:   genericAttrProfileHandle - start handle for generic attribute profile
- *           genericAttrProfileLen - length of generic attribute profile
+ * PARAMS:   uuid - the uuid
+ *           firstHandle - the first handle
+ *           numHandles - how mnay handles the profile has
  * RETURN:   sdp handle or 0 on error
  * NOTES:
  */
-static uint32_t gattSdpAdd(uint16_t uuid16, uint16_t profileAttHandle, uint16_t profileAttLen)
+static uint32_t gattSdpAdd(struct uuid *uuid, uint16_t firstHandle, uint16_t numHandles)
 {
-    uint16_t profileAttEnd = profileAttHandle + profileAttLen - 1;
-
-    uint8_t sdpDescrGatt[] = {
+    const uint16_t lastHandle = firstHandle + numHandles - 1;
+    static const uint8_t hdrUuid16[] = {
         //service class ID list
         SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(SDP_ATTR_SVC_CLS_ID_LIST),
         SDP_ITEM_DESC(SDP_TYPE_ARRAY, SDP_SZ_u8), 3,
-            SDP_ITEM_DESC(SDP_TYPE_UUID, SDP_SZ_2), SDP_U16(uuid16),
-
+            SDP_ITEM_DESC(SDP_TYPE_UUID, SDP_SZ_2)
+    };
+    static const uint8_t hdrUuid128[] = {
+        //service class ID list
+        SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(SDP_ATTR_SVC_CLS_ID_LIST),
+        SDP_ITEM_DESC(SDP_TYPE_ARRAY, SDP_SZ_u8), 17,
+            SDP_ITEM_DESC(SDP_TYPE_UUID, SDP_SZ_16)
+    };
+    uint8_t footer[] = {
         //ProtocolDescriptorList
         SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(SDP_ATTR_PROTOCOL_DESCR_LIST),
         SDP_ITEM_DESC(SDP_TYPE_ARRAY, SDP_SZ_u8), 19,
@@ -749,16 +754,31 @@ static uint32_t gattSdpAdd(uint16_t uuid16, uint16_t profileAttHandle, uint16_t 
                 SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(GATT_PSM),
             SDP_ITEM_DESC(SDP_TYPE_ARRAY, SDP_SZ_u8), 9,
                 SDP_ITEM_DESC(SDP_TYPE_UUID, SDP_SZ_2), SDP_U16(SDP_PROTO_ATT),
-                SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(profileAttHandle),
-                SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(profileAttEnd),
+                SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(firstHandle),
+                SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(lastHandle),
 
         //browse group list
         SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(SDP_ATTR_BROWSE_GRP_LIST),
         SDP_ITEM_DESC(SDP_TYPE_ARRAY, SDP_SZ_u8), 3,
             SDP_ITEM_DESC(SDP_TYPE_UUID, SDP_SZ_2), SDP_U16(SDP_BROWSE_GROUP_ID_PUBLIC),
     };
+    uint8_t descr[sizeof(hdrUuid16) + sizeof(hdrUuid128) + sizeof(footer)]; /* surely big enough */
+    uint16_t uuid16;
+    uint32_t len;
 
-    return sdpServiceDescriptorAdd(sdpDescrGatt, sizeof(sdpDescrGatt));
+    if (uuidToUuid16(&uuid16, uuid)) {
+        memcpy(descr, hdrUuid16, len = sizeof(hdrUuid16));
+        utilSetBE16(descr + len, uuid16);
+        len += sizeof(uuid16);
+    } else {
+        memcpy(descr, hdrUuid128, len = sizeof(hdrUuid128));
+        uuidWriteBE(descr + len, uuid);
+        len += sizeof(struct uuid);
+    }
+    memcpy(descr + len, footer, sizeof(footer));
+    len += sizeof(footer);
+
+    return sdpServiceDescriptorAdd(descr, len);
 }
 
 /*
@@ -888,29 +908,9 @@ bool gattProfileInit(void)
         goto out_fixed;
     }
 
-    /* todo: create the profile, so we do not pass zeroes here  */
-    mSdpHandleGatt = gattSdpAdd(SDP_SVC_CLASS_GATT, 0, 0);
-    if (!mSdpHandleGatt) {
-        loge("Failed to register ATT-GATT with SDP\n");
-        goto out_sdp_gatt;
-    }
-
-    /* todo: create the profile, so we do not pass zeroes here  */
-    mSdpHandleGap = gattSdpAdd(SDP_SVC_CLASS_GAP, 0, 0);
-    if (!mSdpHandleGap) {
-        loge("Failed to register ATT-GAP with SDP\n");
-        goto out_sdp_gap;
-    }
-
-
 
     return true;
 
-out_sdp_gap:
-    sdpServiceDescriptorDel(mSdpHandleGatt);
-
-out_sdp_gatt:
-    l2cApiServiceFixedChUnregister(GATT_FIXEDCH, NULL, 0);
 
 out_fixed:
     l2cApiServicePsmUnregister(GATT_PSM, NULL, 0);
@@ -941,8 +941,6 @@ out_att:
  */
 void gattProfileDeinit(void)
 {
-    sdpServiceDescriptorDel(mSdpHandleGap);
-    sdpServiceDescriptorDel(mSdpHandleGatt);
     l2cApiServiceFixedChUnregister(GATT_FIXEDCH, NULL, 0);
     l2cApiServicePsmUnregister(GATT_PSM, NULL, 0);
     attSrvDestroy();
@@ -994,7 +992,7 @@ int gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles
     }
 
     /* grab a range */
-    svc->attRange = attSrvHandleRangeReserve(numHandles);
+    svc->attRange = attSrvHandleRangeReserve(numHandles, supportLE, supportEDR);
     if (!svc->attRange) {
         loge("Failed to reserve %u-handle range\n", numHandles);
         goto out_att;
@@ -1007,8 +1005,8 @@ int gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles
 
     svc->maxItems = numHandles;
     svc->primary = primary;
-    svc->supportLE = supportLE;
-    svc->supportEDR = supportEDR;
+    svc->allowLE = supportLE;
+    svc->allowEDR = supportEDR;
     svcRef = svc->svcRef;
 
     svc->next = mSvcs;
@@ -1132,6 +1130,14 @@ static bool gattServiceOnline(struct gattService *svc)
         goto out_dereg;
     }
 
+    if (svc->allowEDR) {
+        svc->sdpHandle = gattSdpAdd(&svc->uuid, attSrvHandleRangeGetBase(svc->attRange), ofst);
+        if (!svc->sdpHandle) {
+            loge("Failed to add EDR service to SDP\n");
+            goto out_dereg;
+        }
+    }
+
     svc->online = true;
     return true;
 
@@ -1158,6 +1164,9 @@ static void gattServiceOffline(struct gattService *svc)
         loge("Cannot offline an offlined service\n");
         return;
     }
+    if (svc->sdpHandle)
+        sdpServiceDescriptorDel(svc->sdpHandle);
+    svc->sdpHandle = 0;
     svc->online = false;
 
     for (i = 0; i < svc->numItems; i++)
@@ -1303,7 +1312,7 @@ uint16_t gattServiceGetHandleBaseByUuid(const struct uuid *uuid)
 }
 
 /*
- * FUNCTION: gattServiceGetHandleBaseBySvc///aaa
+ * FUNCTION: gattServiceGetHandleBaseBySvc
  * USE:      Get the base handle for a service given its service ref
  * PARAMS:   uuid - the desired uuid
  * RETURN:   handle value or 0 on error

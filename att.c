@@ -985,10 +985,12 @@ void attSrvNotifConnClose(l2c_handle_t conn)
  * FUNCTION: attSrvHandleRangeReserve
  * USE:      reserve a range of handles in the ATT server
  * PARAMS:   len - the wanted handle range length
+ *           allowLE - accessible by LE?
+ *           allowEDR - accessible by EDR?
  * RETURN:   a reference to the handle range or 0 on failure
  * NOTES:
  */
-att_range_t attSrvHandleRangeReserve(uint16_t len)
+att_range_t attSrvHandleRangeReserve(uint16_t len, bool allowLE, bool allowEDR)
 {
     uint32_t searchH = ATT_FIRST_VALID_HANDLE;
     struct attSrvRange *next, *prev = NULL, *newRange;
