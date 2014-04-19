@@ -1,4 +1,3 @@
-//TODO: we enforce readbility/writablity perms, we can also easily enforce encrypt/auth perms. we should, to avoid higher layer bothering
 #include <stdlib.h>
 #include <string.h>
 #include "workQueue.h"
