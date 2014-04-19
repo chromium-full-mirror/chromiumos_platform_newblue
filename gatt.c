@@ -399,7 +399,6 @@ static void gattAttSrvIndCbk(l2c_handle_t to, int cid, att_range_t rangeRef, uin
 static bool gattAttSvrReadCbk(l2c_handle_t who, int cid, att_range_t rangeRef, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t maxLen)
 {
     uint8_t err = ATT_ERROR_NONE;
-    struct gattConnState *conn;
     struct gattService *svc;
     struct gattItem *gi;
     uint8_t *ptr = NULL;
@@ -409,15 +408,9 @@ static bool gattAttSvrReadCbk(l2c_handle_t who, int cid, att_range_t rangeRef, u
 
     pthread_mutex_lock(&mGattLock);
     svc = gattServiceFindByRangeRef(rangeRef);
-    conn = gattConnFind(who);
     if (!svc) {
         logw("Failed to find service for read\n");
         err = ATT_ERROR_INVALID_HANDLE;
-        goto out;
-    }
-    if (!conn) {
-        logw("Failed to find/allocate client for read\n");
-        err = ATT_ERROR_INSUFFICIENT_RSRCS;
         goto out;
     }
 
@@ -526,10 +519,28 @@ out:
  * RETURN:   false on immediate failure
  * NOTES:    when write completes, a call to attSrvCbkReply() should be made
  */
-static bool gattAttSvrWriteCbk(l2c_handle_t who, int cid, att_range_t range, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
+static bool gattAttSvrWriteCbk(l2c_handle_t who, int cid, att_range_t rangeRef, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
 {
-    //TODO
-    return false;
+    /* attributes GATT creates internally for the user {service headers, includes, characteristic headers} are not writeable. All write pass to user */
+    uint8_t err = ATT_ERROR_NONE;
+    struct gattService *svc;
+
+    pthread_mutex_lock(&mGattLock);
+    svc = gattServiceFindByRangeRef(rangeRef);
+    if (!svc) {
+        logw("Failed to find service for read\n");
+        err = ATT_ERROR_INVALID_HANDLE;
+        goto out;
+    }
+
+    if (!gattEnqueueWriteCall(svc, who, cid, transId, ofst + attSrvHandleRangeGetBase(svc->attRange), byteOfst, reason, len, data)) {
+        attSrvCbkReply(cid, transId, 0, err, NULL, 0);
+        goto out;
+    }
+
+out:
+    pthread_mutex_unlock(&mGattLock);
+    return true;
 }
 
 /*
