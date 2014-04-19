@@ -2515,7 +2515,11 @@ static bool attSrvOpReadMultStart(l2c_handle_t to, uint32_t mtu, sg handles)
         }
     }
 
-    return attSrvSendErrorReply(to, err, ATT_OPCODE_READ_MULT_REQ, 0);
+    if (attSrvSendErrorReply(to, err, ATT_OPCODE_READ_MULT_REQ, 0)) {
+        sgFree(handles);
+        return true;
+    }
+    return false;
 }
 
 /*
