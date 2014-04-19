@@ -636,7 +636,6 @@ static void gattConnEvt(void *userData, void *instance, uint8_t evt, const void 
         }
         s = *(sg*)data;
         attSrvDataRx(state->conn, s);
-        sgFree(s);
         break;
 
     case L2C_STATE_CLOSED:
