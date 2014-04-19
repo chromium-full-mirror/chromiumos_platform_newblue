@@ -1687,6 +1687,69 @@ static bool attSrvSendEmptyPacket(l2c_handle_t to, uint8_t opcode)
 }
 
 /*
+ * FUNCTION: attValIsReadableBy
+ * USE:      Decide if a given value is readable by a given connection
+ * PARAMS:   range -the value's range
+ *           val - the value
+ *           extra - per-connection state for this connection
+ * RETURN:   true if allowed to read, false else
+ * NOTES:    call with mSrvLock held
+ */
+static bool attValIsReadableBy(struct attSrvRange *range, struct attSrvVal *val, struct attSrvConnExtra *extra)
+{
+    if (extra->isEncr && extra->isMitmProtected && (val->perms & ATT_PERM_READ_ENCR_MITM))
+        return true;
+
+    if (extra->isEncr && !extra->isMitmProtected && (val->perms & ATT_PERM_READ_ENCR))
+        return true;
+
+    if (!extra->isEncr && (val->perms & ATT_PERM_READ))
+        return true;
+
+    return false;
+}
+
+/*
+ * FUNCTION: attValIsWriteableBy
+ * USE:      Decide if a given value is writeable by a given connection
+ * PARAMS:   range -the value's range
+ *           val - the value
+ *           extra - per-connection state for this connection
+ *           isSigned - is this a signed write?
+ * RETURN:   true if allowed to write, false else
+ * NOTES:    call with mSrvLock held
+ */
+static bool attValIsWriteableBy(struct attSrvRange *range, struct attSrvVal *val, struct attSrvConnExtra *extra, bool isSigned)
+{
+    if (!extra->isEncr && isSigned && (val->perms & ATT_PERM_WRITE_SIGNED))
+        return true;
+
+    if (!isSigned && extra->isEncr && extra->isMitmProtected && (val->perms & ATT_PERM_WRITE_ENCR_MITM))
+        return true;
+
+    if (!isSigned && extra->isEncr && !extra->isMitmProtected && (val->perms & ATT_PERM_WRITE_ENCR))
+        return true;
+
+    if (!isSigned && !extra->isEncr && (val->perms & ATT_PERM_WRITE))
+        return true;
+
+    return false;
+}
+
+/*
+ * FUNCTION: attRangeIsVisibleBy
+ * USE:      Decide if a given range is visibile to a given connection
+ * PARAMS:   range - the range
+ *           extra - per-connection state for this connection
+ * RETURN:   true if visible, false else
+ * NOTES:    call with mSrvLock held
+ */
+static bool attRangeIsVisibleTo(struct attSrvRange *range, struct attSrvConnExtra *extra)
+{
+    return (extra->isLE && range->allowLE) || (!extra->isLE && range->allowEDR);
+}
+
+/*
  * FUNCTION: attSrvOpFindInfo
  * USE:      Perform a find info request
  * PARAMS:   to - whom to reply to
@@ -1698,12 +1761,18 @@ static bool attSrvSendEmptyPacket(l2c_handle_t to, uint8_t opcode)
  */
 static bool attSrvOpFindInfo(l2c_handle_t to, uint32_t mtu, uint16_t startHandle, uint16_t endHandle)
 {
+    struct attSrvConnExtra *extra = attConnListGetExtra(&mAllClients, to);
     struct attPduFindInfoRsp rsp;
     bool allUuidsSmall = true;
     struct attSrvRange *range;
     struct attSrvVal *val;
     sg results = NULL;
     bool err = false;
+
+    if (!extra) {
+        loge("No extra found for connection\n");
+        return attSrvSendErrorReply(to, ATT_ERROR_UNLIKELY_ERROR, ATT_OPCODE_FIND_INFO_REQ, startHandle);
+    }
 
     if (!startHandle || startHandle > endHandle)
         return attSrvSendErrorReply(to, ATT_ERROR_INVALID_HANDLE, ATT_OPCODE_FIND_INFO_REQ, startHandle);
@@ -1716,6 +1785,8 @@ static bool attSrvOpFindInfo(l2c_handle_t to, uint32_t mtu, uint16_t startHandle
     mtu -= sizeof(struct attPduFindInfoRsp) + sizeof(struct attHdr); /* mtu is now how many bytes we can produce */
 
     for (range = mRangesHead; range; range = range->next) {
+        if (!attRangeIsVisibleTo(range, extra))
+            continue;
         for (val = range->valsHead; val; val = val->next) {
             uint16_t uuid16, handle = range->start + val->offset;
 
@@ -1795,58 +1866,6 @@ unrecoverable:
 }
 
 /*
- * FUNCTION: attValIsReadableBy
- * USE:      Decide if a given value is readable by a given connection
- * PARAMS:   range -the value's range
- *           val - the value
- *           who - who is asking
- *           extra - per-connection state for this connection
- * RETURN:   true if allowed to read, false else
- * NOTES:    call with mSrvLock held
- */
-static bool attValIsReadableBy(struct attSrvRange *range, struct attSrvVal *val, l2c_handle_t who, struct attSrvConnExtra *extra)
-{
-    if (extra->isEncr && extra->isMitmProtected && (val->perms & ATT_PERM_READ_ENCR_MITM))
-        return true;
-
-    if (extra->isEncr && !extra->isMitmProtected && (val->perms & ATT_PERM_READ_ENCR))
-        return true;
-
-    if (!extra->isEncr && (val->perms & ATT_PERM_READ))
-        return true;
-
-    return false;
-}
-
-/*
- * FUNCTION: attValIsWriteableBy
- * USE:      Decide if a given value is writeable by a given connection
- * PARAMS:   range -the value's range
- *           val - the value
- *           who - who is asking
- *           extra - per-connection state for this connection
- *           isSigned - is this a signed write?
- * RETURN:   true if allowed to write, false else
- * NOTES:    call with mSrvLock held
- */
-static bool attValIsWriteableBy(struct attSrvRange *range, struct attSrvVal *val, l2c_handle_t who, struct attSrvConnExtra *extra, bool isSigned)
-{
-    if (!extra->isEncr && isSigned && (val->perms & ATT_PERM_WRITE_SIGNED))
-        return true;
-
-    if (!isSigned && extra->isEncr && extra->isMitmProtected && (val->perms & ATT_PERM_WRITE_ENCR_MITM))
-        return true;
-
-    if (!isSigned && extra->isEncr && !extra->isMitmProtected && (val->perms & ATT_PERM_WRITE_ENCR))
-        return true;
-
-    if (!isSigned && !extra->isEncr && (val->perms & ATT_PERM_WRITE))
-        return true;
-
-    return false;
-}
-
-/*
  * FUNCTION: attSrvOpFindByTypeValContinue
  * USE:      Continue a find by type value request
  * PARAMS:   extra - the extra struct
@@ -1901,6 +1920,8 @@ static bool attSrvOpFindByTypeValContinue(struct attSrvConnExtra *extra, l2c_han
     startHandle++;
 
     for (range = mRangesHead; range; range = range->next) {
+        if (!attRangeIsVisibleTo(range, extra))
+            continue;
         for (val = range->valsHead; val; val = val->next) {
             uint16_t handle = range->start + val->offset;
             uint16_t effectiveGrpLen = val->grpLen ? val->grpLen : 1;
@@ -1913,7 +1934,7 @@ static bool attSrvOpFindByTypeValContinue(struct attSrvConnExtra *extra, l2c_han
                 goto done;
 
             /* must be readable */
-            if (!attValIsReadableBy(range, val, to, extra))
+            if (!attValIsReadableBy(range, val, extra))
                 continue;
 
             /* must be of a given type */
@@ -2125,6 +2146,8 @@ static bool attSrvOpReadByTypeContinue(struct attSrvConnExtra *extra, l2c_handle
     startHandle++;
 
     for (range = mRangesHead; range; range = range->next) {
+        if (!attRangeIsVisibleTo(range, extra))
+            continue;
         for (val = range->valsHead; val; val = val->next) {
             uint16_t handle = range->start + val->offset;
             uint16_t effectiveGrpLen = val->grpLen ? val->grpLen : 1;
@@ -2136,7 +2159,7 @@ static bool attSrvOpReadByTypeContinue(struct attSrvConnExtra *extra, l2c_handle
                 goto done;
 
             /* must be readable */
-            if (!attValIsReadableBy(range, val, to, extra))
+            if (!attValIsReadableBy(range, val, extra))
                 continue;
 
             /* must be of a given type */
@@ -2315,6 +2338,8 @@ static bool attSrvOpReadStart(l2c_handle_t to, uint32_t mtu, uint16_t wantedHand
         err = ATT_ERROR_UNLIKELY_ERROR;
     else {
         for (range = mRangesHead; range; range = range->next) {
+            if (!attRangeIsVisibleTo(range, extra))
+                continue;
             for (val = range->valsHead; val; val = val->next) {
                 uint8_t readReason = opcode == ATT_OPCODE_READ_REQ ? ATT_READ_FOR_READ : ATT_READ_FOR_READ_BLOB;
                 uint16_t handle = range->start + val->offset;
@@ -2328,7 +2353,7 @@ static bool attSrvOpReadStart(l2c_handle_t to, uint32_t mtu, uint16_t wantedHand
                 }
 
                 /* must be readable */
-                if (!attValIsReadableBy(range, val, to, extra)) {
+                if (!attValIsReadableBy(range, val, extra)) {
                     err = ATT_ERROR_READ_NOT_ALLOWED;
                     goto done;
                 }
@@ -2406,6 +2431,8 @@ static bool attSrvOpReadMultContinue(struct attSrvConnExtra *extra, l2c_handle_t
     wantedHandle = utilGetLE16(&wantedHandle);
 
     for (range = mRangesHead; range; range = range->next) {
+        if (!attRangeIsVisibleTo(range, extra))
+            continue;
         for (val = range->valsHead; val; val = val->next) {
             uint16_t handle = range->start + val->offset;
 
@@ -2418,7 +2445,7 @@ static bool attSrvOpReadMultContinue(struct attSrvConnExtra *extra, l2c_handle_t
             extra->penOp.readMult.lastReadHandle = wantedHandle;
 
             /* must be readable */
-            if (!attValIsReadableBy(range, val, to, extra)) {
+            if (!attValIsReadableBy(range, val, extra)) {
                 err = ATT_ERROR_READ_NOT_ALLOWED;
                 goto error;
             }
@@ -2545,6 +2572,8 @@ static bool attSrvWriteStart(l2c_handle_t to, uint32_t mtu, uint16_t wantedHandl
     else if (!extra->penOp.origOpcode) {
 
         for (range = mRangesHead; range; range = range->next) {
+            if (!attRangeIsVisibleTo(range, extra))
+                continue;
             for (val = range->valsHead; val; val = val->next) {
                 uint16_t handle = range->start + val->offset;
 
@@ -2558,7 +2587,7 @@ static bool attSrvWriteStart(l2c_handle_t to, uint32_t mtu, uint16_t wantedHandl
 out:
         if (!val)
             err = ATT_ERROR_INVALID_HANDLE;
-        else if (!attValIsWriteableBy(range, val, to, extra, writeReason == ATT_WRITE_FOR_SIGNED_WRITE_CMD))
+        else if (!attValIsWriteableBy(range, val, extra, writeReason == ATT_WRITE_FOR_SIGNED_WRITE_CMD))
             err = ATT_ERROR_WRITE_NOT_ALLOWED;
         else {
             extra->penOp.origOpcode = opcode;
@@ -2830,7 +2859,7 @@ void attSrvDataRx(l2c_handle_t from, sg s)
         if ((sgLength(s) % sizeof(uint16_t)) || sgLength(s) < sizeof(uint16_t[ATT_MIN_HANDLES_IN_READ_MULT]))
             ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
-            ret = attSrvOpReadMultStart(from, mtu, s);///aaa
+            ret = attSrvOpReadMultStart(from, mtu, s);
         break;
 
     case ATT_OPCODE_READ_BY_GRP_TYPE_REQ:
