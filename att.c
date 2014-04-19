@@ -773,7 +773,7 @@ static bool attConnListDel(struct attConnList *list, l2c_handle_t conn)
             list->conns[i] = list->conns[list->listNum];
             if (list->hasExtras) {
                 attConnListFreeExtra(list->extras + i);
-                memcpy(list->extras + i, list->extras + list->listNum, sizeof(struct attSrvConnExtra));
+                memmove(list->extras + i, list->extras + list->listNum, sizeof(struct attSrvConnExtra));
             }
             return true;
         }
