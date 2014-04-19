@@ -142,7 +142,7 @@ bool gattBuiltinInit(void)
 
     /* make "GATT" service */
     uuidFromUuid16(&uuid, GATT_UUID_SVC_GATT_SVR);
-    mSvcGatt = gattServiceCreate(&uuid, true, 1, gattBuiltinReadF, gattBuiltinWriteF, gattBuiltinIndF);
+    mSvcGatt = gattServiceCreate(&uuid, true, 1, gattBuiltinReadF, gattBuiltinWriteF, gattBuiltinIndF, true, true);
     if (!mSvcGatt) {
         loge("Failed to register GATT.GATT\n");
         goto out_fail;
@@ -150,7 +150,7 @@ bool gattBuiltinInit(void)
 
     /* make "GAP" service */
     uuidFromUuid16(&uuid, GATT_UUID_SVC_GAP);
-    mSvcGap = gattServiceCreate(&uuid, true, 7, gattBuiltinReadF, gattBuiltinWriteF, gattBuiltinIndF);
+    mSvcGap = gattServiceCreate(&uuid, true, 7, gattBuiltinReadF, gattBuiltinWriteF, gattBuiltinIndF, true, true);
     if (!mSvcGap) {
         loge("Failed to register GATT.GAP\n");
         goto out_gatt_destroy;

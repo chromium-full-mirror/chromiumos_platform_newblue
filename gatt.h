@@ -66,7 +66,7 @@ typedef bool (*gattSrvValueWriteCbk)(int svc, l2c_handle_t who, int cid, int tra
 typedef void (*gattSrvIndCbk)(int svc, l2c_handle_t who, int cid, uint16_t handle, uint8_t evt, uint64_t ref); /* GATT_SRV_EVT_* */
 
 /* service lifecycle */
-int gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles, gattSrvValueReadCbk readF, gattSrvValueWriteCbk writeF, gattSrvIndCbk indF);
+int gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles, gattSrvValueReadCbk readF, gattSrvValueWriteCbk writeF, gattSrvIndCbk indF, bool supportLE, bool supportEDR);
 bool gattServiceDestroy(int svc);
 uint16_t gattServiceGetHandleBaseByUuid(const struct uuid *uuid); /* or 0 on error */
 uint16_t gattServiceGetHandleBaseBySvc(int svc); /* or 0 on error */

@@ -86,6 +86,8 @@ struct gattService {
     uint16_t             useCount; /* how many services include this one */
     bool                 primary;
     bool                 online;
+    bool                 supportLE;
+    bool                 supportEDR;
 };
 
 struct gattWorkItem {
@@ -959,10 +961,12 @@ void gattProfileDeinit(void)
  *           readF - read callback for the values
  *           writeF - write callback for the values
  *           indF - callback to be notified of confirmations of indications
+ *           supportLE - does this service support LE?
+ *           supportEDR - does this service support EDR (and should be added to SDP thus)
  * RETURN:   service reference or 0 on error
  * NOTES:
  */
-int gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles, gattSrvValueReadCbk readF, gattSrvValueWriteCbk writeF, gattSrvIndCbk indF)
+int gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles, gattSrvValueReadCbk readF, gattSrvValueWriteCbk writeF, gattSrvIndCbk indF, bool supportLE, bool supportEDR)
 {
     struct gattService *svc;
     int svcRef = 0;
@@ -1003,6 +1007,8 @@ int gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles
 
     svc->maxItems = numHandles;
     svc->primary = primary;
+    svc->supportLE = supportLE;
+    svc->supportEDR = supportEDR;
     svcRef = svc->svcRef;
 
     svc->next = mSvcs;
