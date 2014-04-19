@@ -247,6 +247,7 @@ struct attSrvConnExtra {
     int cid; /* for higher layer */
     bool isEncr;
     bool isMitmProtected;
+    bool isLE;
 
     int nextTransId;
     struct attSrvPendingOp penOp;
@@ -278,6 +279,8 @@ struct attSrvRange {
     struct attSrvVal *valsHead;
     struct attSrvVal *valsTail;
     struct attConnList seenBy;
+    bool allowLE;
+    bool allowEDR;
 };
 
 struct attWorkItem {
@@ -683,12 +686,19 @@ static bool attConnListFindByCid(struct attConnList *list, int cid, l2c_handle_t
  */
 static bool attConnListAdd(struct attConnList *list, l2c_handle_t conn)
 {
+    struct bt_addr peer;
     uint32_t i;
 
     /* check for existence */
     for (i = 0; i < list->listNum; i++)
         if (list->conns[i] == conn)
             return true;
+
+    /* grab the peer address */
+    if (!l2cApiGetBtAddr(conn, &peer)) {
+        loge("Failed to get peer address\n");
+        return false;
+    }
 
     /* if list is full, expand it */
     if (list->listCap == list->listNum) {
@@ -728,6 +738,7 @@ static bool attConnListAdd(struct attConnList *list, l2c_handle_t conn)
         /* get initial encr and mitm state */
         extra->isEncr = l2cApiIsConnEncrypted(conn);
         extra->isMitmProtected = l2cApiIsConnMitmSafe(conn);
+        extra->isLE = BT_ADDR_IS_LE(peer);
     }
     list->listNum++;
     return true;
@@ -1022,6 +1033,8 @@ att_range_t attSrvHandleRangeReserve(uint16_t len, bool allowLE, bool allowEDR)
     newRange->rangeRef = uniqGetNext();
     newRange->prev = prev;
     newRange->next = next;
+    newRange->allowLE = allowLE;
+    newRange->allowEDR = allowEDR;
     if (next)
         next->prev = newRange;
     else
