@@ -1546,6 +1546,7 @@ static bool hciCmdSubmitSimpleCbk(const struct hciEvtHdr *evt, void *cbkData, un
     uint8_t evtType;
     uint8_t paramLen;
     uint8_t evtHdrLen;
+    bool ret = false;
 
     if (!evt)
         return hciScheduleSimpleCbk(cbkd->cbk, cbkd->cbkData1, cbkd->cbkData2, true, NULL);
@@ -1556,7 +1557,7 @@ static bool hciCmdSubmitSimpleCbk(const struct hciEvtHdr *evt, void *cbkData, un
 
     if (paramLen < evtHdrLen) {
         logw("Comand %s event too short @ %ub (wanted %ub+)\n", name, paramLen, evtHdrLen);
-        return false;
+        goto out;
     }
     paramLen -= evtHdrLen;
 
@@ -1564,11 +1565,15 @@ static bool hciCmdSubmitSimpleCbk(const struct hciEvtHdr *evt, void *cbkData, un
     if (paramLen < cbkd->expectedParamLenMin || paramLen > cbkd->expectedParamLenMax) {
         logw("Got expected %s event, but wrong size: %u !< %u !< %u\n", name,
             cbkd->expectedParamLenMin, paramLen, cbkd->expectedParamLenMax);
-        return false;
+        goto out;
     }
 
     /* enqueue the callback */
-    return hciScheduleSimpleCbk(cbkd->cbk, cbkd->cbkData1, cbkd->cbkData2, false, cbkd->wantEventItself ? evt : NULL);
+    ret = hciScheduleSimpleCbk(cbkd->cbk, cbkd->cbkData1, cbkd->cbkData2, false, cbkd->wantEventItself ? evt : NULL);
+
+out:
+    free(cbkData);
+    return ret;
 }
 
 /*
@@ -4937,7 +4942,8 @@ static bool hciHandleConnAclEncr(uint16_t cid, bool encrOn)
     if (c) {
         logd("cid %d was %sencrypted\n", cid, c->encrypted ? "" : "not ");
         c->encrypted = encrOn;
-        ret = hciScheduleConnEncrChange(c->handle, c->encrypted, c->mitmSafe);
+        ret = hciScheduleConnEncrChange(c->handle, c->encrypted, c->mitmSafe
+);
     }
     pthread_mutex_unlock(&mConnsLock);
     return ret;
