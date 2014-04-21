@@ -2631,15 +2631,13 @@ static bool attSrvOpSignedWrite(l2c_handle_t to, uint32_t mtu, uint16_t handle, 
 
     if (!l2cApiGetBtAddr(to, &addr)) {
         logw("Cannot get address for signed write. Dropping\n");
-        sgFree(data);
-        return true;
+        goto out;
     }
 
     /* XXX: may need to resolve address first */
     if (!persistGetDevKey(&addr, KEY_TYPE_CSRK, k)) {
         logw("Cannot get CSRK for signed write. Dropping\n");
-        sgFree(data);
-        return true;
+        goto out;
     }
 
     /* Signature is over packet header too, but we stripped it. Luckily it is easy to reconstruct temporarily */
@@ -2653,11 +2651,14 @@ static bool attSrvOpSignedWrite(l2c_handle_t to, uint32_t mtu, uint16_t handle, 
 
     if (memcmp(calcedSig, rxedSig, ATT_SIG_LEN)) {
         logw("Sig check failed. Dropping\n");
-        sgFree(data);
-        return true;
+        goto out;
     }
 
     return attSrvWriteStart(to, mtu, handle, data, 0, ATT_OPCODE_SIGNED_WRITE_CMD, ATT_WRITE_FOR_SIGNED_WRITE_CMD);
+
+out:
+    sgFree(data);
+    return true;
 }
 
 
@@ -2781,6 +2782,7 @@ void attSrvDataRx(l2c_handle_t from, sg s)
 
     if (!sgSerializeCutFront(s, &hdr, sizeof(hdr))) {
         loge("ATT cannot find header\n");
+        sgFree(s);
         return;
     }
 
@@ -2825,7 +2827,10 @@ void attSrvDataRx(l2c_handle_t from, sg s)
             ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else {
             uuidFromUuid16(&uuid, utilGetLE16(&findByTypeValReq.uuid16));
-            ret = attSrvOpFindByTypeValStart(from, mtu, utilGetLE16(&findByTypeValReq.startHandle), utilGetLE16(&findByTypeValReq.endHandle), &uuid, s);
+            if (attSrvOpFindByTypeValStart(from, mtu, utilGetLE16(&findByTypeValReq.startHandle), utilGetLE16(&findByTypeValReq.endHandle), &uuid, s)) {
+                ret = true;
+                s = NULL;
+            }
         }
         break;
 
@@ -2861,8 +2866,10 @@ void attSrvDataRx(l2c_handle_t from, sg s)
         mtu = attConnMtuGet(from, true);
         if ((sgLength(s) % sizeof(uint16_t)) || sgLength(s) < sizeof(uint16_t[ATT_MIN_HANDLES_IN_READ_MULT]))
             ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
-        else
-            ret = attSrvOpReadMultStart(from, mtu, s);
+        else if (attSrvOpReadMultStart(from, mtu, s)) {
+            ret = true;
+            s = NULL;
+        }
         break;
 
     case ATT_OPCODE_READ_BY_GRP_TYPE_REQ:
@@ -2877,16 +2884,20 @@ void attSrvDataRx(l2c_handle_t from, sg s)
         mtu = attConnMtuGet(from, true);
         if (!sgSerializeCutFront(s, &writeReq, sizeof(writeReq)))
             ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
-        else
-            ret = attSrvWriteStart(from, mtu, utilGetLE16(&writeReq.handle), s, 0, opcode, ATT_WRITE_FOR_WRITE_REQ);
+        else if (attSrvWriteStart(from, mtu, utilGetLE16(&writeReq.handle), s, 0, opcode, ATT_WRITE_FOR_WRITE_REQ)) {
+            ret = true;
+            s = NULL;
+        }
         break;
 
     case ATT_OPCODE_PREPARE_WRITE_REQ:
         mtu = attConnMtuGet(from, true);
         if (!sgSerializeCutFront(s, &prepareWriteReq, sizeof(prepareWriteReq)))
             ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
-        else
-            ret = attSrvWriteStart(from, mtu, utilGetLE16(&prepareWriteReq.handle), s, utilGetLE16(&prepareWriteReq.offset), opcode, ATT_WRITE_FOR_PREPARE);
+        else if (attSrvWriteStart(from, mtu, utilGetLE16(&prepareWriteReq.handle), s, utilGetLE16(&prepareWriteReq.offset), opcode, ATT_WRITE_FOR_PREPARE)) {
+            ret = true;
+            s = NULL;
+        }
         break;
 
     case ATT_OPCODE_EXECUTE_WRITE_REQ:
@@ -2911,13 +2922,15 @@ void attSrvDataRx(l2c_handle_t from, sg s)
         mtu = attConnMtuGet(from, true);
         if (!sgSerializeCutFront(s, &writeCmd, sizeof(writeCmd)))
             ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
-        else
-            ret = attSrvWriteStart(from, mtu, utilGetLE16(&writeReq.handle), s, 0, opcode, ATT_WRITE_FOR_WRITE_CMD);
+        else if (attSrvWriteStart(from, mtu, utilGetLE16(&writeReq.handle), s, 0, opcode, ATT_WRITE_FOR_WRITE_CMD)) {
+            ret = true;
+            s = NULL;
+        }
         break;
 
     case ATT_OPCODE_SIGNED_WRITE_CMD:
         if (l2cApiIsConnEncrypted(from)) {
-            sgFree(s);
+            /* ignore signed writes on encrypted connections as per spec */
             ret = true;
             break;
         }
@@ -2930,7 +2943,10 @@ void attSrvDataRx(l2c_handle_t from, sg s)
             uint8_t sig[ATT_SIG_LEN];
             sgSerialize(s, sgLength(s) - ATT_SIG_LEN, ATT_SIG_LEN, sig);
             sgTruncBack(s, ATT_SIG_LEN);
-            ret = attSrvOpSignedWrite(from, mtu, utilGetLE16(&signedWriteCmd.handle), sig, s);
+            if (attSrvOpSignedWrite(from, mtu, utilGetLE16(&signedWriteCmd.handle), sig, s)) {
+                ret = true;
+                s = NULL;
+            }
         }
         break;
 
@@ -2942,10 +2958,10 @@ void attSrvDataRx(l2c_handle_t from, sg s)
 
 out:
     pthread_mutex_unlock(&mSrvLock);
-    if (!ret) {
+    if (!ret)
         loge("ATT failed to handle this message\n");
+    if (s)
         sgFree(s);
-    }
 }
 
 /*
