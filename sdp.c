@@ -1403,6 +1403,7 @@ bool sdpInit(void)
  */
 void sdpDeinit(void)
 {
+    sendQueueFree(mSendQ);
     l2cApiServicePsmUnregister(SDP_PSM, NULL, NULL);
     pthread_rwlock_wrlock(&mSvcsLock);
     while (mSvcsHead) {
