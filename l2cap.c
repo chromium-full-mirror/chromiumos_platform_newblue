@@ -3034,14 +3034,16 @@ static void l2cAclDataRxCompletePacket(struct l2cAclConn *aclConn, struct l2cFrm
     uint16_t cid = utilGetLE16(&frm->cid);
 
     if (cid == L2C_CH_SIGNALLING_EDR) {
-        if (!BT_ADDR_IS_EDR(aclConn->addr))
+        if (!BT_ADDR_IS_EDR(aclConn->addr)) {
             loge("Received EDR signalling packet on non-EDR link. Dropping.\n");
-        else
+            sgFree(packet);
+        } else
             l2cSignallingRx(aclConn, packet);
     } else if (cid == L2C_CH_SIGNALLING_LE) {
-        if (!BT_ADDR_IS_LE(aclConn->addr))
+        if (!BT_ADDR_IS_LE(aclConn->addr)) {
             loge("Received LE signalling packet on non-LE link. Dropping.\n");
-        else
+            sgFree(packet);
+        } else
             l2cSignallingRx(aclConn, packet);
     } else if (cid == L2C_CH_CONNECTIONLESS) {
         psm_t psm;
@@ -3072,7 +3074,7 @@ static void l2cAclDataRxCompletePacket(struct l2cAclConn *aclConn, struct l2cFrm
  *           complete, and if so process it
  * PARAMS:   conn - the ACL connection struct
  *           packet - the incoming (possibly complete) packet
- * RETURN:   true if packet was compelte and was processed
+ * RETURN:   true if packet was complete and was processed
  *           false if more data is needed
  * NOTES:    call with mConnsLock held
  */
