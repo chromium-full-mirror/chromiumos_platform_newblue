@@ -1202,6 +1202,7 @@ static void gattServiceDelete(struct gattService *svc)
         return;
     }
 
+    attSrvHandleRangeRelease(svc->attRange);
     if (svc->prev)
         svc->prev->next = svc->next;
     else
