@@ -130,6 +130,7 @@ void sendQueueFree(struct sendQ *q)
     struct packet *p;
 
     pthread_mutex_lock(&q->lock);
+    l2cApiUnegisterWriteBufNotif(q->l2cNotifH);
     while (q->head) {
         p = q->head;
         q->head = q->head->next;
