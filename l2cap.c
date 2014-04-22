@@ -3840,8 +3840,10 @@ static void l2cConnStructDelete(struct l2cConn *conn)
     if (mNextToTx == conn)
         mNextToTx = NULL;
 
-    if (conn->queuedRx)
+    if (conn->queuedRx) {
         sgFree(conn->queuedRx);
+        conn->queuedRx = NULL;
+    }
 
     if (conn->next)
         conn->next->prev = conn->prev;
