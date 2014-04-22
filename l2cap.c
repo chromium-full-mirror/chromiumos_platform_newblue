@@ -440,11 +440,13 @@ struct l2cConn {
     uint8_t            inUse    : 1; /* 1 if connection is in use, 0 else */
     uint8_t            fcs      : 1; /* 1 if FCS is on */
 
+    sg                 queuedRx;
+
     union {            /* per-state info */
         struct {       /*  config */
             uint8_t cfgTxState;
             uint8_t cfgRxState;
-        };
+        }cfg;
     };
 
     /* advanced mode structures for TX */
@@ -1016,13 +1018,13 @@ static void l2cConnTimeout(uniq_t timerH,  uint64_t connH)
          * the same - by closing the connection.
          */
         switch (conn->state) {
-        case L2C_CONN_STATE_CONN_WAIT:
         case L2C_CONN_STATE_RX_OPEN_SVC:
+        case L2C_CONN_STATE_CONN_WAIT:
         case L2C_CONN_STATE_ESTABLISHED:
         case L2C_CONN_STATE_DIE_REQD:
         case L2C_CONN_STATE_DIE_RXED:
         case L2C_CONN_STATE_TEARDOWN:
-            loge("Unexpected timout in state %d for "HANDLEFMT" - closing connection\n", conn->state, HANDLECNV(connH));
+            loge("Unexpected timeout in state %d for "HANDLEFMT" - closing connection\n", conn->state, HANDLECNV(connH));
             break;
         case L2C_CONN_STATE_TX_OPEN_TXED:
             logi("Connection open timeout for "HANDLEFMT" - closing connection\n", HANDLECNV(connH));
@@ -1253,8 +1255,8 @@ static void l2cHandleConnRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
 
     conn->state = L2C_CONN_STATE_CFG;
     l2cConnTimer(conn, L2C_L2CAP_CONFIG_TIMEOUT);
-    conn->cfgTxState = L2C_CFG_STATE_INITIAL;
-    conn->cfgRxState = L2C_CFG_STATE_INITIAL;
+    conn->cfg.cfgTxState = L2C_CFG_STATE_INITIAL;
+    conn->cfg.cfgRxState = L2C_CFG_STATE_INITIAL;
     conn->remCh = remCh;
 
     l2cPsmSendConfig(aclConn, conn);
@@ -1276,15 +1278,15 @@ static void l2cPsmSendConfig(struct l2cAclConn *aclConn, struct l2cConn *conn)
         L2C_CONF_MTU, 0x02, conn->ourMtu & 0xFF, conn->ourMtu >> 8
     };
 
-    if (conn->cfgTxState != L2C_CFG_STATE_INITIAL) {
-        loge("Unexpectred call to l2cPsmSendConfig with state %d\n", conn->cfgTxState);
+    if (conn->cfg.cfgTxState != L2C_CFG_STATE_INITIAL) {
+        loge("Unexpectred call to l2cPsmSendConfig with state %d\n", conn->cfg.cfgTxState);
         return;
     }
 
     ident = l2cSigSendConfigReq(aclConn, conn->remCh, 0, config, sizeof(config));
     if (ident) {
         conn->ident = ident;
-        conn->cfgTxState = L2C_CFG_STATE_REQ_SENT;
+        conn->cfg.cfgTxState = L2C_CFG_STATE_REQ_SENT;
     } else {
         loge("Failed to send config request on conn for chs %d %d on acl "HCI_CONN_FMT"x\n", conn->localCh, conn->remCh, HCI_CONN_CONV(aclConn->conn));
         l2cConnRequestClose(aclConn, conn, true);
@@ -1301,11 +1303,49 @@ static void l2cPsmSendConfig(struct l2cAclConn *aclConn, struct l2cConn *conn)
  */
 static void l2cChannelReadyForData(struct l2cAclConn *aclConn, struct l2cConn *conn)
 {
+    uint32_t len;
     uint16_t mtu = conn->theirMtu;
 
-    l2cSvcWorkScheduleStateCall(conn, L2C_STATE_OPEN, &conn->handle, sizeof(l2c_handle_t));
-    if (conn->psm)
-        l2cSvcWorkScheduleStateCall(conn, L2C_STATE_MTU, &mtu, sizeof(mtu));
+    if (!l2cSvcWorkScheduleStateCall(conn, L2C_STATE_OPEN, &conn->handle, sizeof(l2c_handle_t))) {
+        loge("Failed to send open call\n");
+        l2cConnRequestClose(aclConn, conn, true);
+        return;
+    }
+
+    /* this failure is non-fatal. they can just ask later */
+    if (conn->psm && !l2cSvcWorkScheduleStateCall(conn, L2C_STATE_MTU, &mtu, sizeof(mtu)))
+        logw("Failed to notify user of MTU\n");
+
+    /* send all queued data, if any */
+    if (conn->queuedRx) {
+
+        sg packet;
+
+        while (sgLength(conn->queuedRx) >= sizeof(uint32_t)) {
+            if (!sgSerializeCutFront(conn->queuedRx, &len, sizeof(len))) {
+                loge("Failed to grab queued packet len\n");
+                break;
+            }
+            if (sgLength(conn->queuedRx) < len) {
+                loge("Queued packet claims %ub, left %ub\n", len, sgLength(conn->queuedRx));
+                break;
+            }
+            packet = sgSplit(conn->queuedRx, len);
+            if (!packet) {
+                loge("Failed to split off packet\n");
+                break;
+            }
+            sgSwap(packet, conn->queuedRx);
+            if (!l2cSvcWorkScheduleStateCall(conn, L2C_STATE_RX, &packet, sizeof(packet))) {
+                loge("Failed to send queued packet\n");
+                break;
+            }
+        }
+        if (sgLength(conn->queuedRx))
+            loge("QueuedRX had leftover data!\n");
+        sgFree(conn->queuedRx);
+        conn->queuedRx = NULL;
+    }
 
     conn->state = L2C_CONN_STATE_ESTABLISHED;
 }
@@ -1350,8 +1390,8 @@ static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
         return;
     }
 
-    if (conn->cfgRxState != L2C_CFG_STATE_INITIAL)
-        loge("Unexpected internal inconsistency on conf req: expected %d saw %d\n", L2C_CFG_STATE_INITIAL, conn->cfgRxState);
+    if (conn->cfg.cfgRxState != L2C_CFG_STATE_INITIAL)
+        loge("Unexpected internal inconsistency on conf req: expected %d saw %d\n", L2C_CFG_STATE_INITIAL, conn->cfg.cfgRxState);
 
     /* go through every option and make up a reply. Note: no reply is longer than request, so this allocation works */
     end = reply = (uint8_t*)malloc(len);
@@ -1476,8 +1516,8 @@ static void l2cHandleConfReq(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
     if (flags & L2C_SIG_CONF_FLAG_C)
         logi("Conf Rsp continues\n");
     else {
-        conn->cfgRxState = L2C_CFG_STATE_CFG_ACCEPTED;
-        if (conn->cfgTxState == L2C_CFG_STATE_CFG_ACCEPTED) {
+        conn->cfg.cfgRxState = L2C_CFG_STATE_CFG_ACCEPTED;
+        if (conn->cfg.cfgTxState == L2C_CFG_STATE_CFG_ACCEPTED) {
             l2cConnTimer(conn, 0);
             l2cChannelReadyForData(aclConn, conn);
         }
@@ -1541,14 +1581,14 @@ static void l2cHandleConfRsp(struct l2cAclConn *aclConn, uint8_t ident, uint16_t
         return;
     }
 
-    if (conn->cfgTxState != L2C_CFG_STATE_REQ_SENT)
-        loge("Unexpected internal inconsistency on conf rsp: expected %d saw %d\n", L2C_CFG_STATE_REQ_SENT, conn->cfgTxState);
+    if (conn->cfg.cfgTxState != L2C_CFG_STATE_REQ_SENT)
+        loge("Unexpected internal inconsistency on conf rsp: expected %d saw %d\n", L2C_CFG_STATE_REQ_SENT, conn->cfg.cfgTxState);
 
     if (flags & L2C_SIG_CONF_FLAG_C)
         logi("Conf Rsp continues\n");
     else {
-        conn->cfgTxState = L2C_CFG_STATE_CFG_ACCEPTED;
-        if (conn->cfgRxState == L2C_CFG_STATE_CFG_ACCEPTED) {
+        conn->cfg.cfgTxState = L2C_CFG_STATE_CFG_ACCEPTED;
+        if (conn->cfg.cfgRxState == L2C_CFG_STATE_CFG_ACCEPTED) {
             l2cChannelReadyForData(aclConn, conn);
             l2cConnTimer(conn, 0);
         }
@@ -2956,13 +2996,31 @@ static bool l2cHandleCompleteDataFrameRx(struct l2cAclConn *aclConn, struct l2cF
 
     cur = mConns;
     while (cur) {
-        if (cur->acl == aclConn->handle && cur->localCh == cid && cur->state == L2C_CONN_STATE_ESTABLISHED)
+        if (cur->acl == aclConn->handle && cur->localCh == cid)
             break;
         cur = cur->next;
     }
 
-found:
-    if (cur) {
+    if (!cur) {
+        logw("Connection for incoming data on ch %u not found\n", cid);
+    } else if (cur->state == L2C_CONN_STATE_RX_OPEN_SVC && cid < L2C_NUM_FIXED_CHANNELS) {
+        /* Queue the data for later */
+
+        uint32_t len = sgLength(payload);
+        if (len + (cur->queuedRx ? sgLength(cur->queuedRx) : 0) > L2C_FIXED_CH_CONN_RX_BACKLOG_MAX) {
+            logw("too much queued for FixedCh connection already. Dropping packet\n");
+        } else {
+            if (!sgConcatFrontCopy(payload, &len, sizeof(len)))
+                logw("Failed to concat length to queued data. Dropping\n");
+            else if (cur->queuedRx)
+                sgConcat(cur->queuedRx, payload);
+            else
+                cur->queuedRx = payload;
+        }
+        ret = true;
+    } else if (cur->state != L2C_CONN_STATE_ESTABLISHED) {
+        logw("Connection in state %u on ch %u unable to accept data\n", cur->state, cid);
+    } else {
         if (!cur->inUse) {
             logd("Marking conn "HANDLEFMT" as in use due to RX\n", HANDLECNV(cur->handle));
             cur->inUse = 1;
@@ -3233,8 +3291,8 @@ static void l2cPsmCfgStart(struct l2cAclConn *aclConn, struct l2cConn *conn)
 {
     conn->state = L2C_CONN_STATE_CFG;
     l2cConnTimer(conn, L2C_L2CAP_CONFIG_TIMEOUT);
-    conn->cfgTxState = L2C_CFG_STATE_INITIAL;
-    conn->cfgRxState = L2C_CFG_STATE_INITIAL;
+    conn->cfg.cfgTxState = L2C_CFG_STATE_INITIAL;
+    conn->cfg.cfgRxState = L2C_CFG_STATE_INITIAL;
     l2cPsmSendConfig(aclConn, conn);
 }
 
@@ -3781,6 +3839,9 @@ static void l2cConnStructDelete(struct l2cConn *conn)
 
     if (mNextToTx == conn)
         mNextToTx = NULL;
+
+    if (conn->queuedRx)
+        sgFree(conn->queuedRx);
 
     if (conn->next)
         conn->next->prev = conn->prev;
@@ -4500,7 +4561,8 @@ bool l2cApiServiceFixedChUnregister(uint16_t chan, void (*doneCbk)(void*), void*
 
                  if (conn->instance) {
                      conn->state = L2C_CONN_STATE_TEARDOWN;
-                     l2cSvcWorkScheduleStateCall(conn, L2C_STATE_CLOSED, NULL, 0);
+                     if (!l2cSvcWorkScheduleStateCall(conn, L2C_STATE_CLOSED, NULL, 0))
+                         loge("Failed to send close state\n");
                  } else {
                      logw("no instance found for fixed ch %d while unregistering\n", chan);
                      l2cConnStructDelete(conn);
@@ -5264,8 +5326,8 @@ static void l2cAclLinkEncrChangeInt(struct l2cAclConn *aclConn, bool isEncrypted
         }
 
         /* notify existing connections */
-        if (conn->state == L2C_CONN_STATE_ESTABLISHED)
-           l2cSvcWorkScheduleStateCall(conn, L2C_STATE_ENCR, &es, sizeof(es));
+        if (conn->state == L2C_CONN_STATE_ESTABLISHED && !l2cSvcWorkScheduleStateCall(conn, L2C_STATE_ENCR, &es, sizeof(es)))
+            loge("Failed to send close state\n");
     }
 }
 
@@ -5433,8 +5495,9 @@ void l2cAclLinkUp(hci_conn_t aclConnID, const struct bt_addr* addr, bool isMaste
             if (ident)
                 inUse = true;
             else {
-                l2cSvcWorkScheduleStateCall(conn, L2C_STATE_CLOSED, NULL, 0);
                 loge("Failed to request opening of a psm channel\n");
+                if (!l2cSvcWorkScheduleStateCall(conn, L2C_STATE_CLOSED, NULL, 0))
+                    loge("Failed to send close state\n");
                 l2cConnStructDelete(conn);
                 continue;
             }
@@ -5451,7 +5514,7 @@ void l2cAclLinkUp(hci_conn_t aclConnID, const struct bt_addr* addr, bool isMaste
                 /* See if a conn is already pending. If so we'll not instantiate the service.
                  * This may seem strange, but unlike PSM world, here we cannot have two FixedCh
                  * connections at the same time */
-                struct l2cConn *conn = mConns;///aaa
+                struct l2cConn *conn = mConns;
                 while (conn && (conn->acl != aclConn->handle || conn->psm || conn->localCh != svc->chan))
                     conn = conn->next;
 

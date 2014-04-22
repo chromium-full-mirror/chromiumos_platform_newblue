@@ -18,9 +18,7 @@
 #define ATT_WORK_Q_SIZE                     128
 
 /*
- * AAPI will try to queue this much per socket before shutting off flow
- * Due to latencies in shutting off slow, the real amount queued could be
- * more.
+ * Where to store stack config/state
  */
 #ifdef ANDROID
 #define PREF_PATH                           "/data/data/com.android.bluetooth/bt.newblue.prefs"
@@ -121,6 +119,12 @@
  * HCI layer will queue up only this many callbacks at a time
  */
 #define HCI_NUM_OUTSTANDING_CBKS           256
+
+/*
+ * How many bytes of RX data we're willing to buffer for a new FixedCh conn during
+ * service allocation.
+ */
+#define L2C_FIXED_CH_CONN_RX_BACKLOG_MAX   65536
 
 /*
  * L2CAP layer will allow at most this many concurrent outstanding work requests
