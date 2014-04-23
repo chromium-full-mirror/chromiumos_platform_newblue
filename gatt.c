@@ -1297,6 +1297,27 @@ bool gattServiceStop(int svcRef)
 }
 
 /*
+ * FUNCTION: gattServiceIsRunning
+ * USE:      Check if a service is online
+ * PARAMS:   svcRef - the service reference
+ * RETURN:   true if service exists and is running
+ * NOTES:
+ */
+bool gattServiceIsRunning(int svcRef)
+{
+    struct gattService *svc;
+    bool ret = false;
+
+    pthread_mutex_lock(&mGattLock);
+    svc = gattServiceFindByHandle(svcRef);
+    if (svc)
+        ret = svc->online;
+    pthread_mutex_unlock(&mGattLock);
+
+    return ret;
+}
+
+/*
  * FUNCTION: gattServiceGetHandleBaseByUuid
  * USE:      Get the base handle for a service given its UUID. Only works for online services
  * PARAMS:   uuid - the desired uuid
