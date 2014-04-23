@@ -75,6 +75,7 @@ uint16_t gattServiceGetHandleBaseBySvc(int svc); /* or 0 on error */
 bool gattServiceStart(int svc);
 bool gattServiceStop(int svc);
 bool gattServiceIsRunning(int svc);
+bool gattServiceGetUuid(int svc, struct uuid *uuid);
 
 /* service construction (order of calls matters and is important). All return handle value or 0 on error */
 uint16_t gattServiceAddIncludedService(int svc, const struct uuid *uuid);

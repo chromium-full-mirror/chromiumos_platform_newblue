@@ -1318,6 +1318,30 @@ bool gattServiceIsRunning(int svcRef)
 }
 
 /*
+ * FUNCTION: gattServiceGetUuid
+ * USE:      Get a service's UUID
+ * PARAMS:   svcRef - the service reference
+ *           dst - store UUID here
+ * RETURN:   true if service exists and UUID was gotten
+ * NOTES:
+ */
+bool gattServiceGetUuid(int svcRef, struct uuid *dst)
+{
+    struct gattService *svc;
+    bool ret = false;
+
+    pthread_mutex_lock(&mGattLock);
+    svc = gattServiceFindByHandle(svcRef);
+    if (svc) {
+        memcpy(dst, &svc->uuid, sizeof(struct uuid));
+        ret = true;
+    }
+    pthread_mutex_unlock(&mGattLock);
+
+    return ret;
+}
+
+/*
  * FUNCTION: gattServiceGetHandleBaseByUuid
  * USE:      Get the base handle for a service given its UUID. Only works for online services
  * PARAMS:   uuid - the desired uuid
