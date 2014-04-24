@@ -4641,6 +4641,29 @@ bool l2cApiGetBtAddr(l2c_handle_t handle, struct bt_addr* addrP)
 }
 
 /*
+ * FUNCTION: l2cApiGetAclHandle
+ * USE:      Get ACL handle for the L2CAP connection
+ * PARAMS:   handle - the handle
+ * RETURN:   ACL handle, or zero for invalid L2CAP handle
+ * NOTES:
+ */
+acl_handle_t l2cApiGetAclHandle(l2c_handle_t handle)
+{
+    struct l2cConn* conn;
+    acl_handle_t ret = 0;
+
+    pthread_mutex_lock(&mConnsLock);
+    conn = l2cConnFindByHandle(handle);
+    if (conn) {
+        ret = conn->acl;
+    }
+    pthread_mutex_unlock(&mConnsLock);
+
+    return ret;
+}
+
+
+/*
  * FUNCTION: l2cApiDisconnect
  * USE:      Request a disconnect of a pipe
  * PARAMS:   handle - the handle

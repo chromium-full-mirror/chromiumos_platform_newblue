@@ -13,6 +13,8 @@
 
 typedef uint16_t psm_t;
 typedef uniq_t l2c_handle_t; /* a 0-valued handle is invalid and indicates error */
+typedef uniq_t acl_handle_t; /* a 0-valued handle is invalid and indicates error */
+
 #define HANDLEFMT    UNIQ_FMT"x"
 #define HANDLECNV(x) UNIQ_CONV(x)
 
@@ -110,6 +112,9 @@ bool l2cApiUpdateConnectionParams(l2c_handle_t handle, uint16_t intMin, uint16_t
 
 /* external code can use this to get remote's bt addr */
 bool l2cApiGetBtAddr(l2c_handle_t handle, struct bt_addr *addrP);
+
+/* external code can use this to get L2CAP's ACL handle */
+acl_handle_t l2cApiGetAclHandle(l2c_handle_t handle);
 
 /* external code can use this to see if a connection is encrypted */
 bool l2cApiIsConnEncrypted(l2c_handle_t handle);
