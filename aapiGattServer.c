@@ -348,10 +348,11 @@ static bt_status_t aapiGattServerAddService(int server_if, btgatt_srvc_id_t *srv
  *           srvP - if not NULL, we store the struct aapiGattServer* there
  *           svc - if not NULL, we store the service reference number there
  *           svcIdxInTableP - if not NULL, we store service's index in the server's "services" table
+ *           firstOnly - if set handle is service_handle, else it is any handle in the range
  * RETURN:   true if all were found
  * NOTES:    call with mAapiGattLock held
  */
-static bool aapiGattServerFindService(int server_if, int service_handle, struct aapiGattServer **srvP, int *svcP, uint32_t *svcIdxInTableP)
+static bool aapiGattServerFindService(int server_if, int handle, struct aapiGattServer **srvP, int *svcP, uint32_t *svcIdxInTableP, bool firstOnly)
 {
     struct aapiGattServer *srv;
     uint32_t i;
@@ -361,7 +362,7 @@ static bool aapiGattServerFindService(int server_if, int service_handle, struct 
     if (!srv)
         return false;
 
-    svc = gattServiceFindByHandle(service_handle);
+    svc = gattServiceFindByHandle(handle, firstOnly);
     if (svc < 0)
         return false;
 
@@ -404,13 +405,13 @@ static bt_status_t aapiGattServerAddIncludedService(int server_if, int service_h
     int svc;
 
     pthread_mutex_lock(&mAapiGattLock);
-    if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc, NULL))
+    if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc, NULL, true))
         logw("Server/Service not found while attempting to add included service\n");
     else {
         struct uuid uuid;
         int includedSvc;
 
-        if (!aapiGattServerFindService(server_if, included_handle, NULL, &includedSvc, NULL) || !gattServiceGetUuid(includedSvc, &uuid))
+        if (!aapiGattServerFindService(server_if, included_handle, NULL, &includedSvc, NULL, true) || !gattServiceGetUuid(includedSvc, &uuid))
             logw("Failed to find or get UUID of included service\n");
         else {
 
@@ -444,8 +445,8 @@ static bt_status_t aapiGattServerAddCharacteristic(int server_if, int service_ha
     int svc;
 
     pthread_mutex_lock(&mAapiGattLock);
-    if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc, NULL))
-        logw("Server/Service not found while attempting to add included service\n");
+    if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc, NULL, true))
+        logw("Server/Service not found while attempting to add characteristic\n");
     else {
         struct uuid uuid;
 
@@ -478,8 +479,8 @@ static bt_status_t aapiGattServerAddDescriptor(int server_if, int service_handle
     int svc;
 
     pthread_mutex_lock(&mAapiGattLock);
-    if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc, NULL))
-        logw("Server/Service not found while attempting to add included service\n");
+    if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc, NULL, true))
+        logw("Server/Service not found while attempting to add descriptor\n");
     else {
         struct uuid uuid;
 
@@ -510,8 +511,8 @@ static bt_status_t aapiGattServerStartService(int server_if, int service_handle,
     int svc;
 
     pthread_mutex_lock(&mAapiGattLock);
-    if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc, NULL))
-        logw("Server/Service not found while attempting to add included service\n");
+    if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc, NULL, true))
+        logw("Server/Service not found while attempting to start service\n");
     else {
         bool useLE = transport == GATT_TRANSPORT_LE || transport == GATT_TRANSPORT_LE_BR_EDR;
         bool useEDR = transport == GATT_TRANSPORT_BR_EDR || transport == GATT_TRANSPORT_LE_BR_EDR;
@@ -545,8 +546,8 @@ static bt_status_t aapiGattServerStopService(int server_if, int service_handle)
     int svc;
 
     pthread_mutex_lock(&mAapiGattLock);
-    if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc, NULL))
-        logw("Server/Service not found while attempting to add included service\n");
+    if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc, NULL, true))
+        logw("Server/Service not found while attempting to stop service\n");
     else {
        if (gattServiceStop(svc))
             ret = BT_STATUS_SUCCESS;
@@ -573,8 +574,8 @@ static bt_status_t aapiGattServerDeleteService(int server_if, int service_handle
     int svc;
 
     pthread_mutex_lock(&mAapiGattLock);
-    if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc, &idx))
-        logw("Server/Service not found while attempting to add included service\n");
+    if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc, &idx, true))
+        logw("Server/Service not found while attempting to delete service\n");
     else {
        memmove(srv->services + idx, srv->services + srv->numServices - 1, sizeof(struct aapiGattServerService));
        srv->numServices--;
@@ -601,13 +602,26 @@ static bt_status_t aapiGattServerDeleteService(int server_if, int service_handle
  */
 static bt_status_t aapiGattServerSendIndication(int server_if, int attribute_handle, int conn_id, int len, int confirm, char *p_value)
 {
-    //TODO
-    return BT_STATUS_FAIL;
+    bt_status_t ret = BT_STATUS_FAIL;
+    struct aapiGattServer *srv;
+    int svc;
+
+    pthread_mutex_lock(&mAapiGattLock);
+    if (!aapiGattServerFindService(server_if, attribute_handle, &srv, &svc, NULL, false))
+        logw("Server/service not found while attempting to send indication\n");
+    else {
+        if (gattServiceSendInd(svc, conn_id, attribute_handle, p_value, len, !!confirm, 0))
+            ret = BT_STATUS_SUCCESS;
+    }
+    pthread_mutex_unlock(&mAapiGattLock);
+
+    /* XXX: callback here? */
+    return ret;
 }
 
 /*
  * FUNCTION: aapiGattServerSendResponse
- * USE:      Send a response to a read/write operatio
+ * USE:      Send a response to a read/write operation
  * PARAMS:   conn_id - the connection reference number
  *           trans_id - transaction reference number
  *           status - the status to send
@@ -617,8 +631,9 @@ static bt_status_t aapiGattServerSendIndication(int server_if, int attribute_han
  */
 static bt_status_t aapiGattServerSendResponse(int conn_id, int trans_id, int status, btgatt_response_t *response)
 {
-    //TODO
-    return BT_STATUS_FAIL;
+    gattSrvCbkReply(conn_id, trans_id, response->handle, status, response->attr_value.value, response->attr_value.len);
+
+    return BT_STATUS_SUCCESS;
 }
 
 
@@ -638,7 +653,6 @@ void *aapiGattServerGetProfileIface(void)
         .unregister_server = aapiGattServerUnregisterServer,
         .connect = aapiGattServerConnect,
         .disconnect = aapiGattServerDisconnect,
-
         .add_service = aapiGattServerAddService,
         .add_included_service = aapiGattServerAddIncludedService,
         .add_characteristic = aapiGattServerAddCharacteristic,
