@@ -1168,6 +1168,25 @@ uint16_t attSrvHandleRangeGetBase(att_range_t rangeRef)
 }
 
 /*
+ * FUNCTION: attSrvHandleRangeGetLen
+ * USE:      Get the actual length (in handled) of a range
+ * PARAMS:   rangeRef - the range reference
+ * RETURN:   length or 0 on error
+ * NOTES:
+ */
+uint16_t attSrvHandleRangeGetLen(att_range_t rangeRef)
+{
+    struct attSrvRange *range;
+    uint16_t ret;
+
+    pthread_mutex_lock(&mSrvLock);
+    range = attSrvRangeFind(rangeRef);
+    ret = range ? range->len : 0;
+    pthread_mutex_unlock(&mSrvLock);
+    return ret;
+}
+
+/*
  * FUNCTION: attSrvValueRegister
  * USE:      Register a given value in a given range
  * PARAMS:   rangeRef - the range reference
