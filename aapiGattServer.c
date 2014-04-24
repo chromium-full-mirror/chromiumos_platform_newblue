@@ -154,9 +154,7 @@ static bt_status_t aapiGattServerRegisterServer(bt_uuid_t *andrUuid)
     }
     pthread_mutex_unlock(&mAapiGattLock);
 
-    if (ret == BT_STATUS_SUCCESS)
-        mCbks.register_server_cb(ret, ref, andrUuid);
-
+    mCbks.register_server_cb(ret, ref, andrUuid);
     return ret;
 }
 
@@ -302,25 +300,83 @@ static bt_status_t aapiGattServerAddService(int server_if, btgatt_srvc_id_t *srv
 {
     bt_status_t ret = BT_STATUS_FAIL;
     struct aapiGattServer *srv;
-    int inst;
+    uint16_t handle = 0;
 
     pthread_mutex_lock(&mAapiGattLock);
     srv = aapiGattServerFindStructByRef(server_if);
     if (!srv)
-        logw("Server not found while attempting to unregister\n");
+        logw("Server not found while attempting to add service\n");
     else {
+        struct aapiGattServerService *svcs;
         struct uuid uuid;
         int svc;
 
-        aapiGattServerUuidFromAndroidUuid(&uuid, &srvc_id->id.uuid);
-        svc = gattServiceCreate(&uuid, srvc_id->is_primary, num_handles, aapiGattServerReadF, aapiGattServerWriteF, aapiGattServerIndF);
-        if (svc) {
-            //todo
+        svcs = realloc(srv->services, sizeof(struct aapiGattServerService[srv->numServices + 1]));
+	if (!svcs)
+            logw("Failed to make space for the service\n");
+        else {
+            srv->services = svcs;
+
+            aapiGattServerUuidFromAndroidUuid(&uuid, &srvc_id->id.uuid);
+            svc = gattServiceCreate(&uuid, srvc_id->is_primary, num_handles, aapiGattServerReadF, aapiGattServerWriteF, aapiGattServerIndF);
+            if (!svc)
+                logw("Failed to create GATT service\n");
+            else {
+                srv->services[srv->numServices].gattSvc = svc;
+                srv->services[srv->numServices].inst = srvc_id->id.inst_id;
+                srv->numServices++;
+                handle = gattServiceGetHandleBaseBySvc(svc);
+                ret = BT_STATUS_SUCCESS;
+            }
         }
     }
     pthread_mutex_unlock(&mAapiGattLock);
 
+    mCbks.service_added_cb(ret, server_if, srvc_id, handle);
     return ret;
+}
+
+/*
+ * FUNCTION: aapiGattServerFindService
+ * USE:      Find a server and a service given their externally-visible reference numbers
+ * PARAMS:   server_if - the server's reference number
+ *           service_handle - the handle of the service
+ *           srvP - we store the struct aapiGattServer* there
+ *           svc - we store the service reference number there
+ * RETURN:   true if all were found
+ * NOTES:    call with mAapiGattLock held
+ */
+static bool aapiGattServerFindService(int server_if, int service_handle, struct aapiGattServer **srvP, int *svcP)
+{
+    struct aapiGattServer *srv;
+    uint32_t i;
+    int svc;
+
+    srv = aapiGattServerFindStructByRef(server_if);
+    if (!srv)
+        return false;
+
+    svc = gattServiceFindByHandle(service_handle);
+    if (svc < 0)
+        return false;
+
+    /* verify proper belonging */
+    for (i = 0; i < srv->numServices; i++)
+        if (srv->services[i].gattSvc == svc)
+            break;
+
+    if (i == srv->numServices) {
+        logw("Found service not aprt of found server!\n");
+        return false;
+    }
+
+    if (srvP)
+        *srvP = srv;
+
+    if (svcP)
+        *svcP = svc;
+
+    return true;
 }
 
 /*
@@ -334,8 +390,31 @@ static bt_status_t aapiGattServerAddService(int server_if, btgatt_srvc_id_t *srv
  */
 static bt_status_t aapiGattServerAddIncludedService(int server_if, int service_handle, int included_handle)
 {
-    //TODO
-    return BT_STATUS_FAIL;
+    bt_status_t ret = BT_STATUS_FAIL;
+    struct aapiGattServer *srv;
+    uint16_t handle = 0;
+    int svc;
+
+    pthread_mutex_lock(&mAapiGattLock);
+    if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc))
+        logw("Server/Service not found while attempting to add included service\n");
+    else {
+        struct uuid uuid;
+        int includedSvc;
+
+        if (!aapiGattServerFindService(server_if, included_handle, NULL, &includedSvc) || !gattServiceGetUuid(includedSvc, &uuid))
+            logw("Failed to find or get UUID of included service\n");
+        else {
+
+            handle = gattServiceAddIncludedService(svc, &uuid);
+            if (handle)
+                ret = BT_STATUS_SUCCESS;
+        }
+    }
+    pthread_mutex_unlock(&mAapiGattLock);
+
+    mCbks.included_service_added_cb(ret, server_if, service_handle, handle /* XXX: shoudl this be included_handle instead? */);
+    return ret;
 }
 
 /*
