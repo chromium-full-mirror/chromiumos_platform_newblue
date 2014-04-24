@@ -61,6 +61,8 @@
 
 bool gattBuiltinInit(void);
 void gattBuiltinDeinit(void);
+
+/* these are safe even while not inited! this is by design */
 void gattBuiltinSetDevName(const char *name);
 void gattBuiltinSetPreferredConnParamsWhenSlave(uint16_t minInt, uint16_t maxInt, uint16_t lat, uint16_t to); //TODO: these can be advertised too. we shodul make sure they match
 void gattBuiltinSetAppearance(uint16_t appearance); /* GAP_APPEAR_* */

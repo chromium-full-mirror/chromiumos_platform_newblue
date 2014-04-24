@@ -228,7 +228,7 @@ void gattBuiltinDeinit(void)
  * USE:      Set device name visible on GAP
  * PARAMS:   name - the bt name in the usual format (HCI_DEV_NAME_LEN chars, NULL terminated unless exactly HCI_DEV_NAME_LEN chars long)
  * RETURN:   NONE
- * NOTES:
+ * NOTES:    can be called before gattBuiltinInit or after gattBuiltinDeinit. Must handle that!
  */
 void gattBuiltinSetDevName(const char *name)
 {
@@ -249,6 +249,7 @@ void gattBuiltinSetDevName(const char *name)
  *           to - preferred timeout
  * RETURN:   NONE
  * NOTES:    units for all params are standard LE connection units/multiples
+ *           can be called before gattBuiltinInit or after gattBuiltinDeinit. Must handle that!
  */
 void gattBuiltinSetPreferredConnParamsWhenSlave(uint16_t minInt, uint16_t maxInt, uint16_t lat, uint16_t to)
 {
@@ -265,7 +266,7 @@ void gattBuiltinSetPreferredConnParamsWhenSlave(uint16_t minInt, uint16_t maxInt
  * USE:      Set "device appearance" as visible on GAP
  * PARAMS:   appearance - GAP_APPEAR_*
  * RETURN:   NONE
- * NOTES:
+ * NOTES:    can be called before gattBuiltinInit or after gattBuiltinDeinit. Must handle that!
  */
 void gattBuiltinSetAppearance(uint16_t appearance)
 {
