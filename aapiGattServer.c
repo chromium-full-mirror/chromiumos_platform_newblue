@@ -25,6 +25,10 @@ struct aapiGattServer {
 
 
 
+/* these not documented anywhere, for some reason */
+#define GATT_TRANSPORT_LE         0
+#define GATT_TRANSPORT_BR_EDR     1
+#define GATT_TRANSPORT_LE_BR_EDR  2
 
 
 
@@ -497,8 +501,29 @@ static bt_status_t aapiGattServerAddDescriptor(int server_if, int service_handle
  */
 static bt_status_t aapiGattServerStartService(int server_if, int service_handle, int transport)
 {
-    //TODO
-    return BT_STATUS_FAIL;
+    bt_status_t ret = BT_STATUS_FAIL;
+    struct aapiGattServer *srv;
+    int svc;
+
+    pthread_mutex_lock(&mAapiGattLock);
+    if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc))
+        logw("Server/Service not found while attempting to add included service\n");
+    else {
+        bool useLE = transport == GATT_TRANSPORT_LE || transport == GATT_TRANSPORT_LE_BR_EDR;
+        bool useEDR = transport == GATT_TRANSPORT_BR_EDR || transport == GATT_TRANSPORT_LE_BR_EDR;
+
+        if (!useLE && !useEDR)
+            logw("Cannot bring up service given no transports\n");
+        else {
+
+            if (gattServiceStart(svc, useLE, useEDR))
+                ret = BT_STATUS_SUCCESS;
+        }
+    }
+    pthread_mutex_unlock(&mAapiGattLock);
+
+    mCbks.service_started_cb(ret, server_if, service_handle);
+    return ret;
 }
 
 /*
@@ -511,8 +536,21 @@ static bt_status_t aapiGattServerStartService(int server_if, int service_handle,
  */
 static bt_status_t aapiGattServerStopService(int server_if, int service_handle)
 {
-    //TODO
-    return BT_STATUS_FAIL;
+    bt_status_t ret = BT_STATUS_FAIL;
+    struct aapiGattServer *srv;
+    int svc;
+
+    pthread_mutex_lock(&mAapiGattLock);
+    if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc))
+        logw("Server/Service not found while attempting to add included service\n");
+    else {
+       if (gattServiceStop(svc))
+            ret = BT_STATUS_SUCCESS;
+    }
+    pthread_mutex_unlock(&mAapiGattLock);
+
+    mCbks.service_stopped_cb(ret, server_if, service_handle);
+    return ret;
 }
 
 /*
