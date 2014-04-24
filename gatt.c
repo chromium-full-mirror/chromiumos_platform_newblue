@@ -192,13 +192,13 @@ static struct gattService *gattServiceFindByUuid(const struct uuid *uuid)
 }
 
 /*
- * FUNCTION: gattServiceFindByHandle
- * USE:      Find a gatt service by handle
+ * FUNCTION: gattServiceFindBySvcRef
+ * USE:      Find a gatt service by service reference
  * PARAMS:   svcRef - the service reference
  * RETURN:   service struct or NULL if not found
  * NOTES:    call with mGattLock held
  */
-static struct gattService *gattServiceFindByHandle(int svcRef)
+static struct gattService *gattServiceFindBySvcRef(int svcRef)
 {
     struct gattService *svc = mSvcs;
 
@@ -992,7 +992,7 @@ int gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles
 
     /* get a handle */
     svc->svcRef = mSvcs ? mSvcs->svcRef : 1;
-    while (gattServiceFindByHandle(svc->svcRef)) {
+    while (gattServiceFindBySvcRef(svc->svcRef)) {
         svc->svcRef++;
         if (svc->svcRef <= 0)
             svc->svcRef = 1;
@@ -1240,7 +1240,7 @@ bool gattServiceDestroy(int svcRef)
     struct gattService *svc;
 
     pthread_mutex_lock(&mGattLock);
-    svc = gattServiceFindByHandle(svcRef);
+    svc = gattServiceFindBySvcRef(svcRef);
     if (svc) {
         if (svc->useCount)
             loge("Refusing to destroy service included elsewhere (%u times)\n", svc->useCount);
@@ -1272,7 +1272,7 @@ bool gattServiceStart(int svcRef, bool supportLE, bool supportEDR)
     bool ret = false;
 
     pthread_mutex_lock(&mGattLock);
-    svc = gattServiceFindByHandle(svcRef);
+    svc = gattServiceFindBySvcRef(svcRef);
     if (svc)
         ret = gattServiceOnline(svc, supportLE, supportEDR);
     pthread_mutex_unlock(&mGattLock);
@@ -1293,7 +1293,7 @@ bool gattServiceStop(int svcRef)
     bool ret = false;
 
     pthread_mutex_lock(&mGattLock);
-    svc = gattServiceFindByHandle(svcRef);
+    svc = gattServiceFindBySvcRef(svcRef);
     if (svc) {
         gattServiceOffline(svc);
         ret = true;
@@ -1316,7 +1316,7 @@ bool gattServiceIsRunning(int svcRef)
     bool ret = false;
 
     pthread_mutex_lock(&mGattLock);
-    svc = gattServiceFindByHandle(svcRef);
+    svc = gattServiceFindBySvcRef(svcRef);
     if (svc)
         ret = svc->online;
     pthread_mutex_unlock(&mGattLock);
@@ -1338,7 +1338,7 @@ bool gattServiceGetUuid(int svcRef, struct uuid *dst)
     bool ret = false;
 
     pthread_mutex_lock(&mGattLock);
-    svc = gattServiceFindByHandle(svcRef);
+    svc = gattServiceFindBySvcRef(svcRef);
     if (svc) {
         memcpy(dst, &svc->uuid, sizeof(struct uuid));
         ret = true;
@@ -1386,11 +1386,34 @@ uint16_t gattServiceGetHandleBaseBySvc(int svcRef)
     uint16_t handle = 0;
 
     pthread_mutex_lock(&mGattLock);
-    svc = gattServiceFindByHandle(svcRef);
+    svc = gattServiceFindBySvcRef(svcRef);
     if (!svc)
         loge("Cannot get base for not-found service\n");
     else
         handle = attSrvHandleRangeGetBase(svc->attRange);
+    pthread_mutex_unlock(&mGattLock);
+
+    return handle;
+}
+
+/*
+ * FUNCTION: gattServiceFindByHandle
+ * USE:      Find the svcRef of a service by handle
+ * PARAMS:   handle - the handle
+ * RETURN:   srvcRef or negative number on error
+ * NOTES:
+ */
+int gattServiceFindByHandle(uint16_t handle)
+{
+    struct gattService *svc;
+    int ret = -1;
+
+    pthread_mutex_lock(&mGattLock);
+    svc = mSvcs;
+    while (svc && attSrvHandleRangeGetBase(svc->attRange) != handle)
+       svc = svc->next;
+    if (svc)
+        ret = svc->svcRef;
     pthread_mutex_unlock(&mGattLock);
 
     return handle;
@@ -1430,7 +1453,7 @@ uint16_t gattServiceAddIncludedService(int svcRef, const struct uuid *uuid)
     uint16_t handle = 0;
 
     pthread_mutex_lock(&mGattLock);
-    svc = gattServiceFindByHandle(svcRef);
+    svc = gattServiceFindBySvcRef(svcRef);
     if (!svc) {
         loge("Failed to find service %d\n", svcRef);
         goto out;
@@ -1478,7 +1501,7 @@ uint16_t gattServiceAddChar(int svcRef, const struct uuid *uuid, uint8_t props, 
     uint16_t handle = 0;
 
     pthread_mutex_lock(&mGattLock);
-    svc = gattServiceFindByHandle(svcRef);
+    svc = gattServiceFindBySvcRef(svcRef);
     if (!svc) {
         loge("Failed to find service %d\n", svcRef);
         goto out;
@@ -1532,7 +1555,7 @@ uint16_t gattServiceAddCharDescr(int svcRef, const struct uuid *uuid, uint32_t p
     uint16_t handle = 0;
 
     pthread_mutex_lock(&mGattLock);
-    svc = gattServiceFindByHandle(svcRef);
+    svc = gattServiceFindBySvcRef(svcRef);
     if (!svc) {
         loge("Failed to find service %d\n", svcRef);
         goto out;
@@ -1578,7 +1601,7 @@ bool gattServiceSendInd(int svcRef, int cid, uint16_t handle, const void *buf, u
     sg data;
 
     pthread_mutex_lock(&mGattLock);
-    svc = gattServiceFindByHandle(svcRef);
+    svc = gattServiceFindBySvcRef(svcRef);
     if (!svc) {
         loge("Failed to find service %d\n", svcRef);
         goto out;
