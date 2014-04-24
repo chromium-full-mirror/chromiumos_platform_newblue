@@ -413,7 +413,7 @@ static bt_status_t aapiGattServerAddIncludedService(int server_if, int service_h
     }
     pthread_mutex_unlock(&mAapiGattLock);
 
-    mCbks.included_service_added_cb(ret, server_if, service_handle, handle /* XXX: shoudl this be included_handle instead? */);
+    mCbks.included_service_added_cb(ret, server_if, service_handle, handle);
     return ret;
 }
 
@@ -430,8 +430,26 @@ static bt_status_t aapiGattServerAddIncludedService(int server_if, int service_h
  */
 static bt_status_t aapiGattServerAddCharacteristic(int server_if, int service_handle, bt_uuid_t *andrUuid, int properties, int permissions)
 {
-    //TODO
-    return BT_STATUS_FAIL;
+    bt_status_t ret = BT_STATUS_FAIL;
+    struct aapiGattServer *srv;
+    uint16_t handle = 0;
+    int svc;
+
+    pthread_mutex_lock(&mAapiGattLock);
+    if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc))
+        logw("Server/Service not found while attempting to add included service\n");
+    else {
+        struct uuid uuid;
+
+        aapiGattServerUuidFromAndroidUuid(&uuid, andrUuid);
+        handle = gattServiceAddChar(svc, &uuid, properties, permissions);
+        if (handle)
+            ret = BT_STATUS_SUCCESS;
+    }
+    pthread_mutex_unlock(&mAapiGattLock);
+
+    mCbks.characteristic_added_cb(ret, server_if, andrUuid, service_handle, handle);
+    return ret;
 }
 
 /*
@@ -446,8 +464,26 @@ static bt_status_t aapiGattServerAddCharacteristic(int server_if, int service_ha
  */
 static bt_status_t aapiGattServerAddDescriptor(int server_if, int service_handle, bt_uuid_t *andrUuid, int permissions)
 {
-    //TODO
-    return BT_STATUS_FAIL;
+    bt_status_t ret = BT_STATUS_FAIL;
+    struct aapiGattServer *srv;
+    uint16_t handle = 0;
+    int svc;
+
+    pthread_mutex_lock(&mAapiGattLock);
+    if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc))
+        logw("Server/Service not found while attempting to add included service\n");
+    else {
+        struct uuid uuid;
+
+        aapiGattServerUuidFromAndroidUuid(&uuid, andrUuid);
+        handle = gattServiceAddCharDescr(svc, &uuid, permissions);
+        if (handle)
+            ret = BT_STATUS_SUCCESS;
+    }
+    pthread_mutex_unlock(&mAapiGattLock);
+
+    mCbks.descriptor_added_cb(ret, server_if, andrUuid, service_handle, handle);
+    return ret;
 }
 
 /*
