@@ -110,9 +110,10 @@ void attSrvDestroy(void);
 
 l2c_handle_t attSrvCidResolve(int cid); //or 0 on failure
 
-att_range_t attSrvHandleRangeReserve(uint16_t len, bool allowLE, bool allowEDR); /* -> 0 on failure */
+att_range_t attSrvHandleRangeReserve(uint16_t len); /* -> 0 on failure */
 void attSrvHandleRangeRelease(att_range_t rangeRef);
 uint16_t attSrvHandleRangeGetBase(att_range_t rangeRef); /* -> 0 on failure */
+bool aapiSrvHandleRangeSetAllowedTransports(att_range_t rangeRef, bool allowLE, bool allowEDR);
 bool attSrvValueRegister(att_range_t rangeRef, uint16_t offset, const struct uuid *type, uint8_t perms);
 bool attSrvValueSetGrpLen(att_range_t rangeRef, uint16_t offset, uint16_t grpLen);
 bool attSrvValueGetGrpLen(att_range_t rangeRef, uint16_t offset, uint16_t *grpLenP);

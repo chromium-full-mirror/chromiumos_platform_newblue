@@ -995,12 +995,10 @@ void attSrvNotifConnClose(l2c_handle_t conn)
  * FUNCTION: attSrvHandleRangeReserve
  * USE:      reserve a range of handles in the ATT server
  * PARAMS:   len - the wanted handle range length
- *           allowLE - accessible by LE?
- *           allowEDR - accessible by EDR?
  * RETURN:   a reference to the handle range or 0 on failure
- * NOTES:
+ * NOTES:    by default both LE and EDR accesses are disabled until a call to aapiSrvHandleRangeSetAllowedTransports() is amde
  */
-att_range_t attSrvHandleRangeReserve(uint16_t len, bool allowLE, bool allowEDR)
+att_range_t attSrvHandleRangeReserve(uint16_t len)
 {
     uint32_t searchH = ATT_FIRST_VALID_HANDLE;
     struct attSrvRange *next, *prev = NULL, *newRange;
@@ -1032,8 +1030,6 @@ att_range_t attSrvHandleRangeReserve(uint16_t len, bool allowLE, bool allowEDR)
     newRange->rangeRef = uniqGetNext();
     newRange->prev = prev;
     newRange->next = next;
-    newRange->allowLE = allowLE;
-    newRange->allowEDR = allowEDR;
     if (next)
         next->prev = newRange;
     else
@@ -1055,6 +1051,7 @@ out:
  * PARAMS:   rangeRef - the range reference
  * RETURN:   the range struct or NULL if not found
  * NOTES:    call with mSrvLock help
+
  */
 static struct attSrvRange* attSrvRangeFind(att_range_t rangeRef)
 {
@@ -1063,6 +1060,32 @@ static struct attSrvRange* attSrvRangeFind(att_range_t rangeRef)
     for (range = mRangesHead; range && range->rangeRef != rangeRef; range = range->next);
 
     return range;
+}
+
+/*
+ * FUNCTION: aapiSrvHandleRangeSetAllowedTransports
+ * USE:      Set which transports may access a range
+ * PARAMS:   rangeRef - the range reference
+ *           allowLE - accessible by LE?
+ *           allowEDR - accessible by EDR?
+ * RETURN:   a reference to the handle range or 0 on failure
+ * NOTES:
+ */
+bool aapiSrvHandleRangeSetAllowedTransports(att_range_t rangeRef, bool allowLE, bool allowEDR)
+{
+    struct attSrvRange *range;
+
+    pthread_mutex_lock(&mSrvLock);
+    range = attSrvRangeFind(rangeRef);
+    if (!range)
+        logw("Attempt to delete a non-existent range\n");
+    else {
+        range->allowLE = allowLE;
+        range->allowEDR = allowEDR;
+    }
+    pthread_mutex_unlock(&mSrvLock);
+
+    return !!range;
 }
 
 /*

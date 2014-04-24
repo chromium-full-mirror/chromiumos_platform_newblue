@@ -968,12 +968,10 @@ void gattProfileDeinit(void)
  *           readF - read callback for the values
  *           writeF - write callback for the values
  *           indF - callback to be notified of confirmations of indications
- *           supportLE - does this service support LE?
- *           supportEDR - does this service support EDR (and should be added to SDP thus)
  * RETURN:   service reference or 0 on error
  * NOTES:
  */
-int gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles, gattSrvValueReadCbk readF, gattSrvValueWriteCbk writeF, gattSrvIndCbk indF, bool supportLE, bool supportEDR)
+int gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles, gattSrvValueReadCbk readF, gattSrvValueWriteCbk writeF, gattSrvIndCbk indF)
 {
     struct gattService *svc;
     int svcRef = 0;
@@ -1001,7 +999,7 @@ int gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles
     }
 
     /* grab a range */
-    svc->attRange = attSrvHandleRangeReserve(numHandles, supportLE, supportEDR);
+    svc->attRange = attSrvHandleRangeReserve(numHandles);
     if (!svc->attRange) {
         loge("Failed to reserve %u-handle range\n", numHandles);
         goto out_att;
@@ -1014,8 +1012,6 @@ int gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles
 
     svc->maxItems = numHandles;
     svc->primary = primary;
-    svc->allowLE = supportLE;
-    svc->allowEDR = supportEDR;
     svcRef = svc->svcRef;
 
     svc->next = mSvcs;
@@ -1066,10 +1062,12 @@ static uint8_t gattPermToAttPerm(uint32_t gattPerms)
  * FUNCTION: gattServiceOnline
  * USE:      Online a service
  * PARAMS:   svc - the service struct
+ *           supportLE - does this service support LE
+ *           supportEDR - does this service support EDR
  * RETURN:   success
  * NOTES:    call with mGattLock held
  */
-static bool gattServiceOnline(struct gattService *svc)
+static bool gattServiceOnline(struct gattService *svc, bool supportLE, bool supportEDR)
 {
     static const uint8_t attAllReadPerms = ATT_PERM_READ | ATT_PERM_READ_ENCR | ATT_PERM_READ_ENCR_MITM;
     uint16_t ofst = 0, charOfst = 0;
@@ -1079,6 +1077,13 @@ static bool gattServiceOnline(struct gattService *svc)
 
     if (svc->online) {
         logw("Cannot online an online service\n");
+        goto out;
+    }
+
+    svc->allowLE = supportLE;
+    svc->allowEDR = supportEDR;
+    if (!aapiSrvHandleRangeSetAllowedTransports(svc->attRange, supportLE, supportEDR)) {
+        logw("Failed to set ATT transport perms\n");
         goto out;
     }
 
@@ -1256,10 +1261,12 @@ bool gattServiceDestroy(int svcRef)
  * FUNCTION: gattServiceStart
  * USE:      Online a service
  * PARAMS:   svcRef - the service reference
+ *           supportLE - does this service support LE
+ *           supportEDR - does this service support EDR
  * RETURN:   success
  * NOTES:
  */
-bool gattServiceStart(int svcRef)
+bool gattServiceStart(int svcRef, bool supportLE, bool supportEDR)
 {
     struct gattService *svc;
     bool ret = false;
@@ -1267,7 +1274,7 @@ bool gattServiceStart(int svcRef)
     pthread_mutex_lock(&mGattLock);
     svc = gattServiceFindByHandle(svcRef);
     if (svc)
-        ret = gattServiceOnline(svc);
+        ret = gattServiceOnline(svc, supportLE, supportEDR);
     pthread_mutex_unlock(&mGattLock);
 
     return ret;
