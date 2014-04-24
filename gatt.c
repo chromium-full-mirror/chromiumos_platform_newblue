@@ -1400,23 +1400,35 @@ uint16_t gattServiceGetHandleBaseBySvc(int svcRef)
  * FUNCTION: gattServiceFindByHandle
  * USE:      Find the svcRef of a service by handle
  * PARAMS:   handle - the handle
+ *           firstOnly - if set only search by start of range, else serach by anything IN range
  * RETURN:   srvcRef or negative number on error
  * NOTES:
  */
-int gattServiceFindByHandle(uint16_t handle)
+int gattServiceFindByHandle(uint16_t handle, bool firstOnly)
 {
     struct gattService *svc;
     int ret = -1;
 
     pthread_mutex_lock(&mGattLock);
     svc = mSvcs;
-    while (svc && attSrvHandleRangeGetBase(svc->attRange) != handle)
+    while (svc) {
+       uint16_t base = attSrvHandleRangeGetBase(svc->attRange);
+       uint16_t len = attSrvHandleRangeGetLen(svc->attRange);
+
+       if (firstOnly && base == handle)
+           break;
+
+       if (base <= handle && base + len > handle)
+           break;
+
        svc = svc->next;
+    }
+
     if (svc)
         ret = svc->svcRef;
     pthread_mutex_unlock(&mGattLock);
 
-    return handle;
+    return ret;
 }
 
 /*

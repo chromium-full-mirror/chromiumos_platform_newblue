@@ -70,7 +70,7 @@ int gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles
 bool gattServiceDestroy(int svc);
 uint16_t gattServiceGetHandleBaseByUuid(const struct uuid *uuid); /* or 0 on error */
 uint16_t gattServiceGetHandleBaseBySvc(int svc); /* or 0 on error */
-int gattServiceFindByHandle(uint16_t handle); /* negative on error */
+int gattServiceFindByHandle(uint16_t handle, bool firstOnly); /* negative on error */
 
 /* service control */
 bool gattServiceStart(int svc, bool supportLE, bool supportEDR);
