@@ -306,7 +306,7 @@ static uniq_t mDiscoverLeHandle = 0;
 
 static struct hciDiscoverNameState *mDiscoverNames = NULL;
 
-
+static uint8_t mIoCapability = HCI_DISP_CAP_DISP_YES_NO;
 
 
 
@@ -1321,13 +1321,15 @@ success:
  * FUNCTION: hciUp
  * USE:      Bring up HCI (comms to bt chip)
  * PARAMS:   addr - the BT addr
+ *           ioCapability - our user interaction capabilities (HCI_DISP_CAP_*)
  * RETURN:   true on success, false else
  * NOTES:    may take a while
  */
-bool hciUp(const uint8_t *addr)
+bool hciUp(const uint8_t *addr, uint8_t ioCapability)
 {
     int ret;
 
+    mIoCapability = ioCapability;
 
     logd("Vendor open\n");
     if (!vendorOpen()) {
@@ -3021,7 +3023,7 @@ static bool hciSecUserEvtCbk(const struct hciEvtHdr *evtHdr, void *cbkData, uniq
         } else {
             if (!conn)
                 logw("Connection not found for pending SSP req\n");
-            hciSecUserCbkSspIoCapabilityReq(&addr, HCI_DISP_CAP_DISP_YES_NO, false, HCI_AUTH_REQMENT_MITM_PROT_GENERAL_BOND);
+            hciSecUserCbkSspIoCapabilityReq(&addr, mIoCapability, false, HCI_AUTH_REQMENT_MITM_PROT_GENERAL_BOND);
         }
         pthread_mutex_unlock(&mConnsLock);
 
@@ -4799,7 +4801,7 @@ static void hciConnCfg(struct hciAclConn *c, uint32_t step, uint32_t aux)
             }
             if (c->sspPending) {
                 logd("Fulfilling pending SSP request\n");
-                hciSecUserCbkSspIoCapabilityReq(&c->addr, HCI_DISP_CAP_DISP_YES_NO, false, HCI_AUTH_REQMENT_MITM_PROT_GENERAL_BOND);
+                hciSecUserCbkSspIoCapabilityReq(&c->addr, mIoCapability, false, HCI_AUTH_REQMENT_MITM_PROT_GENERAL_BOND);
                 c->sspPending = false;
             }
             return;

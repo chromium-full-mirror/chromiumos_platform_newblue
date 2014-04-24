@@ -670,7 +670,7 @@ static int aapiEnable(void)
         goto fail_timers;
     }
 
-    if (!hciUp(mLocalMac.address)) {
+    if (!hciUp(mLocalMac.address, HCI_DISP_CAP_DISP_YES_NO)) {
         loge("HCI up failed\n");
         goto fail_hci;
     }

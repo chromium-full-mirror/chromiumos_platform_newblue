@@ -328,7 +328,7 @@ int main(int argc, char** argv)
 
     persistLoad();
     timersInit();
-    if (!hciUp(mac)) {
+    if (!hciUp(mac, HCI_DISP_CAP_DISP_YES_NO)) {
         loge("HCI up fail\n");
         return -1;
     }
