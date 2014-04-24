@@ -345,12 +345,13 @@ static bt_status_t aapiGattServerAddService(int server_if, btgatt_srvc_id_t *srv
  * USE:      Find a server and a service given their externally-visible reference numbers
  * PARAMS:   server_if - the server's reference number
  *           service_handle - the handle of the service
- *           srvP - we store the struct aapiGattServer* there
- *           svc - we store the service reference number there
+ *           srvP - if not NULL, we store the struct aapiGattServer* there
+ *           svc - if not NULL, we store the service reference number there
+ *           svcIdxInTableP - if not NULL, we store service's index in the server's "services" table
  * RETURN:   true if all were found
  * NOTES:    call with mAapiGattLock held
  */
-static bool aapiGattServerFindService(int server_if, int service_handle, struct aapiGattServer **srvP, int *svcP)
+static bool aapiGattServerFindService(int server_if, int service_handle, struct aapiGattServer **srvP, int *svcP, uint32_t *svcIdxInTableP)
 {
     struct aapiGattServer *srv;
     uint32_t i;
@@ -380,6 +381,9 @@ static bool aapiGattServerFindService(int server_if, int service_handle, struct 
     if (svcP)
         *svcP = svc;
 
+    if (svcIdxInTableP)
+        *svcIdxInTableP = i;
+
     return true;
 }
 
@@ -400,13 +404,13 @@ static bt_status_t aapiGattServerAddIncludedService(int server_if, int service_h
     int svc;
 
     pthread_mutex_lock(&mAapiGattLock);
-    if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc))
+    if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc, NULL))
         logw("Server/Service not found while attempting to add included service\n");
     else {
         struct uuid uuid;
         int includedSvc;
 
-        if (!aapiGattServerFindService(server_if, included_handle, NULL, &includedSvc) || !gattServiceGetUuid(includedSvc, &uuid))
+        if (!aapiGattServerFindService(server_if, included_handle, NULL, &includedSvc, NULL) || !gattServiceGetUuid(includedSvc, &uuid))
             logw("Failed to find or get UUID of included service\n");
         else {
 
@@ -440,7 +444,7 @@ static bt_status_t aapiGattServerAddCharacteristic(int server_if, int service_ha
     int svc;
 
     pthread_mutex_lock(&mAapiGattLock);
-    if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc))
+    if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc, NULL))
         logw("Server/Service not found while attempting to add included service\n");
     else {
         struct uuid uuid;
@@ -474,7 +478,7 @@ static bt_status_t aapiGattServerAddDescriptor(int server_if, int service_handle
     int svc;
 
     pthread_mutex_lock(&mAapiGattLock);
-    if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc))
+    if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc, NULL))
         logw("Server/Service not found while attempting to add included service\n");
     else {
         struct uuid uuid;
@@ -495,7 +499,7 @@ static bt_status_t aapiGattServerAddDescriptor(int server_if, int service_handle
  * USE:      Starts a local service
  * PARAMS:   server_if - the server's reference number
  *           service_handle - the handle of the current service
- *           transport - XXX: TODO: WTF??
+ *           transport
  * RETURN:   status
  * NOTES:    also calls callback with result if successful result here
  */
@@ -506,7 +510,7 @@ static bt_status_t aapiGattServerStartService(int server_if, int service_handle,
     int svc;
 
     pthread_mutex_lock(&mAapiGattLock);
-    if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc))
+    if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc, NULL))
         logw("Server/Service not found while attempting to add included service\n");
     else {
         bool useLE = transport == GATT_TRANSPORT_LE || transport == GATT_TRANSPORT_LE_BR_EDR;
@@ -541,7 +545,7 @@ static bt_status_t aapiGattServerStopService(int server_if, int service_handle)
     int svc;
 
     pthread_mutex_lock(&mAapiGattLock);
-    if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc))
+    if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc, NULL))
         logw("Server/Service not found while attempting to add included service\n");
     else {
        if (gattServiceStop(svc))
@@ -563,8 +567,24 @@ static bt_status_t aapiGattServerStopService(int server_if, int service_handle)
  */
 static bt_status_t aapiGattServerDeleteService(int server_if, int service_handle)
 {
-    //TODO
-    return BT_STATUS_FAIL;
+    bt_status_t ret = BT_STATUS_FAIL;
+    struct aapiGattServer *srv;
+    uint32_t idx;
+    int svc;
+
+    pthread_mutex_lock(&mAapiGattLock);
+    if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc, &idx))
+        logw("Server/Service not found while attempting to add included service\n");
+    else {
+       memmove(srv->services + idx, srv->services + srv->numServices - 1, sizeof(struct aapiGattServerService));
+       srv->numServices--;
+       if (gattServiceDestroy(svc))
+           ret = BT_STATUS_SUCCESS;
+    }
+    pthread_mutex_unlock(&mAapiGattLock);
+
+    mCbks.service_deleted_cb(ret, server_if, service_handle);
+    return ret;
 }
 
 /*
