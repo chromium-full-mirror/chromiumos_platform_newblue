@@ -1,12 +1,102 @@
 #include <string.h>
 #include "aapiGattServer.h"
 #include "gatt.h"
+#include "log.h"
+#include "bt.h"
+#include "mt.h"
+
+
+/* this grouping is not part of the GATT spec and its semantics are thus unclear. */
+
+struct aapiGattServerService {
+    int     gattSvc;
+    uint8_t inst;
+};
+
+struct aapiGattServer {
+    struct aapiGattServer         *next;
+    struct aapiGattServer         *prev;
+    bt_uuid_t                      andrUuid;
+    int                            refNum;
+    uint32_t                       numServices;
+    struct aapiGattServerService  *services;
+};
+
+
+
+
+
+
 
 
 /* our state */
 static btgatt_server_callbacks_t mCbks;
 
+static pthread_mutex_t mAapiGattLock = PTHREAD_MUTEX_INITIALIZER;
+static struct aapiGattServer *mServers;
 
+
+
+/*
+ * FUNCTION: aapiGattServerFindStructByRef
+ * USE:      Find a aapiGattServer struct by reference number
+ * PARAMS:   ref - the reference
+ * RETURN:   the aapiGattServer struct or NULL if not found
+ * NOTES:    call with mAapiGattLock held
+ */
+static struct aapiGattServer* aapiGattServerFindStructByRef(int ref)
+{
+    struct aapiGattServer *ret = mServers;
+
+    while (ret && ret->refNum != ref)
+        ret = ret->next;
+
+    return ret;
+}
+
+/*
+ * FUNCTION: aapiGattServerFindStructByUuid
+ * USE:      Find a aapiGattServer struct by android-style uuid
+ * PARAMS:   andrUuid - the uuid
+ * RETURN:   the aapiGattServer struct or NULL if not found
+ * NOTES:    call with mAapiGattLock held
+ */
+static struct aapiGattServer* aapiGattServerFindStructByUuid(const bt_uuid_t *andrUuid)
+{
+    struct aapiGattServer *ret = mServers;
+
+    while (ret && memcmp(&ret->andrUuid, andrUuid, sizeof(ret->andrUuid)))
+        ret = ret->next;
+
+    return ret;
+}
+
+/*
+ * FUNCTION: aapiGattServerContainsServiceWithUuid
+ * USE:      See if a aapiGattServer contains a service with a given UUID
+ * PARAMS:   srv - the aapiGattServer
+ *           uuid - the uuid in question
+ *           instIdP - if non-null, instance Id will be stored here
+ * RETURN:   true if found, false else
+ * NOTES:    call with mAapiGattLock held
+ */
+static bool aapiGattServerContainsServiceWithUuid(const struct aapiGattServer *srv, const struct uuid *uuid, uint8_t *instIdP)
+{
+    struct uuid localUuid;
+    uint32_t i;
+
+    for (i = 0; i < srv->numServices; i++) {
+        if (gattServiceGetUuid(srv->services[i].gattSvc, &localUuid))
+            loge("Failed to get uuid. This is not possible\n");
+        else if (uuidCmp(&localUuid, uuid)) {
+            if (instIdP)
+                *instIdP = srv->services[i].inst;
+            return true;
+        }
+    }
+
+    return false;
+}
 
 /*
  * FUNCTION: aapiGattServerUuidFromAndroidUuid
@@ -21,7 +111,6 @@ static void aapiGattServerUuidFromAndroidUuid(struct uuid *dst, const bt_uuid_t 
     uuidReadBE(dst, src->uu);
 }
 
-
 /*
  * FUNCTION: aapiGattServerRegisterServer
  * USE:      Registers a GATT server application with the stack
@@ -31,8 +120,44 @@ static void aapiGattServerUuidFromAndroidUuid(struct uuid *dst, const bt_uuid_t 
  */
 static bt_status_t aapiGattServerRegisterServer(bt_uuid_t *andrUuid)
 {
-    //TODO. WTF??
-    return BT_STATUS_FAIL;
+    bt_status_t ret = BT_STATUS_FAIL;
+    int ref = 0;
+
+    pthread_mutex_lock(&mAapiGattLock);
+    if (aapiGattServerFindStructByUuid(andrUuid))
+        loge("Refusing to create identical GATT server\n");
+    else {
+        struct aapiGattServer *srv = (struct aapiGattServer*)calloc(1, sizeof(struct aapiGattServer));
+        if (!srv) {
+            loge("Failed to allocate GATT server\n");
+            ret = BT_STATUS_NOMEM;
+        } else {
+
+            /* grab a free reference number */
+            srv->refNum = mServers  ? (mServers->refNum + 1) : 1;
+            while (aapiGattServerFindStructByRef(srv->refNum))
+                srv->refNum++;
+
+            /* link it in */
+            srv->next = mServers;
+            if (mServers)
+                mServers->prev = srv;
+            mServers = srv;
+
+            /* save uuid */
+            memcpy(&srv->andrUuid, andrUuid, sizeof(srv->andrUuid));
+
+            /* prepare to announce success */
+            ret = BT_STATUS_SUCCESS;
+            ref = srv->refNum;
+        }
+    }
+    pthread_mutex_unlock(&mAapiGattLock);
+
+    if (ret == BT_STATUS_SUCCESS)
+        mCbks.register_server_cb(ret, ref, andrUuid);
+
+    return ret;
 }
 
 /*
@@ -44,8 +169,38 @@ static bt_status_t aapiGattServerRegisterServer(bt_uuid_t *andrUuid)
  */
 static bt_status_t aapiGattServerUnregisterServer(int server_if)
 {
-    //TODO. WTF??
-    return BT_STATUS_FAIL;
+    bt_status_t ret = BT_STATUS_FAIL;
+    struct aapiGattServer *srv;
+
+    pthread_mutex_lock(&mAapiGattLock);
+    srv = aapiGattServerFindStructByRef(server_if);
+    if (!srv)
+        logw("Server not found while attempting to unregister\n");
+    else {
+        uint32_t i;
+
+        if (srv->next)
+            srv->next->prev = srv->prev;
+        if (srv->prev)
+            srv->prev->next = srv->next;
+        else
+            mServers = srv->next;
+
+        for (i = 0; i < srv->numServices; i++) {
+            if (gattServiceIsRunning(srv->services[i].gattSvc)) {
+                logw("Unregistering server with running services!\n");
+                gattServiceStop(srv->services[i].gattSvc);
+            }
+            gattServiceDestroy(srv->services[i].gattSvc);
+        }
+        if (srv->services)
+            free(srv->services);
+        free(srv);
+        ret = BT_STATUS_SUCCESS;
+    }
+    pthread_mutex_unlock(&mAapiGattLock);
+
+    return ret;
 }
 
 /*
@@ -77,6 +232,64 @@ static bt_status_t aapiGattServerDisconnect(int server_if, const bt_bdaddr_t *bd
 }
 
 /*
+ * FUNCTION: aapiGattServerReadF
+ * USE:      GATT's callback for reading
+ * PARAMS:   svc - service ref
+ *           who - connection to whom this pertains to
+ *           cid - ATT's connection ID
+ *           transId - ATT's transaction ID
+ *           handle - the handle that this pertains to
+ *           byteOfst - the offset into the characteristic for the read (in bytes)
+ *           reason - reason for the write (ATT_READ_FOR_*)
+ *           wantedLen - the length to write
+ * RETURN:   NONE
+ * NOTES:    call gattSrvCbkReply() with results. returning false will send ATT_ERROR_UNLIKELY_ERROR to the client
+ */
+static bool aapiGattServerReadF(int svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len)
+{
+    //TODO
+    return false;
+}
+
+/*
+ * FUNCTION: aapiGattServerWriteF
+ * USE:      GATT's callback for writing
+ * PARAMS:   svc - service ref
+ *           who - connection to whom this pertains to
+ *           cid - ATT's connection ID
+ *           transId - ATT's transaction ID
+ *           handle - the handle that this pertains to
+ *           byteOfst - the offset into the characteristic for the write (in bytes)
+ *           reason - reason for the write (ATT_WRITE_FOR_*)
+ *           len - the length to write
+ *           data - the data to write
+ * RETURN:   NONE
+ * NOTES:    call gattSrvCbkReply() with results. returning false will send ATT_ERROR_UNLIKELY_ERROR to the client
+ */
+static bool aapiGattServerWriteF(int svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
+{
+    //TODO
+    return false;
+}
+
+/*
+ * FUNCTION: aapiGattServerIndF
+ * USE:      GATT's callback for indication/notification progress
+ * PARAMS:   svc - service ref
+ *           who - connection to whom this pertains to
+ *           cid - ATT's connection ID
+ *           handle - the handle that this pertains to
+ *           evt - what happened (GATT_SRV_EVT_*)
+ *           ref - value originally passed to gattServiceSendInd()
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void aapiGattServerIndF(int svc, l2c_handle_t who, int cid, uint16_t handle, uint8_t evt, uint64_t ref)
+{
+    //TODO
+}
+
+/*
  * FUNCTION: aapiGattServerAddService
  * USE:      Create a new service
  * PARAMS:   server_if - the server's reference number
@@ -87,8 +300,27 @@ static bt_status_t aapiGattServerDisconnect(int server_if, const bt_bdaddr_t *bd
  */
 static bt_status_t aapiGattServerAddService(int server_if, btgatt_srvc_id_t *srvc_id, int num_handles)
 {
-    //TODO
-    return BT_STATUS_FAIL;
+    bt_status_t ret = BT_STATUS_FAIL;
+    struct aapiGattServer *srv;
+    int inst;
+
+    pthread_mutex_lock(&mAapiGattLock);
+    srv = aapiGattServerFindStructByRef(server_if);
+    if (!srv)
+        logw("Server not found while attempting to unregister\n");
+    else {
+        struct uuid uuid;
+        int svc;
+
+        aapiGattServerUuidFromAndroidUuid(&uuid, &srvc_id->id.uuid);
+        svc = gattServiceCreate(&uuid, srvc_id->is_primary, num_handles, aapiGattServerReadF, aapiGattServerWriteF, aapiGattServerIndF);
+        if (svc) {
+            //todo
+        }
+    }
+    pthread_mutex_unlock(&mAapiGattLock);
+
+    return ret;
 }
 
 /*
