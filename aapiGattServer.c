@@ -218,6 +218,8 @@ static bt_status_t aapiGattServerUnregisterServer(int server_if)
  */
 static bt_status_t aapiGattServerConnect(int server_if, const bt_bdaddr_t *bd_addr, bool is_direct)
 {
+    //TODO
+
     return BT_STATUS_FAIL;
 }
 
@@ -232,6 +234,8 @@ static bt_status_t aapiGattServerConnect(int server_if, const bt_bdaddr_t *bd_ad
  */
 static bt_status_t aapiGattServerDisconnect(int server_if, const bt_bdaddr_t *bd_addr, int conn_id)
 {
+    //TODO
+
     return BT_STATUS_FAIL;
 }
 
@@ -251,8 +255,18 @@ static bt_status_t aapiGattServerDisconnect(int server_if, const bt_bdaddr_t *bd
  */
 static bool aapiGattServerReadF(int svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len)
 {
-    //TODO
-    return false;
+    struct bt_addr peer;
+    bt_bdaddr_t andrPeerAddr;
+
+    if (!l2cApiGetBtAddr(who, &peer)) {
+        loge("Failed to get peer addr for read cbk\n");
+        return false;
+    }
+
+    memcpy(andrPeerAddr.address, peer.addr, sizeof(andrPeerAddr.address));
+    mCbks.request_read_cb(cid, transId, &andrPeerAddr, handle, byteOfst, reason == ATT_READ_FOR_READ_BLOB);
+
+    return true;
 }
 
 /*
@@ -272,8 +286,16 @@ static bool aapiGattServerReadF(int svc, l2c_handle_t who, int cid, int transId,
  */
 static bool aapiGattServerWriteF(int svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
 {
-    //TODO
-    return false;
+    struct bt_addr peer;
+    bt_bdaddr_t andrPeerAddr;
+
+    if (!l2cApiGetBtAddr(who, &peer)) {
+        loge("Failed to get peer addr for write cbk\n");
+        return false;
+    }
+
+    mCbks.request_write_cb(cid, transId, &andrPeerAddr, handle, byteOfst, len, true, reason == ATT_WRITE_FOR_PREPARE, (uint8_t*)data);
+    return true;
 }
 
 /*
@@ -290,7 +312,7 @@ static bool aapiGattServerWriteF(int svc, l2c_handle_t who, int cid, int transId
  */
 static void aapiGattServerIndF(int svc, l2c_handle_t who, int cid, uint16_t handle, uint8_t evt, uint64_t ref)
 {
-    //TODO
+    /* XXX: tell java somehow? Current api has no way it seems */
 }
 
 /*
