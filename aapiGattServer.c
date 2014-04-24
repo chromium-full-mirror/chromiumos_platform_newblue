@@ -1,5 +1,6 @@
 #include <string.h>
 #include "aapiGattServer.h"
+#include "gatt-builtin.h"
 #include "gatt.h"
 #include "log.h"
 #include "bt.h"
@@ -38,6 +39,7 @@ static btgatt_server_callbacks_t mCbks;
 
 static pthread_mutex_t mAapiGattLock = PTHREAD_MUTEX_INITIALIZER;
 static struct aapiGattServer *mServers;
+static bool mInited = false;
 
 
 
@@ -636,9 +638,6 @@ static bt_status_t aapiGattServerSendResponse(int conn_id, int trans_id, int sta
     return BT_STATUS_SUCCESS;
 }
 
-
-
-
 /*
  * FUNCTION: aapiGattServerGetProfileIface
  * USE:      Called to get profile pointer to the GATT server profile
@@ -676,10 +675,29 @@ void *aapiGattServerGetProfileIface(void)
  */
 bt_status_t aapiGattServerInit(const btgatt_server_callbacks_t *cbks)
 {
+    bt_status_t ret;
+
+
     memcpy(&mCbks, cbks, sizeof(mCbks));
 
-    //TODO
-    return BT_STATUS_SUCCESS;
+    pthread_mutex_lock(&mAapiGattLock);
+    if (!mInited) {
+        if (!attInit()) {
+            loge("ATT init failed\n");
+        } else if (!gattProfileInit()) {
+            attDeinit();
+            loge("GATT init failed\n");
+        } else if (!gattBuiltinInit()) {
+            gattProfileDeinit();
+            attDeinit();
+            loge("GATT.GAP init failed\n");
+        } else
+            mInited = true;
+    }
+    ret = mInited ? BT_STATUS_SUCCESS : BT_STATUS_FAIL;
+    pthread_mutex_unlock(&mAapiGattLock);
+
+    return ret;
 }
 
 /*
@@ -691,7 +709,14 @@ bt_status_t aapiGattServerInit(const btgatt_server_callbacks_t *cbks)
  */
 void aapiGattServerDeinit(void)
 {
-    //TODO
+    pthread_mutex_lock(&mAapiGattLock);
+    if (mInited) {
+        mInited = false;
+        gattBuiltinDeinit();
+        gattProfileDeinit();
+        attDeinit();
+    }
+    pthread_mutex_unlock(&mAapiGattLock);
 }
 
 
