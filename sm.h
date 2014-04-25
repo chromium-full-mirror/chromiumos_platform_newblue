@@ -4,6 +4,7 @@
 #include "types.h"
 #include "sg.h"
 
+#define L2C_FIXED_CH_NUM_SM    6
 
 #define SM_BLOCK_LEN      16
 #define SM_SIG_LEN        12
@@ -12,7 +13,8 @@ void smSignatureCalc(sg m, const uint8_t *key, uint8_t *sig);
 
 
 
-
+bool smInit(void);
+void smDeinit(void);
 
 
 #endif

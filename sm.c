@@ -1,19 +1,175 @@
+#include "persist.h"
+#include "l2cap.h"
 #include "util.h"
 #include "log.h"
 #include "sm.h"
 #include "sg.h"
+#include "bt.h"
 
+
+struct smInstance {
+    struct bt_addr peer;
+    l2c_handle_t   conn;
+};
 
 /* fwd decls */
 static void smEncrypt(uint8_t* dst, const uint8_t *src, const uint8_t *key);
 
 
+/*
+ * FUNCTION: smEncrChanged
+ * USE:      Encryption changed - handle it
+ * PARAMS:   inst - the instance
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void smEncrChanged(struct smInstance *inst)
+{
+    //TODO
+}
 
+/*
+ * FUNCTION: smRx
+ * USE:      Data arrived - handle it
+ * PARAMS:   inst - the instance
+ *           packet - the data that arrived
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void smRx(struct smInstance *inst, sg packet)
+{
+    //TODO
+}
 
+/*
+ * FUNCTION: smInstFree
+ * USE:      Free a per-connection instance struct
+ * PARAMS:   inst - the instance
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void smInstFree(struct smInstance *inst)
+{
+    free(inst);
+}
 
+/*
+ * FUNCTION: smFixedChState
+ * USE:      Connection event happened
+ * PARAMS:   userData - unused
+ *           instance - per-connection insdtance allocated by smFixedChAlloc()
+ *           evt - what happened
+ *           data - the pertinent data
+ *           len - length of said data
+ * RETURN:   SVC_ALLOC_*
+ * NOTES:
+ */
+static void smFixedChState(void *userData, void *instance, uint8_t evt, const void *data, uint32_t len)
+{
+    struct smInstance *inst = (struct smInstance*)instance;
+    l2c_handle_t conn;
+    sg s;
 
+    switch (evt) {
+    case L2C_STATE_OPEN:
+        if (len != sizeof(l2c_handle_t)) {
+            loge("invalid length for open event\n");
+            break;
+        }
+        conn = *(l2c_handle_t*)data;
+        if (inst->conn != conn) /* when we support outbound connections, this code will need to evolve */
+            loge("Handle change!!!\n");
+        break;
 
+    case L2C_STATE_ENCR:
+        if (len != sizeof(struct l2cEncrState)) {
+            loge("invalid length for encr event\n");
+            break;
+        }
+        smEncrChanged(inst);
+        break;
 
+    case L2C_STATE_RX:
+        if (len != sizeof(sg)) {
+            loge("invalid length for RX event\n");
+            break;
+        }
+        s = *(sg*)data;
+        smRx(inst, s);
+        break;
+
+    case L2C_STATE_CLOSED:
+        smInstFree(inst);
+        break;
+    default:
+        logd("unknown L2C event %u\n", evt);
+        break;
+    }
+}
+
+/*
+ * FUNCTION: smFixedChAlloc
+ * USE:      Connection request: if accepted, alloc a per-conection instance of the SM connection structure
+ * PARAMS:   userData - unused
+ *           conn - l2c conn handle
+ *           instanceP - we store instance here if we allocate one
+ * RETURN:   SVC_ALLOC_*
+ * NOTES:
+ */
+static uint8_t smFixedChAlloc(void *userData, l2c_handle_t conn, void **instanceP)
+{
+    struct smInstance *inst;
+    struct bt_addr peer;
+
+    if (!l2cApiGetBtAddr(conn, &peer)) {
+        loge("Failed to get peer address\n");
+        return SVC_ALLOC_FAIL_OTHER;
+    }
+
+    if (!BT_ADDR_IS_LE(peer)) {
+        logd("Refusing SM connection for EDR\n");
+        return SVC_ALLOC_FAIL_OTHER;
+    }
+
+    inst = (struct smInstance*)calloc(1, sizeof(struct smInstance));
+    if (!inst)
+        return SVC_ALLOC_FAIL_OTHER;
+
+    memcpy(&inst->peer, &peer, sizeof(struct bt_addr));
+    inst->conn = conn;
+    *instanceP = inst;
+
+    return SVC_ALLOC_SUCCESS;
+}
+
+/*
+ * FUNCTION: smInit
+ * USE:      Init the security manager
+ * PARAMS:   NONE
+ * RETURN:   success
+ * NOTES:
+ */
+bool smInit(void)
+{
+    static const struct l2cServiceFixedChDescriptor descr = {
+        .serviceFixedChAlloc = smFixedChAlloc,
+        .serviceFixedChStateCbk = smFixedChState,
+    };
+
+    return l2cApiServiceFixedChRegister(L2C_FIXED_CH_NUM_SM, &descr);
+}
+
+/*
+ * FUNCTION: smDeinit
+ * USE:      Deinit the security manager
+ * PARAMS:   NONE
+ * RETURN:   NONE
+ * NOTES:
+ */
+void smDeinit(void)
+{
+    l2cApiServiceFixedChUnregister(L2C_FIXED_CH_NUM_SM, NULL, NULL);
+}
 
 /*
  * FUNCTION: smCmacDo
