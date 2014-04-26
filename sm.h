@@ -2,6 +2,7 @@
 #define _SM_H_
 
 #include "types.h"
+#include "hci.h"
 #include "sg.h"
 
 #define L2C_FIXED_CH_NUM_SM    6
@@ -13,7 +14,7 @@ void smSignatureCalc(sg m, const uint8_t *key, uint8_t *sig);
 
 
 
-bool smInit(void);
+bool smInit(uint8_t ioCapability);
 void smDeinit(void);
 
 

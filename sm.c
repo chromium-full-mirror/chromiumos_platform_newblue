@@ -7,13 +7,127 @@
 #include "bt.h"
 
 
+/* packet types */
+#define SM_PAIRING_REQ                  0x01 /* struct smPairReqResp */
+#define SM_PAIRING_RSP                  0x02 /* struct smPairReqResp */
+#define SM_PAIRING_CONF                 0x03 /* struct smPairConf */
+#define SM_PAIRING_RAND                 0x04 /* struct smPairRand */
+#define SM_PAIRING_FAIL                 0x05 /* struct smPairFailed */
+#define SM_ENCR_INFO                    0x06 /* struct smKey => LTK */
+#define SM_MASTER_INFO                  0x07 /* struct smMasterInfo */
+#define SM_IDENTITY_INFO                0x08 /* struct smKey => IRK */
+#define SM_IDENTITY_ADDR_INFO           0x09 /* struct smIdentityAddrInfo */
+#define SM_SIGNING_INFO                 0x0A /* struct smKey => CSRK */
+#define SM_SECURITY_REQUEST             0x0B /* struct smAuthReq */
+
+struct smHdr {
+    uint8_t typ;
+} __packed;
+
+struct smPairReqResp {
+    uint8_t ioCap;
+    uint8_t oobDataFlag;
+    uint8_t authReq; /* SM_AUTH_REQ_* */
+    uint8_t maxKeySz;
+    uint8_t initiatorKeyDistr; /* bitfield of SM_KEY_DISTR_* */
+    uint8_t responderKeyDistr; /* bitfield of SM_KEY_DISTR_* */
+} __packed;
+
+struct smPairConf {
+    uint8_t confirmVal[16];
+} __packed;
+
+struct smPairRand {
+    uint8_t rand[16];
+} __packed;
+
+struct smPairFailed {
+    uint8_t reason; /* SM_ERR_* */
+} __packed;
+
+struct smKey {
+    uint16_t key[16];
+} __packed;
+
+struct smMasterInfo {
+    uint16_t ediv;
+    uint64_t rand;
+} __packed;
+
+struct smIdentityAddrInfo {
+    uint8_t addrType;
+    uint8_t mac[6];
+} __packed;
+
+struct smAuthReq {
+    uint8_t authReq; /* SM_AUTH_REQ_* */
+} __packed;
+
+
+/* fail codes */
+#define SM_ERR_PASSKEY_ENTRY_FAILED     0x01 /* user cancelled or faile dto input key */
+#define SM_ERR_OOB_NOT_AVAIL            0x02 /* no OOB data */
+#define SM_ERR_AUTH_REQMENTS            0x03 /* auth req'ments cannot be met due to IO caps */
+#define SM_ERR_CONF_VAL_FAILED          0x04 /* confirm value does not match calculated value */
+#define SM_ERR_PAIRING_NOT_SUPPORTED    0x05 /* pairing not supported by this device */
+#define SM_ERR_ENCR_KEY_SZ              0x06 /* resulting key size is not long enough */
+#define SM_ERR_CMD_NOT_SUPP             0x07 /* received command not supported by this device */
+#define SM_ERR_UNSPECCED_REASON         0x08 /* pairing faield due to an unspecified reason */
+#define SM_ERR_REPEATED_ATTEMPTS        0x09 /* too rapid an attempt to pair after a failure */
+#define SM_ERR_INVALID_PARAMS           0x0A /* unparseable command or invalid params in command */
+
+/* things for authReq fields */
+#define SM_AUTH_REQ_BOND_MASK           0x03
+#define SM_AUTH_REQ_BOND_NO             0x00
+#define SM_AUTH_REQ_BOND_BOND           0x01
+#define SM_AUTH_REQ_MITM_FLAG           0x04
+
+/* things for key distr fields */
+#define SM_KEY_DISTR_LTK                0x01
+#define SM_KEY_DISTR_IRK                0x02
+#define SM_KEY_DISTR_CSRK               0x04
+
+/* misc defines */
+#define SM_MIN_KEY_LEN                  7
+#define SM_MAX_KEY_LEN                  16
+
+
+
+/* our structs/defines */
+
+#define SM_PHASE_START                  0 /* nothing happened yet */
+#define SM_PHASE_REQ_SENT               1 /* we sent pair req, waiting for pair resp */
+#define SM_PHASE_REQ_RESP               2 /* other side has sent us a pair request, we replied, or we sent req and got reply */
+
 struct smInstance {
-    struct bt_addr peer;
-    l2c_handle_t   conn;
+    struct bt_addr        peer;
+    l2c_handle_t          conn;
+    bool                  isInitiator;
+
+    uint8_t               phase;
+
+    uint8_t               peerIoCaps;
+    bool                  peerHasOob;
+    uint8_t               peerAuthReq;
+    uint8_t               peerMaxKeySz;
+    uint8_t               peerKeyDistr;
+    uint8_t               myKeyDistr;
 };
+
+
+
+
+/* state */
+static uint8_t mIoCap;
+
 
 /* fwd decls */
 static void smEncrypt(uint8_t* dst, const uint8_t *src, const uint8_t *key);
+
+
+
+
+
 
 
 /*
@@ -29,6 +143,104 @@ static void smEncrChanged(struct smInstance *inst)
 }
 
 /*
+ * FUNCTION: smTx
+ * USE:      Send a packet to the peer
+ * PARAMS:   inst - the instance
+ *           pktTyp - packet type
+ *           data - the data to send
+ *           len - length of said data
+ * RETURN:   success
+ * NOTES:
+ */
+static bool smTx(struct smInstance *inst, uint8_t pktTyp, const void *data, uint8_t len)
+{
+    //TODO
+    return false;
+}
+
+/*
+ * FUNCTION: smTxErr
+ * USE:      Send an error to the peer
+ * PARAMS:   inst - the instance
+ *           reason - the error reason
+ * RETURN:   success
+ * NOTES:
+ */
+static bool smTxErr(struct smInstance *inst, uint8_t reason)
+{
+    struct smPairFailed fail;
+
+    utilSetLE8(&fail.reason, reason);
+
+    return smTx(inst, SM_PAIRING_FAIL, &fail, sizeof(fail));
+}
+
+/*
+ * FUNCTION: smParsePairReqRest
+ * USE:      Parse a struct smPairReqResp into relevant instance variables
+ * PARAMS:   inst - the instance
+ *           pairReqResp - the struct
+ * RETURN:   true if all values were read & found valid
+ * NOTES:
+ */
+static bool smParsePairReqRest(struct smInstance *inst, const struct smPairReqResp *pairReqResp)
+{
+    uint8_t tmp, initKeyDistr, rspKeyDistr;
+
+    tmp = utilGetLE8(&pairReqResp->ioCap);
+    if (tmp != HCI_DISP_CAP_DISP_ONLY && tmp != HCI_DISP_CAP_DISP_YES_NO && tmp != HCI_DISP_CAP_KBD_ONLY && tmp != HCI_DISP_CAP_NONE) {
+        logd("Invalid io caps RXed 0x%02X\n", tmp);
+        return false;
+    }
+    inst->peerIoCaps = tmp;
+
+    tmp = utilGetLE8(&pairReqResp->oobDataFlag);
+    if (tmp != 0 && tmp != 1) {
+        logd("Invalid oob flag RXed 0x%02X\n", tmp);
+        return false;
+    }
+    inst->peerHasOob = !!tmp;
+
+    tmp = utilGetLE8(&pairReqResp->authReq);
+    if ((tmp & ~(SM_AUTH_REQ_BOND_MASK | SM_AUTH_REQ_MITM_FLAG)) || ((tmp & SM_AUTH_REQ_BOND_MASK) != SM_AUTH_REQ_BOND_NO && (tmp & SM_AUTH_REQ_BOND_MASK) != SM_AUTH_REQ_BOND_BOND)) {
+        logd("Invalid authReq RXed 0x%02X\n", tmp);
+        return false;
+    }
+    inst->peerAuthReq = tmp;
+
+    tmp = utilGetLE8(&pairReqResp->maxKeySz);
+    if (tmp < SM_MIN_KEY_LEN || tmp > SM_MAX_KEY_LEN) {
+        logd("Invalid maxKeySize RXed 0x%02X\n", tmp);
+        return false;
+    }
+    inst->peerMaxKeySz = tmp;
+
+    tmp = utilGetLE8(&pairReqResp->initiatorKeyDistr);
+    if (tmp &~ (SM_KEY_DISTR_LTK | SM_KEY_DISTR_IRK | SM_KEY_DISTR_CSRK)) {
+        logd("Invalid keyDistr.i RXed 0x%02X\n", tmp);
+        return false;
+    }
+    initKeyDistr = tmp;
+
+    tmp = utilGetLE8(&pairReqResp->responderKeyDistr);
+    if (tmp &~ (SM_KEY_DISTR_LTK | SM_KEY_DISTR_IRK | SM_KEY_DISTR_CSRK)) {
+        logd("Invalid keyDistr.r RXed 0x%02X\n", tmp);
+        return false;
+    }
+    rspKeyDistr = tmp;
+
+    if (inst->isInitiator) { /* must be a response. do not send any keys we did not already commit to send. accept as many as given */
+        inst->myKeyDistr &= initKeyDistr;
+        inst->peerKeyDistr = rspKeyDistr;
+    } else { /* must be a request - agree to send all keys they want, aceept whatever was given */
+        inst->myKeyDistr = rspKeyDistr;
+        inst->peerKeyDistr = initKeyDistr;
+    }
+
+    return true;
+}
+
+/*
  * FUNCTION: smRx
  * USE:      Data arrived - handle it
  * PARAMS:   inst - the instance
@@ -38,7 +250,64 @@ static void smEncrChanged(struct smInstance *inst)
  */
 static void smRx(struct smInstance *inst, sg packet)
 {
-    //TODO
+    struct smPairReqResp pairReqResp;
+    struct smHdr hdr;
+    uint8_t typ, tmp;
+
+    if (!sgSerializeCutFront(packet, &hdr, sizeof(hdr))) {
+        logw("Incoming SM packet header extraction failed\n");
+        sgFree(packet);
+        return;
+    }
+
+    typ = utilGetLE8(&hdr.typ);
+    switch (typ) {
+    case SM_PAIRING_REQ:
+        if (!sgSerializeCutFront(packet, &pairReqResp, sizeof(pairReqResp))) {
+            logw("Incoming SM packet data extraction failed\n");
+            break;
+        }
+        if (sgLength(packet)) {
+            logw("Residual data in packet: %ub\n", sgLength(packet));
+            smTxErr(inst, SM_ERR_INVALID_PARAMS);
+            break;
+        }
+        if (inst->phase != SM_PHASE_START) {
+            logd("Got pairing req in phase %u\n", inst->phase);
+            break;
+        }
+        if (!smParsePairReqRest(inst, &pairReqResp)) {
+            smTxErr(inst, SM_ERR_INVALID_PARAMS);
+            break;
+        }
+        utilSetLE8(&pairReqResp.ioCap, mIoCap);
+        utilSetLE8(&pairReqResp.oobDataFlag, 0) ; /* XXX: if and when we support OOB, this will need to change */
+        utilSetLE8(&pairReqResp.authReq, SM_AUTH_REQ_BOND_BOND | SM_AUTH_REQ_MITM_FLAG); /* TODO: we'll need a way to set this externally! */
+        utilSetLE8(&pairReqResp.maxKeySz, SM_MAX_KEY_LEN);
+        utilSetLE8(&pairReqResp.initiatorKeyDistr, inst->peerKeyDistr); /* accept whatever they promised us */
+        utilSetLE8(&pairReqResp.responderKeyDistr, inst->myKeyDistr); /* give up ahwtever they asked for */
+        if (smTx(inst, SM_PAIRING_RSP, &pairReqResp, sizeof(pairReqResp)))
+            inst->phase = SM_PHASE_REQ_RESP;
+        else
+            inst->phase = SM_PHASE_START;
+        break;
+ 
+    case SM_PAIRING_RSP:
+    case SM_PAIRING_CONF:
+    case SM_PAIRING_RAND:
+    case SM_PAIRING_FAIL:
+    case SM_ENCR_INFO:
+    case SM_MASTER_INFO:
+    case SM_IDENTITY_INFO:
+    case SM_IDENTITY_ADDR_INFO:
+    case SM_SIGNING_INFO:
+    case SM_SECURITY_REQUEST:
+    default:
+        logw("Unxpected packet type 0x%02X in SM. Dropping\n", typ);
+        break;
+    }
+
+    sgFree(packet);
 }
 
 /*
@@ -149,12 +418,14 @@ static uint8_t smFixedChAlloc(void *userData, l2c_handle_t conn, void **instance
  * RETURN:   success
  * NOTES:
  */
-bool smInit(void)
+bool smInit(uint8_t ioCapability)
 {
     static const struct l2cServiceFixedChDescriptor descr = {
         .serviceFixedChAlloc = smFixedChAlloc,
         .serviceFixedChStateCbk = smFixedChState,
     };
+
+    mIoCap = ioCapability;
 
     return l2cApiServiceFixedChRegister(L2C_FIXED_CH_NUM_SM, &descr);
 }
