@@ -263,7 +263,7 @@ static int gattSetup(void)
     int svc;
 
     uuidFromUuid16(&uuid, 0x1805); //"current time" service
-    svc = gattServiceCreate(&uuid, true, 8, testGattSrvValueReadCbk, testGattSrvValueWriteCbk, testGattSrvIndCbk, true, false);
+    svc = gattServiceCreate(&uuid, true, 8, testGattSrvValueReadCbk, testGattSrvValueWriteCbk, testGattSrvIndCbk);
     if (!svc) {
         loge("failed to alloc svc\n");
         goto out;
@@ -460,7 +460,7 @@ int main(int argc, char** argv)
 
     svc = gattSetup();
 
-    gattServiceStart(svc);
+    gattServiceStart(svc, true, false);
 
     gattBuiltinSetDevName("SuperLongDeviceNameThatWillProbablyNotFitIntoASinglePacketEver");
     gattBuiltinSetPreferredConnParamsWhenSlave(20, 30, 40, 400);
