@@ -135,8 +135,12 @@ bool timersInit(void)
     struct timespec dummy;
     int ret;
 
+#ifdef CLOCK_BOOTTIME
     /* find which clock we'll use */
     ret = clock_gettime(mClock = CLOCK_BOOTTIME, &dummy);
+#else
+    ret = -1;
+#endif
     if (ret) {
         logw("CLOCK_BOOTTIME not available on this system. Trying fallbacks\n");
         if (!clock_gettime(mClock = CLOCK_MONOTONIC, &dummy))
