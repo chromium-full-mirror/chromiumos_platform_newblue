@@ -48,5 +48,7 @@ void rfcClose(rfc_conn_t conn);
 int32_t rfcTx(rfc_conn_t conn, sg s); /* ret: non-negative values is bytes sent (and sheared off the front of the SG), negatives are other codes. if entire SG is sent, it is freed! */
 bool rfcFlow(rfc_conn_t conn, bool stop); /* throttles other side - EFFECT IS NOT IMMEDIATE */
 
+uint32_t rfcAddSdpRecord(const uint8_t* serviceUuid, uint8_t rfcommCh, const char* name);
+
 #endif
 

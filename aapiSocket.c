@@ -70,7 +70,6 @@ static struct appiSockListener *mListeners = NULL;
 
 
 /* fwd decls */
-static uint32_t aapiSockAddSdpRecord(const uint8_t* serviceUuid, uint8_t rfcommCh, const char* name);
 static void aapiSockFree(struct aapiSock* sock);
 static void aapiSockWorkerMsgSend(uint8_t msg, void *aux);
 
@@ -663,7 +662,7 @@ static bt_status_t aapiSockListen(btsock_type_t type, const char* serviceName, c
         goto out_stoplisten;
     }
 
-    sock->rfc.sdpHandle = aapiSockAddSdpRecord(serviceUuid, ch, serviceName);
+    sock->rfc.sdpHandle = rfcAddSdpRecord(serviceUuid, ch, serviceName);
     logd("sock %p has atate %u and fd %u with sdp handle 0x%08x\n", sock, sock->rfc.state, sock->fd, sock->rfc.sdpHandle);
     if (!sock->rfc.sdpHandle) {
         loge("Failed to add SDP record\n");
@@ -736,86 +735,6 @@ static bt_status_t aapiSockConnect(const bt_bdaddr_t *bd_addr, btsock_type_t typ
 out:
     return ret;
 }
-
-
-/*
- * FUNCTION: aapiSockAddSdpRecord
- * USE:      Add an SDP record for this service
- * PARAMS:   serviceUuid - the uuid
- *           rfcommCh - the rfcomm channel number
- *           name - the name to advertise
- * RETURN:   handle or 0 on error
- * NOTES:
- */
-static uint32_t aapiSockAddSdpRecord(const uint8_t* serviceUuid, uint8_t rfcommCh, const char* name)
-{
-    uint8_t *record, *t;
-    uint32_t ret, nameLen = name ? strlen(name) : 0, recLen;
-    static const uint8_t preUuidData[] = {
-        /* service class ID list */
-        SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(SDP_ATTR_SVC_CLS_ID_LIST),
-        SDP_ITEM_DESC(SDP_TYPE_ARRAY, SDP_SZ_u8), 17, SDP_ITEM_DESC(SDP_TYPE_UUID, SDP_SZ_16)};
-
-    /* here go 16 bbytes of uuid */
-
-    static const uint8_t preChannelData[] = {
-        /* ServiceId */
-        SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(SDP_ATTR_SVC_ID),
-        SDP_ITEM_DESC(SDP_TYPE_UUID, SDP_SZ_2), SDP_U16(SDP_SVC_CLASS_SPP),
-        /* ProtocolDescriptorList */
-        SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(SDP_ATTR_PROTOCOL_DESCR_LIST),
-        SDP_ITEM_DESC(SDP_TYPE_ARRAY, SDP_SZ_u8), 15,
-            SDP_ITEM_DESC(SDP_TYPE_ARRAY, SDP_SZ_u8), 6,
-                SDP_ITEM_DESC(SDP_TYPE_UUID, SDP_SZ_2), SDP_U16(SDP_PROTO_L2CAP),
-                SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(PSM_RFCOMM),
-            SDP_ITEM_DESC(SDP_TYPE_ARRAY, SDP_SZ_u8), 5,
-                SDP_ITEM_DESC(SDP_TYPE_UUID, SDP_SZ_2), SDP_U16(SDP_PROTO_RFCOMM),
-                SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_1)};
-
-    /* here goes one byte channel number */
-
-    static const uint8_t preNameData[] = {
-        /* browse group list */
-        SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(SDP_ATTR_BROWSE_GRP_LIST),
-        SDP_ITEM_DESC(SDP_TYPE_ARRAY, SDP_SZ_u8), 3,
-            SDP_ITEM_DESC(SDP_TYPE_UUID, SDP_SZ_2), SDP_U16(SDP_BROWSE_GROUP_ID_PUBLIC),
-        /* name */
-        SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(SDP_ATTR_SPP_NAME),
-        SDP_ITEM_DESC(SDP_TYPE_TEXT, SDP_SZ_u8)};
-
-    /* here goes one-byte name length and then the name */
-
-
-    if (nameLen > 255) {
-        logw("Truncating RFCOMM advertised name length\n");
-        nameLen = 255;
-    }
-    recLen = sizeof(preUuidData) + sizeof(preChannelData) + sizeof(preNameData) + 16 + 1 + 1 + nameLen;
-    record = malloc(recLen);
-    if (!record)
-        return 0;
-
-    t = record;
-    memcpy(t, preUuidData, sizeof(preUuidData));
-    t += sizeof(preUuidData);
-    memcpy(t, serviceUuid, 16);
-    t += 16;
-    memcpy(t, preChannelData, sizeof(preChannelData));
-    t += sizeof(preChannelData);
-    *t++ = rfcommCh;
-    memcpy(t, preNameData, sizeof(preNameData));
-    t += sizeof(preNameData);
-    *t++ = nameLen;
-    memcpy(t, name, nameLen);
-
-    ret = sdpServiceDescriptorAdd(record, recLen);
-    if (ret)
-        return ret;
-
-    free(record);
-    return 0;
-}
-
 
 
 /*
