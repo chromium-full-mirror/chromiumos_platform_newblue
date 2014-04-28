@@ -11,9 +11,11 @@
 
 #define OUR_MTU  0xEFFF /* no reason to limit it pointlessly */
 
+#define L2C_INVALID_ACL_HANDLE 0x8000
+
 typedef uint16_t psm_t;
 typedef uniq_t l2c_handle_t; /* a 0-valued handle is invalid and indicates error */
-typedef uniq_t acl_handle_t; /* a 0-valued handle is invalid and indicates error */
+typedef uniq_t acl_handle_t; /* a L2C_INVALID_ACL_HANDLE-valued handle is invalid and indicates error */
 
 #define HANDLEFMT    UNIQ_FMT"x"
 #define HANDLECNV(x) UNIQ_CONV(x)
