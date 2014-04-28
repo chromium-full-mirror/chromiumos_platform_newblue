@@ -312,7 +312,10 @@ int main(int argc, char** argv)
     sem_t sem;
     uniq_t h;
     uint8_t rfcChan;
-
+    uint32_t sdpHandle;
+    // "8ce255c0-200a-11e0-ac64-0800200c9a66", the UUID used by BluetoothChat sample program
+    uint8_t uuid[] = { 0x8c, 0xe2, 0x55, 0xc0, 0x20, 0x0a, 0x11, 0xe0,
+                       0xac, 0x64, 0x08, 0x00, 0x20, 0x0c, 0x9a, 0x66 };
 
     fprintf(stderr, "NewBlue test\n");
     logi("LOG UP\n");
@@ -448,6 +451,9 @@ int main(int argc, char** argv)
     rfcChan = rfcListen(RFC_CHNUM_REQ_ANY, testRfcAllocF, testRfcEvtF, NULL);
     logi("RFC CHAN: %u\n", rfcChan);
 
+    // listen on UUID used by BluetoothChat sample program
+    sdpHandle = rfcAddSdpRecord(uuid, rfcChan, "BluetoothChatInsecure");
+
   //  struct bt_addr addr = {{0xf3, 0xdb, 0x56, 0xf4, 0x2c, 0x40}, BT_ADDR_TYPE_EDR};
   //  logi("conn=%d\n", rfcConnect(&addr, 1, testRfcEvtF, NULL, testRfcAllocF(NULL, &addr, 3))); /* true if you shoudl expect callback(s) */
 
@@ -490,8 +496,8 @@ int main(int argc, char** argv)
     logi("waiting...press a key\n");
     getchar();
 
+    sdpServiceDescriptorDel(sdpHandle);
     rfcStopListen(rfcChan);
-
 
     if (svc) {
         gattServiceStop(svc);
