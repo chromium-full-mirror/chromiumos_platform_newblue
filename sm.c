@@ -6,6 +6,7 @@
 #include "sg.h"
 #include "bt.h"
 
+#include <stdlib.h>
 
 /* packet types */
 #define SM_PAIRING_REQ                  0x01 /* struct smPairReqResp */
