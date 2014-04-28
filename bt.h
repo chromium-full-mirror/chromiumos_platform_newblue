@@ -17,6 +17,11 @@ struct bt_addr {
 #define BT_ADDR_IS_EDR(addr)     ((addr).type == BT_ADDR_TYPE_EDR)
 #define BT_ADDR_IS_LE(addr)      ((addr).type != BT_ADDR_TYPE_EDR)
 
+#define BT_RAND_ADDR_IS_STATIC(addr)             (((addr).addr[0] >> 6) == 3)
+#define BT_RAND_ADDR_IS_RESOLVABLE_PRIV(addr)    (((addr).addr[0] >> 6) == 2)
+#define BT_RAND_ADDR_IS_NONRESOLVABLE_PRIV(addr) (((addr).addr[0] >> 6) == 0)
+
+
 #define BT_LE_CONN_INTERVAL_MIN  6
 #define BT_LE_CONN_INTERVAL_MAX  3200
 #define BT_LE_LATENCY_MAX        499
