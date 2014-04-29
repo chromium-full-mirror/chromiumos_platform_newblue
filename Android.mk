@@ -19,6 +19,7 @@ COMMON_SRC_FILES :=     \
     att.c               \
     gatt.c              \
     gatt-builtin.c      \
+    a2dp.c              \
 
 COMMON_CFLAGS += -Wno-unused-parameter -DANDROID -DSG_DEBUG -DRFC_DEBUG #-DMT_DEBUG -DSDP_DBG -DTEST_DEBUG
 COMMON_SHARED_LIBRARIES := libdl liblog

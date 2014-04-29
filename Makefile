@@ -6,6 +6,7 @@ CFLAGS = -Wall -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -
 CFLAGS += -D_GNU_SOURCE
 
 OBJ =                       \
+    a2dp.o                  \
     att.o                   \
     gatt.o                  \
     hci.o                   \
