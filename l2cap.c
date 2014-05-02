@@ -4650,7 +4650,7 @@ bool l2cApiGetBtAddr(l2c_handle_t handle, struct bt_addr* addrP)
 acl_handle_t l2cApiGetAclHandle(l2c_handle_t handle)
 {
     struct l2cConn* conn;
-    acl_handle_t ret = L2C_INVALID_ACL_HANDLE;
+    acl_handle_t ret = 0;
 
     pthread_mutex_lock(&mConnsLock);
     conn = l2cConnFindByHandle(handle);
