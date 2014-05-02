@@ -28,6 +28,7 @@
 #define HCI_DISP_CAP_DISP_YES_NO 1
 #define HCI_DISP_CAP_KBD_ONLY    2
 #define HCI_DISP_CAP_NONE        3
+#define HCI_DISP_CAP_KBD_DISP    4 /* LE only! */
 
 
 #define HCI_EIR_DATA_LEN        240
