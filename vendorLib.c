@@ -615,7 +615,7 @@ bool vendorUp(const uint8_t *addr, vendorCbkChipUp chipUpCbk, vendorCbkRx dataRx
     ret = mVendorIface->op(BT_VND_OP_POWER_CTRL, (void*)&tmp);
     if (ret) {
         loge("iface power off failed with code %d\n", ret);
-        goto out_need_close;
+        /* we cannot goto out_need_close here since QC chips will then fail */
     }
 
     if (mHaveLpm) {
