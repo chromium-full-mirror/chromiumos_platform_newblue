@@ -3438,15 +3438,21 @@ static bool hciBtStackUp(void)
 
         for (page = 0; page < numPages; page++) {
             struct hciCmplReadLocalExtendedFeatures evt;
+            uint64_t ftrs;
 
             ret = hciReadLocalExtendedFeaturesSync(page, &evt);
             if (ret)
                 goto out;
+            ftrs = utilGetLE64(&evt.features);
 
-            mLocalFtrs[page] = utilGetLE64(&evt.features);
+            /* QC chips like to report page 0 full of zeroes. Catch that here */
+            if (!page && !ftrs)
+                logw("Ignored page 0 full of zeroes\n");
+            else
+                mLocalFtrs[page] = ftrs;
             if (!page)
                 numPages = utilGetLE8(&evt.maxPage) + 1;
-            logi("BT UP: bt extended features[%d/%d] reported: "FMT64"X\n", page, numPages, CNV64(mLocalFtrs[page]));
+            logi("BT UP: bt extended features[%d/%d] reported: "FMT64"X\n", page, numPages, CNV64(ftrs));
         }
     }
 
