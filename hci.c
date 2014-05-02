@@ -3433,26 +3433,26 @@ static bool hciBtStackUp(void)
 
     /* read extended features if possible */
     if (mBtVer >= HCI_VERSION_2_1 && (mLocalFtrs[0] & HCI_LMP_FTR_EXTENDED_FEATURES)) {
-
         uint8_t page, numPages = 1;
 
-        for (page = 0; page < numPages; page++) {
+        for (page = 0; page < numPages && page < MAX_FTR_PAGES; page++) {
             struct hciCmplReadLocalExtendedFeatures evt;
             uint64_t ftrs;
+            uint8_t claimedPage;
 
             ret = hciReadLocalExtendedFeaturesSync(page, &evt);
             if (ret)
                 goto out;
             ftrs = utilGetLE64(&evt.features);
+            claimedPage = utilGetLE8(&evt.page);
+            numPages = utilGetLE8(&evt.maxPage) + 1;
 
-            /* QC chips like to report page 0 full of zeroes. Catch that here */
-            if (!page && !ftrs)
-                logw("Ignored page 0 full of zeroes\n");
+            if (claimedPage < MAX_FTR_PAGES)
+                mLocalFtrs[claimedPage] = ftrs;
             else
-                mLocalFtrs[page] = ftrs;
-            if (!page)
-                numPages = utilGetLE8(&evt.maxPage) + 1;
-            logi("BT UP: bt extended features[%d/%d] reported: "FMT64"X\n", page, numPages, CNV64(ftrs));
+                logw("Ignoring report for ftr page %u\n", claimedPage);
+
+            logi("BT UP: bt extended features[%d/%d, requested %u] reported: "FMT64"X\n", claimedPage, numPages, page, CNV64(ftrs));
         }
     }
 
@@ -3584,13 +3584,17 @@ static bool hciBtStackUp(void)
     {
         logi("Setting page scan timings\n");
         ret = hciWritePageScanActivitySync(0x100, 0x12);
-        if (ret)
-            goto out;
+        if (ret) {
+            logw("Failed to set page scan settings\n");
+            /* if we actually goto out here, QC chips fail */
+        }
 
         logi("Setting inquiry scan timings\n");
         ret = hciWriteInquiryScanActivitySync(0x80, 0x12);
-        if (ret)
-            goto out;
+        if (ret) {
+            logw("Failed to set inquiry scan settings\n");
+            /* if we actually goto out here, QC chips fail */
+        }
     }
 
     /* enable SSP, if possible */
