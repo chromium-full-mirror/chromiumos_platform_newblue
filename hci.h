@@ -177,11 +177,12 @@ uint8_t hciTryToTx(hci_conn_t aclConn, sg data, uint8_t boundary);
 bool hciUpdateLeParams(hci_conn_t aclConn, uint16_t minInt, uint16_t maxInt, uint16_t lat, uint16_t to);
 /* request encryption */
 bool hciDemandEncr(hci_conn_t aclConn, bool demandMitmSafe);
+/* LE connection info */
+bool hciLeConnGetInfo(hci_conn_t aclConn, bool *masterP, uint64_t *peerFtrsP, uint16_t *intP, uint16_t *latP, uint16_t *toP, uint8_t *mcaP, struct bt_addr *selfAddrP);
 
 /* connection request handling */
 bool hciConnRequestReplyYes(const struct bt_addr *addr, bool becomeMaster);
 bool hciConnRequestReplyNo(const struct bt_addr *addr);
-
 
 /* ssp & pin things */
 void hciSecUserCbkPinCodeReq(const struct bt_addr *addr, const uint8_t *pin, uint8_t len);

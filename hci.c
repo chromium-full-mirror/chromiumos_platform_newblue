@@ -249,6 +249,7 @@ struct hciAclConn {
             uint16_t   latency;
             uint16_t   timeout;
             uint8_t    mca;
+            struct bt_addr self; /* what address we were using when the connection was formed */
         } le;
         struct {
             uint64_t   ftrs[MAX_FTR_PAGES];
@@ -328,6 +329,7 @@ static bool mHaveLe = false;
 static bool mHaveEdr = true;
 static bool mSimulLe = false;
 static uint8_t mInquiryState = 0;
+static uint8_t mLocalAddr[BT_MAC_LEN];
 
 
 /* fwd declarations */
@@ -3457,6 +3459,7 @@ static bool hciBtStackUp(void)
         if (ret)
             goto out;
 
+        memcpy(mLocalAddr, evt.mac, sizeof(mLocalAddr));
         logi("Local MAC: %02X:%02X:%02X:%02X:%02X:%02X\n", evt.mac[5], evt.mac[4], evt.mac[3], evt.mac[2], evt.mac[1], evt.mac[0]);
     }
 
@@ -4390,6 +4393,53 @@ bool hciDemandEncr(hci_conn_t aclConn, bool demandMitmSafe)
 }
 
 /*
+ * FUNCTION: hciLeConnGetInfo
+ * USE:      Query info for an LE connection
+ * PARAMS:   aclConn - the connection
+ *           masterP - where to stor if we're master (or NULL)
+ *           peerFtrsP - where to store peer features (or NULL)
+ *           intP - where to store connection interval (or NULL)
+ *           latP - where to sotre connectio nlatency (or NULL)
+ *           toP - where to store connection timeout (or NULL)
+ *           mcaP - where to store MCA (meaningless if we're master) (or NULL)
+ *           selfAddrP - where to store the address we used to make the connection (or NULL)
+ * RETURN:   true if connection was found and results have been returned
+ * NOTES:
+ */
+bool hciLeConnGetInfo(hci_conn_t aclConn, bool *masterP, uint64_t *peerFtrsP, uint16_t *intP, uint16_t *latP, uint16_t *toP, uint8_t *mcaP, struct bt_addr *selfAddrP)
+{
+    struct hciAclConn* conn;
+    bool ret = false;
+
+    pthread_mutex_lock(&mConnsLock);
+    conn = hciConnFindByHandle(aclConn);
+    if (!conn)
+        logw("Conection for encrypt not found\n");
+    else if (!BT_ADDR_IS_LE(conn->addr))
+        logw("Not an LE connection\n");
+    else {
+        if (masterP)
+            *masterP = conn->isMaster;
+        if (peerFtrsP)
+            *peerFtrsP = conn->le.ftrs;
+        if (intP)
+            *intP = conn->le.interval;
+        if (latP)
+            *latP = conn->le.latency;
+        if (toP)
+            *toP = conn->le.timeout;
+        if (mcaP)
+            *mcaP = conn->le.mca;
+        if (selfAddrP)
+            memcpy(selfAddrP, &conn->le.self, sizeof(struct bt_addr));
+        ret = true;
+    }
+    pthread_mutex_unlock(&mConnsLock);
+
+    return ret;
+}
+
+/*
  * FUNCTION: hciTryToTx
  * USE:      Try to send some data
  * PARAMS:   aclConn - the connection
@@ -4919,6 +4969,9 @@ static bool hciHandleConnAclLeUp(uint8_t status, uint16_t id, bool isMaster, con
         c->le.latency = latency;
         c->le.timeout = timeout;
         c->le.mca = mca;
+        /* XXX: TODO: once we start advertising random addresses, this will need to evolve */
+        memcpy(c->le.self.addr, mLocalAddr, sizeof(c->le.self.addr));
+        c->le.self.type = BT_ADDR_TYPE_LE_PUBLIC;
     }
     pthread_mutex_unlock(&mConnsLock);
     return !!c;
