@@ -23,7 +23,6 @@
 #include <string.h>
 #include <pthread.h>
 
-#define UGLY_SCARY_DEBUGGING_CODE	1
 
 //endpoint media types
 	#define AVDTP_MEDIA_TYP_AUDIO		0
@@ -441,47 +440,26 @@ static void synth(OUTSAMPLE* dst, const INSAMPLE* src, uint8_t nBands, FIXED* V)
     else synth_8(dst, src, V);
 }
 
-#if 1
 static inline int32_t mulshift(int32_t val, uint32_t bits){        //return approximately      val / ((2^bits) - 1)
 
-       static const uint32_t tab[] = {0x55555555,  0x24924925,  0x11111111,  0x08421084,  0x04104104,  0x02040810,  0x01010101,  0x00804020,  0x00401004,  0x00200400,  0x00100100,  0x00080040,  0x00040010,  0x00020004,  0x00010001};
+    static const uint32_t tab[] = {
+        0x00000000, 0x00000000, 0x55555555, 0x24924925,
+        0x11111111, 0x08421084, 0x04104104, 0x02040810,
+        0x01010101, 0x00804020, 0x00401004, 0x00200400,
+        0x00100100, 0x00080040, 0x00040010, 0x00020004,
+        0x00010001
+    };
        
-       if (bits > 1){
-               val = (((uint64_t)(uint32_t)val) * (uint64_t)tab[bits - 2]) >> 32;
-       }
+       if (bits > 1)
+               val = (((uint64_t)(uint32_t)val) * (uint64_t)tab[bits]) >> 32; /* if all goes well, this will compile to a single UMULL instr on ARMv5+ */
        
        return val;
 }
-#else
-asm static inline int32_t mulshift(int32_t val, uint32_t bits){	//return approximately      val / ((2^bits) - 1)
 
-	cmp     r1, #1
-	ldrne   r1, [pc, r1, lsl #2]
-	umullne r2, r0, r1, r0
-	bx      lr
-	DCD 0x00000000
-	DCD 0x55555555
-	DCD 0x24924925
-	DCD 0x11111111
-	DCD 0x08421084
-	DCD 0x04104104
-	DCD 0x02040810
-	DCD 0x01010101
-	DCD 0x00804020
-	DCD 0x00401004
-	DCD 0x00200400
-	DCD 0x00100100
-	DCD 0x00080040
-	DCD 0x00040010
-	DCD 0x00020004
-	DCD 0x00010001
-}
-#endif
 
 static void a2dpSbcPlay(sg sgbuf) {
 
     //convenience
-//    const uint8_t* end = buf + len;
     int offset = 0;
     int length = sgLength(sgbuf);
     #define left (length - offset)
@@ -499,22 +477,25 @@ static void a2dpSbcPlay(sg sgbuf) {
     static OUTSAMPLE audio[bufNumBuffers][bufNumSamples];
     static uint32_t whichBuf = 0;
     static uint32_t bufSamples = 0;
-    static FIXED V[2][160] = {0, };
+    static FIXED V[2][160] = {{0,},};
 
     uint8_t numFrames;
     
     //process the packet header
     if (left < 12) return;	//too short of a packet header
 
-//    ver = (*buf[0]) >> 6;
-//    pad = ((*buf[0]) >> 5) & 1;
-//    ext = ((*buf[0]) >> 4) & 1;
-//    cc = (*buf[0]) & 0x0F;
-//    mark = (*buf[1]) >> 7;
-//    pt = (*buf[1]) & 0x7F;
-//    seq = (((uint16_t)buf[2]) << 8) | buf[3];
-//    time = (((uint32_t)buf[4]) << 24) | (((uint32_t)buf[5]) << 16) | (((uint32_t)buf[6]) << 8) | buf[7];
-//    src = (((uint32_t)buf[8]) << 24) | (((uint32_t)buf[9]) << 16) | (((uint32_t)buf[10]) << 8) | buf[11];
+/*
+ * we no longer need to parse packet header here since in A2DP the params are agreed-upon earlier
+ *    ver = (*buf[0]) >> 6;
+ *    pad = ((*buf[0]) >> 5) & 1;
+ *    ext = ((*buf[0]) >> 4) & 1;
+ *    cc = (*buf[0]) & 0x0F;
+ *    mark = (*buf[1]) >> 7;
+ *    pt = (*buf[1]) & 0x7F;
+ *    seq = (((uint16_t)buf[2]) << 8) | buf[3];
+ *    time = (((uint32_t)buf[4]) << 24) | (((uint32_t)buf[5]) << 16) | (((uint32_t)buf[6]) << 8) | buf[7];
+ *    src = (((uint32_t)buf[8]) << 24) | (((uint32_t)buf[9]) << 16) | (((uint32_t)buf[10]) << 8) | buf[11];
+ */
     offset += 12;
 
     //process the count
@@ -831,7 +812,7 @@ static void a2dpServiceDataRx(void* service, sg sgbuf) {
     sigId = (tmp & AVDTP_HDR_MASK_SIG_ID) >> AVDTP_HDR_SHIFT_SIG_ID;
     reqSz -= 2;
 
-    #if UGLY_SCARY_DEBUGGING_CODE
+    #if A2DP_DBG
         logd("A2DP data(trans %d, pktTyp %d msgTyp %d sigId %d %ub)\n", trans, pktTyp, msgTyp, sigId, reqSz);
     #endif
 
@@ -1236,160 +1217,4 @@ void a2dpSinkDeinit() {
         gDesc = NULL;
     }
 }
-
-/* original tables
-
-
-proto_4_40:
-	0.00000000E+00,5.36548976E-04,1.49188357E-03,2.73370904E-03,
-	3.83720193E-03,3.89205149E-03,1.86581691E-03,-3.06012286E-03,
-	1.09137620E-02,2.04385087E-02,2.88757392E-02,3.21939290E-02,
-	2.58767811E-02,6.13245186E-03,-2.88217274E-02,-7.76463494E-02,
-	1.35593274E-01,1.94987841E-01,2.46636662E-01,2.81828203E-01,
-	2.94315332E-01,2.81828203E-01,2.46636662E-01,1.94987841E-01,
-	-1.35593274E-01,-7.76463494E-02,-2.88217274E-02,6.13245186E-03,
-	2.58767811E-02,3.21939290E-02,2.88757392E-02,2.04385087E-02,
-	-1.09137620E-02,-3.06012286E-03,1.86581691E-03,3.89205149E-03,
-	3.83720193E-03,2.73370904E-03,1.49188357E-03,5.36548976E-04
-
-proto_8_80:
-
-	0.00000000E+00,1.56575398E-04,3.43256425E-04,5.54620202E-04,
-	8.23919506E-04,1.13992507E-03,1.47640169E-03,1.78371725E-03,
-	2.01182542E-03,2.10371989E-03,1.99454554E-03,1.61656283E-03,
-	9.02154502E-04,-1.78805361E-04,-1.64973098E-03,-3.49717454E-03,
-	5.65949473E-03,8.02941163E-03,1.04584443E-02,1.27472335E-02,
-	1.46525263E-02,1.59045603E-02,1.62208471E-02,1.53184106E-02,
-	1.29371806E-02,8.85757540E-03,2.92408442E-03,-4.91578024E-03,
-	-1.46404076E-02,-2.61098752E-02,-3.90751381E-02,-5.31873032E-02,
-	6.79989431E-02,8.29847578E-02,9.75753918E-02,1.11196689E-01,
-	1.23264548E-01,1.33264415E-01,1.40753505E-01,1.45389847E-01,
-	1.46955068E-01,1.45389847E-01,1.40753505E-01,1.33264415E-01,
-	1.23264548E-01,1.11196689E-01,9.75753918E-02,8.29847578E-02,
-	-6.79989431E-02,-5.31873032E-02,-3.90751381E-02,-2.61098752E-02,
-	-1.46404076E-02,-4.91578024E-03,2.92408442E-03,8.85757540E-03,
-	1.29371806E-02,1.53184106E-02,1.62208471E-02,1.59045603E-02,
-	1.46525263E-02,1.27472335E-02,1.04584443E-02,8.02941163E-03,
-	-5.65949473E-03,-3.49717454E-03,-1.64973098E-03,-1.78805361E-04,
-	9.02154502E-04,1.61656283E-03,1.99454554E-03,2.10371989E-03,
-	2.01182542E-03,1.78371725E-03,1.47640169E-03,1.13992507E-03,
-	8.23919506E-04,5.54620202E-04,3.43256425E-04,1.56575398E-04
-
-
-js code to convert to fixpoint:
-
-	var xa = new Array(values here...);
-
-	var num = 0;
-	var perRow = 4;
-	var L = parseInt(xa.length);
-
-	for(i = 0; i < L; i++){
-		x = xa[i];
-
-		var neg = 0;
-
-
-		if(x < 0){
-		  neg = 1;
-		  x = -x;
-		}
-		x *= (1 << 26);   //this 26 should be the number of fraction bits
-		x = parseInt(x + 0.5);
-		s = x >> 28
-		x &= 0x0FFFFFFF;
-		if(neg){
-
-			x = x ^ 0x0FFFFFFF;
-			x++;
-			s ^= 0x0F;
-			if(x & 0x10000000) s++;
-			x &= 0x0FFFFFFF;
-			s &= 0x0F;
-		}
-
-		x = x.toString(16);
-		while(x.length < 7) x = "0" + x;
-		x = s.toString(16) + x;
-		x = x.toUpperCase();
-
-
-		document.write("0x" + x);
-		if(i != L - 1) document.write(",");
-		if(++num == perRow){
-			num = 0;
-			document.write("<BR>");
-		}
-		else document.write(" ");
-	}
-
-
-
-js code to produce costab (adjust loop variables as needed for both table vairants)
-
-	for(k = 0; k <= 7; k++) for(i = 0 ;i <= 3; i++){
-
-		document.write(Math.cos((i + 0.5) * (k + 2) * Math.PI / 4) + ", ")
-	}
-
-
-
-js code to generate order tables (they are used for those strange offsets into the V array in synth_* when generating samples):
-
-	var L = 200;
-	var V = new Array(L);
-	var U = new Array(80);
-	var i, j;
-	var nBands = 4;
-
-	for(i = 0; i <L; i++) V[i] = i + 1;
-
-
-	for(i = 0; i <= 4; i++) for(j = 0; j < nBands; j++){
-
-		if(nBands == 4){
-
-			U[i * 8 + j] = V[i * 16 + j];
-			U[i * 8 + 4 + j] = V[i * 16 + 12 + j];
-		}
-		else{
-
-			U[i * 16 + j] = V[i * 32 + j];
-			U[i * 16 + 8 + j] = V[i * 32 + 24 + j];
-		}
-	}
-
-
-	for(j = 0; j < nBands; j++) for(i = 0; i < 10; i++) document.write((U[j + nBands * i] - 1) + ",\t");
-
-
-
-
-
-
-
-C code for reordering the proto_* tables to access order. insert table values and modify nBands as needed
-
-	#include <stdio.h>
-	#include <stdint.h>
-
-
-
-	int32_t tabl[] =
-	{
-		table data here
-	};
-
-
-	int main(int argc, char** argv){
-
-		int i, j;
-		int nBands = 8;
-
-		for(j = 0; j < nBands; j++) for(i = 0; i < 10; i++) printf("0x%08X, ",tabl[j + nBands * i]);
-	}
-
-
-
-*/
 
