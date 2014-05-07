@@ -21,7 +21,7 @@ COMMON_SRC_FILES :=     \
     gatt-builtin.c      \
     a2dp.c              \
 
-COMMON_CFLAGS += -Wno-unused-parameter -DANDROID -DSG_DEBUG -DRFC_DEBUG #-DMT_DEBUG -DSDP_DBG -DTEST_DEBUG
+COMMON_CFLAGS += -Wno-unused-parameter -DANDROID -DSG_DEBUG -DRFC_DEBUG #-DMT_DEBUG -DSDP_DBG -DTEST_DEBUG -DA2DP_DBG
 COMMON_SHARED_LIBRARIES := libdl liblog
 
 ### HAL shared library ###
