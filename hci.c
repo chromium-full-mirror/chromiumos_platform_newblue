@@ -5159,5 +5159,38 @@ static bool hciConnDisconnect(uint16_t cid)
     return hciCmdSubmitSimpleWithStatusWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Disconnect, &cmd, sizeof(cmd), hciCmdStatusCbk, NULL);
 }
 
+/*
+ * FUNCTION: hciLeRandSimpleCbk
+ * USE:      Called back when chip replies to our request for random numbers
+ * PARAMS:   cbkData1 - the callback
+ *           cbkData2 - callback data
+ *           stackGoingDown - set if we're going down
+ *           evt - the RXed event
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void hciLeRandSimpleCbk(void* cbkData1, void* cbkData2, bool stackGoingDown, struct hciEvtHdr *evt)
+{
+    struct hciEvtCmdComplete *cmpl = (struct hciEvtCmdComplete*)(evt + 1);
+    struct hciCmplLeRand *rand = (struct hciCmplLeRand*)(cmpl + 1);
+    hciLeRandCbk cbk = (hciLeRandCbk)cbkData1;
 
+    cbk(cbkData2, !stackGoingDown && !utilGetLE8(&rand->status), utilGetLE64(&rand->rand));
+}
+
+/*
+ * FUNCTION: hciLeRand
+ * USE:      Generate a random 64-bit number using LE radio's Rand()
+ * PARAMS:   cbk - what to call when done
+ *           cbkData -data to pass to said cbk
+ * RETURN:   false on failure. else wait.
+ * NOTES:
+ */
+bool hciLeRand(hciLeRandCbk cbk, void *cbkData)
+{
+    if (!mHaveLe)
+        return false;
+
+    return hciCmdSubmitSimple(HCI_OGF_LE, HCI_CMD_LE_Rand, NULL, 0, hciLeRandSimpleCbk, cbk, cbkData, sizeof(struct hciCmplLeRand), sizeof(struct hciCmplLeRand), true, true);
+}
 

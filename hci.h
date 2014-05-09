@@ -192,5 +192,9 @@ void hciSecUserCbkSspUserOobReq(const struct bt_addr *addr, const uint8_t *C, co
 void hciSecUserCbkSspIoCapabilityReq(const struct bt_addr *addr, uint8_t cap, bool haveOobData, uint8_t authReq); // unused for now
 void hciSecUserCbkSspUserConfirmationReq(const struct bt_addr *addr, bool confirmed);
 
+/* misc */
+typedef void (*hciLeRandCbk)(void *cbkData, bool success, uint64_t rand);
+bool hciLeRand(hciLeRandCbk cbk, void *cbkData);
+
 #endif
 
