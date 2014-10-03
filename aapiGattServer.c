@@ -37,7 +37,7 @@ struct aapiGattServer {
 /* our state */
 static btgatt_server_callbacks_t mCbks;
 
-static pthread_mutex_t mAapiGattLock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t mAapiGattSrvLock = PTHREAD_MUTEX_INITIALIZER;
 static struct aapiGattServer *mServers;
 static bool mInited = false;
 
@@ -48,7 +48,7 @@ static bool mInited = false;
  * USE:      Find a aapiGattServer struct by reference number
  * PARAMS:   ref - the reference
  * RETURN:   the aapiGattServer struct or NULL if not found
- * NOTES:    call with mAapiGattLock held
+ * NOTES:    call with mAapiGattSrvLock held
  */
 static struct aapiGattServer* aapiGattServerFindStructByRef(int ref)
 {
@@ -65,7 +65,7 @@ static struct aapiGattServer* aapiGattServerFindStructByRef(int ref)
  * USE:      Find a aapiGattServer struct by android-style uuid
  * PARAMS:   andrUuid - the uuid
  * RETURN:   the aapiGattServer struct or NULL if not found
- * NOTES:    call with mAapiGattLock held
+ * NOTES:    call with mAapiGattSrvLock held
  */
 static struct aapiGattServer* aapiGattServerFindStructByUuid(const bt_uuid_t *andrUuid)
 {
@@ -84,7 +84,7 @@ static struct aapiGattServer* aapiGattServerFindStructByUuid(const bt_uuid_t *an
  *           uuid - the uuid in question
  *           instIdP - if non-null, instance Id will be stored here
  * RETURN:   true if found, false else
- * NOTES:    call with mAapiGattLock held
+ * NOTES:    call with mAapiGattSrvLock held
  */
 static bool aapiGattServerContainsServiceWithUuid(const struct aapiGattServer *srv, const struct uuid *uuid, uint8_t *instIdP)
 {
@@ -129,7 +129,7 @@ static bt_status_t aapiGattServerRegisterServer(bt_uuid_t *andrUuid)
     bt_status_t ret = BT_STATUS_FAIL;
     int ref = 0;
 
-    pthread_mutex_lock(&mAapiGattLock);
+    pthread_mutex_lock(&mAapiGattSrvLock);
     if (aapiGattServerFindStructByUuid(andrUuid))
         loge("Refusing to create identical GATT server\n");
     else {
@@ -158,7 +158,7 @@ static bt_status_t aapiGattServerRegisterServer(bt_uuid_t *andrUuid)
             ref = srv->refNum;
         }
     }
-    pthread_mutex_unlock(&mAapiGattLock);
+    pthread_mutex_unlock(&mAapiGattSrvLock);
 
     mCbks.register_server_cb(ret, ref, andrUuid);
     return ret;
@@ -176,7 +176,7 @@ static bt_status_t aapiGattServerUnregisterServer(int server_if)
     bt_status_t ret = BT_STATUS_FAIL;
     struct aapiGattServer *srv;
 
-    pthread_mutex_lock(&mAapiGattLock);
+    pthread_mutex_lock(&mAapiGattSrvLock);
     srv = aapiGattServerFindStructByRef(server_if);
     if (!srv)
         logw("Server not found while attempting to unregister\n");
@@ -202,7 +202,7 @@ static bt_status_t aapiGattServerUnregisterServer(int server_if)
         free(srv);
         ret = BT_STATUS_SUCCESS;
     }
-    pthread_mutex_unlock(&mAapiGattLock);
+    pthread_mutex_unlock(&mAapiGattSrvLock);
 
     return ret;
 }
@@ -216,7 +216,7 @@ static bt_status_t aapiGattServerUnregisterServer(int server_if)
  * RETURN:   status
  * NOTES:    also calls callback with result if successful result here
  */
-static bt_status_t aapiGattServerConnect(int server_if, const bt_bdaddr_t *bd_addr, bool is_direct)
+static bt_status_t aapiGattServerConnect(int server_if, const bt_bdaddr_t *bd_addr, bool is_direct, int transport)
 {
     //TODO
 
@@ -330,7 +330,7 @@ static bt_status_t aapiGattServerAddService(int server_if, btgatt_srvc_id_t *srv
     struct aapiGattServer *srv;
     uint16_t handle = 0;
 
-    pthread_mutex_lock(&mAapiGattLock);
+    pthread_mutex_lock(&mAapiGattSrvLock);
     srv = aapiGattServerFindStructByRef(server_if);
     if (!srv)
         logw("Server not found while attempting to add service\n");
@@ -358,7 +358,7 @@ static bt_status_t aapiGattServerAddService(int server_if, btgatt_srvc_id_t *srv
             }
         }
     }
-    pthread_mutex_unlock(&mAapiGattLock);
+    pthread_mutex_unlock(&mAapiGattSrvLock);
 
     mCbks.service_added_cb(ret, server_if, srvc_id, handle);
     return ret;
@@ -374,7 +374,7 @@ static bt_status_t aapiGattServerAddService(int server_if, btgatt_srvc_id_t *srv
  *           svcIdxInTableP - if not NULL, we store service's index in the server's "services" table
  *           firstOnly - if set handle is service_handle, else it is any handle in the range
  * RETURN:   true if all were found
- * NOTES:    call with mAapiGattLock held
+ * NOTES:    call with mAapiGattSrvLock held
  */
 static bool aapiGattServerFindService(int server_if, int handle, struct aapiGattServer **srvP, int *svcP, uint32_t *svcIdxInTableP, bool firstOnly)
 {
@@ -428,7 +428,7 @@ static bt_status_t aapiGattServerAddIncludedService(int server_if, int service_h
     uint16_t handle = 0;
     int svc;
 
-    pthread_mutex_lock(&mAapiGattLock);
+    pthread_mutex_lock(&mAapiGattSrvLock);
     if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc, NULL, true))
         logw("Server/Service not found while attempting to add included service\n");
     else {
@@ -444,7 +444,7 @@ static bt_status_t aapiGattServerAddIncludedService(int server_if, int service_h
                 ret = BT_STATUS_SUCCESS;
         }
     }
-    pthread_mutex_unlock(&mAapiGattLock);
+    pthread_mutex_unlock(&mAapiGattSrvLock);
 
     mCbks.included_service_added_cb(ret, server_if, service_handle, handle);
     return ret;
@@ -468,7 +468,7 @@ static bt_status_t aapiGattServerAddCharacteristic(int server_if, int service_ha
     uint16_t handle = 0;
     int svc;
 
-    pthread_mutex_lock(&mAapiGattLock);
+    pthread_mutex_lock(&mAapiGattSrvLock);
     if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc, NULL, true))
         logw("Server/Service not found while attempting to add characteristic\n");
     else {
@@ -479,7 +479,7 @@ static bt_status_t aapiGattServerAddCharacteristic(int server_if, int service_ha
         if (handle)
             ret = BT_STATUS_SUCCESS;
     }
-    pthread_mutex_unlock(&mAapiGattLock);
+    pthread_mutex_unlock(&mAapiGattSrvLock);
 
     mCbks.characteristic_added_cb(ret, server_if, andrUuid, service_handle, handle);
     return ret;
@@ -502,7 +502,7 @@ static bt_status_t aapiGattServerAddDescriptor(int server_if, int service_handle
     uint16_t handle = 0;
     int svc;
 
-    pthread_mutex_lock(&mAapiGattLock);
+    pthread_mutex_lock(&mAapiGattSrvLock);
     if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc, NULL, true))
         logw("Server/Service not found while attempting to add descriptor\n");
     else {
@@ -513,7 +513,7 @@ static bt_status_t aapiGattServerAddDescriptor(int server_if, int service_handle
         if (handle)
             ret = BT_STATUS_SUCCESS;
     }
-    pthread_mutex_unlock(&mAapiGattLock);
+    pthread_mutex_unlock(&mAapiGattSrvLock);
 
     mCbks.descriptor_added_cb(ret, server_if, andrUuid, service_handle, handle);
     return ret;
@@ -534,7 +534,7 @@ static bt_status_t aapiGattServerStartService(int server_if, int service_handle,
     struct aapiGattServer *srv;
     int svc;
 
-    pthread_mutex_lock(&mAapiGattLock);
+    pthread_mutex_lock(&mAapiGattSrvLock);
     if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc, NULL, true))
         logw("Server/Service not found while attempting to start service\n");
     else {
@@ -549,7 +549,7 @@ static bt_status_t aapiGattServerStartService(int server_if, int service_handle,
                 ret = BT_STATUS_SUCCESS;
         }
     }
-    pthread_mutex_unlock(&mAapiGattLock);
+    pthread_mutex_unlock(&mAapiGattSrvLock);
 
     mCbks.service_started_cb(ret, server_if, service_handle);
     return ret;
@@ -569,14 +569,14 @@ static bt_status_t aapiGattServerStopService(int server_if, int service_handle)
     struct aapiGattServer *srv;
     int svc;
 
-    pthread_mutex_lock(&mAapiGattLock);
+    pthread_mutex_lock(&mAapiGattSrvLock);
     if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc, NULL, true))
         logw("Server/Service not found while attempting to stop service\n");
     else {
        if (gattServiceStop(svc))
             ret = BT_STATUS_SUCCESS;
     }
-    pthread_mutex_unlock(&mAapiGattLock);
+    pthread_mutex_unlock(&mAapiGattSrvLock);
 
     mCbks.service_stopped_cb(ret, server_if, service_handle);
     return ret;
@@ -597,7 +597,7 @@ static bt_status_t aapiGattServerDeleteService(int server_if, int service_handle
     uint32_t idx;
     int svc;
 
-    pthread_mutex_lock(&mAapiGattLock);
+    pthread_mutex_lock(&mAapiGattSrvLock);
     if (!aapiGattServerFindService(server_if, service_handle, &srv, &svc, &idx, true))
         logw("Server/Service not found while attempting to delete service\n");
     else {
@@ -606,7 +606,7 @@ static bt_status_t aapiGattServerDeleteService(int server_if, int service_handle
        if (gattServiceDestroy(svc))
            ret = BT_STATUS_SUCCESS;
     }
-    pthread_mutex_unlock(&mAapiGattLock);
+    pthread_mutex_unlock(&mAapiGattSrvLock);
 
     mCbks.service_deleted_cb(ret, server_if, service_handle);
     return ret;
@@ -630,14 +630,14 @@ static bt_status_t aapiGattServerSendIndication(int server_if, int attribute_han
     struct aapiGattServer *srv;
     int svc;
 
-    pthread_mutex_lock(&mAapiGattLock);
+    pthread_mutex_lock(&mAapiGattSrvLock);
     if (!aapiGattServerFindService(server_if, attribute_handle, &srv, &svc, NULL, false))
         logw("Server/service not found while attempting to send indication\n");
     else {
         if (gattServiceSendInd(svc, conn_id, attribute_handle, p_value, len, !!confirm, 0))
             ret = BT_STATUS_SUCCESS;
     }
-    pthread_mutex_unlock(&mAapiGattLock);
+    pthread_mutex_unlock(&mAapiGattSrvLock);
 
     /* XXX: callback here? */
     return ret;
@@ -702,7 +702,7 @@ bt_status_t aapiGattServerInit(const btgatt_server_callbacks_t *cbks)
 
     memcpy(&mCbks, cbks, sizeof(mCbks));
 
-    pthread_mutex_lock(&mAapiGattLock);
+    pthread_mutex_lock(&mAapiGattSrvLock);
     if (!mInited) {
         if (!attInit()) {
             loge("ATT init failed\n");
@@ -717,7 +717,7 @@ bt_status_t aapiGattServerInit(const btgatt_server_callbacks_t *cbks)
             mInited = true;
     }
     ret = mInited ? BT_STATUS_SUCCESS : BT_STATUS_FAIL;
-    pthread_mutex_unlock(&mAapiGattLock);
+    pthread_mutex_unlock(&mAapiGattSrvLock);
 
     return ret;
 }
@@ -731,14 +731,14 @@ bt_status_t aapiGattServerInit(const btgatt_server_callbacks_t *cbks)
  */
 void aapiGattServerDeinit(void)
 {
-    pthread_mutex_lock(&mAapiGattLock);
+    pthread_mutex_lock(&mAapiGattSrvLock);
     if (mInited) {
         mInited = false;
         gattBuiltinDeinit();
         gattProfileDeinit();
         attDeinit();
     }
-    pthread_mutex_unlock(&mAapiGattLock);
+    pthread_mutex_unlock(&mAapiGattSrvLock);
 }
 
 
