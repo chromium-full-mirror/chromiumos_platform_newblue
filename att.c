@@ -347,6 +347,8 @@ static bool mInTeardown;
 static struct workQueue *mWorkQ;
 static pthread_t mWorker;
 
+static pthread_mutex_t mAttStateLock = PTHREAD_MUTEX_INITIALIZER;
+static unsigned mNumUsers = 0; /* of ATT itself */
 
 
 
@@ -3144,30 +3146,33 @@ static void attWorkItemFree(void *item)
  * USE:      Called to init all of ATT
  * PARAMS:   NONE
  * RETURN:   success
- * NOTES:
+ * NOTES:    internally ref-counted as multiple users exist
  */
 bool attInit(void)
 {
-    mWorkQ = workQueueAlloc(ATT_WORK_Q_SIZE);
-    if (!mWorkQ) {
-        loge("Failed to create work Q\n");
-        goto fail_workq;
-    }
+    bool ret = false;
 
-    if (pthread_create(&mWorker, NULL, attWorker, NULL)) {
-        loge("Failed to create worker\n");
-        goto fail_thread;
-    }
+    pthread_mutex_lock(&mAttStateLock);
+    if (!mNumUsers) {
 
-    mAllClients.hasExtras = true;
+        mWorkQ = workQueueAlloc(ATT_WORK_Q_SIZE);
+        if (!mWorkQ)
+            loge("Failed to create work Q\n");
+        else if (pthread_create(&mWorker, NULL, attWorker, NULL)) {
+            loge("Failed to create worker\n");
+            workQueueFree(mWorkQ, attWorkItemFree);
+        } else {
+            mAllClients.hasExtras = true;
+            ret = true;
+        }
+    } else
+        ret = true;
 
-    return true;
+    if (ret)
+        mNumUsers++;
 
-fail_thread:
-    workQueueFree(mWorkQ, attWorkItemFree);
-
-fail_workq:
-    return false;
+    pthread_mutex_unlock(&mAttStateLock);
+    return ret;
 }
 
 /*
@@ -3175,13 +3180,20 @@ fail_workq:
  * USE:      Called to deinit all of ATT
  * PARAMS:   NONE
  * RETURN:   NONE
- * NOTES:
+ * NOTES:    internally ref-counted as multiple users exist
  */
 void attDeinit(void)
 {
-    workQueueWakeAll(mWorkQ, 1);
-    pthread_join(mWorker, NULL);
-    workQueueFree(mWorkQ, attWorkItemFree);
+    pthread_mutex_lock(&mAttStateLock);
+    if (!mNumUsers)
+        loge("too many ATT closures!\n");
+    else if (!--mNumUsers) {
+        workQueueWakeAll(mWorkQ, 1);
+        pthread_join(mWorker, NULL);
+        workQueueFree(mWorkQ, attWorkItemFree);
+        attConnListFree(&mAllClients);
+    }
+    pthread_mutex_unlock(&mAttStateLock);
 }
 
 
