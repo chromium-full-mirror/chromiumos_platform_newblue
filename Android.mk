@@ -21,7 +21,7 @@ COMMON_SRC_FILES :=     \
     gatt-builtin.c      \
     a2dp.c              \
 
-COMMON_CFLAGS += -Wno-unused-parameter -DANDROID -DSG_DEBUG -DRFC_DEBUG -DMT_DEBUG -DSDP_DBG -DTEST_DEBUG -DA2DP_DBG -O0 -g
+COMMON_CFLAGS += -Wno-unused-parameter -DANDROID #-DTEST_DEBUG -DSG_DEBUG -DRFC_DEBUG -DMT_DEBUG -DSDP_DBG -DA2DP_DBG
 COMMON_SHARED_LIBRARIES := libdl liblog
 
 ### HAL shared library ###
@@ -58,12 +58,12 @@ include $(CLEAR_VARS)
 
 LOCAL_CFLAGS := $(COMMON_CFLAGS)
 LOCAL_MODULE_TAGS := optional
-LOCAL_SHARED_LIBRARIES := $(COMMON_SHARED_LIBRARIES)
-LOCAL_STATIC_LIBRARIES := libNewBlue
 
+LOCAL_SRC_FILES := $(COMMON_SRC_FILES)
 LOCAL_SRC_FILES += test.c
 LOCAL_MODULE := new_blue_test
-LOCAL_CFLAGS += -DEXECUTABLE
+LOCAL_CFLAGS += -DEXECUTABLE -O0 -g
+LOCAL_SHARED_LIBRARIES += libdl liblog
 include $(BUILD_EXECUTABLE)
 
 # build tests in subdirectories
