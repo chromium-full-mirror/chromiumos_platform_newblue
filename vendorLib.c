@@ -27,7 +27,7 @@
 #define BT_VENDOR_INFACE_STRUCT  "BLUETOOTH_VENDOR_LIB_INTERFACE"
 
 
-static bool mLog = true;
+static bool mLog = false;
 
 
 /* our state w.r.t. vendor lib */
