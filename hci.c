@@ -4894,8 +4894,10 @@ static struct hciAclConn* hciConnAclUp(bool established, uint16_t id, const uint
     struct hciAclConn *c;
     struct bt_addr addr;
 
-    c = hciConnFindByAddr(&addr);
+    memcpy(addr.addr, mac, sizeof(addr.addr));
+    addr.type = addrType;
 
+    c = hciConnFindByAddr(&addr);
     if (!established) {
         if (!c)
             logw("cannection we didn't know about failed. Do we care?\n");
@@ -4908,9 +4910,6 @@ static struct hciAclConn* hciConnAclUp(bool established, uint16_t id, const uint
         loge("Refusing to create conn struct for existing connection %d\n", id);
         return NULL;
     }
-
-    memcpy(addr.addr, mac, sizeof(addr.addr));
-    addr.type = addrType;
 
     if (!c) {
         c = hciConnAclStructNew(id, &addr, CONN_STATE_CFG, isMaster);
