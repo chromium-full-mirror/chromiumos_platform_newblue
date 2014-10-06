@@ -213,6 +213,7 @@ static bt_status_t aapiGattServerUnregisterServer(int server_if)
  * PARAMS:   server_if - the server's reference number
  *           bd_addr - remote address
  *           is_direct - XXX: TODO: WTF??
+ *           transport - (BT_TRANSPORT_*)
  * RETURN:   status
  * NOTES:    also calls callback with result if successful result here
  */
@@ -524,7 +525,7 @@ static bt_status_t aapiGattServerAddDescriptor(int server_if, int service_handle
  * USE:      Starts a local service
  * PARAMS:   server_if - the server's reference number
  *           service_handle - the handle of the current service
- *           transport
+ *           transport - which transport to use
  * RETURN:   status
  * NOTES:    also calls callback with result if successful result here
  */

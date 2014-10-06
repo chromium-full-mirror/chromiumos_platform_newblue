@@ -245,7 +245,7 @@ static int aapiPinReply(const bt_bdaddr_t *bd_addr, uint8_t accept, uint8_t pin_
  * FUNCTION: aapiBondCreate
  * USE:      Start a pairing process
  * PARAMS:   bd_addr - the peer adress
- *           transport - the transport to use
+ *           transport - the transport to use (BT_TRANSPORT_*)
  * RETURN:   bt_status_t
  * NOTES:
  */
