@@ -925,7 +925,7 @@ done:
  * USE:      Enumerate all known devices
  * PARAMS:   enumF - callback to call
  *           cbkData - data to pass to said callback
- *           wantedKeyType - if not null, only call bacllback for devices for which we have a key of this type
+ *           wantedKeyType - if not null, only call callback for devices for which we have a key of this type
  * RETURN:   true if enumeration finished by itself, false if by request of callback
  * NOTES:    NONE
  */

@@ -9,7 +9,7 @@
 
 //key types are also bits in "haveKeys" for enumeration
 #define KEY_TYPE_MITM_PROTECTED        0 /* EDR key generated with MITM protection */
-#define KEY_TYPE_MITM_UNPROTECTED      1 /* EDR key generated with MITM protection */
+#define KEY_TYPE_MITM_UNPROTECTED      1 /* EDR key generated without MITM protection */
 #define KEY_TYPE_CSRK                  2 /* LE connection signature resolving key */
 #define KEY_TYPE_IRK                   3 /* LE identity resolving key */
 #define KEY_TYPE_DHK                   4 /* LE diversifier hiding key */
