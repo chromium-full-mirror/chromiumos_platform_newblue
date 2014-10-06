@@ -1,6 +1,7 @@
 #include <string.h>
 #include "aapiGattClient.h"
 #include "gatt.h"
+#include "hci.h"
 #include "log.h"
 #include "att.h"
 #include "bt.h"
@@ -9,7 +10,9 @@
 
 
 
-static btgatt_client_interface_t mCbks;
+static btgatt_client_callbacks_t mCbks;
+static pthread_mutex_t mAapiGattCliLock = PTHREAD_MUTEX_INITIALIZER;
+static uniq_t mScanId = 0;
 
 
 /*
@@ -67,16 +70,58 @@ static bt_status_t aapiGattClientUnregisterClient(int client_if)
 }
 
 /*
+ * FUNCTION: aapiGattClientPrvDeviceDiscovered
+ * USE:      Called on each received LE discovery reply
+ * PARAMS:   cbkData - unused
+ *           addr - the address we got
+ *           rssi - the RSSI
+ *           replyType - HCI_ADV_TYPE_* 
+ *           eir - the received data
+ *           eirLen - the length of said data
+ * RETURN:   status
+ * NOTES:
+ */
+static void aapiGattClientPrvDeviceDiscovered(void *cbkData, const struct bt_addr *addr, int8_t rssi, uint8_t replyType, const void *eir, uint8_t eirLen)
+{
+    //XXX: apparently android does nto care about reply type?
+    //XXX: device type lost here
+    bt_bdaddr_t bd_addr;
+    memcpy(bd_addr.address, addr->addr, sizeof(bd_addr.address));
+
+    mCbks.scan_result_cb(&bd_addr, rssi, (void*)eir);
+}
+
+/*
  * FUNCTION: aapiGattClientScan
  * USE:      Start or stop LE device scanning
- * PARAMS:   ??
+ * PARAMS:   start - to start or to stop scanning?
  * RETURN:   status
  * NOTES:
  */
 static bt_status_t aapiGattClientScan(bool start)
 {
-    //todo
-    return BT_STATUS_SUCCESS;
+    bt_status_t ret = BT_STATUS_SUCCESS;
+
+    pthread_mutex_lock(&mAapiGattCliLock);
+
+    if (start) {
+        if (mScanId) {
+            logw("Starting LE scan while another already underway. Cancelling old one.\n");
+            hciDiscoverLeStop(mScanId);
+        }
+        mScanId = hciDiscoverLeStart(aapiGattClientPrvDeviceDiscovered, NULL, false, false); //XXX: we default to passive scan using our real address for now
+        if (!mScanId) {
+            loge("Failed to start LE scan\n");
+            ret = BT_STATUS_FAIL;
+        }
+    } else if (!mScanId)
+        logw("Stopping an LE scan while none is running\n");
+    else
+        hciDiscoverLeStop(mScanId);
+
+    pthread_mutex_unlock(&mAapiGattCliLock);
+
+    return ret;
 }
 
 /*
