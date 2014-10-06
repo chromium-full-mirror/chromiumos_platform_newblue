@@ -1021,7 +1021,10 @@ static struct persistProp* persistFindKnownDev(const struct bt_addr *addr)
     struct persistArrayInRam *arr, *itemsArr;
     struct persistProp *t, *dev, *devItem;
     struct bt_addr *devAddr;
-   
+
+    //XXX: TODO: private address resolution
+
+
     t = persistPropFind(mPropsHead, PERS_NAME_KNOWN_DEVICES, PERS_TYPE_ARRAY);
     if (!t) {
         logw("Known device list not found\n");

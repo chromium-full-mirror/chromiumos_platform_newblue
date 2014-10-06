@@ -89,6 +89,9 @@ static void aapiGattClientPrvDeviceDiscovered(void *cbkData, const struct bt_add
     memcpy(bd_addr.address, addr->addr, sizeof(bd_addr.address));
 
     mCbks.scan_result_cb(&bd_addr, rssi, (void*)eir);
+
+    /* also add it to know devices for future use */
+    hciInquiryUpdatePersistDeviceDb(addr, NULL, eir, eirLen);
 }
 
 /*

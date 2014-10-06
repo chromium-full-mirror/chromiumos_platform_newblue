@@ -2388,7 +2388,7 @@ HCI_SIMPLY_SYNC_END
 
 /*
  * FUNCTION: hciInquiryUpdatePersistDeviceDb
- * USE:      Update persitent "seen devices" DB with results of discovery
+ * USE:      Update persistent "seen devices" DB with EIR data
  * PARAMS:   addr - the address of the remote device
  *           devClsP - device class or NULL if not known
  *           eir - the provided EIR data (if any)
@@ -2396,7 +2396,7 @@ HCI_SIMPLY_SYNC_END
  * RETURN:   NONE
  * NOTES:
  */
-static void hciInquiryUpdatePersistDeviceDb(const struct bt_addr *addr, const uint32_t *devClsP, const void *eir, uint8_t eirLen)
+void hciInquiryUpdatePersistDeviceDb(const struct bt_addr *addr, const uint32_t *devClsP, const void *eir, uint8_t eirLen)
 {
     const uint8_t *name = NULL;
     uint32_t nameLen = 0;

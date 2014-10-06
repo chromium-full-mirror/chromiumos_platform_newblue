@@ -195,6 +195,7 @@ void hciSecUserCbkSspUserConfirmationReq(const struct bt_addr *addr, bool confir
 /* misc */
 typedef void (*hciLeRandCbk)(void *cbkData, bool success, uint64_t rand);
 bool hciLeRand(hciLeRandCbk cbk, void *cbkData);
+void hciInquiryUpdatePersistDeviceDb(const struct bt_addr *addr, const uint32_t *devClsP, const void *eir, uint8_t eirLen);
 
 #endif
 
