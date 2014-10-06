@@ -2388,7 +2388,7 @@ HCI_SIMPLY_SYNC_END
 
 /*
  * FUNCTION: hciInquiryUpdatePersistDeviceDb
- * USE:      Updat epersitent "seen devices" DB with results of discovery
+ * USE:      Update persitent "seen devices" DB with results of discovery
  * PARAMS:   addr - the address of the remote device
  *           devClsP - device class or NULL if not known
  *           eir - the provided EIR data (if any)
@@ -2401,6 +2401,7 @@ static void hciInquiryUpdatePersistDeviceDb(const struct bt_addr *addr, const ui
     const uint8_t *name = NULL;
     uint32_t nameLen = 0;
     uint32_t eirDevCls;
+    bool nameIsFull = false;
 
     if (eirLen) { /* parse eir to find name */
         const uint8_t *eirP = (const uint8_t*)eir;
@@ -2416,6 +2417,7 @@ static void hciInquiryUpdatePersistDeviceDb(const struct bt_addr *addr, const ui
             if (type == HCI_EIR_TYPE_SHORTENED_NAME || type == HCI_EIR_TYPE_FULL_NAME) {
                 name = eirP;
                 nameLen = len;
+                nameIsFull = type == HCI_EIR_TYPE_FULL_NAME;
             } else if (type == HCI_EIR_DEV_CLS && len == 3) {
                 eirDevCls = utilGetLE24(eirP);
                 devClsP = &eirDevCls;
@@ -2424,7 +2426,7 @@ static void hciInquiryUpdatePersistDeviceDb(const struct bt_addr *addr, const ui
         }
     }
 
-    persistAddKnownDev(addr, name, name ? &nameLen : NULL, devClsP);
+    persistAddKnownDev(addr, name, name ? &nameLen : NULL, nameIsFull, devClsP);
 }
 
 /*
@@ -2587,7 +2589,7 @@ static void hciInquiryEvtEdrNameMac(const uint8_t *mac, uint8_t nameReqState, bo
 
     addr.type = BT_ADDR_TYPE_EDR;
     memcpy(addr.addr, mac, sizeof(addr.addr));
-    persistAddKnownDev(&addr, name, &nameMaxLen, NULL);
+    persistAddKnownDev(&addr, name, &nameMaxLen, true, NULL);
 
     hciInquiryEvtEdrName(dns, prev, nameReqState, lastCbk, name, nameMaxLen);
     pthread_mutex_unlock(&mDiscoveryStateLock);
@@ -3105,7 +3107,7 @@ static bool hciConnEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evt
         memcpy(addr.addr, req->mac, sizeof(addr.addr));
         addr.type = BT_ADDR_TYPE_EDR;
 
-        persistAddKnownDev(&addr, NULL, NULL, &devCls); /* record the device sighting */
+        persistAddKnownDev(&addr, NULL, NULL, false, &devCls); /* record the device sighting */
 
 
         //TODO: ask higher layer/user/whatever?

@@ -31,7 +31,7 @@ bool persistSetDiscoveryLength(uint8_t len);
 
 bool persistEnumKnownDevs(persistKnownDevEnumeratorF enumF, void *cbkData, const uint8_t *wantedKeyType); //return false if callback terminated enumeration. wantedKeyType can be null if we don't care about keys
 bool persistGetKnownDev(const struct bt_addr *addr, void *name, uint32_t *nameLen, uint32_t *devCls);
-void persistAddKnownDev(const struct bt_addr *addr, const void *name, const uint32_t *nameLen, const uint32_t *devCls);
+void persistAddKnownDev(const struct bt_addr *addr, const void *name, const uint32_t *nameLen, bool nameIsFull, const uint32_t *devCls);
 void persistDelKnownDev(const struct bt_addr *addr);
 
 bool persistAddDevKey(const struct bt_addr *addr, uint8_t keyType, const uint8_t *key); //addr = NULL for our own keys, all keys are HCI_LINK_KEY_LEN bytes long

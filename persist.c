@@ -1123,11 +1123,12 @@ void persistDelKnownDev(const struct bt_addr *addr)
  * PARAMS:   addr - the address
  *           name - device name if seen
  *           nameLenP - device name length or NULL if no name known
+ *           nameIsFull - set if name is complete. Clear if it is shortened
  *           devCls - device class or NULL if not known
  * RETURN:   the device property or NULL on error
  * NOTES:    call with mLock held
  */
-static struct persistProp* persistAddKnownDevInt(const struct bt_addr *addr, const void *name, const uint32_t *nameLenP, const uint32_t *devCls)
+static struct persistProp* persistAddKnownDevInt(const struct bt_addr *addr, const void *name, const uint32_t *nameLenP, bool nameIsFull, const uint32_t *devCls)
 {
     struct persistArrayInRam *allDevsArr, *devArr;
     struct persistProp *dev = NULL, *allDevs, *t;
@@ -1167,8 +1168,15 @@ static struct persistProp* persistAddKnownDevInt(const struct bt_addr *addr, con
     if (!persistSetPropInList(&devArr->head, &devArr->tail, PERS_NAME_BT_ADDR, PERS_TYPE_BT_ADDR, addr, sizeof(struct bt_addr), true))
         logw("Failed to save device name\n");
 
-    if (haveName && !persistSetPropInList(&devArr->head, &devArr->tail, PERS_NAME_DEVICE_NAME, PERS_TYPE_BYTE_ARRAY, name, nameLen, true))
-        logw("Failed to save device name\n");
+    if (haveName) {
+        /* never replace an existing name with a shortened one. Always replce with a full one */
+        struct persistArrayInRam *devItems;
+
+        devItems = (struct persistArrayInRam*)(dev + 1);
+        t = persistPropFind(devItems->head, PERS_NAME_DEVICE_NAME, PERS_TYPE_BYTE_ARRAY);
+        if ((!t || nameIsFull) && !persistSetPropInList(&devArr->head, &devArr->tail, PERS_NAME_DEVICE_NAME, PERS_TYPE_BYTE_ARRAY, name, nameLen, true))
+            logw("Failed to save device name\n");
+    }
 
     if (devCls && !persistSetPropInList(&devArr->head, &devArr->tail, PERS_NAME_DEV_CLS, PERS_TYPE_UINT, devCls, sizeof(*devCls), true))
         logw("Failed to save device class\n");
@@ -1190,14 +1198,15 @@ out:
  * PARAMS:   addr - the address
  *           name - device name if seen
  *           nameLen - device name length or NULL if no name known
+ *           nameIsFull - set if name is complete. Clear if it is shortened
  *           devCls - device class or NULL if not known
  * RETURN:   NONE
  * NOTES:
  */
-void persistAddKnownDev(const struct bt_addr *addr, const void *name, const uint32_t *nameLen, const uint32_t *devCls)
+void persistAddKnownDev(const struct bt_addr *addr, const void *name, const uint32_t *nameLen, bool nameIsFull, const uint32_t *devCls)
 {
     pthread_mutex_lock(&mLock);
-    persistAddKnownDevInt(addr, name, nameLen, devCls);
+    persistAddKnownDevInt(addr, name, nameLen, nameIsFull, devCls);
     pthread_mutex_unlock(&mLock);
     persistStore();
 }
@@ -1220,7 +1229,7 @@ bool persistAddDevKey(const struct bt_addr *addr, uint8_t keyType, const uint8_t
 
     pthread_mutex_lock(&mLock);
     if (addr) {
-        parent = persistAddKnownDevInt(addr, NULL, NULL, NULL); /* if we're adding a key for it means we saw it and/or are talking to it */
+        parent = persistAddKnownDevInt(addr, NULL, NULL, false, NULL); /* if we're adding a key for it means we saw it and/or are talking to it */
         if (parent)
             parent = persistPropFind(((struct persistArrayInRam*)(parent + 1))->head, PERS_NAME_KEYS, PERS_TYPE_ARRAY);
     } else
@@ -1299,7 +1308,7 @@ bool persistGetDevKey(const struct bt_addr *addr, uint8_t keyType, uint8_t *key)
 
     pthread_mutex_lock(&mLock);
     if (addr) {
-        parent = persistAddKnownDevInt(addr, NULL, NULL, NULL); /* if we're finding a key for it means we saw it and/or are talking to it */
+        parent = persistAddKnownDevInt(addr, NULL, NULL, false, NULL); /* if we're finding a key for it means we saw it and/or are talking to it */
         if (parent)
             parent = persistPropFind(((struct persistArrayInRam*)(parent + 1))->head, PERS_NAME_KEYS, PERS_TYPE_ARRAY);
     } else
