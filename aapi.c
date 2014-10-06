@@ -245,10 +245,11 @@ static int aapiPinReply(const bt_bdaddr_t *bd_addr, uint8_t accept, uint8_t pin_
  * FUNCTION: aapiBondCreate
  * USE:      Start a pairing process
  * PARAMS:   bd_addr - the peer adress
+ *           transport - the transport to use
  * RETURN:   bt_status_t
  * NOTES:
  */
-static int aapiBondCreate(const bt_bdaddr_t *bd_addr)
+static int aapiBondCreate(const bt_bdaddr_t *bd_addr, int transport)
 {
     logd("AAPI: bond create\n");
     //TODO
