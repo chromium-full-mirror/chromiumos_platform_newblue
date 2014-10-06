@@ -75,3 +75,20 @@ void aapiGattNotifStackState(bool up)
 {
     //TODO
 }
+
+
+/*
+ * FUNCTION: aapiGattUuidFromAndroidUuid
+ * USE:      Convert an android-style bt_uuid_t to a struct uuid
+ * PARAMS:   dst - destination
+ *           src - source
+ * RETURN:   NONE
+ * NOTES:
+ */
+void aapiGattUuidFromAndroidUuid(struct uuid *dst, const bt_uuid_t *src)
+{
+    uuidReadBE(dst, src->uu);
+}
+
+
+

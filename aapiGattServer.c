@@ -1,6 +1,7 @@
 #include <string.h>
 #include "aapiGattServer.h"
 #include "gatt-builtin.h"
+#include "aapiGatt.h"
 #include "gatt.h"
 #include "log.h"
 #include "bt.h"
@@ -102,19 +103,6 @@ static bool aapiGattServerContainsServiceWithUuid(const struct aapiGattServer *s
     }
 
     return false;
-}
-
-/*
- * FUNCTION: aapiGattServerUuidFromAndroidUuid
- * USE:      Convert an android-style bt_uuid_t to a struct uuid
- * PARAMS:   dst - destination
- *           src - source
- * RETURN:   NONE
- * NOTES:
- */
-static void aapiGattServerUuidFromAndroidUuid(struct uuid *dst, const bt_uuid_t *src)
-{
-    uuidReadBE(dst, src->uu);
 }
 
 /*
@@ -346,7 +334,7 @@ static bt_status_t aapiGattServerAddService(int server_if, btgatt_srvc_id_t *srv
         else {
             srv->services = svcs;
 
-            aapiGattServerUuidFromAndroidUuid(&uuid, &srvc_id->id.uuid);
+            aapiGattUuidFromAndroidUuid(&uuid, &srvc_id->id.uuid);
             svc = gattServiceCreate(&uuid, srvc_id->is_primary, num_handles, aapiGattServerReadF, aapiGattServerWriteF, aapiGattServerIndF);
             if (!svc)
                 logw("Failed to create GATT service\n");
@@ -475,7 +463,7 @@ static bt_status_t aapiGattServerAddCharacteristic(int server_if, int service_ha
     else {
         struct uuid uuid;
 
-        aapiGattServerUuidFromAndroidUuid(&uuid, andrUuid);
+        aapiGattUuidFromAndroidUuid(&uuid, andrUuid);
         handle = gattServiceAddChar(svc, &uuid, properties, permissions);
         if (handle)
             ret = BT_STATUS_SUCCESS;
@@ -509,7 +497,7 @@ static bt_status_t aapiGattServerAddDescriptor(int server_if, int service_handle
     else {
         struct uuid uuid;
 
-        aapiGattServerUuidFromAndroidUuid(&uuid, andrUuid);
+        aapiGattUuidFromAndroidUuid(&uuid, andrUuid);
         handle = gattServiceAddCharDescr(svc, &uuid, permissions);
         if (handle)
             ret = BT_STATUS_SUCCESS;
