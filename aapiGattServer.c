@@ -27,12 +27,6 @@ struct aapiGattServer {
 
 
 
-/* these not documented anywhere, for some reason */
-#define GATT_TRANSPORT_LE         0
-#define GATT_TRANSPORT_BR_EDR     1
-#define GATT_TRANSPORT_LE_BR_EDR  2
-
-
 
 
 /* our state */

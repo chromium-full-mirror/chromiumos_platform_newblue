@@ -31,5 +31,11 @@ struct bt_addr {
 /* calc minimum valid LE timeout for given other parems */
 #define BT_LE_TIMEOUT_MIN_VALID(int, lat)    (((int) * ((lat) + 1) * 2 + 7) / 8)
 
+
+
+/* these not documented anywhere, for some reason */
+#define BT_TRANSPORT_BR_EDR     1
+#define BT_TRANSPORT_LE         2
+
 #endif
 
