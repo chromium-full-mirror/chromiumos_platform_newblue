@@ -10,10 +10,54 @@
 
 
 
+struct aapiGattClient {
+    struct aapiGattClient         *next;
+    struct aapiGattClient         *prev;
+    int                            refNum;
+    bt_uuid_t                      andrUuid;
+};
+
+
 static btgatt_client_callbacks_t mCbks;
 static pthread_mutex_t mAapiGattCliLock = PTHREAD_MUTEX_INITIALIZER;
-static uniq_t mScanId = 0;
+static struct aapiGattClient *mClients;
+static uniq_t mScanId;
 
+
+
+/*
+ * FUNCTION: aapiGattClientFindStructByRef
+ * USE:      Find a aapiGattClient struct by reference number
+ * PARAMS:   ref - the reference
+ * RETURN:   the aapiGattClient struct or NULL if not found
+ * NOTES:    call with mAapiGattCliLock held
+ */
+static struct aapiGattClient* aapiGattClientFindStructByRef(int ref)
+{
+    struct aapiGattClient *ret = mClients;
+
+    while (ret && ret->refNum != ref)
+        ret = ret->next;
+
+    return ret;
+}
+
+/*
+ * FUNCTION: aapiGattClientFindStructByUuid
+ * USE:      Find a aapiGattClient struct by android-style uuid
+ * PARAMS:   andrUuid - the uuid
+ * RETURN:   the aapiGattClient struct or NULL if not found
+ * NOTES:    call with mAapiGattCliLock held
+ */
+static struct aapiGattClient* aapiGattClientFindStructByUuid(const bt_uuid_t *andrUuid)
+{
+    struct aapiGattClient *ret = mClients;
+
+    while (ret && memcmp(&ret->andrUuid, andrUuid, sizeof(ret->andrUuid)))
+        ret = ret->next;
+
+    return ret;
+}
 
 /*
  * FUNCTION: aapiGattClientInit
@@ -25,7 +69,8 @@ static uniq_t mScanId = 0;
 bt_status_t aapiGattClientInit(const btgatt_client_callbacks_t *cbks)
 {
     memcpy(&mCbks, cbks, sizeof(mCbks));
-
+    mClients = NULL;
+    mScanId = 0;
 
     return BT_STATUS_SUCCESS;
 }
@@ -46,14 +91,48 @@ void aapiGattClientDeinit(void)
 /*
  * FUNCTION: aapiGattClientRegisterClient
  * USE:      Registers a GATT client application with the stack
- * PARAMS:   ??
+ * PARAMS:   andrUuid - the unique Id of this client
  * RETURN:   status
  * NOTES:
  */
-static bt_status_t aapiGattClientRegisterClient(bt_uuid_t *uuid)
+static bt_status_t aapiGattClientRegisterClient(bt_uuid_t *andrUuid)
 {
-    //todo
-    return BT_STATUS_SUCCESS;
+    bt_status_t ret = BT_STATUS_FAIL;
+    int ref = 0;
+
+    pthread_mutex_lock(&mAapiGattCliLock);
+    if (aapiGattClientFindStructByUuid(andrUuid))
+        loge("Refusing to create identical GATT client\n");
+    else {
+        struct aapiGattClient *cli = (struct aapiGattClient*)calloc(1, sizeof(struct aapiGattClient));
+        if (!cli) {
+            loge("Failed to allocate GATT client\n");
+            ret = BT_STATUS_NOMEM;
+        } else {
+
+            /* grab a free reference number */
+            cli->refNum = mClients  ? (mClients->refNum + 1) : 1;
+            while (aapiGattClientFindStructByRef(cli->refNum))
+                cli->refNum++;
+
+            /* link it in */
+            cli->next = mClients;
+            if (mClients)
+                mClients->prev = cli;
+            mClients = cli;
+
+            /* save uuid */
+            memcpy(&cli->andrUuid, andrUuid, sizeof(cli->andrUuid));
+
+            /* prepare to announce success */
+            ret = BT_STATUS_SUCCESS;
+            ref = cli->refNum;
+        }
+    }
+    pthread_mutex_unlock(&mAapiGattCliLock);
+
+    mCbks.register_client_cb(ret, ref, andrUuid);
+    return ret;
 }
 
 /*
@@ -136,7 +215,9 @@ static bt_status_t aapiGattClientScan(bool start)
  */
 static bt_status_t aapiGattClientConnect(int client_if, const bt_bdaddr_t *bd_addr, bool is_direct, int transport)
 {
-    //todo
+    
+
+
     return BT_STATUS_SUCCESS;
 }
 
