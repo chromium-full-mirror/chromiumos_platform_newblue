@@ -138,14 +138,37 @@ static bt_status_t aapiGattClientRegisterClient(bt_uuid_t *andrUuid)
 /*
  * FUNCTION: aapiGattClientUnregisterClient
  * USE:      Unregister a client application from the stack
- * PARAMS:   ??
+ * PARAMS:   client_if - the client identifier
  * RETURN:   status
  * NOTES:
  */
 static bt_status_t aapiGattClientUnregisterClient(int client_if)
 {
-    //todo
-    return BT_STATUS_SUCCESS;
+    bt_status_t ret = BT_STATUS_FAIL;
+    struct aapiGattClient *cli;
+
+    pthread_mutex_lock(&mAapiGattCliLock);
+    cli = aapiGattClientFindStructByRef(client_if);
+    if (!cli)
+        logw("Client not found while attempting to unregister\n");
+    else {
+        uint32_t i;
+
+        if (cli->next)
+            cli->next->prev = cli->prev;
+        if (cli->prev)
+            cli->prev->next = cli->next;
+        else
+            mClients = cli->next;
+
+        //TODO: more clenaup work here as needed        
+
+        free(cli);
+        ret = BT_STATUS_SUCCESS;
+    }
+    pthread_mutex_unlock(&mAapiGattCliLock);
+
+    return ret;
 }
 
 /*
