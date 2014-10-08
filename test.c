@@ -5,7 +5,6 @@
 #include "gatt-builtin.h"
 #include "vendorLib.h"
 #include "persist.h"
-#include "gattSrv.h"
 #include "rfcomm.h"
 #include "timer.h"
 #include "l2cap.h"

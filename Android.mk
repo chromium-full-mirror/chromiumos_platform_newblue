@@ -17,7 +17,7 @@ COMMON_SRC_FILES :=     \
     persist.c           \
     uuid.c              \
     att.c               \
-    gattSrv.c           \
+    gatt.c              \
     gatt-builtin.c      \
     a2dp.c              \
 

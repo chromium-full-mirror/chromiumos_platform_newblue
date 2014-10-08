@@ -1,7 +1,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include "workQueue.h"
-#include "gattSrv.h"
 #include "config.h"
 #include "l2cap.h"
 #include "sendQ.h"
