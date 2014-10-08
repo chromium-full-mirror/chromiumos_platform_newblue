@@ -121,6 +121,38 @@ static struct aapiGattConn* aapiGattClientConnFind(const struct bt_addr *addr)
 }
 
 /*
+ * FUNCTION: aapiGattClientConnCreate
+ * USE:      Create a aapiGattConn struct and initiate a connection (assume it has already been privacy-resolved)
+ * PARAMS:   addr - the address in question
+ * RETURN:   the aapiGattClientConnFind struct or NULL if no luck
+ * NOTES:    call with mAapiGattCliLock held
+ */
+static struct aapiGattConn* aapiGattClientConnCreate(const struct bt_addr *addr)
+{
+    struct aapiGattConn *ret = (struct aapiGattConn*)calloc(1, sizeof(struct aapiGattConn));
+    bool connRet;
+
+    if (!ret)
+        return NULL;
+
+    ret->state = GATT_CONN_STATE_OPENING;
+    memcpy(&ret->addr, addr, sizeof(ret->addr));
+
+    if (BT_ADDR_IS_LE(*addr))
+        connRet = l2cApiCreateFixedChConnection(GATT_FIXEDCH, addr, l2cStateCbk stateCbk, NULL, ret);
+    else
+        connRet = l2cApiCreatePsmConnection(GATT_PSM, addr, 0x7fff /*as large an mtu as we can support */, l2cStateCbk stateCbk, NULL, ret);
+
+
+    ret->next = mConns;
+    if (mConns)
+        mConns->prev = ret;
+    mConns = ret;
+
+    return ret;
+}
+
+/*
  * FUNCTION: aapiGattClientFindClientConnection
  * USE:      Find a aapiGattClientConn struct by client and connection
  * PARAMS:   cli - the client struct
