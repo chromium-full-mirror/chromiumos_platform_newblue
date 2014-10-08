@@ -3,6 +3,11 @@
 
 
 /*
+ * Hoe many items in the GATT client work queue
+ */
+#define GATT_CLI_WORK_Q_SIZE                64
+
+/*
  * How many items fit in the GATT work Q
  */
 #define GATT_WORK_Q_SIZE                    64
