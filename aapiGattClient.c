@@ -1,7 +1,5 @@
 #include <string.h>
 #include "aapiGattClient.h"
-#include "workQueue.h"
-#include "config.h"
 #include "gatt.h"
 #include "hci.h"
 #include "log.h"
@@ -11,263 +9,11 @@
 
 
 
-#define GATT_CONN_STATE_OPENING       0 /* open is in progress at lower layers */
-#define GATT_CONN_STATE_RUNNING       1 /* all is good */
-#define GATT_CONN_STATE_TEARDOWN      2 /* on its way down */
-
-#define GATT_CLICON_STATE_OPENWAIT    0 /* waiting for connection to open */
-#define GATT_CLICON_STATE_RUNNING     1 /* all is good */
-#define GATT_CLICON_STATE_TEARDOWN    2 /* on its way down */
-
-#define WORK_TYPER_NOTIF_CONN_OPEN    0
-
-struct aapiGattClientWorkItem {
-    uint8_t type;
-    union {
-        struct {
-            int conn_id;
-            int status;
-            int client_if;
-            struct bt_addr addr;
-        } connOpen;
-
-    };
-};
-
-struct aapiGattClient {
-    struct aapiGattClient         *next;
-    struct aapiGattClient         *prev;
-    int                            client_if;
-    bt_uuid_t                      andrUuid;
-};
-
-struct aapiGattConn {
-    struct aapiGattConn           *prev;
-    struct aapiGattConn           *next;
-    l2c_handle_t                   conn;
-    struct bt_addr                 addr;
-    uint8_t                        state; /* GATT_CONN_STATE_* */
-};
-
-struct aapiGattClientConn { /* many-to-many table of the aapiGattClient x aapiGattConn association */
-    struct aapiGattClientConn     *next;
-    struct aapiGattClientConn     *prev;
-    struct aapiGattClient         *client;
-    struct aapiGattConn           *conn;
-    int                            conn_id;
-    uint8_t                        state; /* GATT_CLICON_STATE_* */
-};
 
 static btgatt_client_callbacks_t mCbks;
 static pthread_mutex_t mAapiGattCliLock = PTHREAD_MUTEX_INITIALIZER;
-static struct aapiGattClientConn *mClientConns;
-static struct aapiGattClient *mClients;
-static struct aapiGattConn *mConns;
-static struct workQueue *mWorkQ;
-static pthread_t mWorkThread;
-static uniq_t mScanId;
+static uniq_t mScanId = 0;
 
-
-
-/*
- * FUNCTION: aapiGattClientFindStructByRef
- * USE:      Find a aapiGattClient struct by reference number
- * PARAMS:   client_if - the reference
- * RETURN:   the aapiGattClient struct or NULL if not found
- * NOTES:    call with mAapiGattCliLock held
- */
-static struct aapiGattClient* aapiGattClientFindStructByRef(int client_if)
-{
-    struct aapiGattClient *ret = mClients;
-
-    while (ret && ret->client_if != client_if)
-        ret = ret->next;
-
-    return ret;
-}
-
-/*
- * FUNCTION: aapiGattClientFindStructByUuid
- * USE:      Find a aapiGattClient struct by android-style uuid
- * PARAMS:   andrUuid - the uuid
- * RETURN:   the aapiGattClient struct or NULL if not found
- * NOTES:    call with mAapiGattCliLock held
- */
-static struct aapiGattClient* aapiGattClientFindStructByUuid(const bt_uuid_t *andrUuid)
-{
-    struct aapiGattClient *ret = mClients;
-
-    while (ret && memcmp(&ret->andrUuid, andrUuid, sizeof(ret->andrUuid)))
-        ret = ret->next;
-
-    return ret;
-}
-
-/*
- * FUNCTION: aapiGattClientConnFind
- * USE:      Find a aapiGattConn struct by bt address (assume it has already been privacy-resolved)
- * PARAMS:   addr - the address in question
- * RETURN:   the aapiGattClientConnFind struct or NULL if not found
- * NOTES:    call with mAapiGattCliLock held
- */
-static struct aapiGattConn* aapiGattClientConnFind(const struct bt_addr *addr)
-{
-    struct aapiGattConn *ret = mConns;
-
-    while (ret && memcmp(&ret->addr, addr, sizeof(ret->addr)))
-        ret = ret->next;
-
-    return ret;
-}
-
-/*
- * FUNCTION: aapiGattClientConnCreate
- * USE:      Create a aapiGattConn struct and initiate a connection (assume it has already been privacy-resolved)
- * PARAMS:   addr - the address in question
- * RETURN:   the aapiGattClientConnFind struct or NULL if no luck
- * NOTES:    call with mAapiGattCliLock held
- */
-static struct aapiGattConn* aapiGattClientConnCreate(const struct bt_addr *addr)
-{
-    struct aapiGattConn *ret = (struct aapiGattConn*)calloc(1, sizeof(struct aapiGattConn));
-    bool connRet;
-
-    if (!ret)
-        return NULL;
-
-    ret->state = GATT_CONN_STATE_OPENING;
-    memcpy(&ret->addr, addr, sizeof(ret->addr));
-
-    if (BT_ADDR_IS_LE(*addr))
-        connRet = l2cApiCreateFixedChConnection(GATT_FIXEDCH, addr, l2cStateCbk stateCbk, NULL, ret);
-    else
-        connRet = l2cApiCreatePsmConnection(GATT_PSM, addr, 0x7fff /*as large an mtu as we can support */, l2cStateCbk stateCbk, NULL, ret);
-
-
-    ret->next = mConns;
-    if (mConns)
-        mConns->prev = ret;
-    mConns = ret;
-
-    return ret;
-}
-
-/*
- * FUNCTION: aapiGattClientFindClientConnection
- * USE:      Find a aapiGattClientConn struct by client and connection
- * PARAMS:   cli - the client struct
- *           conn - the connection struct
- * RETURN:   the aapiGattClientConn struct or NULL if not found
- * NOTES:    call with mAapiGattCliLock held
- */
-static struct aapiGattClientConn* aapiGattClientFindClientConnection(struct aapiGattClient *cli, struct aapiGattConn *conn)
-{
-    struct aapiGattClientConn *ret = mClientConns;
-
-    while (ret && (ret->client != cli || ret->conn != conn))
-        ret = ret->next;
-
-    return ret;
-}
-
-/*
- * FUNCTION: aapiGattClientFindClientConnectionByConnId
- * USE:      Find a aapiGattClientConn struct by connection id
- * PARAMS:   conn_id - the connection id
- * RETURN:   the aapiGattClientConn struct or NULL if not found
- * NOTES:    I am not sure if conn_id needs to be unique per client_if or globally.
- *           Since I do not forsee 2 billion connections, here they are globally
- *           unique. Why not?
- */
-static struct aapiGattClientConn* aapiGattClientFindClientConnectionByConnId(int conn_id)
-{
-    struct aapiGattClientConn *ret = mClientConns;
-
-    while (ret && ret->conn_id)
-        ret = ret->next;
-
-    return ret;
-}
-
-/*
- * FUNCTION: aapiGattClientWorkerThread
- * USE:      Aapi.GATT.Client Worker thread
- * PARAMS:   unused - unused
- * RETURN:   ignored
- * NOTES:
- */
-static void* aapiGattClientWorkerThread(void *unused)
-{
-    struct aapiGattClientWorkItem *wi;
-    bt_bdaddr_t bda;
-    int status;
-
-    pthread_setname_np(pthread_self(), "aapi_gatt_client_worker");
-
-    while(1) {
-        status = workQueueGet(mWorkQ, (void**)&wi);
-
-        /* The only one thing we use the work queue status for - exiting */
-        if (status)
-            break;
-
-        switch (wi->type) {
-        case WORK_TYPER_NOTIF_CONN_OPEN:
-            memcpy(bda.address, wi->connOpen.addr.addr, sizeof(bda.address));
-            mCbks.open_cb(wi->connOpen.conn_id, wi->connOpen.status, wi->connOpen.client_if, &bda);
-            break; 
-
-        default:
-            loge("Unknown work type %d\n", wi->type);
-            break;
-        }
-        free(wi);
-    }
-
-    return NULL;
-}
-
-/*
- * FUNCTION: aapiGattClientScheduleConnOpenNotif
- * USE:      Schedule a call to notify that a connection's been opened
- * PARAMS:   cliCon - the client-connection structure which tells us whom to notify and what of
- *           status - status to send
- * RETURN:   NONE
- * NOTES:    errors are logged and ignored since there isn't much else to do about them
- */
-static void aapiGattClientScheduleConnOpenNotif(struct aapiGattClientConn *cliCon, int status)
-{
-    struct aapiGattClientWorkItem *wi = (struct aapiGattClientWorkItem*)malloc(sizeof(struct aapiGattClientWorkItem));
-
-    if (!wi)
-        loge("Failed to allocate gatt.client work\n");
-    else {
-        wi->type = WORK_TYPER_NOTIF_CONN_OPEN;
-        wi->connOpen.conn_id = cliCon->conn_id;
-        wi->connOpen.client_if = cliCon->client->client_if;
-        wi->connOpen.status = status;
-        memcpy(&wi->connOpen.addr, &cliCon->conn->addr, sizeof(struct bt_addr));
-        if (workQueuePut(mWorkQ, wi))
-            return;
-        loge("Failed to enqueue gatt.client work\n");
-        free(wi);
-    }
-}
-
-
-/*
- * FUNCTION: aapiGatClientWorkQItemFreeCbk
- * USE:      Used to free iteam in workquque cleanup
- * PARAMS:   workItem - an item to free
- * RETURN:   NONE
- * NOTES:
- */
-static void aapiGatClientWorkQItemFreeCbk(void *workItem)
-{
-    struct aapiGattClientWorkItem *wi = (struct aapiGattClientWorkItem*)workItem;
-
-    free(wi);
-}
 
 /*
  * FUNCTION: aapiGattClientInit
@@ -279,22 +25,9 @@ static void aapiGatClientWorkQItemFreeCbk(void *workItem)
 bt_status_t aapiGattClientInit(const btgatt_client_callbacks_t *cbks)
 {
     memcpy(&mCbks, cbks, sizeof(mCbks));
-    mClients = NULL;
-    mConns = NULL;
-    mClientConns = NULL;
-    mScanId = 0;
 
-    mWorkQ = workQueueAlloc(GATT_CLI_WORK_Q_SIZE);
-    if (!mWorkQ) {
-        loge("Failed to alloc gatt client workqueue\n");
-        return BT_STATUS_FAIL;
-    }
 
-    if (!pthread_create(&mWorkThread, NULL, aapiGattClientWorkerThread, NULL))
-        return BT_STATUS_SUCCESS;
-
-    workQueueFree(mWorkQ, aapiGatClientWorkQItemFreeCbk);
-    return BT_STATUS_FAIL;
+    return BT_STATUS_SUCCESS;
 }
 
 /*
@@ -306,103 +39,34 @@ bt_status_t aapiGattClientInit(const btgatt_client_callbacks_t *cbks)
  */
 void aapiGattClientDeinit(void)
 {
-    workQueueWakeAll(mWorkQ, 1);
-    pthread_join(mWorkThread, NULL);
-    workQueueFree(mWorkQ, aapiGatClientWorkQItemFreeCbk);
+    //TODO
 }
 
 
 /*
  * FUNCTION: aapiGattClientRegisterClient
  * USE:      Registers a GATT client application with the stack
- * PARAMS:   andrUuid - the unique Id of this client
+ * PARAMS:   ??
  * RETURN:   status
  * NOTES:
  */
-static bt_status_t aapiGattClientRegisterClient(bt_uuid_t *andrUuid)
+static bt_status_t aapiGattClientRegisterClient(bt_uuid_t *uuid)
 {
-    bt_status_t ret = BT_STATUS_FAIL;
-    int ref = 0;
-
-    pthread_mutex_lock(&mAapiGattCliLock);
-    if (aapiGattClientFindStructByUuid(andrUuid))
-        loge("Refusing to create identical GATT client\n");
-    else {
-        struct aapiGattClient *cli = (struct aapiGattClient*)calloc(1, sizeof(struct aapiGattClient));
-        if (!cli) {
-            loge("Failed to allocate GATT client\n");
-            ret = BT_STATUS_NOMEM;
-        } else {
-
-            /* grab a free reference number */
-            cli->client_if = mClients ? (mClients->client_if + 1) : 1;
-            while (aapiGattClientFindStructByRef(cli->client_if))
-                cli->client_if++;
-
-            /* link it in */
-            cli->next = mClients;
-            if (mClients)
-                mClients->prev = cli;
-            mClients = cli;
-
-            /* save uuid */
-            memcpy(&cli->andrUuid, andrUuid, sizeof(cli->andrUuid));
-
-            /* prepare to announce success */
-            ret = BT_STATUS_SUCCESS;
-            ref = cli->client_if;
-        }
-    }
-    pthread_mutex_unlock(&mAapiGattCliLock);
-
-    mCbks.register_client_cb(ret, ref, andrUuid);
-    return ret;
+    //todo
+    return BT_STATUS_SUCCESS;
 }
 
 /*
  * FUNCTION: aapiGattClientUnregisterClient
  * USE:      Unregister a client application from the stack
- * PARAMS:   client_if - the client identifier
+ * PARAMS:   ??
  * RETURN:   status
  * NOTES:
  */
 static bt_status_t aapiGattClientUnregisterClient(int client_if)
 {
-    bt_status_t ret = BT_STATUS_FAIL;
-    struct aapiGattClientConn *cc;
-    struct aapiGattClient *cli;
-
-    pthread_mutex_lock(&mAapiGattCliLock);
-    cli = aapiGattClientFindStructByRef(client_if);
-    if (!cli)
-        logw("Client not found while attempting to unregister\n");
-    else {
-        uint32_t i;
-
-        if (cli->next)
-            cli->next->prev = cli->prev;
-        if (cli->prev)
-            cli->prev->next = cli->next;
-        else
-            mClients = cli->next;
-
-        //TODO: more cleanup work here as needed        
-
-        free(cli);
-        ret = BT_STATUS_SUCCESS;
-
-        /* terminate all connections with prejudice */
-        cc = mClientConns;
-        while (cc) {
-            struct aapiGattClientConn *next = cc->next;
-            if (cc->client == cli)
-                aapiGattClientConnTerminate(cc, false/*do not notify anyone since there is nothing to notify about */);
-            cc = next;
-        }
-    }
-    pthread_mutex_unlock(&mAapiGattCliLock);
-
-    return ret;
+    //todo
+    return BT_STATUS_SUCCESS;
 }
 
 /*
@@ -419,15 +83,12 @@ static bt_status_t aapiGattClientUnregisterClient(int client_if)
  */
 static void aapiGattClientPrvDeviceDiscovered(void *cbkData, const struct bt_addr *addr, int8_t rssi, uint8_t replyType, const void *eir, uint8_t eirLen)
 {
-    //XXX: apparently android does not care about reply type?
+    //XXX: apparently android does nto care about reply type?
     //XXX: device type lost here
     bt_bdaddr_t bd_addr;
     memcpy(bd_addr.address, addr->addr, sizeof(bd_addr.address));
 
     mCbks.scan_result_cb(&bd_addr, rssi, (void*)eir);
-
-    /* also add it to know devices for future use */
-    hciInquiryUpdatePersistDeviceDb(addr, NULL, eir, eirLen);
 }
 
 /*
@@ -455,10 +116,9 @@ static bt_status_t aapiGattClientScan(bool start)
         }
     } else if (!mScanId)
         logw("Stopping an LE scan while none is running\n");
-    else {
-        mScanId = 0;
+    else
         hciDiscoverLeStop(mScanId);
-    }
+
     pthread_mutex_unlock(&mAapiGattCliLock);
 
     return ret;
@@ -467,99 +127,14 @@ static bt_status_t aapiGattClientScan(bool start)
 /*
  * FUNCTION: aapiGattClientConnect
  * USE:      Create a connection to a remote LE or dual-mode device
- * PARAMS:   client_if - the client identifier
- *           bd_addr - whom to connect to
- *           is_direct - ? ? ?
- *           transport - GATT_TRANSPORT_*
+ * PARAMS:   ??
  * RETURN:   status
  * NOTES:
  */
 static bt_status_t aapiGattClientConnect(int client_if, const bt_bdaddr_t *bd_addr, bool is_direct, int transport)
 {
-    bt_status_t ret = BT_STATUS_FAIL;
-    struct aapiGattClientConn *cliCon;
-    struct aapiGattClient *cli;
-    struct aapiGattConn *conn;
-    struct bt_addr addr;
-    int conn_id;
-
-
-    if (!is_direct) {
-        loge("Non-direct gatt connect not supported yet\n");
-        /* what does it mean anyways? */
-        return BT_STATUS_FAIL;
-    }
-
-    pthread_mutex_lock(&mAapiGattCliLock);
-
-    cli = aapiGattClientFindStructByRef(client_if);
-    if (!cli) {
-        loge("Invalid client id seen\n");
-        goto out;
-    }
-
-    memcpy(addr.addr, bd_addr->address, BT_MAC_LEN);
-    addr.type = (transport == BT_TRANSPORT_LE) ? BT_ADDR_TYPE_LE_RANDOM : BT_ADDR_TYPE_EDR; /* random only for now */
-    //TODO: privacy mode resolution
-
-
-    conn = aapiGattClientConnFind(&addr);
-    if (!conn) {
-        logd("Connection to "ADDRFMT" not found - creating a new one\n", ADDRCONV(addr));
-        conn = aapiGattClientConnCreate(&addr);
-        if (!conn) {
-            logw("Connection to "ADDRFMT" failed suspiciously quickly\n", ADDRCONV(addr));
-            goto out;
-        }
-    }
-
-    if (conn->state == GATT_CONN_STATE_TEARDOWN) {
-        logi("Tried to form gatt connection on a link that is going down. Sorry, you're SOL\n");
-        goto out;
-    }
-
-    cliCon = aapiGattClientFindClientConnection(cli, conn);
-    if (cliCon) {
-        logw("Rejecting attemt to create duplicate connection from same client\n");
-        goto out;
-    }
-
-    /* allocate a cliCon struct now and link it in */
-    cliCon = (struct aapiGattClientConn*)malloc(sizeof(struct aapiGattClientConn));
-    if (!cliCon) {
-        loge("Memory error allocating client connection struct. Sorry\n");
-        goto out;
-    }
-
-    /* grab a non-zero connection id */
-    cliCon->conn_id = mClientConns ? mClientConns->conn_id : 1;
-    while (aapiGattClientFindClientConnectionByConnId(cliCon->conn_id) || !cliCon->conn_id)
-        cliCon->conn_id++;
-
-    /* init other fields */
-    cliCon->conn = conn;
-    cliCon->client = cli;
-
-    /* link it in */
-    cliCon->prev = NULL;
-    cliCon->next = mClientConns;
-    if (mClientConns)
-        mClientConns->prev = cliCon;
-    mClientConns = cliCon;
-
-
-    if (conn->state == GATT_CONN_STATE_OPENING) {
-        cliCon->state = GATT_CLICON_STATE_OPENWAIT;
-        ret = BT_STATUS_SUCCESS;
-        goto out;
-    }
-
-    aapiGattClientScheduleConnOpenNotif(cliCon, 0);
-    ret = BT_STATUS_SUCCESS;
-
-out:
-    pthread_mutex_unlock(&mAapiGattCliLock);
-    return ret;
+    //todo
+    return BT_STATUS_SUCCESS;
 }
 
 /*
