@@ -2,6 +2,7 @@
 #include "aapiGattServer.h"
 #include "gatt-builtin.h"
 #include "aapiGatt.h"
+#include "gattSrv.h"
 #include "gatt.h"
 #include "log.h"
 #include "bt.h"

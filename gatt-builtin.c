@@ -1,5 +1,6 @@
 #include <string.h>
 #include "gatt-builtin.h"
+#include "gattSrv.h"
 #include "l2cap.h"
 #include "gatt.h"
 #include "util.h"
