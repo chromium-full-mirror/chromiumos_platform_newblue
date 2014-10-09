@@ -53,6 +53,8 @@
 #define GATT_PERM_ALL_WRITE          (GATT_PERM_WRITE | GATT_PERM_WRITE_ENCR | GATT_PERM_WRITE_ENCR_MITM | GATT_PERM_WRITE_SIGNED | GATT_PERM_WRITE_SIGNED_MITM)
 
 
+/* ==== GATT SERVER CODE (AKA PERIPHERAL MODE) ==== */
+
 /* profile init/deinit */
 bool gattProfileInit(void);
 void gattProfileDeinit(void);
@@ -85,6 +87,33 @@ uint16_t gattServiceAddCharDescr(int svc, const struct uuid *uuid, uint32_t perm
 
 /* TX path */
 bool gattServiceSendInd(int svc, int cid, uint16_t handle, const void *data, uint16_t len, bool withConfirm, uint64_t ref);
+
+
+
+/* ==== GATT CLIENT CODE (AKA CENTRAL MODE) ==== */
+
+/* various callbacks */
+typedef void (*gattCliConnectResultCbk)(int cli, int conn, const struct bt_addr *to, bool success);
+typedef void (*gattCliSvcEnumCbk)(int cli, int con, const struct uuid *uuid, bool primary, uint16_t firstHandle, uint16_t numHandles);
+typedef void (*gattCliMiscEnumCbk)(int cli, int con, const struct uuid *uuid, uint16_t firstHandle, uint16_t numHandles);
+
+
+/* client lifecycle */
+int gattClientCreate(const struct uuid *uuid);
+bool gattClientDestroy(int cli);
+
+/* connection lifecycle */
+bool gattClientConnect(int cli, const struct bt_addr *to, gattCliConnectResultCbk resultCbk);
+bool gattClientDisconnect(int cli, int conn);
+
+/* cache maintenance */
+void gattClientInvalidateCache(const struct bt_addr *whomTo);
+
+/* actual gatt operations */
+bool gattClientEnumServices(int cli, int conn, const struct uuid *searchForThis, gattCliSvcEnumCbk cbk); /* searchForThis can be null to enumerate all services without filtering for that uuid. if another enumeration is ongoing, yours will wait till that one is done */
+bool gattClientEnumIncludedServices(int cli, int conn, const struct uuid *inThisService, const struct uuid *prev, gattCliMiscEnumCbk cbk); /* prev is previous result of this call, or NULL to start enumeration */
+bool gattClientEnumCharacteristics(int cli, int conn, const struct uuid *inThisService, const struct uuid *prev, gattCliMiscEnumCbk cbk); /* prev is previous result of this call, or NULL to start enumeration */
+bool gattClientEnumCharDescriptors(int cli, int conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *prev, gattCliMiscEnumCbk cbk); /* prev is previous result of this call, or NULL to start enumeration */
 
 
 #endif
