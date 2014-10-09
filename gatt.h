@@ -97,7 +97,7 @@ bool gattServiceSendInd(int svc, int cid, uint16_t handle, const void *data, uin
 
 /* various callbacks */
 typedef void (*gattCliConnectResultCbk)(int cli, int conn, const struct bt_addr *to, uint8_t status);
-typedef void (*gattCliSvcEnumCbk)(int cli, int con, const struct uuid *uuid, bool primary, uint16_t firstHandle, uint16_t numHandles, uint8_t status);
+typedef void (*gattCliSvcEnumCbk)(int cli, int con, const struct uuid *uuid, bool primary, uint16_t firstHandle, uint16_t numHandles, uint8_t status); /* uuid passed as set to null for final result */
 typedef void (*gattCliEnumIncludedSvcsCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *uuid, uint16_t firstHandle, uint16_t numHandles, uint8_t status);
 typedef void (*gattCliEnumCharacteristicsCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *uuid, uint16_t firstHandle, uint16_t numHandles, uint8_t status);
 typedef void (*gattCliEnumCharDescrsCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *uuid, uint16_t firstHandle, uint16_t numHandles, uint8_t status);
