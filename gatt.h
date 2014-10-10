@@ -92,8 +92,9 @@ bool gattServiceSendInd(int svc, int cid, uint16_t handle, const void *data, uin
 
 /* ==== GATT CLIENT CODE (AKA CENTRAL MODE) ==== */
 
-#define GATT_CLI_STATUS_OK     0
-#define GATT_CLI_STATUS_ERR    1 /* an unknown error type. USe donyl whe nno other error type makes sense */
+#define GATT_CLI_STATUS_OK        0
+#define GATT_CLI_OTHER_SIDE_DISC  1 /* the peer told us to go away */
+#define GATT_CLI_STATUS_ERR       2 /* an unknown error type. USe donyl whe nno other error type makes sense */
 
 /* various callbacks */
 typedef void (*gattCliConnectResultCbk)(int cli, int conn, const struct bt_addr *to, uint8_t status);
@@ -112,11 +113,11 @@ typedef void (*gattCliNotifArrivedCbk)(int cli, int con, const struct uuid *inTh
 
 /* client lifecycle */
 int gattClientCreate(const struct uuid *uuid);
-uint8_t gattClientDestroy(int cli);
+void gattClientDestroy(int cli);
 
 /* connection lifecycle */
 uint8_t gattClientConnect(int cli, const struct bt_addr *to, gattCliConnectResultCbk resultCbk);
-uint8_t gattClientDisconnect(int conn);
+uint8_t gattClientDisconnect(int conn); /* calls the gattCliConnectResultCbk passed to gattClientConnect() with GATT_CLI_OTHER_SIDE_DISC */
 
 /* cache maintenance */
 void gattClientInvalidateCache(const struct bt_addr *whomTo);

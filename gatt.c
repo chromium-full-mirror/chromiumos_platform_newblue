@@ -37,9 +37,10 @@ struct gattConnState {
     struct gattConnState *next;
     struct gattConnState *prev;
 
-    l2c_handle_t conn;
-    uint32_t     mtu;
-    bool         encr;
+    struct bt_addr        addr;
+    l2c_handle_t          conn;
+    uint32_t              mtu;
+    bool                  encr;
     /* more here later */
 };
 
@@ -90,9 +91,24 @@ struct gattService {
     bool                 allowEDR;
 };
 
+struct gattClient {
+    struct gattClient       *next;
+    struct gattClient       *prev;
+    struct uuid              uuid;
+    int                      clientId; /* used by our callers */
+};
+
+struct gattCliCon { /* many-to-many table between gatt clients and gatt client connections */
+    struct gattCliCon       *next;
+    struct gattCliCon       *prev;
+    struct gattClient       *cli;
+    struct gattConnState    *conn;
+    int                      connId; /* used by our callers */
+    gattCliConnectResultCbk  connCbk;
+};
+
 struct gattWorkItem {
     uint8_t type;
-    /* work data here */
     union {
         struct {
             l2c_handle_t             who;
@@ -108,7 +124,7 @@ struct gattWorkItem {
             uint16_t                 len;
             uint8_t                  reason;
             /* data here, if write */
-        } rwCall;
+        } srvRwCall;
         struct {
             uint64_t                 ref;
             l2c_handle_t             who;
@@ -117,14 +133,21 @@ struct gattWorkItem {
             int                      cid;
             uint16_t                 handle;
             uint8_t                  evt;
-        } indCall;
+        } srvIndCall;
+        struct {
+            gattCliConnectResultCbk  cbk;
+            int                      clientId;
+            int                      connId;
+            struct bt_addr           addr;
+            uint8_t                  status;
+        } cliConnStateNotif;
     };
 };
 
-#define GATT_WORK_TYPE_READ_CALL      0
-#define GATT_WORK_TYPE_WRITE_CALL     1
-#define GATT_WORK_TYPE_IND_CALL       2
-
+#define GATT_WORK_SRV_READ_CALL          0
+#define GATT_WORK_SRV_WRITE_CALL         1
+#define GATT_WORK_SRV_IND_CALL           2
+#define GATT_WORK_CLI_CONN_STATE_NOTIF   3
 
 
 /* our state */
@@ -133,8 +156,10 @@ static struct workQueue* mWorkQ;
 static pthread_t mWorker;
 
 static pthread_mutex_t mGattLock = PTHREAD_MUTEX_INITIALIZER;
-static struct gattConnState *mConns;
-static struct gattService *mSvcs;
+static struct gattConnState *mConns = NULL;
+static struct gattService *mSvcs = NULL;
+static struct gattClient *mClients = NULL;
+static struct gattCliCon *mCliCons = NULL;
 
 
 /*
@@ -181,7 +206,7 @@ static void gattConnStructDelete(struct gattConnState *state)
  * RETURN:   service struct or NULL if not found
  * NOTES:    call with mGattLock held
  */
-static struct gattService *gattServiceFindByUuid(const struct uuid *uuid)
+static struct gattService* gattServiceFindByUuid(const struct uuid *uuid)
 {
     struct gattService *svc = mSvcs;
 
@@ -198,7 +223,7 @@ static struct gattService *gattServiceFindByUuid(const struct uuid *uuid)
  * RETURN:   service struct or NULL if not found
  * NOTES:    call with mGattLock held
  */
-static struct gattService *gattServiceFindBySvcRef(int svcRef)
+static struct gattService* gattServiceFindBySvcRef(int svcRef)
 {
     struct gattService *svc = mSvcs;
 
@@ -206,6 +231,56 @@ static struct gattService *gattServiceFindBySvcRef(int svcRef)
         svc = svc->next;
 
     return svc;
+}
+
+/*
+ * FUNCTION: gattCliconFindById
+ * USE:      Find a gatt client-connection structure by connId
+ * PARAMS:   connId - the connection id
+ * RETURN:   client struct-connection or NULL if not found
+ * NOTES:    call with mGattLock held
+ */
+static struct gattCliCon* gattCliconFindById(int connId)
+{
+    struct gattCliCon *clicon = mCliCons;
+
+    while (clicon && connId != clicon->connId)
+        clicon = clicon->next;
+
+    return clicon;
+}
+/*
+ * FUNCTION: gattClientFindById
+ * USE:      Find a gatt client by clientId
+ * PARAMS:   clientId - the client id
+ * RETURN:   client struct or NULL if not found
+ * NOTES:    call with mGattLock held
+ */
+static struct gattClient* gattClientFindById(int clientId)
+{
+    struct gattClient *cli = mClients;
+
+    while (cli && clientId != cli->clientId)
+        cli = cli->next;
+
+    return cli;
+}
+
+/*
+ * FUNCTION: gattClientFindByUuid
+ * USE:      Find a gatt client by the client uuid (used to prevent duplciate clients and not much more)
+ * PARAMS:   uuid - the client uuid
+ * RETURN:   client struct or NULL if not found
+ * NOTES:    call with mGattLock held
+ */
+static struct gattClient* gattClientFindByUuid(const struct uuid *uuid)
+{
+    struct gattClient *cli = mClients;
+
+    while (cli && memcmp(&cli->uuid, uuid, sizeof(struct uuid)))
+        cli = cli->next;
+
+    return cli;
 }
 
 /*
@@ -239,7 +314,7 @@ static uint8_t gattAttSrvTxCbk(l2c_handle_t who, sg s)
 }
 
 /*
- * FUNCTION: gattEnqueueRwCall
+ * FUNCTION: gattEnqueueSrvRwCall
  * USE:      Enqueue a work item to make a call to the higher layer for a read or a write
  * PARAMS:   workType - read or write?
  *           svc - the relevant service
@@ -254,24 +329,24 @@ static uint8_t gattAttSrvTxCbk(l2c_handle_t who, sg s)
  * RETURN:   false on immediate failure
  * NOTES:    call with mGattLock held
  */
-static bool gattEnqueueRwCall(uint8_t workType, struct gattService *svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
+static bool gattEnqueueSrvRwCall(uint8_t workType, struct gattService *svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
 {
     struct gattWorkItem *wi = (struct gattWorkItem*)calloc(1, sizeof(struct gattWorkItem) + (data ? len : 0));
 
     if (wi) {
         wi->type = workType;
-        wi->rwCall.who = who;
-        wi->rwCall.svcRef = svc->svcRef;
-        wi->rwCall.cid = cid;
-        wi->rwCall.transId = transId;
-        wi->rwCall.handle = handle;
-        wi->rwCall.byteOfst = byteOfst;
-        wi->rwCall.len = len;
-        wi->rwCall.reason = reason;
-        if (workType == GATT_WORK_TYPE_READ_CALL)
-            wi->rwCall.readF = svc->readF;
+        wi->srvRwCall.who = who;
+        wi->srvRwCall.svcRef = svc->svcRef;
+        wi->srvRwCall.cid = cid;
+        wi->srvRwCall.transId = transId;
+        wi->srvRwCall.handle = handle;
+        wi->srvRwCall.byteOfst = byteOfst;
+        wi->srvRwCall.len = len;
+        wi->srvRwCall.reason = reason;
+        if (workType == GATT_WORK_SRV_READ_CALL)
+            wi->srvRwCall.readF = svc->readF;
         else {
-            wi->rwCall.writeF = svc->writeF;
+            wi->srvRwCall.writeF = svc->writeF;
             memcpy(wi + 1, data, len);
         }
 
@@ -284,7 +359,7 @@ static bool gattEnqueueRwCall(uint8_t workType, struct gattService *svc, l2c_han
 }
 
 /*
- * FUNCTION: gattEnqueueReadCall
+ * FUNCTION: gattEnqueueSrvReadCall
  * USE:      Enqueue a work item to make a call to the higher layer for a read
  * PARAMS:   svc - the relevant service
  *           who - whom the connection is to
@@ -297,13 +372,13 @@ static bool gattEnqueueRwCall(uint8_t workType, struct gattService *svc, l2c_han
  * RETURN:   false on immediate failure
  * NOTES:    call with mGattLock held
  */
-static bool gattEnqueueReadCall(struct gattService *svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t maxLen)
+static bool gattEnqueueSrvReadCall(struct gattService *svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t maxLen)
 {
-    return gattEnqueueRwCall(GATT_WORK_TYPE_READ_CALL, svc, who, cid, transId, handle, byteOfst, reason, maxLen, NULL);
+    return gattEnqueueSrvRwCall(GATT_WORK_SRV_READ_CALL, svc, who, cid, transId, handle, byteOfst, reason, maxLen, NULL);
 }
 
 /*
- * FUNCTION: gattEnqueueWriteCall
+ * FUNCTION: gattEnqueueSrvWriteCall
  * USE:      Enqueue a work item to make a call to the higher layer for a write
  * PARAMS:   svc - the relevant service
  *           who - whom the connection is to
@@ -317,13 +392,13 @@ static bool gattEnqueueReadCall(struct gattService *svc, l2c_handle_t who, int c
  * RETURN:   false on immediate failure
  * NOTES:    call with mGattLock held
  */
-static bool gattEnqueueWriteCall(struct gattService *svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
+static bool gattEnqueueSrvWriteCall(struct gattService *svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
 {
-    return gattEnqueueRwCall(GATT_WORK_TYPE_WRITE_CALL, svc, who, cid, transId, handle, byteOfst, reason, len, data);
+    return gattEnqueueSrvRwCall(GATT_WORK_SRV_WRITE_CALL, svc, who, cid, transId, handle, byteOfst, reason, len, data);
 }
 
 /*
- * FUNCTION: gattEnqueueIndCall
+ * FUNCTION: gattEnqueueSrvIndCall
  * USE:      Enqueue a work item to make a call to the higher layer for a result of sending an indication/notification
  * PARAMS:   svc - the relevant service
  *           who - whom the connection is to
@@ -334,18 +409,46 @@ static bool gattEnqueueWriteCall(struct gattService *svc, l2c_handle_t who, int 
  * RETURN:   false on immediate failure
  * NOTES:    call with mGattLock held
  */
-static bool gattEnqueueIndCall(struct gattService *svc, l2c_handle_t who, int cid, uint16_t handle, uint8_t evt, uint64_t ref)
+static bool gattEnqueueSrvIndCall(struct gattService *svc, l2c_handle_t who, int cid, uint16_t handle, uint8_t evt, uint64_t ref)
 {
     struct gattWorkItem *wi = (struct gattWorkItem*)calloc(1, sizeof(struct gattWorkItem));
 
     if (wi) {
-        wi->type = GATT_WORK_TYPE_IND_CALL;
-        wi->indCall.who = who;
-        wi->indCall.svcRef = svc->svcRef;
-        wi->indCall.cid = cid;
-        wi->indCall.handle = handle;
-        wi->indCall.evt = evt;
-        wi->indCall.ref = ref;
+        wi->type = GATT_WORK_SRV_IND_CALL;
+        wi->srvIndCall.who = who;
+        wi->srvIndCall.svcRef = svc->svcRef;
+        wi->srvIndCall.cid = cid;
+        wi->srvIndCall.handle = handle;
+        wi->srvIndCall.evt = evt;
+        wi->srvIndCall.ref = ref;
+
+        if (workQueuePut(mWorkQ, wi))
+            return true;
+
+        free(wi);
+    }
+    return false;
+}
+
+/*
+ * FUNCTION: gattEnqueueCliConnStatusCall
+ * USE:      Enqueue a work item to make a call to the higher layer for a result of sending a GATT connect/disconnetc
+ * PARAMS:   clicon - the client-connection structure
+ *           status - the status to send
+ * RETURN:   false on immediate failure
+ * NOTES:    call with mGattLock held
+ */
+static bool gattEnqueueCliConnStatusCall(struct gattCliCon *clicon, uint8_t status)
+{
+    struct gattWorkItem *wi = (struct gattWorkItem*)calloc(1, sizeof(struct gattWorkItem));
+
+    if (wi) {
+        wi->type = GATT_WORK_CLI_CONN_STATE_NOTIF;
+        wi->cliConnStateNotif.cbk = clicon->connCbk;
+        wi->cliConnStateNotif.clientId = clicon->cli->clientId;
+        wi->cliConnStateNotif.connId = clicon->connId;
+        wi->cliConnStateNotif.status = status;
+        memcpy(&wi->cliConnStateNotif.addr, &clicon->conn->addr, sizeof(struct bt_addr));
 
         if (workQueuePut(mWorkQ, wi))
             return true;
@@ -377,7 +480,7 @@ static void gattAttSrvIndCbk(l2c_handle_t to, int cid, att_range_t rangeRef, uin
     svc = gattServiceFindByRangeRef(rangeRef);
     if (!svc)
         logw("Failed to find service for read\n");
-    else if (!gattEnqueueIndCall(svc, to, cid, offset + attSrvHandleRangeGetBase(svc->attRange), evt, ref))
+    else if (!gattEnqueueSrvIndCall(svc, to, cid, offset + attSrvHandleRangeGetBase(svc->attRange), evt, ref))
         loge("Failed to forward notif event up\n");
     pthread_mutex_unlock(&mGattLock);
 }
@@ -480,7 +583,7 @@ static bool gattAttSvrReadCbk(l2c_handle_t who, int cid, att_range_t rangeRef, u
             }
 
         } else { /* in this case call to the higher layer for the read */
-            if (!gattEnqueueReadCall(svc, who, cid, transId, ofst + attSrvHandleRangeGetBase(svc->attRange), byteOfst, reason, maxLen))
+            if (!gattEnqueueSrvReadCall(svc, who, cid, transId, ofst + attSrvHandleRangeGetBase(svc->attRange), byteOfst, reason, maxLen))
                 err = ATT_ERROR_UNLIKELY_ERROR;
             goto out;
         }
@@ -533,7 +636,7 @@ static bool gattAttSvrWriteCbk(l2c_handle_t who, int cid, att_range_t rangeRef, 
         goto out;
     }
 
-    if (!gattEnqueueWriteCall(svc, who, cid, transId, ofst + attSrvHandleRangeGetBase(svc->attRange), byteOfst, reason, len, data)) {
+    if (!gattEnqueueSrvWriteCall(svc, who, cid, transId, ofst + attSrvHandleRangeGetBase(svc->attRange), byteOfst, reason, len, data)) {
         attSrvCbkReply(cid, transId, 0, err, NULL, 0);
         goto out;
     }
@@ -656,11 +759,11 @@ static void gattConnEvt(void *userData, void *instance, uint8_t evt, const void 
  * USE:      Allocate a GATT state for an L2C link
  * PARAMS:   conn - the connection handle
  *           instanceP - we store per-connection instance here
- *           isLE - what is the underlying link type?
+ *           addr - the peer's address
  * RETURN:   SVC_ALLOC_*
  * NOTES:
  */
-static uint8_t gattStateAlloc(l2c_handle_t conn, void **instanceP, bool isLE)
+static uint8_t gattStateAlloc(l2c_handle_t conn, void **instanceP, const struct bt_addr *addr)
 {
     struct gattConnState *state = (struct gattConnState*)calloc(1, sizeof(struct gattConnState));
 
@@ -668,7 +771,8 @@ static uint8_t gattStateAlloc(l2c_handle_t conn, void **instanceP, bool isLE)
         return SVC_ALLOC_FAIL_OTHER;
 
     state->conn = conn;
-    state->mtu = isLE ? ATT_MTU_MIN_LE : ATT_MTU_MIN_EDR;
+    state->mtu = BT_ADDR_IS_LE(*addr) ? ATT_MTU_MIN_LE : ATT_MTU_MIN_EDR;
+    memcpy(&state->addr, addr, sizeof(struct bt_addr));
     /* any other init here */
 
     pthread_mutex_lock(&mGattLock);
@@ -703,7 +807,7 @@ static uint8_t gattPsmSvcAlloc(void *userData, l2c_handle_t handle, void **insta
     if (BT_ADDR_IS_LE(peer))
         return SVC_ALLOC_FAIL_OTHER;
 
-    return gattStateAlloc(handle, instanceP, false);
+    return gattStateAlloc(handle, instanceP, &peer);
 }
 
 /*
@@ -727,7 +831,7 @@ static uint8_t gattFixedChSvcAlloc(void *userData, l2c_handle_t handle, void **i
     if (BT_ADDR_IS_EDR(peer))
         return SVC_ALLOC_FAIL_OTHER;
 
-    return gattStateAlloc(handle, instanceP, true);
+    return gattStateAlloc(handle, instanceP, &peer);
 }
 
 /*
@@ -735,7 +839,7 @@ static uint8_t gattFixedChSvcAlloc(void *userData, l2c_handle_t handle, void **i
  * USE:      Called to add a GATT profile to SDP
  * PARAMS:   uuid - the uuid
  *           firstHandle - the first handle
- *           numHandles - how mnay handles the profile has
+ *           numHandles - how many handles the profile has
  * RETURN:   sdp handle or 0 on error
  * NOTES:
  */
@@ -831,6 +935,7 @@ void gattSrvCbkReply(int cid, int transId, uint16_t handle, uint8_t err, const v
  */
 static void* gattWorker(void *param)
 {
+    struct gattCliCon* clicon;
     struct gattWorkItem *wi;
     int status;
 
@@ -844,16 +949,19 @@ static void* gattWorker(void *param)
             break;
 
         switch (wi->type) {
-        case GATT_WORK_TYPE_READ_CALL:
-            if (!wi->rwCall.readF(wi->rwCall.svcRef, wi->rwCall.who, wi->rwCall.cid, wi->rwCall.transId, wi->rwCall.handle, wi->rwCall.byteOfst, wi->rwCall.reason, wi->rwCall.len))
-                gattSrvCbkReply(wi->rwCall.cid, wi->rwCall.transId, 0, ATT_ERROR_UNLIKELY_ERROR, NULL, 0);
+        case GATT_WORK_SRV_READ_CALL:
+            if (!wi->srvRwCall.readF(wi->srvRwCall.svcRef, wi->srvRwCall.who, wi->srvRwCall.cid, wi->srvRwCall.transId, wi->srvRwCall.handle, wi->srvRwCall.byteOfst, wi->srvRwCall.reason, wi->srvRwCall.len))
+                gattSrvCbkReply(wi->srvRwCall.cid, wi->srvRwCall.transId, 0, ATT_ERROR_UNLIKELY_ERROR, NULL, 0);
             break;
-        case GATT_WORK_TYPE_WRITE_CALL:
-            if (!wi->rwCall.writeF(wi->rwCall.svcRef, wi->rwCall.who, wi->rwCall.cid, wi->rwCall.transId, wi->rwCall.handle, wi->rwCall.byteOfst, wi->rwCall.reason, wi->rwCall.len, wi + 1))
-                gattSrvCbkReply(wi->rwCall.cid, wi->rwCall.transId, 0, ATT_ERROR_UNLIKELY_ERROR, NULL, 0);
+        case GATT_WORK_SRV_WRITE_CALL:
+            if (!wi->srvRwCall.writeF(wi->srvRwCall.svcRef, wi->srvRwCall.who, wi->srvRwCall.cid, wi->srvRwCall.transId, wi->srvRwCall.handle, wi->srvRwCall.byteOfst, wi->srvRwCall.reason, wi->srvRwCall.len, wi + 1))
+                gattSrvCbkReply(wi->srvRwCall.cid, wi->srvRwCall.transId, 0, ATT_ERROR_UNLIKELY_ERROR, NULL, 0);
             break;
-        case GATT_WORK_TYPE_IND_CALL:
-            wi->indCall.indF(wi->indCall.svcRef, wi->indCall.who, wi->indCall.cid, wi->indCall.handle, wi->indCall.evt, wi->indCall.ref);
+        case GATT_WORK_SRV_IND_CALL:
+            wi->srvIndCall.indF(wi->srvIndCall.svcRef, wi->srvIndCall.who, wi->srvIndCall.cid, wi->srvIndCall.handle, wi->srvIndCall.evt, wi->srvIndCall.ref);
+            break;
+        case GATT_WORK_CLI_CONN_STATE_NOTIF:
+            wi->cliConnStateNotif.cbk(wi->cliConnStateNotif.clientId, wi->cliConnStateNotif.connId, &wi->cliConnStateNotif.addr, wi->cliConnStateNotif.status);
             break;
         default:
             loge("Unknown work type %d\n", wi->type);
@@ -1602,7 +1710,7 @@ out:
  *           len - length of said data
  *           withConfirm - use an indication?
  *           ref - passed to callback later. unused by GATT
- * RETURN:   fals eon immediate failure
+ * RETURN:   false on immediate failure
  * NOTES:
  */
 bool gattServiceSendInd(int svcRef, int cid, uint16_t handle, const void *buf, uint16_t len, bool withConfirm, uint64_t ref)
@@ -1633,7 +1741,7 @@ bool gattServiceSendInd(int svcRef, int cid, uint16_t handle, const void *buf, u
 
     ret = attSrvValueNotifyChanged(svc->attRange, handle - base, cid, data, !withConfirm, ref);
     if (ret == L2C_TX_ACCEPTED) {
-        if (!withConfirm && !gattEnqueueIndCall(svc, attSrvCidResolve(cid), cid, handle, ATT_SRV_EVT_NOTIF_SENT, ref))
+        if (!withConfirm && !gattEnqueueSrvIndCall(svc, attSrvCidResolve(cid), cid, handle, ATT_SRV_EVT_NOTIF_SENT, ref))
             loge("Failed to notify caller of notif TX\n");
     } else
         sgFree(data);
@@ -1642,6 +1750,134 @@ out:
     pthread_mutex_unlock(&mGattLock);
     return ret;
 }
+
+/*
+ * FUNCTION: gattClientConnClose
+ * USE:      Close a client's connection (optionally notify said client)
+ * PARAMS:   clicon - the client-connection structure
+ *           status - status to notifu client with (if GATT_CLI_STATUS_OK, no notification will be sent)
+ * RETURN:   NONE
+ * NOTES:    call with mGattLock held
+ */
+static void gattClientConnClose(struct gattCliCon *clicon, uint8_t status)
+{
+    if (status != GATT_CLI_STATUS_OK && !gattEnqueueCliConnStatusCall(clicon, GATT_CLI_STATUS_OK))
+        logw("Failed to notify client about connection closure. Pity.\n");
+
+    //TODO: enumerate all notifications this client had and unsubscribe from them
+
+    if (clicon->next)
+        clicon->next->prev = clicon->prev;
+    if (clicon->prev)
+        clicon->prev->next = clicon->next;
+    else
+        mCliCons = clicon->next;
+
+    free(clicon);
+}
+
+/*
+ * FUNCTION: gattClientCreate
+ * USE:      Allocate a per-gatt-client structure
+ * PARAMS:   uuid - client uuid (not used for anything really)
+ * RETURN:   client_id value or 0 on failure
+ * NOTES:
+ */
+int gattClientCreate(const struct uuid *uuid)
+{
+    struct gattClient *cli;
+    int ret = 0;
+
+    pthread_mutex_lock(&mGattLock);
+
+    cli = gattClientFindByUuid(uuid);
+    if (cli)
+        logw("Refusing to create duplciate gatt client with UUID "UUIDFMT" (current is client %d)\n", UUIDCONV(*uuid), cli->clientId);
+    else {
+        cli = (struct gattClient*)calloc(1, sizeof(struct gattClient));
+        if (cli) {
+
+           cli->clientId = mClients ? mClients->clientId : 1;
+           while (gattClientFindById(cli->clientId)) {
+               cli->clientId++;
+               if (cli->clientId <= 0)
+                   cli->clientId = 1;
+           }
+
+           memcpy(&cli->uuid, uuid, sizeof(struct uuid));
+           cli->next = mClients;
+           if (mClients)
+               mClients->prev = cli;
+           mClients = cli;
+           ret = cli->clientId;
+        }
+    }
+
+    pthread_mutex_unlock(&mGattLock);
+
+    return ret;
+}
+
+/*
+ * FUNCTION: gattClientDestroy
+ * USE:      Destroy a per-gatt-client structure
+ * PARAMS:   clientId - the clientId
+ * RETURN:   client_id value or 0 on failure
+ * NOTES:
+ */
+void gattClientDestroy(int clientId)
+{
+    struct gattCliCon *cliCon;
+    struct gattClient *cli;
+
+    pthread_mutex_lock(&mGattLock);
+
+    cli = gattClientFindById(clientId);
+    if (!cli)
+        logw("Attempting to destroy a nonexistent GATT client %d\n", clientId);
+    else {
+
+        /* schedule a force-close of all its connections */
+        for (cliCon = mCliCons; cliCon; cliCon = cliCon->next)
+            if (cliCon->cli == cli)
+                gattClientConnClose(cliCon, false /* do not notify client -> no need they're about to go away awnyways */);
+
+        /* destroy the client */
+        if (cli->next)
+            cli->next->prev = cli->prev;
+        if (cli->prev)
+            cli->prev->next = cli->next;
+        else
+            mClients = cli->next;
+        free(cli);
+    }
+
+    pthread_mutex_unlock(&mGattLock);
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
