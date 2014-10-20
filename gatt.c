@@ -20,6 +20,8 @@
 #define GATT_ITEM_TYPE_CHAR_DESCR  4
 
 #define GATT_HDR_HANDLES           1 /* handles required for a service header */
+struct gattService;
+struct gattCliNotif;
 
 struct gattIncludeDefHdr {
     uint16_t startHandle;
@@ -37,14 +39,13 @@ struct gattConnState {
     struct gattConnState *next;
     struct gattConnState *prev;
 
+    struct gattCliNotif  *cliNotifs; /* things we as a client are subscribed to */
     struct bt_addr        addr;
     l2c_handle_t          conn;
     uint32_t              mtu;
     bool                  encr;
     /* more here later */
 };
-
-struct gattService;
 
 struct gattItem { /* a list of these exists in a a gett service */
     struct gattItem    *next;
@@ -91,6 +92,19 @@ struct gattService {
     bool                 allowEDR;
 };
 
+struct gattCliNotif { /* keeps track of all notifications all clients are subscribed to */
+    struct gattCliNotif     *prev;
+    struct gattCliNotif     *next;
+    uint32_t                 refCt;
+    uint16_t                 handle;
+};
+
+struct gattCliNotifRec { /* used to keep track of all notifications that a client is subscribed to */
+    struct gattCliNotifRec  *next;
+    struct gattCliNotifRec  *prev;
+    struct gattCliNotif     *notif;
+};
+
 struct gattClient {
     struct gattClient       *next;
     struct gattClient       *prev;
@@ -103,6 +117,7 @@ struct gattCliCon { /* many-to-many table between gatt clients and gatt client c
     struct gattCliCon       *prev;
     struct gattClient       *cli;
     struct gattConnState    *conn;
+    struct gattCliNotifRec  *notifs;
     int                      connId; /* used by our callers */
     gattCliConnectResultCbk  connCbk;
 };
@@ -1751,28 +1766,71 @@ out:
     return ret;
 }
 
+
+/*
+ * FUNCTION: gattClientNotifUnsubscribe
+ * USE:      Unsubscribe fron a notification/indication
+ * PARAMS:   clicon - the client-connection structure
+ *           nr - the gattCliNotifRec
+ * RETURN:   NONE
+ * NOTES:    call with mGattLock held
+ */
+static void gattClientNotifUnsubscribe(struct gattCliCon *clicon, struct gattCliNotifRec *nr)
+{
+    struct gattCliNotif *n = nr->notif;
+
+    /* unlink */
+    if (nr->prev)
+        nr->prev->next = nr->next;
+    else
+        clicon->notifs = nr->next;
+    if (nr->next)
+        nr->next->prev = nr->prev;
+
+    /* update refcount for this characteristic's notif subscription and unsub if needed */
+    if (!--n->refCt) {
+
+        if (n->prev)
+            n->prev->next = n->next;
+        else
+            clicon->conn->cliNotifs = n->next;
+        if (n->next)
+            n->next->prev = n->prev;
+
+        //TODO: unsubscribe from notification using ATT's api
+
+        free(n);
+    }
+
+    free(nr);
+}
+
 /*
  * FUNCTION: gattClientConnClose
  * USE:      Close a client's connection (optionally notify said client)
  * PARAMS:   clicon - the client-connection structure
- *           status - status to notifu client with (if GATT_CLI_STATUS_OK, no notification will be sent)
+ *           status - status to notify client with (if GATT_CLI_STATUS_OK, no notification will be sent)
  * RETURN:   NONE
  * NOTES:    call with mGattLock held
  */
 static void gattClientConnClose(struct gattCliCon *clicon, uint8_t status)
 {
+
+    /* notify client if needed */
     if (status != GATT_CLI_STATUS_OK && !gattEnqueueCliConnStatusCall(clicon, GATT_CLI_STATUS_OK))
         logw("Failed to notify client about connection closure. Pity.\n");
 
-    //TODO: enumerate all notifications this client had and unsubscribe from them
+    /* enumerate all notifications this client had and unsubscribe from them. */
+    while (clicon->notifs)
+        gattClientNotifUnsubscribe(clicon, clicon->notifs);
 
+    /* destroy the structure(s) */
     if (clicon->next)
         clicon->next->prev = clicon->prev;
     if (clicon->prev)
         clicon->prev->next = clicon->next;
     else
         mCliCons = clicon->next;
-
     free(clicon);
 }
 
