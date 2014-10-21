@@ -767,6 +767,7 @@ bool attEncrAuthUpdate(l2c_handle_t who, bool encr, bool mitmSafe)
     bool ret = false;
 
     pthread_mutex_lock(&mAttLock);
+    attConnListAddIfNew(who);
     conn = attConnFindByL2cConn(who);
     if (conn) {
         conn->isEncr = encr;
@@ -846,15 +847,6 @@ void attSrvDeinit(void)
         }
         attConnListFree(&range->seenBy);
     }
-
-    /* get another server CID to prevent any confusion */
-    newCid = conn->srv.cid;
-    do {
-        newCid++;
-        if (newCid < 0)
-            newCid = 1;
-    } while (attConnFindBySrvCid(newCid));
-    conn->srv.cid = newCid;
 
     pthread_mutex_unlock(&mAttLock);
 
@@ -1680,6 +1672,7 @@ l2c_handle_t attSrvCidResolve(int srvCid)
 void attSetMtu(l2c_handle_t to, uint32_t mtu)
 {
     pthread_mutex_lock(&mAttLock);
+    attConnListAddIfNew(to);
     attConnMtuSet(to, mtu);
     pthread_mutex_unlock(&mAttLock);
 }
