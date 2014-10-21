@@ -329,6 +329,7 @@ struct attWorkItem {
         } indResult;
         struct {
             uint16_t             mtu;
+            bool                 asServer;
         } mtuInfo;
         struct {
             sem_t               *sem;
@@ -348,12 +349,16 @@ struct attWorkItem {
 static pthread_mutex_t mAttLock = PTHREAD_MUTEX_INITIALIZER;
 static struct attSrvRange *mRangesHead;
 static struct attSrvRange *mRangesTail;
+
 static attSrvTxCbk mTxCbk;
-static attSrvMtuCbk mMtuCbk;
+static attMtuCbk mSrvMtuCbk;
 static attSrvIndResultCbk mIndCbk;
 static attSrvValueExecWriteCbk mExecCbk;
 static attSrvValueReadCbk mReadCbk;
 static attSrvValueWriteCbk mWriteCbk;
+
+static attMtuCbk mCliMtuCbk;
+
 static struct attConn *mConns;
 static bool mInTeardown;
 static struct workQueue *mWorkQ;
@@ -644,10 +649,11 @@ static bool attSrvSchedIndResultCbk(att_range_t rangeRef, uint16_t offst, struct
  * USE:      Schedule a call to the MTU callback
  * PARAMS:   conn - the per-connection structure
  *           mtu - the new mtu
+ *           asServer - are we acting as server for this negotiation
  * RETURN:   success
  * NOTES:    call with mAttLock held Do not release the lock until all state in conn->penOp is set up
  */
-static bool attSrvSchedMtuCbk(struct attConn* conn, uint32_t mtu)
+static bool attSrvSchedMtuCbk(struct attConn* conn, uint32_t mtu, bool asServer)
 {
     struct attWorkItem *wi;
     
@@ -658,6 +664,7 @@ static bool attSrvSchedMtuCbk(struct attConn* conn, uint32_t mtu)
     wi->who = conn->conn;
     wi->cid = conn->srv.cid;
     wi->mtuInfo.mtu = mtu;
+    wi->mtuInfo.asServer = asServer;
 
     if (workQueuePut(mWorkQ, wi))
         return true;
@@ -783,15 +790,15 @@ bool attEncrAuthUpdate(l2c_handle_t who, bool encr, bool mitmSafe)
  * FUNCTION: attSrvInit
  * USE:      Init our ATT server
  * PARAMS:   txF - callback to use to TX data to clients
- *           mtuF - callback to tell client of new MTU
- *           indF - callback to tell client of ind TX progress
+ *           srvMtuF - callback to tell higher-leyer of new MTU
+ *           indF - callback to tell higher-layer of ind TX progress
  *           execF - callback to execute or cancel pending writes
  *           readF - read callback
  *           writeF - write callback
  * RETURN:   success
  * NOTES:
  */
-bool attSrvInit(attSrvTxCbk txF, attSrvMtuCbk mtuF, attSrvIndResultCbk indF, attSrvValueExecWriteCbk execF, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF)
+bool attSrvInit(attSrvTxCbk txF, attMtuCbk srvMtuF, attSrvIndResultCbk indF, attSrvValueExecWriteCbk execF, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF)
 {
     bool ret = false;
 
@@ -800,7 +807,7 @@ bool attSrvInit(attSrvTxCbk txF, attSrvMtuCbk mtuF, attSrvIndResultCbk indF, att
         loge("RE-initing ATT server\n");
     else {
         mTxCbk = txF;
-        mMtuCbk = mtuF;
+        mSrvMtuCbk = srvMtuF;
         mIndCbk = indF;
         mExecCbk = execF;
         mReadCbk = readF;
@@ -851,7 +858,7 @@ void attSrvDeinit(void)
     pthread_mutex_unlock(&mAttLock);
 
     mTxCbk = NULL;
-    mMtuCbk = NULL;
+    mSrvMtuCbk = NULL;
     mIndCbk = NULL;
 }
 
@@ -2825,7 +2832,7 @@ void attSrvDataRx(l2c_handle_t from, sg s)
                 ret = attSendPacket(from, ATT_OPCODE_MTU_EXCH_RSP, &mtuExch, sizeof(mtuExch), NULL);
             }
             if (conn)
-                attSrvSchedMtuCbk(conn, mtu);
+                attSrvSchedMtuCbk(conn, mtu, opcode == ATT_OPCODE_MTU_EXCH_REQ);
         }
         break;
 
@@ -3081,7 +3088,7 @@ static void* attWorker(void *unused)
             break;
 
         case WORK_TYPE_MTU_INFO:
-            mMtuCbk(wi->who, wi->mtuInfo.mtu);
+            (wi->mtuInfo.asServer ? mSrvMtuCbk : mCliMtuCbk)(wi->who, wi->mtuInfo.mtu);
             break;
 
         case WORK_TYPE_SYNC:
@@ -3173,5 +3180,23 @@ void attDeinit(void)
     }
     pthread_mutex_unlock(&mAttLock);
 }
+
+/*
+ * FUNCTION: attCliRequestMtu
+ * USE:      As a client request an MTU value from the server
+ * PARAMS:   to - the server l2c connection
+ *           mtu - the mtu to request
+ * RETURN:   false on error, true if will try
+ * NOTES:
+ */
+bool attCliRequestMtu(l2c_handle_t to, uint32_t mtu)
+{
+    struct attPduMtu mtuExch;
+
+    utilSetLE16(&mtuExch.mtu, mtu);
+
+    return attSendPacket(to, ATT_OPCODE_MTU_EXCH_REQ, &mtuExch, sizeof(mtuExch), NULL);
+}
+
 
 

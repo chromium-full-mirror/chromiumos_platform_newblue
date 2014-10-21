@@ -88,6 +88,8 @@ typedef uniq_t att_range_t;
 #define ATT_SRV_EVT_IND_SRV_DESTROYED  4 /* could happen before a timeout */
 
 /* att common api */
+typedef void (*attMtuCbk)(l2c_handle_t to, uint32_t mtu);
+
 bool attInit(void);
 void attDeinit(void);
 bool attSync(void); /* verifies all pending att work before now is finished. Use this after deleting things to make sure all refs to them are gone */
@@ -103,10 +105,10 @@ typedef bool (*attSrvValueWriteCbk)(l2c_handle_t who, int cid, att_range_t range
 typedef bool (*attSrvValueExecWriteCbk)(l2c_handle_t who, int cid, int transId, bool exec);
 
 typedef uint8_t (*attSrvTxCbk)(l2c_handle_t to, sg s); /* -> ATT_TX_RET_* */
-typedef void (*attSrvMtuCbk)(l2c_handle_t to, uint32_t mtu);
+
 typedef void (*attSrvIndResultCbk)(l2c_handle_t to, int cid, att_range_t rangeRef, uint16_t offset, uint8_t evt, uint64_t ref);
 
-bool attSrvInit(attSrvTxCbk txF, attSrvMtuCbk mtuF, attSrvIndResultCbk indF, attSrvValueExecWriteCbk execF, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF);
+bool attSrvInit(attSrvTxCbk txF, attMtuCbk srvMtuF, attSrvIndResultCbk indF, attSrvValueExecWriteCbk execF, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF);
 void attSrvDeinit(void);
 
 l2c_handle_t attSrvCidResolve(int cid); //or 0 on failure
@@ -129,6 +131,10 @@ void attSrvCbkReply(int cid, int transId, uint16_t handle, uint8_t err, const vo
 
 /* att client api */
 
+bool attCliInit(attMtuCbk cliMtuF);
+void attCliDeinit(void);
+
+bool attCliRequestMtu(l2c_handle_t to, uint32_t mtu); /* LE only. once per connection only */
 
 
 
