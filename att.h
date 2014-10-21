@@ -91,22 +91,23 @@ typedef uniq_t att_range_t;
 bool attInit(void);
 void attDeinit(void);
 bool attSync(void); /* verifies all pending att work before now is finished. Use this after deleting things to make sure all refs to them are gone */
+void attSetMtu(l2c_handle_t to, uint32_t mtu); /* EDR uses this since L2C negotiates MTU */
+void attNotifConnClose(l2c_handle_t conn); /* allows server to no longer try to notify it */
+bool attEncrAuthUpdate(l2c_handle_t who, bool encr, bool mitmSafe);
 
 /* att server api */
 
 /* these callbacks call attSrvReadCbkReply/attSrvWriteCbkReply on completion of actual work */
 typedef bool (*attSrvValueReadCbk)(l2c_handle_t who, int cid, att_range_t range, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t maxLen);
 typedef bool (*attSrvValueWriteCbk)(l2c_handle_t who, int cid, att_range_t range, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data);
-typedef bool (*attSrvValueExecWrite)(l2c_handle_t who, int cid, int transId, bool exec);
+typedef bool (*attSrvValueExecWriteCbk)(l2c_handle_t who, int cid, int transId, bool exec);
 
 typedef uint8_t (*attSrvTxCbk)(l2c_handle_t to, sg s); /* -> ATT_TX_RET_* */
 typedef void (*attSrvMtuCbk)(l2c_handle_t to, uint32_t mtu);
 typedef void (*attSrvIndResultCbk)(l2c_handle_t to, int cid, att_range_t rangeRef, uint16_t offset, uint8_t evt, uint64_t ref);
 
-bool attSrvCreate(attSrvTxCbk txF, attSrvMtuCbk mtuF, attSrvIndResultCbk indF, attSrvValueExecWrite execF, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF);
-void attSrvSetMtu(l2c_handle_t to, uint32_t mtu); /* EDR uses this since L2C negotiates MTU */
-void attSrvNotifConnClose(l2c_handle_t conn); /* allows server to no longer try to notify it */
-void attSrvDestroy(void);
+bool attSrvInit(attSrvTxCbk txF, attSrvMtuCbk mtuF, attSrvIndResultCbk indF, attSrvValueExecWriteCbk execF, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF);
+void attSrvDeinit(void);
 
 l2c_handle_t attSrvCidResolve(int cid); //or 0 on failure
 
@@ -121,13 +122,15 @@ bool attSrvValueGetGrpLen(att_range_t rangeRef, uint16_t offset, uint16_t *grpLe
 bool attSrvValueUnregister(att_range_t rangeRef, uint16_t offset);
 uint8_t attSrvValueNotifyChanged(att_range_t rangeRef, uint16_t offset, int cid, sg data, bool notify, uint64_t ref); /* -> ATT_NOTIF_RET_* */
 void attSrvDataRx(l2c_handle_t from, sg s);
-bool attSrvEncrAuthUpdate(l2c_handle_t who, bool encr, bool mitmSafe);
+
 
 void attSrvCbkReply(int cid, int transId, uint16_t handle, uint8_t err, const void *data, uint16_t len); /* err is ATT_ERROR_* */
 
 
 /* att client api */
-//TODO
+
+
+
 
 
 #endif

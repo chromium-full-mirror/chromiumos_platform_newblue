@@ -735,7 +735,7 @@ static void gattConnEvt(void *userData, void *instance, uint8_t evt, const void 
             break;
         }
         mtu = *(uint16_t*)data;
-        attSrvSetMtu(state->conn, mtu);
+        attSetMtu(state->conn, mtu);
         gattAttSrvMtuCbk(state->conn, mtu);
         break;
 
@@ -744,7 +744,7 @@ static void gattConnEvt(void *userData, void *instance, uint8_t evt, const void 
             loge("invalid length for encr event\n");
             break;
         }
-        attSrvEncrAuthUpdate(state->conn, ((struct l2cEncrState*)data)->isEncr, ((struct l2cEncrState*)data)->isMitmSafe);
+        attEncrAuthUpdate(state->conn, ((struct l2cEncrState*)data)->isEncr, ((struct l2cEncrState*)data)->isMitmSafe);
         break;
 
     case L2C_STATE_RX:
@@ -757,7 +757,7 @@ static void gattConnEvt(void *userData, void *instance, uint8_t evt, const void 
         break;
 
     case L2C_STATE_CLOSED:
-        attSrvNotifConnClose(state->conn);
+        attNotifConnClose(state->conn);
         sendQueueDelPackets(mSendQ, state->conn);
         pthread_mutex_lock(&mGattLock);
         gattConnStructDelete(state);
@@ -1008,8 +1008,8 @@ bool gattProfileInit(void)
         .serviceFixedChStateCbk = gattConnEvt,
     };
 
-    if (!attSrvCreate(gattAttSrvTxCbk, gattAttSrvMtuCbk, gattAttSrvIndCbk, gattAttExecWriteCbk, gattAttSvrReadCbk, gattAttSvrWriteCbk)) {
-        loge("Failed create an ATT server\n");
+    if (!attSrvInit(gattAttSrvTxCbk, gattAttSrvMtuCbk, gattAttSrvIndCbk, gattAttExecWriteCbk, gattAttSvrReadCbk, gattAttSvrWriteCbk)) {
+        loge("Failed init the ATT server\n");
         goto out_att;
     }
 
@@ -1058,7 +1058,7 @@ out_thread:
     workQueueFree(mWorkQ, gattWorkQueueFreeItem);
 
 out_workq:
-    attSrvDestroy();
+    attSrvDeinit();
 
 out_att:
     return false;
@@ -1075,7 +1075,7 @@ void gattProfileDeinit(void)
 {
     l2cApiServiceFixedChUnregister(GATT_FIXEDCH, NULL, 0);
     l2cApiServicePsmUnregister(GATT_PSM, NULL, 0);
-    attSrvDestroy();
+    attSrvDeinit();
     workQueueWakeAll(mWorkQ, 1);
     pthread_join(mWorker, NULL);
     workQueueFree(mWorkQ, gattWorkQueueFreeItem);

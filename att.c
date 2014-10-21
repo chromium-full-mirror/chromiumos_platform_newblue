@@ -235,29 +235,41 @@ struct attSrvPendingOp { /* an op we have an outstanding callback for */
     };
 };
 
+struct attConn {
 
-struct attSrvConnExtra {
-    uniq_t indTimer;
-    att_range_t indRangeRef;
-    uint64_t indRef;
-    uint16_t indOffset;
+    /* list */
+    struct attConn *next;
+    struct attConn *prev;
 
+    /* comon for client and server */
+    l2c_handle_t conn;
     uint32_t mtu;
-    int cid; /* for higher layer */
     bool isEncr;
     bool isMitmProtected;
     bool isLE;
 
-    int nextTransId;
-    struct attSrvPendingOp penOp;
+    /* used if we're acting as client on this connection */
+    struct {
+        int tbd;
+    } cli;
+
+    /* used if we're acting as server */
+    struct {
+        att_range_t indRangeRef;
+        uniq_t indTimer;
+        uint64_t indRef;
+        uint16_t indOffset;
+
+        int cid; /* for higher layer */
+        int nextTransId;
+
+        struct attSrvPendingOp penOp;
+    } srv;
 };
 
-struct attConnList {
-    uint32_t listCap;
-    uint32_t listNum;
-    l2c_handle_t *conns;
-    struct attSrvConnExtra *extras;
-    bool hasExtras;
+struct attConnListNode {
+    struct attConnListNode *next;
+    l2c_handle_t conn;
 };
 
 struct attSrvVal {
@@ -277,7 +289,7 @@ struct attSrvRange {
     uint16_t len;
     struct attSrvVal *valsHead;
     struct attSrvVal *valsTail;
-    struct attConnList seenBy;
+    struct attConnListNode *seenBy;
     bool allowLE;
     bool allowEDR;
 };
@@ -333,26 +345,112 @@ struct attWorkItem {
 
 
 /* our state */
-static pthread_mutex_t mSrvLock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t mAttLock = PTHREAD_MUTEX_INITIALIZER;
 static struct attSrvRange *mRangesHead;
 static struct attSrvRange *mRangesTail;
 static attSrvTxCbk mTxCbk;
 static attSrvMtuCbk mMtuCbk;
 static attSrvIndResultCbk mIndCbk;
-static attSrvValueExecWrite mExecCbk;
+static attSrvValueExecWriteCbk mExecCbk;
 static attSrvValueReadCbk mReadCbk;
 static attSrvValueWriteCbk mWriteCbk;
-static struct attConnList mAllClients;
+static struct attConn *mConns;
 static bool mInTeardown;
 static struct workQueue *mWorkQ;
 static pthread_t mWorker;
-
-static pthread_mutex_t mAttStateLock = PTHREAD_MUTEX_INITIALIZER;
 static unsigned mNumUsers = 0; /* of ATT itself */
 
 
 
 
+/*
+ * FUNCTION: attConnFindByL2cConn
+ * USE:      Find a per-connection state given an l2cap connection handle
+ * PARAMS:   who - l2cap connection handle
+ * RETURN:   struct attConn or NULL if not found
+ * NOTES:    plase call while holding mAttLock
+ */
+static struct attConn* attConnFindByL2cConn(l2c_handle_t who)
+{
+    struct attConn *conn = mConns;
+
+    while (conn && conn->conn != who)
+        conn = conn->next;
+
+    return conn;
+}
+
+/*
+ * FUNCTION: attConnFindBySrvCid
+ * USE:      Find a per-connection state given a server "cid" value (used by android if sadly)
+ * PARAMS:   srvCid - the cid
+ * RETURN:   struct attConn or NULL if not found
+ * NOTES:    plase call while holding mAttLock
+ */
+static struct attConn* attConnFindBySrvCid(int srvCid)
+{
+    struct attConn *conn = mConns;
+
+    while (conn && conn->srv.cid != srvCid)
+        conn = conn->next;
+
+    return conn;
+}
+
+/*
+ * FUNCTION: attConnListFree
+ * USE:      Free a conn-list
+ * PARAMS:   listP - where list head is stored
+ * RETURN:   NONE
+ * NOTES:    call while holding mAttLock
+ */
+static void attConnListFree(struct attConnListNode **listP)
+{
+    while (*listP) {
+        struct attConnListNode *t = (*listP)->next;
+        free(*listP);
+        *listP = t;
+    }
+}
+
+/*
+ * FUNCTION: attConnListIsEmpty
+ * USE:      See if a conn-list has items
+ * PARAMS:   listP - where list head is stored
+ * RETURN:   true if an item is found
+ * NOTES:    call while holding mAttLock
+ */
+static bool attConnListIsEmpty(struct attConnListNode **listP)
+{
+    return !*listP;
+}
+
+/*
+ * FUNCTION: attConnListDel
+ * USE:      Delete a given connection from a conn-list
+ * PARAMS:   listP - where list head is stored
+ *           conn - the connection to remove
+ * RETURN:   NONE
+ * NOTES:    call while holding mAttLock
+ */
+static void attConnListDel(struct attConnListNode **listP, l2c_handle_t conn)
+{
+    struct attConnListNode *c = *listP, *p = NULL;
+
+    while (c && c->conn != conn) {
+        p = c;
+        c = c->next;
+    }
+
+    if (c) {
+        if (p)
+            p->next = c->next;
+        else
+            *listP = c->next;
+
+        free(c);
+    }
+}
 
 /*
  * FUNCTION: attWorkItemAlloc
@@ -360,7 +458,7 @@ static unsigned mNumUsers = 0; /* of ATT itself */
  * PARAMS:   type - the type
  *           extraSz - the extra size to allocate
  * RETURN:   success
- * NOTES:    blocks till done
+ * NOTES:
  */
 static struct attWorkItem* attWorkItemAlloc(uint8_t type, uint32_t extraSz)
 {
@@ -372,40 +470,21 @@ static struct attWorkItem* attWorkItemAlloc(uint8_t type, uint32_t extraSz)
 }
 
 /*
- * FUNCTION: attConnListGetExtra
- * USE:      Retrieve a given connection's "extra" data from a connection list, if it is present there
- * PARAMS:   list - the list
- *           conn - the connection
- * RETURN:   the extra data pointer or NULL
- * NOTES:    attConnList has no locks itself - please hold the parent data structure's lock when calling
- */
-static struct attSrvConnExtra* attConnListGetExtra(struct attConnList *list, l2c_handle_t conn)
-{
-    uint32_t i;
-
-    for (i = 0; i < list->listNum; i++)
-        if (list->conns[i] == conn)
-            return list->hasExtras ? list->extras + i : NULL;
-
-    return NULL;
-}
-
-/*
  * FUNCTION: attSrvSchedCbkGetNextTid
  * USE:      Get the transaction ID to use
- * PARAMS:   extra - the per-conenction extra data
+ * PARAMS:   conn - the per-connection data
  * RETURN:   the transaction ID to use (positive int)
- * NOTES:    call with mSrvLock help
+ * NOTES:    call with mAttLock held
  */
-static int attSrvSchedCbkGetNextTid(struct attSrvConnExtra* extra)
+static int attSrvSchedCbkGetNextTid(struct attConn* conn)
 {
     int tid;
 
-    extra->nextTransId++;
-    if (extra->nextTransId < 0)
-        extra->nextTransId = 1;
+    conn->srv.nextTransId++;
+    if (conn->srv.nextTransId < 0)
+        conn->srv.nextTransId = 1;
 
-    return extra->nextTransId;
+    return conn->srv.nextTransId;
 }
 
 /*
@@ -413,30 +492,26 @@ static int attSrvSchedCbkGetNextTid(struct attSrvConnExtra* extra)
  * USE:      Schedule a call to the read callback
  * PARAMS:   range - the handle range
  *           val - the value struct
- *           who - whom the connection is to
+ *           conn - the per-connection structure
  *           reason - reason value to pass to read callback
  *           byteOfst - byte offset to pass to read callback
  *           maxLen - maxLength to read
  * RETURN:   true if we should expect callback. false on immediate failute
- * NOTES:    call with mSrvLock held Do not release the lock until all state in extra->penOp is set up
+ * NOTES:    call with mAttLock held Do not release the lock until all your state in conn->penOp is set up
  */
-static bool attSrvSchedReadCbk(struct attSrvRange *range, struct attSrvVal* val, l2c_handle_t who, uint8_t reason, uint16_t byteOfst, uint16_t maxLen)
+static bool attSrvSchedReadCbk(struct attSrvRange *range, struct attSrvVal* val, struct attConn* conn, uint8_t reason, uint16_t byteOfst, uint16_t maxLen)
 {
-    struct attSrvConnExtra* extra = attConnListGetExtra(&mAllClients, who);
     struct attWorkItem *wi;
     int tid;
-    
-    if (!extra)
-        return false;
 
     wi = attWorkItemAlloc(WORK_TYPE_READ_CALL, 0);
     if (!wi)
         return false;
 
-    tid = attSrvSchedCbkGetNextTid(extra);
+    tid = attSrvSchedCbkGetNextTid(conn);
 
-    wi->who = who;
-    wi->cid = extra->cid;
+    wi->who = conn->conn;
+    wi->cid = conn->srv.cid;
     wi->read.range = range->rangeRef;
     wi->read.ofst = val->offset;
     wi->read.transId = tid;
@@ -456,17 +531,16 @@ static bool attSrvSchedReadCbk(struct attSrvRange *range, struct attSrvVal* val,
  * USE:      Schedule a call to the write callback
  * PARAMS:   range - the handle range
  *           val - the value struct
- *           who - whom the connection is to
+ *           conn - the per-connection structure
  *           reason - reason value to pass to write callback
  *           replace - repalce the existing slot (else will fail if slot not empty)
  *           byteOfst - byte offset to pass to write callback
  *           data - the sg with the data to write
  * RETURN:   true if we should expect callback. false on immediate failute
- * NOTES:    call with mSrvLock held  Do not release the lock until all state in extra->penOp is set up. WILL NOT FREE "data". Caller must!
+ * NOTES:    call with mAttLock held  Do not release the lock until all state in conn->penOp is set up. WILL NOT FREE "data". Caller must!
  */
-static bool attSrvSchedWriteCbk(struct attSrvRange *range, struct attSrvVal* val, l2c_handle_t who, uint8_t reason, uint16_t byteOfst, sg data)
+static bool attSrvSchedWriteCbk(struct attSrvRange *range, struct attSrvVal* val, struct attConn* conn, uint8_t reason, uint16_t byteOfst, sg data)
 {
-    struct attSrvConnExtra* extra = attConnListGetExtra(&mAllClients, who);
     uint16_t len = sgLength(data);
     struct attWorkItem *wi;
     const void *dataPtr = NULL;
@@ -475,19 +549,16 @@ static bool attSrvSchedWriteCbk(struct attSrvRange *range, struct attSrvVal* val
     bool ret;
     int tid;
 
-    
-    if (!extra)
-        return false;
 
     wi = attWorkItemAlloc(WORK_TYPE_WRITE_CALL, len);
     if (!wi)
         return false;
 
-    tid = attSrvSchedCbkGetNextTid(extra);
+    tid = attSrvSchedCbkGetNextTid(conn);
     sgSerialize(data, 0, len, wi + 1);
 
-    wi->who = who;
-    wi->cid = extra->cid;
+    wi->who = conn->conn;
+    wi->cid = conn->srv.cid;
     wi->write.range = range->rangeRef;
     wi->write.ofst = val->offset;
     wi->write.transId = tid;
@@ -507,28 +578,24 @@ static bool attSrvSchedWriteCbk(struct attSrvRange *range, struct attSrvVal* val
 /*
  * FUNCTION: attSrvSchedExecCbk
  * USE:      Schedule a call to the execute-write callback
- * PARAMS:   who - whom the connection is to
+ * PARAMS:   conn - the per-connection structure
  *           exec - true to execute, false to clear state
  * RETURN:   true if we should expect callback. false on immediate failute
- * NOTES:    call with mSrvLock held  Do not release the lock until all state in extra->penOp is set up. WILL NOT FREE "data". Caller must!
+ * NOTES:    call with mAttLock held  Do not release the lock until all state in conn->penOp is set up. WILL NOT FREE "data". Caller must!
  */
-static bool attSrvSchedExecCbk(l2c_handle_t who, bool exec)
+static bool attSrvSchedExecCbk(struct attConn* conn, bool exec)
 {
-    struct attSrvConnExtra* extra = attConnListGetExtra(&mAllClients, who);
     struct attWorkItem *wi;
     int tid;
-    
-    if (!extra)
-        return false;
 
     wi = attWorkItemAlloc(WORK_TYPE_EXEC_WRITE_CALL, 0);
     if (!wi)
         return false;
 
-    tid = attSrvSchedCbkGetNextTid(extra);
+    tid = attSrvSchedCbkGetNextTid(conn);
 
-    wi->who = who;
-    wi->cid = extra->cid;
+    wi->who = conn->conn;
+    wi->cid = conn->srv.cid;
     wi->execWrite.transId = tid;
     wi->execWrite.exec = exec;
 
@@ -544,26 +611,22 @@ static bool attSrvSchedExecCbk(l2c_handle_t who, bool exec)
  * USE:      Schedule a call to the indication result callback
  * PARAMS:   rangeRef - the range reference
  *           offst - the value offset in the range
- *           who - whom the connection is to
+ *           conn - the per-connection structure
  *           evt - what happened?
  *           ref - the reference value provided by the higher layer
  * RETURN:   success
- * NOTES:    call with mSrvLock held Do not release the lock until all state in extra->penOp is set up
+ * NOTES:    call with mAttLock held Do not release the lock until all state in conn->penOp is set up
  */
-static bool attSrvSchedIndResultCbk(att_range_t rangeRef, uint16_t offst, l2c_handle_t who, uint8_t evt, uint64_t ref)
+static bool attSrvSchedIndResultCbk(att_range_t rangeRef, uint16_t offst, struct attConn* conn, uint8_t evt, uint64_t ref)
 {
-    struct attSrvConnExtra* extra = attConnListGetExtra(&mAllClients, who);
     struct attWorkItem *wi;
-    
-    if (!extra)
-        return false;
 
     wi = attWorkItemAlloc(WORK_TYPE_IND_RESULT, 0);
     if (!wi)
         return false;
 
-    wi->who = who;
-    wi->cid = extra->cid;
+    wi->who = conn->conn;
+    wi->cid = conn->srv.cid;
     wi->indResult.range = rangeRef;
     wi->indResult.ofst = offst;
     wi->indResult.ref = ref;
@@ -579,25 +642,21 @@ static bool attSrvSchedIndResultCbk(att_range_t rangeRef, uint16_t offst, l2c_ha
 /*
  * FUNCTION: attSrvSchedMtuCbk
  * USE:      Schedule a call to the MTU callback
- * PARAMS:   who - whom the connection is to
+ * PARAMS:   conn - the per-connection structure
  *           mtu - the new mtu
  * RETURN:   success
- * NOTES:    call with mSrvLock held Do not release the lock until all state in extra->penOp is set up
+ * NOTES:    call with mAttLock held Do not release the lock until all state in conn->penOp is set up
  */
-static bool attSrvSchedMtuCbk(l2c_handle_t who, uint64_t mtu)
+static bool attSrvSchedMtuCbk(struct attConn* conn, uint32_t mtu)
 {
-    struct attSrvConnExtra* extra = attConnListGetExtra(&mAllClients, who);
     struct attWorkItem *wi;
     
-    if (!extra)
-        return false;
-
     wi = attWorkItemAlloc(WORK_TYPE_MTU_INFO, 0);
     if (!wi)
         return false;
 
-    wi->who = who;
-    wi->cid = extra->cid;
+    wi->who = conn->conn;
+    wi->cid = conn->srv.cid;
     wi->mtuInfo.mtu = mtu;
 
     if (workQueuePut(mWorkQ, wi))
@@ -646,205 +705,82 @@ fail_alloc:
 }
 
 /*
- * FUNCTION: attConnListFindByCid
- * USE:      Find a connection by its "cid" value
- * PARAMS:   list - the list
- *           cid - the cid
- *           connP - conenction handle gets stored here if not NULL
- *           extraP - extra pointer gets stored her eif not NULL
- * RETURN:   true if found
- * NOTES:    attConnList has no locks itself - please hold the parent data structure's lock when calling
- */
-static bool attConnListFindByCid(struct attConnList *list, int cid, l2c_handle_t *connP, struct attSrvConnExtra **extraP)
-{
-    uint32_t i;
-
-    if (!list->hasExtras) {
-        loge("CIDs not supported in lists with no extras\n");
-        return false;
-    }
-
-    for (i = 0; i < list->listNum; i++) {
-        if (list->extras[i].cid == cid) {
-            if (connP)
-                *connP = list->conns[i];
-            if (extraP)
-                *extraP = list->extras + i;
-            return true;
-        }
-    }
-
-    return false;
-}
-
-/*
- * FUNCTION: attConnListAdd
+ * FUNCTION: attConnListAddIfNew
  * USE:      Add a given connection to a connection list, if it is not yet present there
- * PARAMS:   list - the list
- *           conn - the connection
+ * PARAMS:   l2cConn - the l2c connection handle
  * RETURN:   false on error
- * NOTES:    attConnList has no locks itself - please hold the parent data structure's lock when calling
+ * NOTES:    call with mAttLock held
  */
-static bool attConnListAdd(struct attConnList *list, l2c_handle_t conn)
+static bool attConnListAddIfNew(l2c_handle_t l2cConn)
 {
+    struct attConn *conn;
     struct bt_addr peer;
     uint32_t i;
 
-    /* check for existence */
-    for (i = 0; i < list->listNum; i++)
-        if (list->conns[i] == conn)
-            return true;
+    /* check for existence & alloc as needed */
+    if (attConnFindByL2cConn(l2cConn))
+        return true;
+    conn = calloc(1, sizeof(struct attConn));
+    if (!conn)
+        return false;
 
     /* grab the peer address */
-    if (!l2cApiGetBtAddr(conn, &peer)) {
+    conn->conn = l2cConn;
+    if (!l2cApiGetBtAddr(l2cConn, &peer)) {
         loge("Failed to get peer address\n");
+        free(conn);
         return false;
     }
 
-    /* if list is full, expand it */
-    if (list->listCap == list->listNum) {
-        uint32_t newCap = list->listCap + ATT_CONN_LIST_GROW_BY;
-        l2c_handle_t *conns;
-        struct attSrvConnExtra *extras;
+    /* get initial encr and mitm state */
+    conn->isEncr = l2cApiIsConnEncrypted(conn->conn);
+    conn->isMitmProtected = l2cApiIsConnMitmSafe(conn->conn);
+    conn->isLE = BT_ADDR_IS_LE(peer);
 
-        conns = (l2c_handle_t*)realloc(list->conns, sizeof(l2c_handle_t[newCap]));
-        if (!conns)
-            return false;
-        list->conns = conns;
+    /* find a free server CID */
+    conn->srv.cid = mConns ? mConns->srv.cid : 1;
+    while (attConnFindBySrvCid(conn->srv.cid))
+        if (++conn->srv.cid < 0)
+            conn->srv.cid = 1;
 
-        if (list->hasExtras) {
-            extras = (struct attSrvConnExtra*)realloc(list->extras, sizeof(struct attSrvConnExtra[newCap]));
-            if (!extras)
-                return false;
-            list->extras = extras;
-        }
+    /* link it in */
+    conn->next = mConns;
+    if (mConns)
+        mConns->prev = conn;
+    mConns = conn;
 
-        list->listCap = newCap;
-    }
-
-    /* init the item */
-    list->conns[list->listNum] = conn;
-    if (list->hasExtras) {
-        struct attSrvConnExtra *extra = list->extras + list->listNum;
-
-        /* zero-init the extra struct */
-        memset(extra, 0, sizeof(struct attSrvConnExtra));
-
-        /* find a free CID */
-        extra->cid = list->listNum ? list->extras[list->listNum - 1].cid : 1;
-        while (attConnListFindByCid(list, extra->cid, NULL, NULL))
-            if (++extra->cid < 0)
-                extra->cid = 1;
-
-        /* get initial encr and mitm state */
-        extra->isEncr = l2cApiIsConnEncrypted(conn);
-        extra->isMitmProtected = l2cApiIsConnMitmSafe(conn);
-        extra->isLE = BT_ADDR_IS_LE(peer);
-    }
-    list->listNum++;
     return true;
 }
 
 /*
- * FUNCTION: attConnListFreeExtra
- * USE:      Free the storage occupied by the "extra" data in a connection list
- * PARAMS:   extra the extra struct
- * RETURN:   NONE
- * NOTES:
- */
-static void attConnListFreeExtra(struct attSrvConnExtra *extra)
-{
-    /* future extra freeing steps here */
-}
-
-/*
- * FUNCTION: attConnListDel
- * USE:      Delete a given connection from a connection list, if it is present there
- * PARAMS:   list - the list
- *           conn - the connection
- * RETURN:   true if deleted
- * NOTES:    attConnList has no locks itself - please hold the parent data structure's lock when calling
- */
-static bool attConnListDel(struct attConnList *list, l2c_handle_t conn)
-{
-    uint32_t i;
-
-    for (i = 0; i < list->listNum; i++) {
-        if (list->conns[i] == conn) {
-            list->listNum--;
-            list->conns[i] = list->conns[list->listNum];
-            if (list->hasExtras) {
-                attConnListFreeExtra(list->extras + i);
-                memmove(list->extras + i, list->extras + list->listNum, sizeof(struct attSrvConnExtra));
-            }
-            return true;
-        }
-    }
-
-    return false;
-}
-
-/*
- * FUNCTION: attConnListIsEmpty
- * USE:      Check if a given connection list is empty
- * PARAMS:   list - the list
- * RETURN:   true if it is empty
- * NOTES:    attConnList has no locks itself - please hold the parent data structure's lock when calling
- */
-static bool attConnListIsEmpty(const struct attConnList *list)
-{
-    return !list->listNum;
-}
-
-/*
- * FUNCTION: attConnListFree
- * USE:      Free the storage occupied by a given connection list
- * PARAMS:   list - the list
- * RETURN:   NONE
- * NOTES:    IDEMPOTENT, attConnList has no locks itself - please hold the parent data structure's lock when calling
- */
-static void attConnListFree(struct attConnList *list)
-{
-    if (list->conns)
-        free(list->conns);
-    if (list->hasExtras && list->extras) {
-        uint32_t i;
-        for(i = 0; i < list->listNum; i++)
-            attConnListFreeExtra(list->extras + i);
-        free(list->extras);
-    }
-    list->conns = NULL;
-}
-
-/*
- * FUNCTION: attSrvEncrAuthUpdate
- * USE:      Update the ATT server about a change in a connection to a client pertaining to auth/encr
+ * FUNCTION: attEncrAuthUpdate
+ * USE:      Update the ATT state about a change in a connection to a client pertaining to auth/encr
  * PARAMS:   who - the connection to the client
  *           encr - is it now encrypted?
  *           mitmSafe - is it now mitm-safe?
  * RETURN:   success
  * NOTES:
  */
-bool attSrvEncrAuthUpdate(l2c_handle_t who, bool encr, bool mitmSafe)
+bool attEncrAuthUpdate(l2c_handle_t who, bool encr, bool mitmSafe)
 {
-    struct attSrvConnExtra *extra;
+    struct attConn *conn;
     bool ret = false;
 
-    pthread_mutex_lock(&mSrvLock);
-    extra = attConnListGetExtra(&mAllClients, who);
-    if (extra) {
-        extra->isEncr = encr;
-        extra->isMitmProtected = mitmSafe;
+    pthread_mutex_lock(&mAttLock);
+    conn = attConnFindByL2cConn(who);
+    if (conn) {
+        conn->isEncr = encr;
+        conn->isMitmProtected = mitmSafe;
         ret = true;
     }
-    pthread_mutex_unlock(&mSrvLock);
+    pthread_mutex_unlock(&mAttLock);
 
     return true;
 }
 
 /*
- * FUNCTION: attSrvCreate
- * USE:      create an ATT server
+ * FUNCTION: attSrvInit
+ * USE:      Init our ATT server
  * PARAMS:   txF - callback to use to TX data to clients
  *           mtuF - callback to tell client of new MTU
  *           indF - callback to tell client of ind TX progress
@@ -854,11 +790,11 @@ bool attSrvEncrAuthUpdate(l2c_handle_t who, bool encr, bool mitmSafe)
  * RETURN:   success
  * NOTES:
  */
-bool attSrvCreate(attSrvTxCbk txF, attSrvMtuCbk mtuF, attSrvIndResultCbk indF, attSrvValueExecWrite execF, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF)
+bool attSrvInit(attSrvTxCbk txF, attSrvMtuCbk mtuF, attSrvIndResultCbk indF, attSrvValueExecWriteCbk execF, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF)
 {
     bool ret = false;
 
-    pthread_mutex_lock(&mSrvLock);
+    pthread_mutex_lock(&mAttLock);
     if (mTxCbk)
         loge("RE-initing ATT server\n");
     else {
@@ -870,38 +806,37 @@ bool attSrvCreate(attSrvTxCbk txF, attSrvMtuCbk mtuF, attSrvIndResultCbk indF, a
         mWriteCbk = writeF;
         ret = true;
     }
-    pthread_mutex_unlock(&mSrvLock);
+    pthread_mutex_unlock(&mAttLock);
     return ret;
 }
 
 /*
- * FUNCTION: attSrvDestroy
- * USE:      destroy an ATT server
+ * FUNCTION: attSrvDeinit
+ * USE:      Deinit our ATT server
  * PARAMS:   NONE
  * RETURN:   NONE
  * NOTES:
  */
-void attSrvDestroy(void)
+void attSrvDeinit(void)
 {
-    struct attSrvConnExtra *extra;
     struct attSrvRange *range;
     struct attSrvVal *val;
+    struct attConn *conn;
+    int newCid;
     uint32_t i;
 
-    pthread_mutex_lock(&mSrvLock);
-    for (i = 0; i < mAllClients.listNum; i++) {
-        extra = mAllClients.extras + i;
-        if (extra->indTimer) {
-            if (timerCancel(extra->indTimer))
-                attSrvSchedIndResultCbk(extra->indRangeRef, extra->indOffset, mAllClients.conns[i], ATT_SRV_EVT_IND_SRV_DESTROYED, extra->indRef);
-            extra->indTimer = 0;
+    pthread_mutex_lock(&mAttLock);
+    for (conn = mConns; conn; conn = conn->next) {
+        if (conn->srv.indTimer) {
+            if (timerCancel(conn->srv.indTimer))
+                attSrvSchedIndResultCbk(conn->srv.indRangeRef, conn->srv.indOffset, conn, ATT_SRV_EVT_IND_SRV_DESTROYED, conn->srv.indRef);
+            conn->srv.indTimer = 0;
         }
     }
-    mInTeardown = true;
     /* all uncancelled timers need to be run before we destroy state, so we let them */
-    pthread_mutex_unlock(&mSrvLock);
+    pthread_mutex_unlock(&mAttLock);
     timerSync();
-    pthread_mutex_lock(&mSrvLock);
+    pthread_mutex_lock(&mAttLock);
 
     for (range = mRangesHead; range; range = range->next) {
         for (val = range->valsHead; val; ) {
@@ -911,8 +846,17 @@ void attSrvDestroy(void)
         }
         attConnListFree(&range->seenBy);
     }
-    attConnListFree(&mAllClients);
-    pthread_mutex_unlock(&mSrvLock);
+
+    /* get another server CID to prevent any confusion */
+    newCid = conn->srv.cid;
+    do {
+        newCid++;
+        if (newCid < 0)
+            newCid = 1;
+    } while (attConnFindBySrvCid(newCid));
+    conn->srv.cid = newCid;
+
+    pthread_mutex_unlock(&mAttLock);
 
     mTxCbk = NULL;
     mMtuCbk = NULL;
@@ -968,29 +912,45 @@ static void attSrvRangeDelete(struct attSrvRange *range)
 }
 
 /*
- * FUNCTION: attSrvNotifConnClose
- * USE:      tell an ATT server about a closed connection (in case it cares)
- * PARAMS:   conn - the connection
+ * FUNCTION: attNotifConnClose
+ * USE:      tell the ATT code about a closed connection (in case it cares)
+ * PARAMS:   l2cConn - the l2c connection handle
  * RETURN:   NONE
  * NOTES:    if said connection substribed to notifications, allows us to unsubstribe
  *           them proactively instead of waiting for TX errors
  */
-void attSrvNotifConnClose(l2c_handle_t conn)
+void attNotifConnClose(l2c_handle_t l2cConn)
 {
     struct attSrvRange *range, *t;
     struct attSrvVal *val;
+    struct attConn *conn;
     uint32_t i;
 
-    pthread_mutex_lock(&mSrvLock);
+    pthread_mutex_lock(&mAttLock);
     for (range = mRangesHead; range;) {
-        attConnListDel(&range->seenBy, conn);
+        attConnListDel(&range->seenBy, l2cConn);
         t = range;
         range = range->next;
         if (attConnListIsEmpty(&t->seenBy) && !t->rangeRef) /* delete a disused range after all who knew about it are gone */
             attSrvRangeDelete(t);
     }
-    attConnListDel(&mAllClients, conn);
-    pthread_mutex_unlock(&mSrvLock);
+
+    conn = attConnFindByL2cConn(l2cConn);
+    if (conn) {
+        if (conn->prev)
+            conn->prev->next = conn->next;
+        else
+            mConns = conn->next;
+        if (conn->next)
+             conn->next->prev = conn->prev;
+
+        //TODO: XXX: what other cleanup is needed?
+        free(conn);
+    }
+    else
+        logi("ATT: notified of a connection closure for a connection we never knew about");
+
+    pthread_mutex_unlock(&mAttLock);
 }
 
 /*
@@ -1006,7 +966,7 @@ att_range_t attSrvHandleRangeReserve(uint16_t len)
     struct attSrvRange *next, *prev = NULL, *newRange;
     att_range_t ret = 0;
 
-    pthread_mutex_lock(&mSrvLock);
+    pthread_mutex_lock(&mAttLock);
     next = mRangesHead;
     while (searchH <= ATT_LAST_VALID_HANDLE && next) {
         if (next->start - searchH >= len)
@@ -1043,7 +1003,7 @@ att_range_t attSrvHandleRangeReserve(uint16_t len)
 
     ret = newRange->rangeRef;
 out:
-    pthread_mutex_unlock(&mSrvLock);
+    pthread_mutex_unlock(&mAttLock);
     return ret;
 }
 
@@ -1052,7 +1012,7 @@ out:
  * USE:      find a range structure for a given range reference in a given ATT server
  * PARAMS:   rangeRef - the range reference
  * RETURN:   the range struct or NULL if not found
- * NOTES:    call with mSrvLock help
+ * NOTES:    call with mAttLock held
 
  */
 static struct attSrvRange* attSrvRangeFind(att_range_t rangeRef)
@@ -1077,7 +1037,7 @@ bool aapiSrvHandleRangeSetAllowedTransports(att_range_t rangeRef, bool allowLE, 
 {
     struct attSrvRange *range;
 
-    pthread_mutex_lock(&mSrvLock);
+    pthread_mutex_lock(&mAttLock);
     range = attSrvRangeFind(rangeRef);
     if (!range)
         logw("Attempt to delete a non-existent range\n");
@@ -1085,7 +1045,7 @@ bool aapiSrvHandleRangeSetAllowedTransports(att_range_t rangeRef, bool allowLE, 
         range->allowLE = allowLE;
         range->allowEDR = allowEDR;
     }
-    pthread_mutex_unlock(&mSrvLock);
+    pthread_mutex_unlock(&mAttLock);
 
     return !!range;
 }
@@ -1096,7 +1056,7 @@ bool aapiSrvHandleRangeSetAllowedTransports(att_range_t rangeRef, bool allowLE, 
  * PARAMS:   range - the range
  *           offset - the offset
  * RETURN:   the value struct or NULL if not found
- * NOTES:    call with mSrvLock help
+ * NOTES:    call with mAttLock held
  */
 static struct attSrvVal* attSrvValFind(struct attSrvRange *range, uint16_t offset)
 {
@@ -1114,7 +1074,7 @@ static struct attSrvVal* attSrvValFind(struct attSrvRange *range, uint16_t offse
  *           offset - the offset
  *           rangeP - range gets stored here
  * RETURN:   the value struct or NULL if not found
- * NOTES:    call with mSrvLock help
+ * NOTES:    call with mAttLock held
  */
 static struct attSrvVal* attSrvValRangeFind(att_range_t rangeRef, uint16_t offset, struct attSrvRange **rangeP)
 {
@@ -1135,7 +1095,7 @@ void attSrvHandleRangeRelease(att_range_t rangeRef)
 {
     struct attSrvRange *range;
 
-    pthread_mutex_lock(&mSrvLock);
+    pthread_mutex_lock(&mAttLock);
     range = attSrvRangeFind(rangeRef);
     if (!range)
         logw("Attempt to delete a non-existent range\n");
@@ -1147,7 +1107,7 @@ void attSrvHandleRangeRelease(att_range_t rangeRef)
             range->rangeRef = 0;
         }
     }
-    pthread_mutex_unlock(&mSrvLock);
+    pthread_mutex_unlock(&mAttLock);
 }
 
 /*
@@ -1162,10 +1122,10 @@ uint16_t attSrvHandleRangeGetBase(att_range_t rangeRef)
     struct attSrvRange *range;
     uint16_t ret;
 
-    pthread_mutex_lock(&mSrvLock);
+    pthread_mutex_lock(&mAttLock);
     range = attSrvRangeFind(rangeRef);
     ret = range ? range->start : 0;
-    pthread_mutex_unlock(&mSrvLock);
+    pthread_mutex_unlock(&mAttLock);
     return ret;
 }
 
@@ -1181,10 +1141,10 @@ uint16_t attSrvHandleRangeGetLen(att_range_t rangeRef)
     struct attSrvRange *range;
     uint16_t ret;
 
-    pthread_mutex_lock(&mSrvLock);
+    pthread_mutex_lock(&mAttLock);
     range = attSrvRangeFind(rangeRef);
     ret = range ? range->len : 0;
-    pthread_mutex_unlock(&mSrvLock);
+    pthread_mutex_unlock(&mAttLock);
     return ret;
 }
 
@@ -1205,7 +1165,7 @@ bool attSrvValueRegister(att_range_t rangeRef, uint16_t offset, const struct uui
     bool ret = false;
 
 
-    pthread_mutex_lock(&mSrvLock);
+    pthread_mutex_lock(&mAttLock);
     range = attSrvRangeFind(rangeRef);
     if (!range) {
         logw("Attempt to add a value to a non-existent range\n");
@@ -1249,7 +1209,7 @@ bool attSrvValueRegister(att_range_t rangeRef, uint16_t offset, const struct uui
     ret = true;
 
 out:
-    pthread_mutex_unlock(&mSrvLock);
+    pthread_mutex_unlock(&mAttLock);
     return ret;
 }
 
@@ -1268,7 +1228,7 @@ bool attSrvValueGetGrpLen(att_range_t rangeRef, uint16_t offset, uint16_t *grpLe
     struct attSrvVal *val;
     bool ret = false;
 
-    pthread_mutex_lock(&mSrvLock);
+    pthread_mutex_lock(&mAttLock);
     val = attSrvValRangeFind(rangeRef, offset, &range);
     if (!range) {
         logw("Attempt to set group len on a value from a non-existent range\n");
@@ -1284,7 +1244,7 @@ bool attSrvValueGetGrpLen(att_range_t rangeRef, uint16_t offset, uint16_t *grpLe
     ret = true;
 
 out:
-    pthread_mutex_unlock(&mSrvLock);
+    pthread_mutex_unlock(&mAttLock);
     return ret;
 }
 /*
@@ -1302,7 +1262,7 @@ bool attSrvValueSetGrpLen(att_range_t rangeRef, uint16_t offset, uint16_t grpLen
     struct attSrvVal *val;
     bool ret = false;
 
-    pthread_mutex_lock(&mSrvLock);
+    pthread_mutex_lock(&mAttLock);
     val = attSrvValRangeFind(rangeRef, offset, &range);
     if (!range) {
         logw("Attempt to set group len on a value from a non-existent range\n");
@@ -1322,7 +1282,7 @@ bool attSrvValueSetGrpLen(att_range_t rangeRef, uint16_t offset, uint16_t grpLen
     ret = true;
 
 out:
-    pthread_mutex_unlock(&mSrvLock);
+    pthread_mutex_unlock(&mAttLock);
     return ret;
 }
 
@@ -1340,7 +1300,7 @@ bool attSrvValueUnregister(att_range_t rangeRef, uint16_t offset)
     struct attSrvVal *val;
     bool ret = false;
 
-    pthread_mutex_lock(&mSrvLock);
+    pthread_mutex_lock(&mAttLock);
     val = attSrvValRangeFind(rangeRef, offset, &range);
     if (!range) {
         logw("Attempt to remove a value from a non-existent range\n");
@@ -1363,24 +1323,48 @@ bool attSrvValueUnregister(att_range_t rangeRef, uint16_t offset)
     ret = true;
 
 out:
-    pthread_mutex_unlock(&mSrvLock);
+    pthread_mutex_unlock(&mAttLock);
     return ret;
 }
 
 /*
- * FUNCTION: attConnMtuGet
+ * FUNCTION: attConnMtuGetByConn
+ * USE:      Get the MTU to someone
+ * PARAMS:   conn - per-connection structure
+ *           tryDefaults - try to find the default to use?
+ * RETURN:   the mtu to use or 0 on error
+ * NOTES:    call with mAttLock held
+ */
+static uint32_t attConnMtuGetByConn(struct attConn *conn, bool tryDefaults)
+{
+    uint32_t mtu = 0;
+
+    if (!(mtu = conn->mtu) && tryDefaults) {
+        struct bt_addr peer;
+
+        if (!l2cApiGetBtAddr(conn->conn, &peer)) {
+            logw("Failed to get peer address\n");
+            return 0;
+        }
+        mtu = BT_ADDR_IS_EDR(peer) ? ATT_MTU_MIN_EDR : ATT_MTU_MIN_LE;
+    }
+
+    return mtu;
+}
+/*
+ * FUNCTION: attConnMtuGetByL2c
  * USE:      Get the MTU to someone
  * PARAMS:   to - whom to
  *           tryDefaults - try to find the default to use?
  * RETURN:   the mtu to use or 0 on error
- * NOTES:    call with mSrvLock help
+ * NOTES:    call with mAttLock held
  */
-static uint32_t attConnMtuGet(l2c_handle_t to, bool tryDefaults)
+static uint32_t attConnMtuGetByL2c(l2c_handle_t to, bool tryDefaults)
 {
-    struct attSrvConnExtra *extra = attConnListGetExtra(&mAllClients, to);
+    struct attConn *conn = attConnFindByL2cConn(to);
     uint32_t mtu = 0;
 
-    if ((!extra || !(mtu = extra->mtu)) && tryDefaults) {
+    if ((!conn || !(mtu = conn->mtu)) && tryDefaults) {
         struct bt_addr peer;
 
         if (!l2cApiGetBtAddr(to, &peer)) {
@@ -1399,23 +1383,48 @@ static uint32_t attConnMtuGet(l2c_handle_t to, bool tryDefaults)
  * PARAMS:   to - whom to
  *           mtu - the MTU to set
  * RETURN:   success
- * NOTES:    call with mSrvLock help
+ * NOTES:    call with mAttLock held
  */
 static bool attConnMtuSet(l2c_handle_t to, uint32_t mtu)
 {
-    struct attSrvConnExtra *extra = attConnListGetExtra(&mAllClients, to);
+    struct attConn *conn = attConnFindByL2cConn(to);
 
-    if (!extra) {
+    if (!conn) {
         logw("Setting MTU for unknown connection\n");
         return false;
     }
 
-    extra->mtu = mtu;
+    conn->mtu = mtu;
     return true;
 }
 
 /*
- * FUNCTION: attSrvSend
+ * FUNCTION: attSrvTimerCbk
+ * USE:      Called when a timeout for a confirmation for a sent notification comes
+ * PARAMS:   which - the timer
+ *           userData - unused
+ * RETURN:   NONE
+ * NOTES:    XXX: penOp interaction with this should be explored
+ */
+static void attSrvTimerCbk(uniq_t which,  uint64_t userData)
+{
+    struct attConn *conn = NULL;
+
+    pthread_mutex_lock(&mAttLock);
+
+    /* find the relant conn */
+    for (conn = mConns; conn && conn->srv.indTimer != which; conn = conn->next);
+
+    /* if we found it, send the callback */
+    if (conn)
+        attSrvSchedIndResultCbk(conn->srv.indRangeRef, conn->srv.indOffset, conn, ATT_SRV_EVT_IND_TIMEOUT, conn->srv.indRef);
+
+    pthread_mutex_unlock(&mAttLock);
+}
+
+
+/*
+ * FUNCTION: attSendPacket
  * USE:      Sends an assembled packet to the peer
  * PARAMS:   to - whom the data is to be sent to
  *           preData - first part of the packet or NULL
@@ -1424,9 +1433,9 @@ static bool attConnMtuSet(l2c_handle_t to, uint32_t mtu)
  *           postData - last part of the packet or NULL
  *           postLen - length of said data
  * RETURN:   ATT_TX_RET_*
- * NOTES:    call with mSrvLock help
+ * NOTES:    call with mAttLock held
  */
-static uint8_t attSrvSend(l2c_handle_t to, const void *preData, uint32_t preLen, sg data, const void *postData, uint32_t postLen)
+static uint8_t attSendPacketRaw(l2c_handle_t to, const void *preData, uint32_t preLen, sg data, const void *postData, uint32_t postLen)
 {
     uint8_t ret;
     sg tmpData = NULL;
@@ -1465,53 +1474,23 @@ static uint8_t attSrvSend(l2c_handle_t to, const void *preData, uint32_t preLen,
 }
 
 /*
- * FUNCTION: attSrvTimerCbk
- * USE:      Called when a timeout for a confirmation for a sent notification comes
- * PARAMS:   which - the timer
- *           userData - unused
- * RETURN:   NONE
- * NOTES:
- */
-static void attSrvTimerCbk(uniq_t which,  uint64_t userData)
-{
-    struct attSrvConnExtra *extra = NULL;
-    l2c_handle_t conn;
-    uint32_t i;
-
-    pthread_mutex_lock(&mSrvLock);
-    /* find the relant conn */
-    for (i = 0; i < mAllClients.listNum; i++) {
-        if (mAllClients.extras[i].indTimer == which) {
-            extra = mAllClients.extras + i;
-            conn = mAllClients.conns[i];
-            break;
-        }
-    }
-
-    if (extra) /* we found it */
-        attSrvSchedIndResultCbk(extra->indRangeRef, extra->indOffset, conn, ATT_SRV_EVT_IND_TIMEOUT, extra->indRef);
-    pthread_mutex_unlock(&mSrvLock);
-}
-
-/*
- * FUNCTION: attSrvSendNotif
+ * FUNCTION: attSrvSendPacketNotif
  * USE:      Send notifications to all clients who wanted them for this value
  * PARAMS:   range - the range
  *           val - the value struct
- *           to - whom to send to
+ *           conn - the per-connection structure
  *           data - the value
  *           notify - send notification (as opposed to indication)
  *           ref - pased to callbacks so you know which notif/ind they are tellking you about
  * RETURN:   L2C_TX_*
- * NOTES:    call with mSrvLock help
+ * NOTES:    call with mAttLock held
  */
-static uint8_t attSrvSendNotif(struct attSrvRange *range, struct attSrvVal *val, l2c_handle_t to, sg data, bool notify, uint64_t ref)
+static uint8_t attSrvSendPacketNotif(struct attSrvRange *range, struct attSrvVal *val, struct attConn* conn, sg data, bool notify, uint64_t ref)
 {
     uint8_t hdrBuf[sizeof(struct attHdr) + sizeof(struct attPduHandleValueNotif) + sizeof(struct attPduHandleValueInd)]; /* definitely big enoguh to fit the fist and either second or third */
     struct attHdr *hdr = (struct attHdr*)hdrBuf;
     struct attPduHandleValueNotif *notifH = (struct attPduHandleValueNotif*)(hdr + 1);
     struct attPduHandleValueInd *indH = (struct attPduHandleValueInd*)(hdr + 1);
-    struct attSrvConnExtra* extra = attConnListGetExtra(&mAllClients, to);
     uint8_t hdrLen = sizeof(*hdr);
     uint32_t mtu;
     uint8_t ret;
@@ -1521,10 +1500,8 @@ static uint8_t attSrvSendNotif(struct attSrvRange *range, struct attSrvVal *val,
         utilSetLE16(&notifH->handle, val->offset + range->start);
         hdrLen += sizeof(*notifH);
     } else {
-        if (!extra)
-            return ATT_TX_RET_ATT_ERROR;
 
-        if (extra->indTimer)
+        if (conn->srv.indTimer)
             return ATT_TX_RET_ATT_BUSY;
 
         utilSetLE8(&hdr->opcode, ATT_OPCODE_HANDLE_VALUE_IND);
@@ -1532,7 +1509,7 @@ static uint8_t attSrvSendNotif(struct attSrvRange *range, struct attSrvVal *val,
         hdrLen += sizeof(*indH);
     }
 
-    mtu = attConnMtuGet(to, true);
+    mtu = attConnMtuGetByConn(conn, true);
     if (!mtu)
         return ATT_TX_RET_ATT_ERROR;
 
@@ -1543,12 +1520,88 @@ static uint8_t attSrvSendNotif(struct attSrvRange *range, struct attSrvVal *val,
     }
 
     if (!notify) {
-        extra->indRangeRef = range->rangeRef;
-        extra->indOffset = val->offset;
-        extra->indTimer = timerSet(ATT_IND_TIMEOUT, attSrvTimerCbk, 0);
+        conn->srv.indRangeRef = range->rangeRef;
+        conn->srv.indOffset = val->offset;
+        conn->srv.indTimer = timerSet(ATT_IND_TIMEOUT, attSrvTimerCbk, 0);
     }
 
-    return attSrvSend(to, hdrBuf, hdrLen, data, NULL, 0);
+    return attSendPacketRaw(conn->conn, hdrBuf, hdrLen, data, NULL, 0);
+}
+
+/*
+ * FUNCTION: attSrvSendPacketErrorReply
+ * USE:      Sends an error to the client
+ * PARAMS:   to - whom to send to
+ *           err - the error
+ *           opcode - opcode for which the error happened
+ *           handle - the pertinent handle
+ * RETURN:   success
+ * NOTES:    call with mAttLock held
+ */
+static bool attSrvSendPacketErrorReply(l2c_handle_t to, uint8_t errNo, uint8_t opcode, uint16_t handle)
+{
+    struct attPduError err;
+    struct attHdr hdr;
+
+    utilSetLE8(&hdr.opcode, ATT_OPCODE_ERROR);
+    utilSetLE8(&err.reqOpcode, opcode);
+    utilSetLE8(&err.err, errNo);
+    utilSetLE16(&err.handle, handle);
+
+    return attSendPacketRaw(to, &hdr, sizeof(hdr), NULL, &err, sizeof(err)) == ATT_TX_RET_ACCEPTED;
+}
+
+/*
+ * FUNCTION: attSendPacket
+ * USE:      Sends a packet to a client
+ * PARAMS:   to - whom to send to
+ *           opcode - opcode to send
+ *           hdr - a header to prepend
+ *           hdrLen - length of said header
+ *           data - the data to send (may be NULL)
+ * RETURN:   success
+ * NOTES:    call with mAttLock held
+ */
+static bool attSendPacket(l2c_handle_t to, uint8_t opcode, const void *hdr, uint32_t hdrLen, sg data)
+{
+    struct attHdr attHdr;
+    bool freeData = false;
+
+    if (!data) {
+        data = sgNew();
+        if (!data)
+            return false;
+        freeData = true;
+    }
+
+    utilSetLE8(&attHdr.opcode, opcode);
+
+    if (hdr && !sgConcatFrontCopy(data, hdr, hdrLen))
+        goto out;
+
+    if (attSendPacketRaw(to, &attHdr, sizeof(attHdr), data, NULL, 0) == ATT_TX_RET_ACCEPTED)
+        return true;
+
+    sgTruncFront(data, hdrLen);
+    /* fallthough */
+
+out:
+    if (freeData)
+        sgFree(data);
+    return false;
+}
+
+/*
+ * FUNCTION: attSendPacketEmptyPacket
+ * USE:      Sends an empy packet to a client
+ * PARAMS:   to - whom to send to
+ *           opcode - opcode to send
+ * RETURN:   success
+ * NOTES:    call with mAttLock held
+ */
+static bool attSendPacketEmptyPacket(l2c_handle_t to, uint8_t opcode)
+{
+    return attSendPacket(to, opcode, NULL, 0, NULL);
 }
 
 /*
@@ -1568,11 +1621,12 @@ uint8_t attSrvValueNotifyChanged(att_range_t rangeRef, uint16_t offset, int cid,
     uint8_t ret = ATT_TX_RET_ATT_ERROR;
     struct attSrvRange *range;
     struct attSrvVal *val;
-    l2c_handle_t who;
+    struct attConn *conn;
     uint32_t i;
 
-    pthread_mutex_lock(&mSrvLock);
-    if (!attConnListFindByCid(&mAllClients, cid, &who, NULL)) {
+    pthread_mutex_lock(&mAttLock);
+    conn = attConnFindBySrvCid(cid);
+    if (!conn) {
         loge("Got notif request reply for unknown connection\n");
         goto out;
     }
@@ -1583,49 +1637,51 @@ uint8_t attSrvValueNotifyChanged(att_range_t rangeRef, uint16_t offset, int cid,
         goto out;
     }
     if (!val) {
-        logw("Attempt to notify on a non-existent value from a non-existent range (0x%04X+0x%04X)\n", range->start, offset);
+        logw("Attempt to notify on a non-existent value from an existent range (0x%04X+0x%04X)\n", range->start, offset);
         goto out;
     }
 
-    ret = attSrvSendNotif(range, val, who, data, notify, ref);
+    ret = attSrvSendPacketNotif(range, val, conn, data, notify, ref);
 
 out:
-    pthread_mutex_unlock(&mSrvLock);
+    pthread_mutex_unlock(&mAttLock);
     return ret;
 }
 
 /*
  * FUNCTION: attSrvCidResolve
- * USE:      Attempt to resolve a CID to a L2C connection ID
- * PARAMS:   cid - the cid
- * RETURN:   conenction ID or 0 on failure
- * NOTES:
+ * USE:      Attempt to resolve a CID to a L2C connection handle
+ * PARAMS:   srvCid - the server cid
+ * RETURN:   L2C connection handle or 0 on failure
+ * NOTES:    this is used externally
  */
-l2c_handle_t attSrvCidResolve(int cid)
+l2c_handle_t attSrvCidResolve(int srvCid)
 {
+    struct attConn* conn;
     l2c_handle_t ret = 0;
-    struct attSrvRange *range;
 
-    pthread_mutex_lock(&mSrvLock);
-    if (!attConnListFindByCid(&mAllClients, cid, &ret, NULL))
-        ret = 0;
-    pthread_mutex_unlock(&mSrvLock);
+    pthread_mutex_lock(&mAttLock);
+    conn = attConnFindBySrvCid(srvCid);
+    if (conn)
+        ret = conn->conn;
+    pthread_mutex_unlock(&mAttLock);
+
     return ret;
 }
 
 /*
- * FUNCTION: attSrvSetMtu
- * USE:      Called to set the MTU for an ATT server to a given client
+ * FUNCTION: attSetMtu
+ * USE:      Called to set the MTU for an ATT server to a given client directly and with no negotiation
  * PARAMS:   to - whom the MTU is to
  *           mtu - the mtu
  * RETURN:   NONE
- * NOTES:    used by EDR only. LE does its own negotiation
+ * NOTES:    used by EDR only. LE does its own negotiation of this over special ATT packets
  */
-void attSrvSetMtu(l2c_handle_t to, uint32_t mtu)
+void attSetMtu(l2c_handle_t to, uint32_t mtu)
 {
-    pthread_mutex_lock(&mSrvLock);
+    pthread_mutex_lock(&mAttLock);
     attConnMtuSet(to, mtu);
-    pthread_mutex_unlock(&mSrvLock);
+    pthread_mutex_unlock(&mAttLock);
 }
 
 /*
@@ -1654,126 +1710,50 @@ static bool attReadUuid(struct uuid *dst, sg s)
 }
 
 /*
- * FUNCTION: attSrvSendErrorReply
- * USE:      Sends an error to the client
- * PARAMS:   to - whom to send to
- *           err - the error
- *           opcode - opcode for which the error happened
- *           handle - the pertinent handle
- * RETURN:   success
- * NOTES:    call with mSrvLock help
- */
-static bool attSrvSendErrorReply(l2c_handle_t to, uint8_t errNo, uint8_t opcode, uint16_t handle)
-{
-    struct attPduError err;
-    struct attHdr hdr;
-
-    utilSetLE8(&hdr.opcode, ATT_OPCODE_ERROR);
-    utilSetLE8(&err.reqOpcode, opcode);
-    utilSetLE8(&err.err, errNo);
-    utilSetLE16(&err.handle, handle);
-
-    return attSrvSend(to, &hdr, sizeof(hdr), NULL, &err, sizeof(err)) == ATT_TX_RET_ACCEPTED;
-}
-
-/*
- * FUNCTION: attSrvSendPacket
- * USE:      Sends a packet to a client
- * PARAMS:   to - whom to send to
- *           opcode - opcode to send
- *           hdr - a header to prepend
- *           hdrLen - length of said header
- *           data - the data to send (may be NULL)
- * RETURN:   success
- * NOTES:    call with mSrvLock help
- */
-static bool attSrvSendPacket(l2c_handle_t to, uint8_t opcode, const void *hdr, uint32_t hdrLen, sg data)
-{
-    struct attHdr attHdr;
-    bool freeData = false;
-
-    if (!data) {
-        data = sgNew();
-        if (!data)
-            return false;
-        freeData = true;
-    }
-
-    utilSetLE8(&attHdr.opcode, opcode);
-
-    if (hdr && !sgConcatFrontCopy(data, hdr, hdrLen))
-        goto out;
-
-    if (attSrvSend(to, &attHdr, sizeof(attHdr), data, NULL, 0) == ATT_TX_RET_ACCEPTED)
-        return true;
-
-    sgTruncFront(data, hdrLen);
-    /* fallthough */
-
-out:
-    if (freeData)
-        sgFree(data);
-    return false;
-}
-
-/*
- * FUNCTION: attSrvSendEmptyPacket
- * USE:      Sends an empy packet to a client
- * PARAMS:   to - whom to send to
- *           opcode - opcode to send
- * RETURN:   success
- * NOTES:    call with mSrvLock help
- */
-static bool attSrvSendEmptyPacket(l2c_handle_t to, uint8_t opcode)
-{
-    return attSrvSendPacket(to, opcode, NULL, 0, NULL);
-}
-
-/*
- * FUNCTION: attValIsReadableBy
+ * FUNCTION: attSrvIsValReadableBy
  * USE:      Decide if a given value is readable by a given connection
  * PARAMS:   range -the value's range
  *           val - the value
- *           extra - per-connection state for this connection
+ *           conn - per-connection state for this connection
  * RETURN:   true if allowed to read, false else
- * NOTES:    call with mSrvLock held
+ * NOTES:    call with mAttLock held
  */
-static bool attValIsReadableBy(struct attSrvRange *range, struct attSrvVal *val, struct attSrvConnExtra *extra)
+static bool attSrvIsValReadableBy(struct attSrvRange *range, struct attSrvVal *val, struct attConn *conn)
 {
-    if (extra->isEncr && extra->isMitmProtected && (val->perms & ATT_PERM_READ_ENCR_MITM))
+    if (conn->isEncr && conn->isMitmProtected && (val->perms & ATT_PERM_READ_ENCR_MITM))
         return true;
 
-    if (extra->isEncr && !extra->isMitmProtected && (val->perms & ATT_PERM_READ_ENCR))
+    if (conn->isEncr && !conn->isMitmProtected && (val->perms & ATT_PERM_READ_ENCR))
         return true;
 
-    if (!extra->isEncr && (val->perms & ATT_PERM_READ))
+    if (!conn->isEncr && (val->perms & ATT_PERM_READ))
         return true;
 
     return false;
 }
 
 /*
- * FUNCTION: attValIsWriteableBy
+ * FUNCTION: attSrvIsValWriteableBy
  * USE:      Decide if a given value is writeable by a given connection
  * PARAMS:   range -the value's range
  *           val - the value
- *           extra - per-connection state for this connection
+ *           conn - per-connection state for this connection
  *           isSigned - is this a signed write?
  * RETURN:   true if allowed to write, false else
- * NOTES:    call with mSrvLock held
+ * NOTES:    call with mAttLock held
  */
-static bool attValIsWriteableBy(struct attSrvRange *range, struct attSrvVal *val, struct attSrvConnExtra *extra, bool isSigned)
+static bool attSrvIsValWriteableBy(struct attSrvRange *range, struct attSrvVal *val, struct attConn *conn, bool isSigned)
 {
-    if (!extra->isEncr && isSigned && (val->perms & ATT_PERM_WRITE_SIGNED))
+    if (!conn->isEncr && isSigned && (val->perms & ATT_PERM_WRITE_SIGNED))
         return true;
 
-    if (!isSigned && extra->isEncr && extra->isMitmProtected && (val->perms & ATT_PERM_WRITE_ENCR_MITM))
+    if (!isSigned && conn->isEncr && conn->isMitmProtected && (val->perms & ATT_PERM_WRITE_ENCR_MITM))
         return true;
 
-    if (!isSigned && extra->isEncr && !extra->isMitmProtected && (val->perms & ATT_PERM_WRITE_ENCR))
+    if (!isSigned && conn->isEncr && !conn->isMitmProtected && (val->perms & ATT_PERM_WRITE_ENCR))
         return true;
 
-    if (!isSigned && !extra->isEncr && (val->perms & ATT_PERM_WRITE))
+    if (!isSigned && !conn->isEncr && (val->perms & ATT_PERM_WRITE))
         return true;
 
     return false;
@@ -1783,13 +1763,13 @@ static bool attValIsWriteableBy(struct attSrvRange *range, struct attSrvVal *val
  * FUNCTION: attRangeIsVisibleBy
  * USE:      Decide if a given range is visibile to a given connection
  * PARAMS:   range - the range
- *           extra - per-connection state for this connection
+ *           conn - per-connection state for this connection
  * RETURN:   true if visible, false else
- * NOTES:    call with mSrvLock held
+ * NOTES:    call with mAttLock held
  */
-static bool attRangeIsVisibleTo(struct attSrvRange *range, struct attSrvConnExtra *extra)
+static bool attSrvIsRangeVisibleTo(struct attSrvRange *range, struct attConn *conn)
 {
-    return (extra->isLE && range->allowLE) || (!extra->isLE && range->allowEDR);
+    return (conn->isLE && range->allowLE) || (!conn->isLE && range->allowEDR);
 }
 
 /*
@@ -1800,11 +1780,11 @@ static bool attRangeIsVisibleTo(struct attSrvRange *range, struct attSrvConnExtr
  *           startHandle - first handle the client cares about
  *           endHandle - last handle the client cares about
  * RETURN:   success
- * NOTES:    call with mSrvLock help
+ * NOTES:    call with mAttLock held
  */
 static bool attSrvOpFindInfo(l2c_handle_t to, uint32_t mtu, uint16_t startHandle, uint16_t endHandle)
 {
-    struct attSrvConnExtra *extra = attConnListGetExtra(&mAllClients, to);
+    struct attConn *conn = attConnFindByL2cConn(to);
     struct attPduFindInfoRsp rsp;
     bool allUuidsSmall = true;
     struct attSrvRange *range;
@@ -1812,23 +1792,23 @@ static bool attSrvOpFindInfo(l2c_handle_t to, uint32_t mtu, uint16_t startHandle
     sg results = NULL;
     bool err = false;
 
-    if (!extra) {
-        loge("No extra found for connection\n");
-        return attSrvSendErrorReply(to, ATT_ERROR_UNLIKELY_ERROR, ATT_OPCODE_FIND_INFO_REQ, startHandle);
+    if (!conn) {
+        loge("No connection found\n");
+        return attSrvSendPacketErrorReply(to, ATT_ERROR_UNLIKELY_ERROR, ATT_OPCODE_FIND_INFO_REQ, startHandle);
     }
 
     if (!startHandle || startHandle > endHandle)
-        return attSrvSendErrorReply(to, ATT_ERROR_INVALID_HANDLE, ATT_OPCODE_FIND_INFO_REQ, startHandle);
+        return attSrvSendPacketErrorReply(to, ATT_ERROR_INVALID_HANDLE, ATT_OPCODE_FIND_INFO_REQ, startHandle);
 
     results = sgNew();
 
     if (!results)
-        return attSrvSendErrorReply(to, ATT_ERROR_INSUFFICIENT_RSRCS, ATT_OPCODE_FIND_INFO_REQ, startHandle);
+        return attSrvSendPacketErrorReply(to, ATT_ERROR_INSUFFICIENT_RSRCS, ATT_OPCODE_FIND_INFO_REQ, startHandle);
 
     mtu -= sizeof(struct attPduFindInfoRsp) + sizeof(struct attHdr); /* mtu is now how many bytes we can produce */
 
     for (range = mRangesHead; range; range = range->next) {
-        if (!attRangeIsVisibleTo(range, extra))
+        if (!attSrvIsRangeVisibleTo(range, conn))
             continue;
         for (val = range->valsHead; val; val = val->next) {
             uint16_t uuid16, handle = range->start + val->offset;
@@ -1892,12 +1872,12 @@ out:
     /* a lack of results is reported thusly */
     if (!sgLength(results)) {
         sgFree(results);
-        return attSrvSendErrorReply(to, ATT_ERROR_ATTRIBUTE_NOT_FOUND, ATT_OPCODE_FIND_INFO_REQ, startHandle);
+        return attSrvSendPacketErrorReply(to, ATT_ERROR_ATTRIBUTE_NOT_FOUND, ATT_OPCODE_FIND_INFO_REQ, startHandle);
     }
 
     /* we're ready to send a reply */
     utilSetLE8(&rsp.format, allUuidsSmall ? ATT_FIND_INFO_RSP_FMT_16 : ATT_FIND_INFO_RSP_FMT_128);
-    if (attSrvSendPacket(to, ATT_OPCODE_FIND_INFO_RSP, &rsp, sizeof(rsp), results))
+    if (attSendPacket(to, ATT_OPCODE_FIND_INFO_RSP, &rsp, sizeof(rsp), results))
         return true;
 
     /* if we fall though to here, try to send an error (even if it is unlikely to work) */
@@ -1905,21 +1885,20 @@ out:
 unrecoverable:
     if (results)
         sgFree(results);
-    return attSrvSendErrorReply(to, ATT_ERROR_UNLIKELY_ERROR, ATT_OPCODE_FIND_INFO_REQ, 0);
+    return attSrvSendPacketErrorReply(to, ATT_ERROR_UNLIKELY_ERROR, ATT_OPCODE_FIND_INFO_REQ, 0);
 }
 
 /*
  * FUNCTION: attSrvOpFindByTypeValContinue
  * USE:      Continue a find by type value request
- * PARAMS:   extra - the extra struct
- *           to - the connection handle
+ * PARAMS:   conn - the per-connection struct
  *           lastReadData - return from the READ call
  *           leastReadLen - length last read result produced
  *           lastReadRet - last read's result
  * RETURN:   false to fail immediately, true if more work will be done
- * NOTES:    call with mSrvLock held
+ * NOTES:    call with mAttLock held
  */
-static bool attSrvOpFindByTypeValContinue(struct attSrvConnExtra *extra, l2c_handle_t to, const void *lastReadData, uint16_t leastReadLen, uint8_t lastReadRet)
+static bool attSrvOpFindByTypeValContinue(struct attConn *conn, const void *lastReadData, uint16_t leastReadLen, uint8_t lastReadRet)
 {
     uint8_t err = ATT_ERROR_UNLIKELY_ERROR;
     struct attSrvRange *range;
@@ -1929,23 +1908,23 @@ static bool attSrvOpFindByTypeValContinue(struct attSrvConnExtra *extra, l2c_han
     uint32_t mtu;
     sg results;
 
-    if (extra->penOp.origOpcode != ATT_OPCODE_FIND_BY_TYPE_VAL_REQ)
+    if (conn->srv.penOp.origOpcode != ATT_OPCODE_FIND_BY_TYPE_VAL_REQ)
         return false;
 
-    startHandle = extra->penOp.startHandle;
-    endHandle = extra->penOp.endHandle;
-    mtu = extra->penOp.mtu;
-    results = extra->penOp.replyInProgress;
+    startHandle = conn->srv.penOp.startHandle;
+    endHandle = conn->srv.penOp.endHandle;
+    mtu = conn->srv.penOp.mtu;
+    results = conn->srv.penOp.replyInProgress;
 
     mtu -= sizeof(struct attHdr); /* mtu is now how many bytes we can produce */
 
-    if (lastReadRet == ATT_ERROR_NONE && leastReadLen == extra->penOp.findByTypeValue.wantedLen && !memcmp(lastReadData, extra->penOp.findByTypeValue.wantedVal, leastReadLen)) {
+    if (lastReadRet == ATT_ERROR_NONE && leastReadLen == conn->srv.penOp.findByTypeValue.wantedLen && !memcmp(lastReadData, conn->srv.penOp.findByTypeValue.wantedVal, leastReadLen)) {
 
         /* if the last read succeeded, append the result if it is a result */
         struct attPduFindByTypeValRspItem result;
 
         utilSetLE16(&result.firstHandle, startHandle);
-        utilSetLE16(&result.groupEndHandle, startHandle + extra->penOp.findByTypeValue.valGrpLen - 1);
+        utilSetLE16(&result.groupEndHandle, startHandle + conn->srv.penOp.findByTypeValue.valGrpLen - 1);
 
         if (!sgConcatBackCopy(results, &result, sizeof(result)))
             goto done;
@@ -1963,7 +1942,7 @@ static bool attSrvOpFindByTypeValContinue(struct attSrvConnExtra *extra, l2c_han
     startHandle++;
 
     for (range = mRangesHead; range; range = range->next) {
-        if (!attRangeIsVisibleTo(range, extra))
+        if (!attSrvIsRangeVisibleTo(range, conn))
             continue;
         for (val = range->valsHead; val; val = val->next) {
             uint16_t handle = range->start + val->offset;
@@ -1977,17 +1956,17 @@ static bool attSrvOpFindByTypeValContinue(struct attSrvConnExtra *extra, l2c_han
                 goto done;
 
             /* must be readable */
-            if (!attValIsReadableBy(range, val, extra))
+            if (!attSrvIsValReadableBy(range, val, conn))
                 continue;
 
             /* must be of a given type */
-            if (!uuidCmp(&val->type, &extra->penOp.findByTypeValue.uuid))
+            if (!uuidCmp(&val->type, &conn->srv.penOp.findByTypeValue.uuid))
                 continue;
 
             /* we found a falue to read - schedule it */
-            extra->penOp.startHandle = handle;
-            extra->penOp.findByTypeValue.valGrpLen = effectiveGrpLen;
-            if (!attSrvSchedReadCbk(range, val, to, ATT_READ_FOR_FIND_BY_TYPE_VAL, 0, extra->penOp.findByTypeValue.wantedLen + 1))
+            conn->srv.penOp.startHandle = handle;
+            conn->srv.penOp.findByTypeValue.valGrpLen = effectiveGrpLen;
+            if (!attSrvSchedReadCbk(range, val, conn, ATT_READ_FOR_FIND_BY_TYPE_VAL, 0, conn->srv.penOp.findByTypeValue.wantedLen + 1))
                 break;
 
             return false;
@@ -1995,8 +1974,8 @@ static bool attSrvOpFindByTypeValContinue(struct attSrvConnExtra *extra, l2c_han
     }
 
 done:
-    extra->penOp.origOpcode = 0;
-    free(extra->penOp.findByTypeValue.wantedVal);
+    conn->srv.penOp.origOpcode = 0;
+    free(conn->srv.penOp.findByTypeValue.wantedVal);
 
     /* make sure we do not send too much */
     while (sgLength(results) > mtu)
@@ -2005,13 +1984,13 @@ done:
     /* a lack of results is reported via error */
     if (!sgLength(results)) {
         err = ATT_ERROR_ATTRIBUTE_NOT_FOUND;
-        startHandle = extra->penOp.origStartHandle;
-    } else if (attSrvSendPacket(to, ATT_OPCODE_FIND_BY_TYPE_VAL_RSP, NULL, 0, results))
+        startHandle = conn->srv.penOp.origStartHandle;
+    } else if (attSendPacket(conn->conn, ATT_OPCODE_FIND_BY_TYPE_VAL_RSP, NULL, 0, results))
         return true;
 
     /* if we fall though to here, try to send an error */
     sgFree(results);
-    return attSrvSendErrorReply(to, err, ATT_OPCODE_FIND_BY_TYPE_VAL_REQ, startHandle);
+    return attSrvSendPacketErrorReply(conn->conn, err, ATT_OPCODE_FIND_BY_TYPE_VAL_REQ, startHandle);
 }
 
 /*
@@ -2024,59 +2003,59 @@ done:
  *           uuid - the uuid to find
  *           s - the value to find
  * RETURN:   success
- * NOTES:    call with mSrvLock held
+ * NOTES:    call with mAttLock held
  */
 static bool attSrvOpFindByTypeValStart(l2c_handle_t to, uint32_t mtu, uint16_t startHandle, uint16_t endHandle, const struct uuid *uuid, sg s)
 {
-    struct attSrvConnExtra *extra = attConnListGetExtra(&mAllClients, to);
+    struct attConn *conn = attConnFindByL2cConn(to);
     uint8_t err = ATT_ERROR_INSUFFICIENT_RSRCS;
     sg results = NULL;
     bool ret;
 
     if (!startHandle || startHandle > endHandle) {
-        ret = attSrvSendErrorReply(to, ATT_ERROR_INVALID_HANDLE, ATT_OPCODE_FIND_BY_TYPE_VAL_REQ, startHandle);
+        ret = attSrvSendPacketErrorReply(to, ATT_ERROR_INVALID_HANDLE, ATT_OPCODE_FIND_BY_TYPE_VAL_REQ, startHandle);
         goto out;
     }
 
-    if (!extra)
-        loge("No extra found for connection\n");
-    else if (extra->penOp.origOpcode)
+    if (!conn)
+        loge("No connection found\n");
+    else if (conn->srv.penOp.origOpcode)
         err = ATT_ERROR_UNLIKELY_ERROR;
     else {
 
         results = sgNew();
         if (results) {
 
-            extra->penOp.findByTypeValue.wantedVal = malloc(sgLength(s));
-            if (extra->penOp.findByTypeValue.wantedVal) {
+            conn->srv.penOp.findByTypeValue.wantedVal = malloc(sgLength(s));
+            if (conn->srv.penOp.findByTypeValue.wantedVal) {
 
-                sgSerialize(s, 0, sgLength(s), extra->penOp.findByTypeValue.wantedVal);
+                sgSerialize(s, 0, sgLength(s), conn->srv.penOp.findByTypeValue.wantedVal);
 
-                extra->penOp.origOpcode = ATT_OPCODE_FIND_BY_TYPE_VAL_REQ;
-                extra->penOp.replyInProgress = results;
-                extra->penOp.origStartHandle = startHandle;
-                extra->penOp.startHandle = startHandle - 1;
-                extra->penOp.endHandle = endHandle;
-                extra->penOp.mtu = mtu;
-                memcpy(&extra->penOp.findByTypeValue.uuid, uuid, sizeof(extra->penOp.findByTypeValue.uuid));
-                extra->penOp.findByTypeValue.wantedLen = sgLength(s);
-                extra->penOp.findByTypeValue.valGrpLen = 0;
+                conn->srv.penOp.origOpcode = ATT_OPCODE_FIND_BY_TYPE_VAL_REQ;
+                conn->srv.penOp.replyInProgress = results;
+                conn->srv.penOp.origStartHandle = startHandle;
+                conn->srv.penOp.startHandle = startHandle - 1;
+                conn->srv.penOp.endHandle = endHandle;
+                conn->srv.penOp.mtu = mtu;
+                memcpy(&conn->srv.penOp.findByTypeValue.uuid, uuid, sizeof(conn->srv.penOp.findByTypeValue.uuid));
+                conn->srv.penOp.findByTypeValue.wantedLen = sgLength(s);
+                conn->srv.penOp.findByTypeValue.valGrpLen = 0;
 
-                if (attSrvOpFindByTypeValContinue(extra, to, NULL, 0, ATT_FIRST_CONTINUE_CALL)) {
+                if (attSrvOpFindByTypeValContinue(conn, NULL, 0, ATT_FIRST_CONTINUE_CALL)) {
                     sgFree(s);
                     return true;
                 }
 
                 err = ATT_ERROR_UNLIKELY_ERROR;
-                extra->penOp.origOpcode = 0;
+                conn->srv.penOp.origOpcode = 0;
 
-                free(extra->penOp.findByTypeValue.wantedVal);
+                free(conn->srv.penOp.findByTypeValue.wantedVal);
             }
             sgFree(results);
         }
     }
 
-    ret = attSrvSendErrorReply(to, err, ATT_OPCODE_FIND_BY_TYPE_VAL_REQ, startHandle);
+    ret = attSrvSendPacketErrorReply(to, err, ATT_OPCODE_FIND_BY_TYPE_VAL_REQ, startHandle);
 
 out:
     if (ret)
@@ -2087,15 +2066,14 @@ out:
 /*
  * FUNCTION: attSrvOpReadByTypeContinue
  * USE:      Continue a read by type / read by group type request
- * PARAMS:   extra - the extra struct
- *           to - the connection handle
+ * PARAMS:   conn - the per-connection structure
  *           lastReadData - return from the READ call
  *           leastReadLen - length last read result produced
  *           lastReadRet - last read's result
  * RETURN:   false to fail immediately, true if more work will be done
- * NOTES:    call with mSrvLock held
+ * NOTES:    call with mAttLock held
  */
-static bool attSrvOpReadByTypeContinue(struct attSrvConnExtra *extra, l2c_handle_t to, const void *lastReadData, uint16_t leastReadLen, uint8_t lastReadRet)
+static bool attSrvOpReadByTypeContinue(struct attConn *conn, const void *lastReadData, uint16_t leastReadLen, uint8_t lastReadRet)
 {
     uint8_t err = ATT_ERROR_UNLIKELY_ERROR;
     struct attSrvRange *range;
@@ -2113,7 +2091,7 @@ static bool attSrvOpReadByTypeContinue(struct attSrvConnExtra *extra, l2c_handle
     sg results;
 
 
-    grpType = extra->penOp.readByType.grpType;
+    grpType = conn->srv.penOp.readByType.grpType;
     packetHdrSz = grpType ? sizeof(struct attPduReadByGrpTypeRsp) : sizeof(struct attPduReadByTypeRsp);
     itemHdrSz = grpType ? sizeof(struct attGrpValuePair) : sizeof(struct attHandleValuePair);
     itemMaxLen = grpType ? ATT_MAX_LEN_FOR_RD_BY_GRP_TYP : ATT_MAX_LEN_FOR_RD_BY_TYPE;
@@ -2121,13 +2099,13 @@ static bool attSrvOpReadByTypeContinue(struct attSrvConnExtra *extra, l2c_handle
     reqOpcode = grpType ? ATT_OPCODE_READ_BY_GRP_TYPE_REQ : ATT_OPCODE_READ_BY_TYPE_REQ;
     rspOpcode = grpType ? ATT_OPCODE_READ_BY_GRP_TYPE_RSP : ATT_OPCODE_READ_BY_TYPE_RSP;
 
-    if (extra->penOp.origOpcode != reqOpcode)
+    if (conn->srv.penOp.origOpcode != reqOpcode)
         return false;
 
-    startHandle = extra->penOp.startHandle;
-    endHandle = extra->penOp.endHandle;
-    mtu = extra->penOp.mtu;
-    results = extra->penOp.replyInProgress;
+    startHandle = conn->srv.penOp.startHandle;
+    endHandle = conn->srv.penOp.endHandle;
+    mtu = conn->srv.penOp.mtu;
+    results = conn->srv.penOp.replyInProgress;
 
     mtu -= sizeof(struct attHdr) + packetHdrSz; /* mtu is now how many bytes we can produce */
     if (itemMaxLen > mtu - itemHdrSz)
@@ -2138,15 +2116,15 @@ static bool attSrvOpReadByTypeContinue(struct attSrvConnExtra *extra, l2c_handle
         uint16_t perResultSize;
 
         /* only items of the same size shall be provided, so the first result sets the size */
-        if (sgLength(results) && leastReadLen != extra->penOp.readByType.itemLen)
+        if (sgLength(results) && leastReadLen != conn->srv.penOp.readByType.itemLen)
             goto done;
-        extra->penOp.readByType.itemLen = leastReadLen;
+        conn->srv.penOp.readByType.itemLen = leastReadLen;
 
         /* prepare the per-item header */
         if (grpType) {
             struct attGrpValuePair gvp;
             utilSetLE16(&gvp.handle, startHandle);
-            utilSetLE16(&gvp.groupEndHadle, startHandle + extra->penOp.readByType.valGrpLen - 1);
+            utilSetLE16(&gvp.groupEndHadle, startHandle + conn->srv.penOp.readByType.valGrpLen - 1);
 
             thisResult = sgNewWithCopyData(&gvp, sizeof(gvp));
         } else {
@@ -2189,7 +2167,7 @@ static bool attSrvOpReadByTypeContinue(struct attSrvConnExtra *extra, l2c_handle
     startHandle++;
 
     for (range = mRangesHead; range; range = range->next) {
-        if (!attRangeIsVisibleTo(range, extra))
+        if (!attSrvIsRangeVisibleTo(range, conn))
             continue;
         for (val = range->valsHead; val; val = val->next) {
             uint16_t handle = range->start + val->offset;
@@ -2202,17 +2180,17 @@ static bool attSrvOpReadByTypeContinue(struct attSrvConnExtra *extra, l2c_handle
                 goto done;
 
             /* must be readable */
-            if (!attValIsReadableBy(range, val, extra))
+            if (!attSrvIsValReadableBy(range, val, conn))
                 continue;
 
             /* must be of a given type */
-            if (!uuidCmp(&val->type, &extra->penOp.readByType.uuid))
+            if (!uuidCmp(&val->type, &conn->srv.penOp.readByType.uuid))
                 continue;
 
             /* we found a falue to read - schedule it */
-            extra->penOp.startHandle = handle;
-            extra->penOp.readByType.valGrpLen = effectiveGrpLen;
-            if (attSrvSchedReadCbk(range, val, to, readReason, 0, itemMaxLen))
+            conn->srv.penOp.startHandle = handle;
+            conn->srv.penOp.readByType.valGrpLen = effectiveGrpLen;
+            if (attSrvSchedReadCbk(range, val, conn, readReason, 0, itemMaxLen))
                 return true;
 
             goto done;
@@ -2220,16 +2198,16 @@ static bool attSrvOpReadByTypeContinue(struct attSrvConnExtra *extra, l2c_handle
     }
 
 done:
-    extra->penOp.origOpcode = 0;
+    conn->srv.penOp.origOpcode = 0;
 
     if (sgLength(results) > mtu) {
         /* make sure we do not send too much */
         logw("Impossible result length %u over mtu %u in read by [grp] type\n", sgLength(results), mtu);
-        startHandle = extra->penOp.origStartHandle;
+        startHandle = conn->srv.penOp.origStartHandle;
      } else if (!sgLength(results)) {
         /* a lack of results is reported thusly */
         err = ATT_ERROR_ATTRIBUTE_NOT_FOUND;
-        startHandle = extra->penOp.origStartHandle;
+        startHandle = conn->srv.penOp.origStartHandle;
     } else {
         struct attPduReadByTypeRsp rbt;
         struct attPduReadByGrpTypeRsp gtr;
@@ -2237,19 +2215,19 @@ done:
 
         if (grpType) {
             hdr = &gtr;
-            utilSetLE8(&gtr.attGrpValuePairSz, extra->penOp.readByType.itemLen + sizeof(struct attGrpValuePair));
+            utilSetLE8(&gtr.attGrpValuePairSz, conn->srv.penOp.readByType.itemLen + sizeof(struct attGrpValuePair));
         } else {
             hdr = &rbt;
-            utilSetLE8(&rbt.handleValuePairSz, extra->penOp.readByType.itemLen + sizeof(struct attHandleValuePair));
+            utilSetLE8(&rbt.handleValuePairSz, conn->srv.penOp.readByType.itemLen + sizeof(struct attHandleValuePair));
         }
 
-        if (attSrvSendPacket(to, rspOpcode, hdr, packetHdrSz, results))
+        if (attSendPacket(conn->conn, rspOpcode, hdr, packetHdrSz, results))
             return true;
     }
 
     /* if we fall though to here, try to send an error (even if it is unlikely to work) */
     sgFree(results);
-    return attSrvSendErrorReply(to, err, reqOpcode, startHandle);
+    return attSrvSendPacketErrorReply(conn->conn, err, reqOpcode, startHandle);
 }
 
 /*
@@ -2262,64 +2240,63 @@ done:
  *           uuid - the uuid to find
  *           grpType - is this a "read by group type" request ?
  * RETURN:   success
- * NOTES:    call with mSrvLock help
+ * NOTES:    call with mAttLock held
  */
 static bool attSrvOpReadByTypeStart(l2c_handle_t to, uint32_t mtu, uint16_t startHandle, uint16_t endHandle, const struct uuid *uuid, bool grpType)
 {
     const uint8_t reqOpcode = grpType ? ATT_OPCODE_READ_BY_GRP_TYPE_REQ : ATT_OPCODE_READ_BY_TYPE_REQ;
     const uint8_t rspOpcode = grpType ? ATT_OPCODE_READ_BY_GRP_TYPE_RSP : ATT_OPCODE_READ_BY_TYPE_RSP;
     const uint8_t readReason = grpType ? ATT_READ_FOR_READ_BY_GRP_TYPE : ATT_READ_FOR_READ_BY_TYPE;
-    struct attSrvConnExtra *extra = attConnListGetExtra(&mAllClients, to);
+    struct attConn *conn = attConnFindByL2cConn(to);
     uint8_t err = ATT_ERROR_INSUFFICIENT_RSRCS;
     sg results = NULL;
 
     if (!startHandle || startHandle > endHandle)
-        return attSrvSendErrorReply(to, ATT_ERROR_INVALID_HANDLE, reqOpcode, startHandle);
+        return attSrvSendPacketErrorReply(to, ATT_ERROR_INVALID_HANDLE, reqOpcode, startHandle);
 
-    if (!extra)
-        loge("No extra found for connection\n");
-    else if (extra->penOp.origOpcode)
+    if (!conn)
+        loge("No connection found\n");
+    else if (conn->srv.penOp.origOpcode)
         err = ATT_ERROR_UNLIKELY_ERROR;
     else {
         results = sgNew();
         if (results) {
 
-            extra->penOp.origOpcode = reqOpcode;
-            extra->penOp.replyInProgress = results;
-            extra->penOp.origStartHandle = startHandle;
-            extra->penOp.startHandle = startHandle - 1;
-            extra->penOp.endHandle = endHandle;
-            extra->penOp.mtu = mtu;
-            memcpy(&extra->penOp.readByType.uuid, uuid, sizeof(extra->penOp.readByType.uuid));
-            extra->penOp.readByType.grpType = grpType;
-            extra->penOp.readByType.valGrpLen = 0;
-            extra->penOp.readByType.itemLen = 0;
+            conn->srv.penOp.origOpcode = reqOpcode;
+            conn->srv.penOp.replyInProgress = results;
+            conn->srv.penOp.origStartHandle = startHandle;
+            conn->srv.penOp.startHandle = startHandle - 1;
+            conn->srv.penOp.endHandle = endHandle;
+            conn->srv.penOp.mtu = mtu;
+            memcpy(&conn->srv.penOp.readByType.uuid, uuid, sizeof(conn->srv.penOp.readByType.uuid));
+            conn->srv.penOp.readByType.grpType = grpType;
+            conn->srv.penOp.readByType.valGrpLen = 0;
+            conn->srv.penOp.readByType.itemLen = 0;
 
-            if (attSrvOpReadByTypeContinue(extra, to, NULL, 0, ATT_FIRST_CONTINUE_CALL))
+            if (attSrvOpReadByTypeContinue(conn, NULL, 0, ATT_FIRST_CONTINUE_CALL))
                 return true;
 
             err = ATT_ERROR_UNLIKELY_ERROR;
-            extra->penOp.origOpcode = 0;
+            conn->srv.penOp.origOpcode = 0;
 
             sgFree(results);
         }
     }
 
-    return attSrvSendErrorReply(to, err, reqOpcode, startHandle);
+    return attSrvSendPacketErrorReply(to, err, reqOpcode, startHandle);
 }
 
 /*
- * FUNCTION: attSrvOpReadByTypeContinue
+ * FUNCTION: attSrvOpReadContinue
  * USE:      Continue a read / read blob request
- * PARAMS:   extra - the extra struct
- *           to - the connection handle
+ * PARAMS:   conn - the per-connection structure
  *           lastReadData - return from the READ call
  *           leastReadLen - length last read result produced
  *           lastReadRet - last read's result
  * RETURN:   false to fail immediately, true if more work will be done
- * NOTES:    call with mSrvLock held
+ * NOTES:    call with mAttLock held
  */
-static bool attSrvOpReadContinue(struct attSrvConnExtra *extra, l2c_handle_t to, const void *lastReadData, uint16_t leastReadLen, uint8_t lastReadRet)
+static bool attSrvOpReadContinue(struct attConn *conn, const void *lastReadData, uint16_t leastReadLen, uint8_t lastReadRet)
 {
     uint8_t err = lastReadRet;
     uint16_t wantedHandle;
@@ -2327,29 +2304,29 @@ static bool attSrvOpReadContinue(struct attSrvConnExtra *extra, l2c_handle_t to,
     sg result;
 
 
-    if (extra->penOp.origOpcode == ATT_OPCODE_READ_REQ)
+    if (conn->srv.penOp.origOpcode == ATT_OPCODE_READ_REQ)
         rspOpc = ATT_OPCODE_READ_RSP;
-    else if (extra->penOp.origOpcode == ATT_OPCODE_READ_BLOB_REQ)
+    else if (conn->srv.penOp.origOpcode == ATT_OPCODE_READ_BLOB_REQ)
         rspOpc = ATT_OPCODE_READ_BLOB_RSP;
     else
         return false;
 
-    wantedHandle = extra->penOp.startHandle;
-    opc = extra->penOp.origOpcode;
-    extra->penOp.origOpcode = 0;
+    wantedHandle = conn->srv.penOp.startHandle;
+    opc = conn->srv.penOp.origOpcode;
+    conn->srv.penOp.origOpcode = 0;
     
     if (err == ATT_ERROR_NONE) {
         result = sgNewWithCopyData(lastReadData, leastReadLen);
         if (!result)
             err = ATT_ERROR_INSUFFICIENT_RSRCS;
-        else if (!attSrvSendPacket(to, rspOpc, NULL, 0, result)) {
+        else if (!attSendPacket(conn->conn, rspOpc, NULL, 0, result)) {
             err = ATT_ERROR_UNLIKELY_ERROR;
             sgFree(result);
         } else
             return true;
     }
 
-    return attSrvSendErrorReply(to, err, opc, wantedHandle);
+    return attSrvSendPacketErrorReply(conn->conn, err, opc, wantedHandle);
 }
 
 /*
@@ -2361,11 +2338,11 @@ static bool attSrvOpReadContinue(struct attSrvConnExtra *extra, l2c_handle_t to,
  *           offset - offset to start at (if needed for the opcode)
  *           opcode - the opcode we were called with
  * RETURN:   success
- * NOTES:    call with mSrvLock help
+ * NOTES:    call with mAttLock held
  */
 static bool attSrvOpReadStart(l2c_handle_t to, uint32_t mtu, uint16_t wantedHandle, uint16_t offset, uint8_t opcode)
 {
-    struct attSrvConnExtra *extra = attConnListGetExtra(&mAllClients, to);
+    struct attConn *conn = attConnFindByL2cConn(to);
     uint8_t err = ATT_ERROR_INSUFFICIENT_RSRCS;
     struct attSrvRange *range;
     struct attSrvVal *val;
@@ -2373,15 +2350,15 @@ static bool attSrvOpReadStart(l2c_handle_t to, uint32_t mtu, uint16_t wantedHand
 
     if (!wantedHandle)
         err = ATT_ERROR_INVALID_HANDLE;
-    else if (!extra) {
+    else if (!conn) {
         err = ATT_ERROR_UNLIKELY_ERROR;
         wantedHandle = 0;
-        loge("No extra found for connection\n");
-    } else if (extra->penOp.origOpcode)
+        loge("No connection found\n");
+    } else if (conn->srv.penOp.origOpcode)
         err = ATT_ERROR_UNLIKELY_ERROR;
     else {
         for (range = mRangesHead; range; range = range->next) {
-            if (!attRangeIsVisibleTo(range, extra))
+            if (!attSrvIsRangeVisibleTo(range, conn))
                 continue;
             for (val = range->valsHead; val; val = val->next) {
                 uint8_t readReason = opcode == ATT_OPCODE_READ_REQ ? ATT_READ_FOR_READ : ATT_READ_FOR_READ_BLOB;
@@ -2396,21 +2373,21 @@ static bool attSrvOpReadStart(l2c_handle_t to, uint32_t mtu, uint16_t wantedHand
                 }
 
                 /* must be readable */
-                if (!attValIsReadableBy(range, val, extra)) {
+                if (!attSrvIsValReadableBy(range, val, conn)) {
                     err = ATT_ERROR_READ_NOT_ALLOWED;
                     goto done;
                 }
 
                 /* do a read */
-                extra->penOp.origOpcode = opcode;
-                extra->penOp.mtu = mtu;
-                extra->penOp.startHandle = wantedHandle;
-                extra->penOp.read.offset = offset;
+                conn->srv.penOp.origOpcode = opcode;
+                conn->srv.penOp.mtu = mtu;
+                conn->srv.penOp.startHandle = wantedHandle;
+                conn->srv.penOp.read.offset = offset;
 
-                if (attSrvSchedReadCbk(range, val, to, readReason, offset, mtu - sizeof(struct attHdr)))
+                if (attSrvSchedReadCbk(range, val, conn, readReason, offset, mtu - sizeof(struct attHdr)))
                     return true;
 
-                extra->penOp.origOpcode = 0;
+                conn->srv.penOp.origOpcode = 0;
                 err = ATT_ERROR_UNLIKELY_ERROR;
                 goto done;
             }
@@ -2418,21 +2395,20 @@ static bool attSrvOpReadStart(l2c_handle_t to, uint32_t mtu, uint16_t wantedHand
     }
 done:
 
-    return attSrvSendErrorReply(to, err, opcode, wantedHandle);
+    return attSrvSendPacketErrorReply(to, err, opcode, wantedHandle);
 }
 
 /*
  * FUNCTION: attSrvOpReadMultContinue
  * USE:      Continue a read multiple request
- * PARAMS:   extra - the extra struct
- *           to - the connection handle
+ * PARAMS:   conn - per-connection structure
  *           lastReadData - return from the READ call
  *           leastReadLen - length last read result produced
  *           lastReadRet - last read's result
  * RETURN:   false to fail immediately, true if more work will be done
- * NOTES:    call with mSrvLock held
+ * NOTES:    call with mAttLock held
  */
-static bool attSrvOpReadMultContinue(struct attSrvConnExtra *extra, l2c_handle_t to, const void *lastReadData, uint16_t leastReadLen, uint8_t lastReadRet)
+static bool attSrvOpReadMultContinue(struct attConn *conn, const void *lastReadData, uint16_t leastReadLen, uint8_t lastReadRet)
 {
     uint8_t err = ATT_ERROR_UNLIKELY_ERROR;
     struct attSrvRange *range;
@@ -2442,12 +2418,12 @@ static bool attSrvOpReadMultContinue(struct attSrvConnExtra *extra, l2c_handle_t
     uint16_t mtu;
 
 
-    if (extra->penOp.origOpcode != ATT_OPCODE_READ_MULT_REQ)
+    if (conn->srv.penOp.origOpcode != ATT_OPCODE_READ_MULT_REQ)
         return false;
 
-    mtu = extra->penOp.mtu;
-    results = extra->penOp.replyInProgress;
-    handles = extra->penOp.readMult.handles;
+    mtu = conn->srv.penOp.mtu;
+    results = conn->srv.penOp.replyInProgress;
+    handles = conn->srv.penOp.readMult.handles;
 
     mtu -= sizeof(struct attHdr); /* mtu is now how many bytes we can produce */
 
@@ -2474,7 +2450,7 @@ static bool attSrvOpReadMultContinue(struct attSrvConnExtra *extra, l2c_handle_t
     wantedHandle = utilGetLE16(&wantedHandle);
 
     for (range = mRangesHead; range; range = range->next) {
-        if (!attRangeIsVisibleTo(range, extra))
+        if (!attSrvIsRangeVisibleTo(range, conn))
             continue;
         for (val = range->valsHead; val; val = val->next) {
             uint16_t handle = range->start + val->offset;
@@ -2485,17 +2461,17 @@ static bool attSrvOpReadMultContinue(struct attSrvConnExtra *extra, l2c_handle_t
             if (handle > wantedHandle)
                 goto done;
 
-            extra->penOp.readMult.lastReadHandle = wantedHandle;
+            conn->srv.penOp.readMult.lastReadHandle = wantedHandle;
 
             /* must be readable */
-            if (!attValIsReadableBy(range, val, extra)) {
+            if (!attSrvIsValReadableBy(range, val, conn)) {
                 err = ATT_ERROR_READ_NOT_ALLOWED;
                 goto error;
             }
 
             /* we found the falue to read - schedule it */
-            extra->penOp.startHandle = handle;
-            if (attSrvSchedReadCbk(range, val, to, ATT_READ_FOR_READ_MULT, 0, mtu))
+            conn->srv.penOp.startHandle = handle;
+            if (attSrvSchedReadCbk(range, val, conn, ATT_READ_FOR_READ_MULT, 0, mtu))
                 return true;
 
             goto error;
@@ -2506,7 +2482,7 @@ error:
     sgTruncFront(results, sgLength(results));
 
 done:
-    extra->penOp.origOpcode = 0;
+    conn->srv.penOp.origOpcode = 0;
 
     /* mind the length */
     if (sgLength(results) > mtu)
@@ -2514,14 +2490,14 @@ done:
 
     if (!sgLength(results)) {
         /* a lack of results is reported as an error */
-        wantedHandle = extra->penOp.readMult.lastReadHandle;
-    } else if (attSrvSendPacket(to, ATT_OPCODE_READ_MULT_RSP, NULL, 0, results))
+        wantedHandle = conn->srv.penOp.readMult.lastReadHandle;
+    } else if (attSendPacket(conn->conn, ATT_OPCODE_READ_MULT_RSP, NULL, 0, results))
         return true;
 
     /* if we fall though to here, try to send an error (even if it is unlikely to work) */
     sgFree(results);
     sgFree(handles);
-    return attSrvSendErrorReply(to, err, ATT_OPCODE_READ_MULT_REQ, wantedHandle);
+    return attSrvSendPacketErrorReply(conn->conn, err, ATT_OPCODE_READ_MULT_REQ, wantedHandle);
 }
 
 /*
@@ -2531,34 +2507,34 @@ done:
  *           mtu - the mtu to use
  *           s - sg with uint16_t list of handles
  * RETURN:   success
- * NOTES:    call with mSrvLock held. WILL FREE "handles" eventually, if true is returned
+ * NOTES:    call with mAttLock held. WILL FREE "handles" eventually, if true is returned
  */
 static bool attSrvOpReadMultStart(l2c_handle_t to, uint32_t mtu, sg handles)
 {
-    struct attSrvConnExtra *extra = attConnListGetExtra(&mAllClients, to);
+    struct attConn *conn = attConnFindByL2cConn(to);
     uint8_t err = ATT_ERROR_UNLIKELY_ERROR;
 
-    if (!extra)
-        loge("No extra found for connection\n");
-    else if (!extra->penOp.origOpcode) {
+    if (!conn)
+        loge("No connection found\n");
+    else if (!conn->srv.penOp.origOpcode) {
 
-        extra->penOp.replyInProgress = sgNew();
-        if (!extra->penOp.replyInProgress)
+        conn->srv.penOp.replyInProgress = sgNew();
+        if (!conn->srv.penOp.replyInProgress)
             err = ATT_ERROR_INSUFFICIENT_RSRCS;
         else {
 
-            extra->penOp.origOpcode = ATT_OPCODE_READ_MULT_REQ;
-            extra->penOp.readMult.handles = handles;
-            extra->penOp.mtu = mtu;
+            conn->srv.penOp.origOpcode = ATT_OPCODE_READ_MULT_REQ;
+            conn->srv.penOp.readMult.handles = handles;
+            conn->srv.penOp.mtu = mtu;
 
-            if (attSrvOpReadContinue(extra, to, NULL, 0, ATT_FIRST_CONTINUE_CALL))
+            if (attSrvOpReadContinue(conn, NULL, 0, ATT_FIRST_CONTINUE_CALL))
                 return true;
 
-            sgFree(extra->penOp.replyInProgress);
+            sgFree(conn->srv.penOp.replyInProgress);
         }
     }
 
-    if (attSrvSendErrorReply(to, err, ATT_OPCODE_READ_MULT_REQ, 0)) {
+    if (attSrvSendPacketErrorReply(to, err, ATT_OPCODE_READ_MULT_REQ, 0)) {
         sgFree(handles);
         return true;
     }
@@ -2568,29 +2544,29 @@ static bool attSrvOpReadMultStart(l2c_handle_t to, uint32_t mtu, sg handles)
 /*
  * FUNCTION: attSrvWriteContinue
  * USE:      Continue a [signed] write request / command
- * PARAMS:   extra - the extra struct
- *           to - the connection handle
+ * PARAMS:   conn - per-connection structure
  *           lastWriteData - return from the READ call
  *           leastWriteLen - length last read result produced
  *           lastWriteRet - last read's result
  * RETURN:   false to fail immediately, true if more work will be done
- * NOTES:    call with mSrvLock held
+ * NOTES:    call with mAttLock held
  */
-static bool attSrvWriteContinue(struct attSrvConnExtra *extra, l2c_handle_t to, const void *lastWriteData, uint16_t leastWriteLen, uint8_t lastWriteRet)
+static bool attSrvWriteContinue(struct attConn *conn, const void *lastWriteData, uint16_t leastWriteLen, uint8_t lastWriteRet)
 {
     uint8_t err = ATT_ERROR_UNLIKELY_ERROR;
 
 
-    if (extra->penOp.origOpcode != ATT_OPCODE_WRITE_REQ && extra->penOp.origOpcode != ATT_OPCODE_SIGNED_WRITE_CMD &&
-         extra->penOp.origOpcode != ATT_OPCODE_WRITE_REQ && extra->penOp.origOpcode != ATT_OPCODE_PREPARE_WRITE_REQ)
+    if (conn->srv.penOp.origOpcode != ATT_OPCODE_WRITE_REQ && conn->srv.penOp.origOpcode != ATT_OPCODE_SIGNED_WRITE_CMD &&
+         conn->srv.penOp.origOpcode != ATT_OPCODE_WRITE_REQ && conn->srv.penOp.origOpcode != ATT_OPCODE_PREPARE_WRITE_REQ)
         return false;
 
-    extra->penOp.origOpcode = 0;
+    conn->srv.penOp.origOpcode = 0;
 
-    if (extra->penOp.origOpcode == ATT_OPCODE_WRITE_REQ)
-        return attSrvSendEmptyPacket(to, ATT_OPCODE_WRITE_RSP);
-    if (extra->penOp.origOpcode == ATT_OPCODE_PREPARE_WRITE_REQ)
-        return attSrvSendPacket(to, ATT_OPCODE_PREPARE_WRITE_RSP, lastWriteData, leastWriteLen, NULL);
+    if (conn->srv.penOp.origOpcode == ATT_OPCODE_WRITE_REQ)
+        return attSendPacketEmptyPacket(conn->conn, ATT_OPCODE_WRITE_RSP);
+    if (conn->srv.penOp.origOpcode == ATT_OPCODE_PREPARE_WRITE_REQ)
+        return attSendPacket(conn->conn, ATT_OPCODE_PREPARE_WRITE_RSP, lastWriteData, leastWriteLen, NULL);
+
     return true;
 }
 
@@ -2605,21 +2581,21 @@ static bool attSrvWriteContinue(struct attSrvConnExtra *extra, l2c_handle_t to, 
  *           opcode - the opcode the brought us here
  *           writeReason - the write reason to pass to write callback
  * RETURN:   success
- * NOTES:    call with mSrvLock held
+ * NOTES:    call with mAttLock held
  */
 static bool attSrvWriteStart(l2c_handle_t to, uint32_t mtu, uint16_t wantedHandle, sg data, uint16_t byteOfst, uint8_t opcode, uint8_t writeReason)
 {
-    struct attSrvConnExtra *extra = attConnListGetExtra(&mAllClients, to);
+    struct attConn *conn = attConnFindByL2cConn(to);
     uint8_t err = ATT_ERROR_UNLIKELY_ERROR;
     struct attSrvRange *range;
     struct attSrvVal *val;
 
-    if (!extra)
-        loge("No extra found for connection\n");
-    else if (!extra->penOp.origOpcode) {
+    if (!conn)
+        loge("No connection found\n");
+    else if (!conn->srv.penOp.origOpcode) {
 
         for (range = mRangesHead; range; range = range->next) {
-            if (!attRangeIsVisibleTo(range, extra))
+            if (!attSrvIsRangeVisibleTo(range, conn))
                 continue;
             for (val = range->valsHead; val; val = val->next) {
                 uint16_t handle = range->start + val->offset;
@@ -2634,19 +2610,19 @@ static bool attSrvWriteStart(l2c_handle_t to, uint32_t mtu, uint16_t wantedHandl
 out:
         if (!val)
             err = ATT_ERROR_INVALID_HANDLE;
-        else if (!attValIsWriteableBy(range, val, extra, writeReason == ATT_WRITE_FOR_SIGNED_WRITE_CMD))
+        else if (!attSrvIsValWriteableBy(range, val, conn, writeReason == ATT_WRITE_FOR_SIGNED_WRITE_CMD))
             err = ATT_ERROR_WRITE_NOT_ALLOWED;
         else {
-            extra->penOp.origOpcode = opcode;
-            extra->penOp.mtu = mtu;
-            extra->penOp.startHandle = wantedHandle;
-            if (attSrvSchedWriteCbk(range, val, to, writeReason, 0, data))
+            conn->srv.penOp.origOpcode = opcode;
+            conn->srv.penOp.mtu = mtu;
+            conn->srv.penOp.startHandle = wantedHandle;
+            if (attSrvSchedWriteCbk(range, val, conn, writeReason, 0, data))
                 return true;
-            extra->penOp.origOpcode = 0;
+            conn->srv.penOp.origOpcode = 0;
         }
     }
 
-    if (attSrvSendErrorReply(to, err, ATT_OPCODE_WRITE_REQ, wantedHandle)) {
+    if (attSrvSendPacketErrorReply(to, err, ATT_OPCODE_WRITE_REQ, wantedHandle)) {
         sgFree(data);
         return true;
     }
@@ -2662,7 +2638,7 @@ out:
  *           rxedSig - the SIG we got
  *           data - sg with the data to write
  * RETURN:   success
- * NOTES:    call with mSrvLock held  WILL NOT FREE "data". Caller must!
+ * NOTES:    call with mAttLock held  WILL NOT FREE "data". Caller must!
  */
 static bool attSrvOpSignedWrite(l2c_handle_t to, uint32_t mtu, uint16_t handle, const uint8_t *rxedSig, sg data)
 {
@@ -2709,30 +2685,30 @@ out:
 /*
  * FUNCTION: attSrvOpExecuteWriteContinue
  * USE:      Continue an execute write request
- * PARAMS:   extra - the extra struct
+ * PARAMS:   conn - per-connection structure
  *           to - the connection handle
  *           execResult - the result of the execution attempt
  *           errorHandle - in case of error stores the handle the caused it
  * RETURN:   false to fail immediately, true if more work will be done
- * NOTES:    call with mSrvLock held
+ * NOTES:    call with mAttLock held
  */
-static bool attSrvOpExecuteWriteContinue(struct attSrvConnExtra *extra, l2c_handle_t to, uint8_t execResult, uint16_t errorHandle)
+static bool attSrvOpExecuteWriteContinue(struct attConn *conn, uint8_t execResult, uint16_t errorHandle)
 {
     uint8_t err = ATT_ERROR_UNLIKELY_ERROR;
 
 
-    if (extra->penOp.origOpcode != ATT_OPCODE_EXECUTE_WRITE_REQ)
+    if (conn->srv.penOp.origOpcode != ATT_OPCODE_EXECUTE_WRITE_REQ)
         return false;
 
-    extra->penOp.origOpcode = 0;
+    conn->srv.penOp.origOpcode = 0;
 
     if (!execResult) {
-        if (attSrvSendEmptyPacket(to, ATT_OPCODE_EXECUTE_WRITE_RSP))
+        if (attSendPacketEmptyPacket(conn->conn, ATT_OPCODE_EXECUTE_WRITE_RSP))
             return true;
         execResult = ATT_ERROR_UNLIKELY_ERROR;
     }
 
-    return attSrvSendErrorReply(to, execResult, ATT_OPCODE_EXECUTE_WRITE_REQ, errorHandle);
+    return attSrvSendPacketErrorReply(conn->conn, execResult, ATT_OPCODE_EXECUTE_WRITE_REQ, errorHandle);
 }
 
 /*
@@ -2742,31 +2718,30 @@ static bool attSrvOpExecuteWriteContinue(struct attSrvConnExtra *extra, l2c_hand
  *           mtu - the mtu to use
  *           flags - ATT_EXECUTE_WRITE_FLG_*
  * RETURN:   success
- * NOTES:    call with mSrvLock help
+ * NOTES:    call with mAttLock held
  */
 static bool attSrvOpExecuteWriteStart(l2c_handle_t to, uint32_t mtu, uint8_t flags)
 {
     uint8_t err = ATT_ERROR_UNLIKELY_ERROR;
-    struct attSrvConnExtra* extra;
+    struct attConn* conn = attConnFindByL2cConn(to);
     bool ret = ATT_ERROR_NONE;
 
-    extra = attConnListGetExtra(&mAllClients, to);
-    if (!extra) {
-        /* no tmuch to do here, nothing we CAN do */
+    if (!conn) {
+        /* not much to do here - nothing we CAN do */
     } else if (flags == ATT_EXECUTE_WRITE_FLG_CANCEL || flags == ATT_EXECUTE_WRITE_FLG_EXECUTE) {
-        if (attSrvSchedExecCbk(to, flags == ATT_EXECUTE_WRITE_FLG_EXECUTE))
+        if (attSrvSchedExecCbk(conn, flags == ATT_EXECUTE_WRITE_FLG_EXECUTE))
             return true;
     } else {
         err = ATT_ERROR_INVALID_PDU;
         goto err;
     }
 
-    if (ret == ATT_ERROR_NONE && attSrvSendEmptyPacket(to, ATT_OPCODE_EXECUTE_WRITE_RSP))
+    if (ret == ATT_ERROR_NONE && attSendPacketEmptyPacket(to, ATT_OPCODE_EXECUTE_WRITE_RSP))
         return true;
     /* if we fail to send, fall through and try to signal an error */
 
 err:
-    return attSrvSendErrorReply(to, ret, ATT_OPCODE_EXECUTE_WRITE_REQ, 0);
+    return attSrvSendPacketErrorReply(to, ret, ATT_OPCODE_EXECUTE_WRITE_REQ, 0);
 }
 
 /*
@@ -2775,23 +2750,23 @@ err:
  * PARAMS:   to - whom to reply to (if any)
  *           mtu - the mtu to use
  * RETURN:   success
- * NOTES:    call with mSrvLock help
+ * NOTES:    call with mAttLock held
  */
 static bool attSrvOpHandleValueConf(l2c_handle_t to, uint32_t mtu)
 {
-    struct attSrvConnExtra *extra;
+    struct attConn *conn;
 
-    extra = attConnListGetExtra(&mAllClients, to);
-    if (!extra)
-        loge("Failed to find extra for confirmation\n");
-    else if (extra->indTimer) { /* we're not late */
-        attSrvSchedIndResultCbk(extra->indRangeRef, extra->indOffset, to, ATT_SRV_EVT_IND_ACKED, extra->indRef);
-        timerCancel(extra->indTimer);
-        extra->indTimer = 0;
+    conn = attConnFindByL2cConn(to);
+    if (!conn)
+        loge("No connection found\n");
+    else if (conn->srv.indTimer) { /* we're not late */
+        attSrvSchedIndResultCbk(conn->srv.indRangeRef, conn->srv.indOffset, conn, ATT_SRV_EVT_IND_ACKED, conn->srv.indRef);
+        timerCancel(conn->srv.indTimer);
+        conn->srv.indTimer = 0;
     } else /* we are late */
         logw("Confirmation is late\n");
 
-    pthread_mutex_lock(&mSrvLock);
+    pthread_mutex_lock(&mAttLock);
     return true;
 }
 
@@ -2833,42 +2808,48 @@ void attSrvDataRx(l2c_handle_t from, sg s)
     opcode = utilGetLE8(&hdr.opcode);
 
     /* add to known client list */
-    pthread_mutex_lock(&mSrvLock);
-    attConnListAdd(&mAllClients, from);
+    pthread_mutex_lock(&mAttLock);
+    attConnListAddIfNew(from);
 
     switch (opcode) {
     case ATT_OPCODE_MTU_EXCH_REQ:
-        mtu = attConnMtuGet(from, true);
+    case ATT_OPCODE_MTU_EXCH_RSP:
+        mtu = attConnMtuGetByL2c(from, true);
         if (!sgSerializeCutFront(s, &mtuExch, sizeof(mtuExch)))
-            ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
+            ret = attSrvSendPacketErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else if (sgLength(s))
-            ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
+            ret = attSrvSendPacketErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else {
+            struct attConn* conn = attConnFindByL2cConn(from);
+
             newMtu = utilGetLE16(&mtuExch.mtu);
-            mtu = attConnMtuGet(from, false);
+            mtu = attConnMtuGetByL2c(from, false);
             if (!mtu || mtu > newMtu)
                 mtu = newMtu;
             attConnMtuSet(from, mtu);
-            utilSetLE16(&mtuExch.mtu, mtu);
-            ret = attSrvSendPacket(from, ATT_OPCODE_MTU_EXCH_RSP, &mtuExch, sizeof(mtuExch), NULL);
-            attSrvSchedMtuCbk(from, mtu);
+            if (opcode == ATT_OPCODE_MTU_EXCH_REQ) { /* it was a request - we should reply */
+                utilSetLE16(&mtuExch.mtu, mtu); /* we unconditionally accept */
+                ret = attSendPacket(from, ATT_OPCODE_MTU_EXCH_RSP, &mtuExch, sizeof(mtuExch), NULL);
+            }
+            if (conn)
+                attSrvSchedMtuCbk(conn, mtu);
         }
         break;
 
     case ATT_OPCODE_FIND_INFO_REQ:
-        mtu = attConnMtuGet(from, true);
+        mtu = attConnMtuGetByL2c(from, true);
         if (!sgSerializeCutFront(s, &findInfoReq, sizeof(findInfoReq)))
-            ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
+            ret = attSrvSendPacketErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else if (sgLength(s))
-            ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
+            ret = attSrvSendPacketErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
             ret = attSrvOpFindInfo(from, mtu, utilGetLE16(&findInfoReq.startHandle), utilGetLE16(&findInfoReq.endHandle));
         break;
 
     case ATT_OPCODE_FIND_BY_TYPE_VAL_REQ:
-        mtu = attConnMtuGet(from, true);
+        mtu = attConnMtuGetByL2c(from, true);
         if (!sgSerializeCutFront(s, &findByTypeValReq, sizeof(findByTypeValReq)))
-            ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
+            ret = attSrvSendPacketErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else {
             uuidFromUuid16(&uuid, utilGetLE16(&findByTypeValReq.uuid16));
             if (attSrvOpFindByTypeValStart(from, mtu, utilGetLE16(&findByTypeValReq.startHandle), utilGetLE16(&findByTypeValReq.endHandle), &uuid, s)) {
@@ -2879,37 +2860,37 @@ void attSrvDataRx(l2c_handle_t from, sg s)
         break;
 
     case ATT_OPCODE_READ_BY_TYPE_REQ:
-        mtu = attConnMtuGet(from, true);
+        mtu = attConnMtuGetByL2c(from, true);
         if (!sgSerializeCutFront(s, &readByTypeReq, sizeof(readByTypeReq)) || !attReadUuid(&uuid, s))
-            ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
+            ret = attSrvSendPacketErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
             ret = attSrvOpReadByTypeStart(from, mtu, utilGetLE16(&readByTypeReq.startHandle), utilGetLE16(&readByTypeReq.endHandle), &uuid, false);
         break;
 
     case ATT_OPCODE_READ_REQ:
-        mtu = attConnMtuGet(from, true);
+        mtu = attConnMtuGetByL2c(from, true);
         if (!sgSerializeCutFront(s, &readReq, sizeof(readReq)))
-            ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
+            ret = attSrvSendPacketErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else if (sgLength(s))
-            ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
+            ret = attSrvSendPacketErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
             ret = attSrvOpReadStart(from, mtu, utilGetLE16(&readReq.handle), 0, opcode);
         break;
 
     case ATT_OPCODE_READ_BLOB_REQ:
-        mtu = attConnMtuGet(from, true);
+        mtu = attConnMtuGetByL2c(from, true);
         if (!sgSerializeCutFront(s, &readBlobReq, sizeof(readBlobReq)))
-            ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
+            ret = attSrvSendPacketErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else if (sgLength(s))
-            ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
+            ret = attSrvSendPacketErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
             ret = attSrvOpReadStart(from, mtu, utilGetLE16(&readBlobReq.handle), utilGetLE16(&readBlobReq.offset), opcode);
         break;
 
     case ATT_OPCODE_READ_MULT_REQ:
-        mtu = attConnMtuGet(from, true);
+        mtu = attConnMtuGetByL2c(from, true);
         if ((sgLength(s) % sizeof(uint16_t)) || sgLength(s) < sizeof(uint16_t[ATT_MIN_HANDLES_IN_READ_MULT]))
-            ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
+            ret = attSrvSendPacketErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else if (attSrvOpReadMultStart(from, mtu, s)) {
             ret = true;
             s = NULL;
@@ -2917,17 +2898,17 @@ void attSrvDataRx(l2c_handle_t from, sg s)
         break;
 
     case ATT_OPCODE_READ_BY_GRP_TYPE_REQ:
-        mtu = attConnMtuGet(from, true);
+        mtu = attConnMtuGetByL2c(from, true);
         if (!sgSerializeCutFront(s, &readByGrpType, sizeof(readByGrpType)) || !attReadUuid(&uuid, s))
-            ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
+            ret = attSrvSendPacketErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
             ret = attSrvOpReadByTypeStart(from, mtu, utilGetLE16(&readByGrpType.startHandle), utilGetLE16(&readByGrpType.endHandle), &uuid, true);
         break;
 
     case ATT_OPCODE_WRITE_REQ:
-        mtu = attConnMtuGet(from, true);
+        mtu = attConnMtuGetByL2c(from, true);
         if (!sgSerializeCutFront(s, &writeReq, sizeof(writeReq)))
-            ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
+            ret = attSrvSendPacketErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else if (attSrvWriteStart(from, mtu, utilGetLE16(&writeReq.handle), s, 0, opcode, ATT_WRITE_FOR_WRITE_REQ)) {
             ret = true;
             s = NULL;
@@ -2935,9 +2916,9 @@ void attSrvDataRx(l2c_handle_t from, sg s)
         break;
 
     case ATT_OPCODE_PREPARE_WRITE_REQ:
-        mtu = attConnMtuGet(from, true);
+        mtu = attConnMtuGetByL2c(from, true);
         if (!sgSerializeCutFront(s, &prepareWriteReq, sizeof(prepareWriteReq)))
-            ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
+            ret = attSrvSendPacketErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else if (attSrvWriteStart(from, mtu, utilGetLE16(&prepareWriteReq.handle), s, utilGetLE16(&prepareWriteReq.offset), opcode, ATT_WRITE_FOR_PREPARE)) {
             ret = true;
             s = NULL;
@@ -2945,27 +2926,27 @@ void attSrvDataRx(l2c_handle_t from, sg s)
         break;
 
     case ATT_OPCODE_EXECUTE_WRITE_REQ:
-        mtu = attConnMtuGet(from, true);
+        mtu = attConnMtuGetByL2c(from, true);
         if (!sgSerializeCutFront(s, &execWriteReq, sizeof(execWriteReq)))
-            ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
+            ret = attSrvSendPacketErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else if (sgLength(s))
-            ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
+            ret = attSrvSendPacketErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
             ret = attSrvOpExecuteWriteStart(from, mtu, utilGetLE16(&execWriteReq.flags));
         break;
 
     case ATT_OPCODE_HANDLE_VALUE_CONF:
-        mtu = attConnMtuGet(from, true);
+        mtu = attConnMtuGetByL2c(from, true);
         if (sgLength(s))
-            ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
+            ret = attSrvSendPacketErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
             ret = attSrvOpHandleValueConf(from, mtu);
         break;
 
     case ATT_OPCODE_WRITE_CMD:
-        mtu = attConnMtuGet(from, true);
+        mtu = attConnMtuGetByL2c(from, true);
         if (!sgSerializeCutFront(s, &writeCmd, sizeof(writeCmd)))
-            ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
+            ret = attSrvSendPacketErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else if (attSrvWriteStart(from, mtu, utilGetLE16(&writeReq.handle), s, 0, opcode, ATT_WRITE_FOR_WRITE_CMD)) {
             ret = true;
             s = NULL;
@@ -2978,11 +2959,11 @@ void attSrvDataRx(l2c_handle_t from, sg s)
             ret = true;
             break;
         }
-        mtu = attConnMtuGet(from, true);
+        mtu = attConnMtuGetByL2c(from, true);
         if (!sgSerializeCutFront(s, &signedWriteCmd, sizeof(signedWriteCmd)))
-            ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
+            ret = attSrvSendPacketErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else if (sgLength(s) < ATT_SIG_LEN)
-            ret = attSrvSendErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
+            ret = attSrvSendPacketErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else {
             uint8_t sig[ATT_SIG_LEN];
             sgSerialize(s, sgLength(s) - ATT_SIG_LEN, ATT_SIG_LEN, sig);
@@ -2996,12 +2977,12 @@ void attSrvDataRx(l2c_handle_t from, sg s)
 
     default:
         logw("Unexpected ATT opcode 0x%02X\n", opcode);
-        ret = attSrvSendErrorReply(from, ATT_ERROR_REQ_NOT_SUPPORTED, opcode, 0);
+        ret = attSrvSendPacketErrorReply(from, ATT_ERROR_REQ_NOT_SUPPORTED, opcode, 0);
         break;
     }
 
 out:
-    pthread_mutex_unlock(&mSrvLock);
+    pthread_mutex_unlock(&mAttLock);
     if (!ret)
         loge("ATT failed to handle this message\n");
     if (s)
@@ -3022,47 +3003,47 @@ out:
  */
 void attSrvCbkReply(int cid, int transId, uint16_t handle, uint8_t err, const void *data, uint16_t len)
 {
-    struct attSrvConnExtra* extra; //attConnListGetExtra(struct attConnList *list, l2c_handle_t conn)
-    l2c_handle_t who;
+    struct attConn* conn;
     uint8_t opcode;
     bool ret = false;
 
-    pthread_mutex_lock(&mSrvLock);
-    if (!attConnListFindByCid(&mAllClients, cid, &who, &extra))
+    pthread_mutex_lock(&mAttLock);
+    conn = attConnFindBySrvCid(cid);
+    if (!conn)
         loge("Got callback reply for unknown connection\n");
-    else if (extra->nextTransId != transId)
+    else if (conn->srv.nextTransId != transId)
         loge("Got callback reply for unknown transcation id %u\n", transId);
     else {
-        switch (extra->penOp.origOpcode) {
+        switch (conn->srv.penOp.origOpcode) {
         case ATT_OPCODE_FIND_BY_TYPE_VAL_REQ:
-            ret = attSrvOpFindByTypeValContinue(extra, who, data, len, err);
+            ret = attSrvOpFindByTypeValContinue(conn, data, len, err);
             break;
         case ATT_OPCODE_READ_BY_TYPE_REQ:
         case ATT_OPCODE_READ_BY_GRP_TYPE_REQ:
-            ret = attSrvOpReadByTypeContinue(extra, who, data, len, err);
+            ret = attSrvOpReadByTypeContinue(conn, data, len, err);
             break;
         case ATT_OPCODE_READ_REQ:
         case ATT_OPCODE_READ_BLOB_REQ:
-            ret = attSrvOpReadContinue(extra, who, data, len, err);
+            ret = attSrvOpReadContinue(conn, data, len, err);
             break;
         case ATT_OPCODE_READ_MULT_REQ:
-            ret = attSrvOpReadMultContinue(extra, who, data, len, err);
+            ret = attSrvOpReadMultContinue(conn, data, len, err);
             break;
         case ATT_OPCODE_WRITE_REQ:
         case ATT_OPCODE_SIGNED_WRITE_CMD:
         case ATT_OPCODE_WRITE_CMD:
         case ATT_OPCODE_PREPARE_WRITE_REQ:
-            ret = attSrvWriteContinue(extra, who, data, len, err);
+            ret = attSrvWriteContinue(conn, data, len, err);
             break;
         case ATT_OPCODE_EXECUTE_WRITE_REQ:
-            ret = attSrvOpExecuteWriteContinue(extra, who, err, handle);
+            ret = attSrvOpExecuteWriteContinue(conn, err, handle);
             break;
         default:
             loge("Unknown original opcode\n");
-            extra->penOp.origOpcode = 0;
+            conn->srv.penOp.origOpcode = 0;
         }
     }
-    pthread_mutex_unlock(&mSrvLock);
+    pthread_mutex_unlock(&mAttLock);
 }
 
 /*
@@ -3152,9 +3133,10 @@ bool attInit(void)
 {
     bool ret = false;
 
-    pthread_mutex_lock(&mAttStateLock);
+    pthread_mutex_lock(&mAttLock);
     if (!mNumUsers) {
 
+        mConns = NULL;
         mWorkQ = workQueueAlloc(ATT_WORK_Q_SIZE);
         if (!mWorkQ)
             loge("Failed to create work Q\n");
@@ -3162,7 +3144,6 @@ bool attInit(void)
             loge("Failed to create worker\n");
             workQueueFree(mWorkQ, attWorkItemFree);
         } else {
-            mAllClients.hasExtras = true;
             ret = true;
         }
     } else
@@ -3171,7 +3152,7 @@ bool attInit(void)
     if (ret)
         mNumUsers++;
 
-    pthread_mutex_unlock(&mAttStateLock);
+    pthread_mutex_unlock(&mAttLock);
     return ret;
 }
 
@@ -3184,16 +3165,20 @@ bool attInit(void)
  */
 void attDeinit(void)
 {
-    pthread_mutex_lock(&mAttStateLock);
+    pthread_mutex_lock(&mAttLock);
     if (!mNumUsers)
         loge("too many ATT closures!\n");
     else if (!--mNumUsers) {
         workQueueWakeAll(mWorkQ, 1);
         pthread_join(mWorker, NULL);
         workQueueFree(mWorkQ, attWorkItemFree);
-        attConnListFree(&mAllClients);
+        while (mConns) {
+            struct attConn *t = mConns->next;
+            free(mConns);
+            mConns = t;
+        }
     }
-    pthread_mutex_unlock(&mAttStateLock);
+    pthread_mutex_unlock(&mAttLock);
 }
 
 
