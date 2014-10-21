@@ -708,25 +708,31 @@ static void hciRxEvt(sg packet)
         for (i = 0; i < utilGetLE8(&ncp->numHandles); i++, items++) {
             uint16_t connID = utilGetLE16(&items->conn);
             uint16_t numPackets = utilGetLE16(&items->numPackets);
+            uint8_t acceptCredits = 0;
 
             conn = hciConnFindById(connID);
-            if (!conn)
-                loge("Unknown conn 0x%04X in packets completed. Credits leaked: %d\n", connID, numPackets);
-            else {
-                if (conn->outstandingPackets >= numPackets)
+            if (!conn) {
+                loge("Unknown conn 0x%04X in %d packets completed.\n", connID, numPackets);
+            } else {
+                if (conn->outstandingPackets >= numPackets) {
+                    acceptCredits = numPackets;
                     conn->outstandingPackets -= numPackets;
-                else {
-                    loge("Conn %u has %u outstanding packets but got %u credits back. Leaked!\n", (unsigned)conn->id, conn->outstandingPackets, numPackets);
+                } else {
+                    loge("Conn %u has %u outstanding packets but got %u credits back.\n", (unsigned)conn->id, conn->outstandingPackets, numPackets);
+                    acceptCredits = conn->outstandingPackets;
                     conn->outstandingPackets = 0;
                 }
-
-                if (BT_ADDR_IS_LE(conn->addr) && !mBtJointBuffers) {
-                    hadLeCreds = true;
-                    newCreditsLe += numPackets;
-                } else {
-                    hadEdrCreds = true;
-                    newCreditsEdr += numPackets;
-                }
+            }
+            if (HCI_TAKE_CREDS_FOR_UNKNOWN_CONNS && acceptCredits != numPackets) {
+                logw("Accepting %d credits for unknown packets\n", numPackets - acceptCredits);
+                acceptCredits = numPackets;
+            }
+            if (BT_ADDR_IS_LE(conn->addr) && !mBtJointBuffers) {
+                hadLeCreds = true;
+                newCreditsLe += acceptCredits;
+            } else {
+                hadEdrCreds = true;
+                newCreditsEdr += acceptCredits;
             }
         }
         pthread_mutex_unlock(&mConnsLock);

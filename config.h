@@ -3,7 +3,12 @@
 
 
 /*
- * Hoe many items in the GATT client work queue
+ * Take back credits fo runknown connections (Set to prefer chip operation, clear to prefer connection correctness)
+ */
+#define HCI_TAKE_CREDS_FOR_UNKNOWN_CONNS    true
+
+/*
+ * How many items in the GATT client work queue
  */
 #define GATT_CLI_WORK_Q_SIZE                64
 
