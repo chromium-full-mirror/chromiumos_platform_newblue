@@ -3192,11 +3192,46 @@ void attDeinit(void)
 bool attCliRequestMtu(l2c_handle_t to, uint32_t mtu)
 {
     struct attPduMtu mtuExch;
+    bool ret;
 
     utilSetLE16(&mtuExch.mtu, mtu);
 
-    return attSendPacket(to, ATT_OPCODE_MTU_EXCH_REQ, &mtuExch, sizeof(mtuExch), NULL);
+    pthread_mutex_lock(&mAttLock);
+    ret = attSendPacket(to, ATT_OPCODE_MTU_EXCH_REQ, &mtuExch, sizeof(mtuExch), NULL);
+    pthread_mutex_unlock(&mAttLock);
+
+    return ret;
 }
+
+/*
+ * FUNCTION: attCliInit
+ * USE:      Init ATT client code (by providing callbacks)
+ * PARAMS:   cliMtuF - calback about MTU negotiation results
+ * RETURN:   false on error, true if will try
+ * NOTES:
+ */
+bool attCliInit(attMtuCbk cliMtuF)
+{
+    pthread_mutex_lock(&mAttLock);
+    mCliMtuCbk = cliMtuF;
+    pthread_mutex_unlock(&mAttLock);
+
+    return true;
+}
+
+/*
+ * FUNCTION: attCliDeinit
+ * USE:      Deinit ATT client code
+ * PARAMS:   NONE
+ * RETURN:
+ * NOTES:
+ */
+void attCliDeinit(void)
+{
+
+}
+
+
 
 
 
