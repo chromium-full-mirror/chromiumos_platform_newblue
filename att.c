@@ -358,6 +358,9 @@ static attSrvValueReadCbk mReadCbk;
 static attSrvValueWriteCbk mWriteCbk;
 
 static attMtuCbk mCliMtuCbk;
+static attCliReadCbk mCliReadF;
+static attCliWriteCbk mCliWriteF;
+static attCliError mCliErrF;
 
 static struct attConn *mConns;
 static bool mInTeardown;
@@ -3207,13 +3210,19 @@ bool attCliRequestMtu(l2c_handle_t to, uint32_t mtu)
  * FUNCTION: attCliInit
  * USE:      Init ATT client code (by providing callbacks)
  * PARAMS:   cliMtuF - calback about MTU negotiation results
+ *           cliReadF - read callback for clients
+ *           cliWriteF - write callabck for clients
+ *           cliErrF - error callback for clients
  * RETURN:   false on error, true if will try
  * NOTES:
  */
-bool attCliInit(attMtuCbk cliMtuF)
+bool attCliInit(attMtuCbk cliMtuF, attCliReadCbk cliReadF, attCliWriteCbk cliWriteF, attCliError cliErrF)
 {
     pthread_mutex_lock(&mAttLock);
     mCliMtuCbk = cliMtuF;
+    mCliReadF = cliReadF;
+    mCliWriteF = cliWriteF;
+    mCliErrF = cliErrF;
     pthread_mutex_unlock(&mAttLock);
 
     return true;

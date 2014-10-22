@@ -131,12 +131,20 @@ void attSrvCbkReply(int cid, int transId, uint16_t handle, uint8_t err, const vo
 
 /* att client api */
 
-bool attCliInit(attMtuCbk cliMtuF);
+typedef void (*attCliReadCbk)(uniq_t trans, const uint16_t *handleP, const uint16_t *endGrpHandleP, const void *data, uint32_t len, bool haveMore); /* haveMore s used for requests that can return more than one item per read, handleP & endGrpHandleP are non-null when available */
+typedef void (*attCliWriteCbk)(uniq_t trans); /* prepare write is verified by ATT, data is not sent to you */
+typedef void (*attCliError)(uniq_t trans, uint16_t handle, uint8_t err);
+
+bool attCliInit(attMtuCbk cliMtuF, attCliReadCbk cliReadF, attCliWriteCbk cliWriteF, attCliError cliErrF);
 void attCliDeinit(void);
 
 bool attCliRequestMtu(l2c_handle_t to, uint32_t mtu); /* LE only. once per connection only */
 
-
+/* these all return the Id of this transaction and callback will have it too for matching. zero is returned in case of failure to start operation */
+uniq_t attCliReadByTypeOrGroupType(l2c_handle_t to, uint16_t hStart, uint16_t hEnd, const struct uuid *type, bool byGroupType);
+uniq_t attCliRead(l2c_handle_t to, uint16_t handle, const uint16_t *offset); /* offset as NULL to issue a read, non-null to issue a read blob with the value it points to */
+uniq_t attCliWrite(l2c_handle_t to, uint8_t writeType, const void* data, uint16_t offset, uint32_t len); /* type is ATT_WRITE_FOR_*, offset is only used for ATT_WRITE_FOR_PREPARE */
+uniq_t attCliExecuteStagedWrites(l2c_handle_t to, bool commit);
 
 
 #endif
