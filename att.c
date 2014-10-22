@@ -1427,7 +1427,7 @@ static void attSrvTimerCbk(uniq_t which,  uint64_t userData)
 
 
 /*
- * FUNCTION: attSendPacket
+ * FUNCTION: attSendPacketRaw
  * USE:      Sends an assembled packet to the peer
  * PARAMS:   to - whom the data is to be sent to
  *           preData - first part of the packet or NULL
@@ -1436,7 +1436,7 @@ static void attSrvTimerCbk(uniq_t which,  uint64_t userData)
  *           postData - last part of the packet or NULL
  *           postLen - length of said data
  * RETURN:   ATT_TX_RET_*
- * NOTES:    call with mAttLock held
+ * NOTES:
  */
 static uint8_t attSendPacketRaw(l2c_handle_t to, const void *preData, uint32_t preLen, sg data, const void *postData, uint32_t postLen)
 {
@@ -1539,7 +1539,7 @@ static uint8_t attSrvSendPacketNotif(struct attSrvRange *range, struct attSrvVal
  *           opcode - opcode for which the error happened
  *           handle - the pertinent handle
  * RETURN:   success
- * NOTES:    call with mAttLock held
+ * NOTES:
  */
 static bool attSrvSendPacketErrorReply(l2c_handle_t to, uint8_t errNo, uint8_t opcode, uint16_t handle)
 {
@@ -1563,7 +1563,7 @@ static bool attSrvSendPacketErrorReply(l2c_handle_t to, uint8_t errNo, uint8_t o
  *           hdrLen - length of said header
  *           data - the data to send (may be NULL)
  * RETURN:   success
- * NOTES:    call with mAttLock held
+ * NOTES:
  */
 static bool attSendPacket(l2c_handle_t to, uint8_t opcode, const void *hdr, uint32_t hdrLen, sg data)
 {
@@ -3199,12 +3199,7 @@ bool attCliRequestMtu(l2c_handle_t to, uint32_t mtu)
     bool ret;
 
     utilSetLE16(&mtuExch.mtu, mtu);
-
-    pthread_mutex_lock(&mAttLock);
-    ret = attSendPacket(to, ATT_OPCODE_MTU_EXCH_REQ, &mtuExch, sizeof(mtuExch), NULL);
-    pthread_mutex_unlock(&mAttLock);
-
-    return ret;
+    return attSendPacket(to, ATT_OPCODE_MTU_EXCH_REQ, &mtuExch, sizeof(mtuExch), NULL);
 }
 
 /*
@@ -3239,10 +3234,13 @@ bool attCliInit(attMtuCbk cliMtuF, attCliReadCbk cliReadF, attCliWriteCbk cliWri
  */
 void attCliDeinit(void)
 {
-
+    //TODO: maybe?
 }
 
-
+bool attCliSendIndicationAck(l2c_handle_t to)
+{
+   return attSendPacketEmptyPacket(to, ATT_OPCODE_HANDLE_VALUE_CONF);
+}
 
 
 
