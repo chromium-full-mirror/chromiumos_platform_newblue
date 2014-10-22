@@ -361,6 +361,7 @@ static attMtuCbk mCliMtuCbk;
 static attCliReadCbk mCliReadF;
 static attCliWriteCbk mCliWriteF;
 static attCliError mCliErrF;
+static attCliIndNotif mCliIndNotifF;
 
 static struct attConn *mConns;
 static bool mInTeardown;
@@ -3216,13 +3217,14 @@ bool attCliRequestMtu(l2c_handle_t to, uint32_t mtu)
  * RETURN:   false on error, true if will try
  * NOTES:
  */
-bool attCliInit(attMtuCbk cliMtuF, attCliReadCbk cliReadF, attCliWriteCbk cliWriteF, attCliError cliErrF)
+bool attCliInit(attMtuCbk cliMtuF, attCliReadCbk cliReadF, attCliWriteCbk cliWriteF, attCliError cliErrF, attCliIndNotif cliIndNotifF)
 {
     pthread_mutex_lock(&mAttLock);
     mCliMtuCbk = cliMtuF;
     mCliReadF = cliReadF;
     mCliWriteF = cliWriteF;
     mCliErrF = cliErrF;
+    mCliIndNotifF = cliIndNotifF;
     pthread_mutex_unlock(&mAttLock);
 
     return true;
