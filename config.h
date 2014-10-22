@@ -3,7 +3,7 @@
 
 
 /*
- * Take back credits fo runknown connections (Set to prefer chip operation, clear to prefer connection correctness)
+ * Take back credits for unknown connections (Set to prefer chip operation, clear to prefer connection correctness)
  */
 #define HCI_TAKE_CREDS_FOR_UNKNOWN_CONNS    true
 
@@ -18,9 +18,14 @@
 #define GATT_WORK_Q_SIZE                    64
 
 /*
- * How many milliseconds from sending an indication to deciding it timed out?
+ * How many milliseconds from sending an indication as a server to deciding it timed out?
  */
 #define ATT_IND_TIMEOUT                     30000
+
+/*
+ * How many milliseconds from sending a request as a client to deciding it timed out?
+ */
+#define ATT_REQ_TIMOUT                      30000
 
 /*
  * How many items fit in the ATT work Q
