@@ -250,7 +250,7 @@ struct attConn {
 
     /* used if we're acting as client on this connection */
     struct {
-        int tbd;
+        uniq_t ongoingTrans; /* is a timer ID */
     } cli;
 
     /* used if we're acting as server */
@@ -362,6 +362,8 @@ static attCliReadCbk mCliReadF;
 static attCliWriteCbk mCliWriteF;
 static attCliError mCliErrF;
 static attCliIndNotif mCliIndNotifF;
+static attCliFindInfoCbk mCliFindInfoCbk;
+static attCliFindByTypeValCbk mCliFindByTypeValCbk;
 
 static struct attConn *mConns;
 static bool mInTeardown;
@@ -3212,10 +3214,12 @@ bool attCliRequestMtu(l2c_handle_t to, uint32_t mtu)
  * RETURN:   false on error, true if will try
  * NOTES:
  */
-bool attCliInit(attMtuCbk cliMtuF, attCliReadCbk cliReadF, attCliWriteCbk cliWriteF, attCliError cliErrF, attCliIndNotif cliIndNotifF)
+bool attCliInit(attMtuCbk cliMtuF, attCliFindInfoCbk cliFindInfoCbk, attCliFindByTypeValCbk cliFindByTypeValCbk, attCliReadCbk cliReadF, attCliWriteCbk cliWriteF, attCliError cliErrF, attCliIndNotif cliIndNotifF)
 {
     pthread_mutex_lock(&mAttLock);
     mCliMtuCbk = cliMtuF;
+    mCliFindInfoCbk = cliFindInfoCbk;
+    mCliFindByTypeValCbk = cliFindByTypeValCbk;
     mCliReadF = cliReadF;
     mCliWriteF = cliWriteF;
     mCliErrF = cliErrF;
@@ -3237,10 +3241,498 @@ void attCliDeinit(void)
     //TODO: maybe?
 }
 
+/*
+ * FUNCTION: attCliSendIndicationAck
+ * USE:      Send a value confirmation (an ack to a value indication)
+ * PARAMS:   to - whom to
+ * RETURN:   false on error
+ * NOTES:
+ */
 bool attCliSendIndicationAck(l2c_handle_t to)
 {
-   return attSendPacketEmptyPacket(to, ATT_OPCODE_HANDLE_VALUE_CONF);
+    return attSendPacketEmptyPacket(to, ATT_OPCODE_HANDLE_VALUE_CONF);
 }
+
+/*
+ * FUNCTION: attCliTransTimeout
+ * USE:      Timer callback for ATT trasnaction timer
+ * PARAMS:   timer - the timer
+ *           cbkData - the L2C connection handle
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void attCliTransTimeout(uniq_t timer,  uint64_t cbkData)
+{
+    l2c_handle_t to = (l2c_handle_t)cbkData;
+    struct attConn* conn;
+    pthread_mutex_lock(&mAttLock);
+    conn = attConnFindByL2cConn(to);
+    if (!conn)
+        logw("Timer for transaction to for unknown connection\n");
+    else if (!conn->cli.ongoingTrans)
+        logw("Stale timer for transaction fired\n");
+    else if (conn->cli.ongoingTrans != timer)
+        logw("Wrong timer for transaction fired\n");
+    else {
+        conn->cli.ongoingTrans = 0;
+        //TODO: schedule callback for timeout error
+    }
+    pthread_mutex_unlock(&mAttLock);
+}
+
+/*
+ * FUNCTION: attCliReqStart
+ * USE:      Prepare to send a request that we expect a response for
+ * PARAMS:   to - whom to
+ * RETURN:   non-zero transaction ID or 0 on failure
+ * NOTES:    call with mAttLock held
+ */
+static uniq_t attCliReqStart(l2c_handle_t to)
+{
+    struct attConn* conn;
+
+    attConnListAddIfNew(to);
+    conn = attConnFindByL2cConn(to);
+
+    if (!conn)
+        loge("Cannot find connection for enw ATT transaction\n");
+    else if (conn->cli.ongoingTrans)
+        logw("Refusing to start ATT transaction while another inflight\n");
+    else {
+        conn->cli.ongoingTrans = timerSet(ATT_REQ_TIMOUT, attCliTransTimeout, (uint64_t)to);
+        return conn->cli.ongoingTrans;
+    }
+
+    return 0;
+}
+
+/*
+ * FUNCTION: attCliReqStop
+ * USE:      Clean up state for a sent transaction for ATT client
+ * PARAMS:   to - whom to
+ * RETURN:   NONE
+ * NOTES:    call with mAttLock held
+ */
+static void attCliReqStop(l2c_handle_t to)
+{
+    struct attConn* conn;
+
+    attConnListAddIfNew(to);
+    conn = attConnFindByL2cConn(to);
+
+    if (!conn)
+        loge("Cannot find connection for enw ATT transaction\n");
+    else if (!conn->cli.ongoingTrans)
+        logw("Refusing to stop ATT transaction while none inflight\n");
+    else {
+        timerCancel(conn->cli.ongoingTrans);
+        conn->cli.ongoingTrans = 0;
+    }
+}
+
+/*
+ * FUNCTION: attCliFindInformation
+ * USE:      Send a find-information request to the server
+ * PARAMS:   to - whom to
+ *           hStart - start handle
+ *           hEnd - end handle
+ * RETURN:   non-zero transaction ID or 0 on failure
+ * NOTES:    find or error callbacks passed to attCliInit may be called
+ */
+uniq_t attCliFindInformation(l2c_handle_t to, uint16_t hStart, uint16_t hEnd)
+{
+    struct attPduFindInfoReq req;
+    uniq_t ret;
+
+    utilSetLE16(&req.startHandle, hStart);
+    utilSetLE16(&req.endHandle, hEnd);
+
+    pthread_mutex_lock(&mAttLock);
+    ret = attCliReqStart(to);
+    if (ret && !attSendPacket(to, ATT_OPCODE_FIND_INFO_REQ, &req, sizeof(req), NULL)) {
+        attCliReqStop(to);
+        ret = 0;
+    }
+    pthread_mutex_unlock(&mAttLock);
+
+    return ret;
+}
+
+/*
+ * FUNCTION: attCliFindByTypeValue
+ * USE:      Send a find-by-type-value request to the server
+ * PARAMS:   to - whom to
+ *           hStart - start handle
+ *           hEnd - end handle
+ *           typeUuid16 - type (must be a uuid16)
+ *           valueData - the value to look for
+ *           valueLen - the length of the abovementioned value
+ * RETURN:   non-zero transaction ID or 0 on failure
+ * NOTES:    find or error callbacks passed to attCliInit may be called
+ */
+uniq_t attCliFindByTypeValue(l2c_handle_t to, uint16_t hStart, uint16_t hEnd, uint16_t typeUuid16, const void *valueData, uint32_t valueLen)
+{
+    uint8_t buf[sizeof(struct attHdr) + sizeof(struct attPduFindByTypeValReq)];
+    struct attHdr *hdr = (struct attHdr*)buf;
+    struct attPduFindByTypeValReq *req = (struct attPduFindByTypeValReq*)(hdr + 1);
+    uint32_t mtu;
+    uniq_t ret;
+
+    utilSetLE8(&hdr->opcode, ATT_OPCODE_FIND_BY_TYPE_VAL_REQ);
+    utilSetLE16(&req->startHandle, hStart);
+    utilSetLE16(&req->endHandle, hEnd);
+    utilSetLE16(&req->uuid16, typeUuid16);
+
+    pthread_mutex_lock(&mAttLock);
+    mtu = attConnMtuGetByL2c(to, true);
+    if (sizeof(req) + valueLen > mtu) {
+        logw("Truncating value in FindByTypeValue to fit into mtu %u -> %u\n", valueLen, mtu - sizeof(req));
+        valueLen = mtu - sizeof(req);
+    }
+
+    ret = attCliReqStart(to);
+    if (ret && attSendPacketRaw(to, buf, sizeof(buf), NULL, valueData, valueLen) != ATT_TX_RET_ACCEPTED) {
+        attCliReqStop(to);
+        ret = 0;
+    }
+    pthread_mutex_unlock(&mAttLock);
+
+    return ret;
+}
+
+/*
+ * FUNCTION: attCliReadByType
+ * USE:      Send a read-by-type request to the server
+ * PARAMS:   to - whom to
+ *           hStart - start handle
+ *           hEnd - end handle
+ *           type - the type of values to read
+ * RETURN:   non-zero transaction ID or 0 on failure
+ * NOTES:    read or error callbacks passed to attCliInit may be called
+ */
+uniq_t attCliReadByType(l2c_handle_t to, uint16_t hStart, uint16_t hEnd, const struct uuid *type)
+{
+    uint8_t hdrBuf[sizeof(struct attPduReadByTypeReq) + sizeof(struct uuid) + sizeof(uint16_t)]; /* definitely big enoguh to fit both formats */
+    struct attPduReadByTypeReq *req = (struct attPduReadByTypeReq*)hdrBuf;
+    struct uuid *uuid128 = (struct uuid*)(req + 1);
+    uint16_t *uuid16 = (uint16_t*)(req + 1);
+    uint16_t tmpUuid;
+    unsigned uuidSz;
+    uniq_t ret;
+
+    utilSetLE16(&req->startHandle, hStart);
+    utilSetLE16(&req->endHandle, hEnd);
+
+    if (uuidToUuid16(&tmpUuid, type)) {
+        utilSetLE16(uuid16, tmpUuid);
+        uuidSz = sizeof(uint16_t);
+    } else {
+        uuidWriteLE(uuid128, type);
+        uuidSz = sizeof(struct uuid);
+    }
+
+    pthread_mutex_lock(&mAttLock);
+    ret = attCliReqStart(to);
+    if (ret && !attSendPacket(to, ATT_OPCODE_READ_BY_TYPE_REQ, hdrBuf, sizeof(struct attPduReadByTypeReq) + uuidSz, NULL)) {
+        attCliReqStop(to);
+        ret = 0;
+    }
+    pthread_mutex_unlock(&mAttLock);
+
+    return ret;
+}
+
+/*
+ * FUNCTION: attCliReadByGroupType
+ * USE:      Send a read-by-group-type request to the server
+ * PARAMS:   to - whom to
+ *           hStart - start handle
+ *           hEnd - end handle
+ *           type - the group type of values to read
+ * RETURN:   non-zero transaction ID or 0 on failure
+ * NOTES:    read or error callbacks passed to attCliInit may be called
+ */
+uniq_t attCliReadByGroupType(l2c_handle_t to, uint16_t hStart, uint16_t hEnd, const struct uuid *type)
+{
+    uint8_t hdrBuf[sizeof(struct attPduReadByGrpTypeReq) + sizeof(struct uuid) + sizeof(uint16_t)]; /* definitely big enoguh to fit both formats */
+    struct attPduReadByGrpTypeReq *req = (struct attPduReadByGrpTypeReq*)hdrBuf;
+    struct uuid *uuid128 = (struct uuid*)(req + 1);
+    uint16_t *uuid16 = (uint16_t*)(req + 1);
+    uint16_t tmpUuid;
+    unsigned uuidSz;
+    uniq_t ret;
+
+    utilSetLE16(&req->startHandle, hStart);
+    utilSetLE16(&req->endHandle, hEnd);
+
+    if (uuidToUuid16(&tmpUuid, type)) {
+        utilSetLE16(uuid16, tmpUuid);
+        uuidSz = sizeof(uint16_t);
+    } else {
+        uuidWriteLE(uuid128, type);
+        uuidSz = sizeof(struct uuid);
+    }
+
+    pthread_mutex_lock(&mAttLock);
+    ret = attCliReqStart(to);
+    if (ret && !attSendPacket(to, ATT_OPCODE_READ_BY_GRP_TYPE_REQ, hdrBuf, sizeof(struct attPduReadByTypeReq) + uuidSz, NULL)) {
+        attCliReqStop(to);
+        ret = 0;
+    }
+    pthread_mutex_unlock(&mAttLock);
+
+    return ret;
+}
+
+/*
+ * FUNCTION: attCliRead
+ * USE:      Send a read request to the server
+ * PARAMS:   to - whom to
+ *           handle - the handle
+ * RETURN:   non-zero transaction ID or 0 on failure
+ * NOTES:    read or error callbacks passed to attCliInit may be called
+ */
+uniq_t attCliRead(l2c_handle_t to, uint16_t handle)
+{
+    struct attPduReadReq req;
+    uniq_t ret;
+
+    utilSetLE16(&req.handle, handle);
+
+    pthread_mutex_lock(&mAttLock);
+    ret = attCliReqStart(to);
+    if (ret && !attSendPacket(to, ATT_OPCODE_READ_REQ, &req, sizeof(req), NULL)) {
+        attCliReqStop(to);
+        ret = 0;
+    }
+    pthread_mutex_unlock(&mAttLock);
+
+    return ret;
+}
+
+/*
+ * FUNCTION: attCliReadBlob
+ * USE:      Send a read-blob request to the server
+ * PARAMS:   to - whom to
+ *           handle - the handle
+ *           offset - the offset to request into the value
+ * RETURN:   non-zero transaction ID or 0 on failure
+ * NOTES:    read or error callbacks passed to attCliInit may be called
+ */
+uniq_t attCliReadBlob(l2c_handle_t to, uint16_t handle, uint16_t offset)
+{
+    struct attPduReadBlobReq req;
+    uniq_t ret;
+
+    utilSetLE16(&req.handle, handle);
+    utilSetLE16(&req.offset, offset);
+
+    pthread_mutex_lock(&mAttLock);
+    ret = attCliReqStart(to);
+    if (ret && !attSendPacket(to, ATT_OPCODE_READ_BLOB_REQ, &req, sizeof(req), NULL)) {
+        attCliReqStop(to);
+        ret = 0;
+    }
+    pthread_mutex_unlock(&mAttLock);
+
+    return ret;
+}
+
+
+/*
+ * FUNCTION: attCliWriteInt
+ * USE:      Send a write request/command to the server
+ * PARAMS:   to - whom to
+ *           handle - the handle
+ *           data - the data
+ *           len - the len
+ * RETURN:   non-zero transaction ID or 0 on failure (transaction ID is fake for write command)
+ * NOTES:    write or error callbacks passed to attCliInit may be called in case of request. none for command
+ */
+uniq_t attCliWriteInt(l2c_handle_t to, uint16_t handle, const void* data, uint32_t len, bool cmd)
+{
+    uint8_t buf[sizeof(struct attHdr) + sizeof(struct attPduWriteCmd)];
+    struct attHdr *hdr = (struct attHdr*)buf;
+    struct attPduWriteCmd *req = (struct attPduWriteCmd*)(hdr + 1);
+    uint32_t mtu;
+    uniq_t ret;
+
+    utilSetLE8(&hdr->opcode, cmd ? ATT_OPCODE_WRITE_CMD : ATT_OPCODE_WRITE_REQ);
+    utilSetLE16(&req->handle, handle);
+
+    pthread_mutex_lock(&mAttLock);
+    mtu = attConnMtuGetByL2c(to, true);
+    if (sizeof(buf) + len > mtu) {
+        logw("Truncating value in Write to fit into mtu %u -> %u\n", len, mtu - sizeof(req));
+        len = mtu - sizeof(buf);
+    }
+
+    ret = cmd ? 1 : attCliReqStart(to);
+    if (ret && attSendPacketRaw(to, buf, sizeof(buf), NULL, data, len) != ATT_TX_RET_ACCEPTED) {
+        if (!cmd)
+            attCliReqStop(to);
+        ret = 0;
+    }
+    pthread_mutex_unlock(&mAttLock);
+
+    return ret;
+}
+
+/*
+ * FUNCTION: attCliWrite
+ * USE:      Send a write request to the server
+ * PARAMS:   to - whom to
+ *           handle - the handle
+ *           data - the data
+ *           len - the len
+ * RETURN:   non-zero transaction ID or 0 on failure
+ * NOTES:    write or error callbacks passed to attCliInit may be called
+ */
+uniq_t attCliWrite(l2c_handle_t to, uint16_t handle, const void* data, uint32_t len)
+{
+    return attCliWriteInt(to, handle, data, len, false);
+}
+
+/*
+ * FUNCTION: attCliWrite
+ * USE:      Send a write command to the server
+ * PARAMS:   to - whom to
+ *           handle - the handle
+ *           data - the data
+ *           len - the len
+ * RETURN:   false on failure
+ * NOTES:    no callbacks will be called.
+ */
+bool attCliWriteNoAck(l2c_handle_t to, uint16_t handle, const void* data, uint32_t len)
+{
+    return !!attCliWriteInt(to, handle, data, len, true);
+}
+
+/*
+ * FUNCTION: attCliSignedWriteNoAck
+ * USE:      Send a signed write command to the server
+ * PARAMS:   to - whom to
+ *           handle - the handle
+ *           data - the data
+ *           len - the len
+ * RETURN:   false on failure
+ * NOTES:    no callbacks will be called.
+ */
+bool attCliSignedWriteNoAck(l2c_handle_t to, uint16_t handle, const void* data, uint32_t len)
+{
+    uint8_t hdr[sizeof(struct attHdr) + sizeof(struct attPduSignedWriteCmd)];
+    struct attHdr *attHdr = (struct attHdr*)hdr;
+    struct attPduSignedWriteCmd *cmd = (struct attPduSignedWriteCmd*)(hdr + 1);
+    uint8_t sig[ATT_SIG_LEN];
+    uint8_t k[SM_BLOCK_LEN];
+    bool ret = false;
+    uint32_t mtu;
+    sg s;
+
+    utilSetLE8(&attHdr->opcode, ATT_OPCODE_SIGNED_WRITE_CMD);
+    utilSetLE16(&cmd->handle, handle);
+
+    if (!persistGetDevKey(NULL, KEY_TYPE_CSRK, k)) {
+        logw("Cannot get ownCSRK for signed write\n");
+        return false;
+    }
+
+    pthread_mutex_lock(&mAttLock);
+    mtu = attConnMtuGetByL2c(to, true);
+    if (sizeof(hdr) + sizeof(sig) + len > mtu) {
+        logw("Truncating value in SignedWrite to fit into mtu %u -> %u\n", len, mtu - sizeof(hdr) - sizeof(sig));
+        len = mtu - sizeof(hdr) - sizeof(sig);
+    }
+
+    s = sgNewWithCopyData(data, len);
+    if (!s)
+        loge("Failed to alloc SG for signed write\n");
+    else if (!sgConcatFrontCopy(s, hdr, sizeof(hdr)))
+        loge("Failed to concat SG for signed write\n");
+    else {
+        smSignatureCalc(s, k, sig);
+
+        ret = attSendPacketRaw(to, NULL, 0, s, sig, sizeof(sig)) == ATT_TX_RET_ACCEPTED;
+        if (ret)
+            s = NULL;
+    }
+
+    pthread_mutex_unlock(&mAttLock);
+
+    if (s)
+        sgFree(s);
+    return ret;
+}
+
+/*
+ * FUNCTION: attCliPrepareWrite
+ * USE:      Send a prepare-write request to the server
+ * PARAMS:   to - whom to
+ *           handle - the handle
+ *           offset - the offset into the data to write
+ *           data - the data
+ *           len - the len
+ * RETURN:   transaction id or 0 on failure
+ * NOTES:    write or error callbacks passed to attCliInit may be called
+ */
+uniq_t attCliPrepareWrite(l2c_handle_t to, uint16_t handle, uint16_t offset, const void* data, uint32_t len)
+{
+    uint8_t buf[sizeof(struct attHdr) + sizeof(struct attPduPrepareWriteReq)];
+    struct attHdr *hdr = (struct attHdr*)buf;
+    struct attPduPrepareWriteReq *req = (struct attPduPrepareWriteReq*)(hdr + 1);
+    uint32_t mtu;
+    uniq_t ret;
+
+    utilSetLE8(&hdr->opcode, ATT_OPCODE_PREPARE_WRITE_REQ);
+    utilSetLE16(&req->handle, handle);
+    utilSetLE16(&req->offset, offset);
+
+    pthread_mutex_lock(&mAttLock);
+    mtu = attConnMtuGetByL2c(to, true);
+    if (sizeof(buf) + len > mtu) {
+        logw("Truncating value in PrepareWrite to fit into mtu %u -> %u\n", len, mtu - sizeof(req));
+        len = mtu - sizeof(buf);
+    }
+
+    ret = attCliReqStart(to);
+    if (ret && attSendPacketRaw(to, buf, sizeof(buf), NULL, data, len) != ATT_TX_RET_ACCEPTED) {
+        attCliReqStop(to);
+        ret = 0;
+    }
+    pthread_mutex_unlock(&mAttLock);
+
+    return ret;
+}
+
+/*
+ * FUNCTION: attCliExecuteStagedWrites
+ * USE:      Send a execute-write request to the server
+ * PARAMS:   to - whom to
+ *           commit - commit data or destroy it?
+ * RETURN:   transaction id or 0 on failure
+ * NOTES:    write or error callbacks passed to attCliInit may be called
+ */
+uniq_t attCliExecuteStagedWrites(l2c_handle_t to, bool commit)
+{
+    struct attPduExecuteWriteReq req;
+    uniq_t ret;
+
+    utilSetLE8(&req.flags, commit ? ATT_EXECUTE_WRITE_FLG_EXECUTE : ATT_EXECUTE_WRITE_FLG_CANCEL);
+
+    pthread_mutex_lock(&mAttLock);
+    ret = attCliReqStart(to);
+    if (ret && !attSendPacket(to, ATT_OPCODE_EXECUTE_WRITE_REQ, &req, sizeof(req), NULL)) {
+        attCliReqStop(to);
+        ret = 0;
+    }
+    pthread_mutex_unlock(&mAttLock);
+
+    return ret;
+}
+
+
+
+
 
 
 
