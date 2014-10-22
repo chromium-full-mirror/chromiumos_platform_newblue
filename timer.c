@@ -28,7 +28,7 @@ static bool mDie = false;
 /*
  * FUNCTION: timerCurTime
  * USE:      Get current time in milliseconds
- * PARAMS:   unused - unused
+ * PARAMS:   NONE
  * RETURN:   the time
  * NOTES:    Time returned here need only be monotonically increasing,
  *           it need not be based on any particular base time, nor
