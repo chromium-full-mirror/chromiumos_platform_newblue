@@ -297,7 +297,14 @@ struct attSrvRange {
 struct attWorkItem {
     uint8_t type;
     l2c_handle_t who;
-    int cid; /* having both this and "who" here makes life a bit easier */
+    union {
+        struct {
+            int cid; /* having both this and "who" here makes life a bit easier */
+        } srv;
+        struct {
+            uniq_t trans;
+        } cli;
+    };
 
     union {
         struct {
@@ -307,7 +314,7 @@ struct attWorkItem {
             uint16_t             byteOfst;
             uint16_t             maxLen;
             uint8_t              reason;
-        } read;
+        } srvRead;
         struct {
             att_range_t          range;
             uint16_t             ofst;
@@ -316,17 +323,17 @@ struct attWorkItem {
             uint16_t             len;
             uint8_t              reason;
             /* data follows */
-        } write;
+        } srvWrite;
         struct {
             int                  transId;
             bool                 exec;
-        } execWrite;
+        } srvExecWrite;
         struct {
             att_range_t          range;
             uint16_t             ofst;
             uint64_t             ref;
             uint8_t              evt;
-        } indResult;
+        } srvIndResult;
         struct {
             uint16_t             mtu;
             bool                 asServer;
@@ -334,15 +341,38 @@ struct attWorkItem {
         struct {
             sem_t               *sem;
         } sync;
+        struct {
+            sg                   data;
+        } cliFind;
+        struct {
+            uint8_t              opcode; /* why parse packets with a lock taken when we can do it in a worker thread? */
+            sg                   data;
+        } cliRead;
+        struct {
+            uint16_t             handle;
+            uint8_t              err;
+            bool                 isAttErr; /* else is timout and no err info is avail */
+        } cliErr;
+        struct {
+            uint16_t             handle;
+            bool                 needsAck;
+            sg                   data;
+        } cliIndNotif;
     };
 };
 
-#define WORK_TYPE_READ_CALL            0
-#define WORK_TYPE_WRITE_CALL           1
-#define WORK_TYPE_EXEC_WRITE_CALL      2
-#define WORK_TYPE_IND_RESULT           3
-#define WORK_TYPE_MTU_INFO             4
-#define WORK_TYPE_SYNC                 5
+#define WORK_ATT_MTU_INFO                0
+#define WORK_ATT_SYNC                    1
+#define WORK_SRV_READ_CALL               2
+#define WORK_SRV_WRITE_CALL              3
+#define WORK_SRV_EXEC_WRITE_CALL         4
+#define WORK_SRV_IND_RESULT              5
+#define WORK_CLI_FIND_INFO_CALL          6
+#define WORK_CLI_FIND_BY_TYPE_VAL_CALL   7
+#define WORK_CLI_READ_CALL               8
+#define WORK_CLI_WRITE_CALL              9
+#define WORK_CLI_ERR_CALL                10
+#define WORK_CLI_IND_NOTIF_CALL          11
 
 
 /* our state */
@@ -515,20 +545,20 @@ static bool attSrvSchedReadCbk(struct attSrvRange *range, struct attSrvVal* val,
     struct attWorkItem *wi;
     int tid;
 
-    wi = attWorkItemAlloc(WORK_TYPE_READ_CALL, 0);
+    wi = attWorkItemAlloc(WORK_SRV_READ_CALL, 0);
     if (!wi)
         return false;
 
     tid = attSrvSchedCbkGetNextTid(conn);
 
     wi->who = conn->conn;
-    wi->cid = conn->srv.cid;
-    wi->read.range = range->rangeRef;
-    wi->read.ofst = val->offset;
-    wi->read.transId = tid;
-    wi->read.byteOfst = byteOfst;
-    wi->read.maxLen = maxLen;
-    wi->read.reason = reason;
+    wi->srv.cid = conn->srv.cid;
+    wi->srvRead.range = range->rangeRef;
+    wi->srvRead.ofst = val->offset;
+    wi->srvRead.transId = tid;
+    wi->srvRead.byteOfst = byteOfst;
+    wi->srvRead.maxLen = maxLen;
+    wi->srvRead.reason = reason;
 
     if (workQueuePut(mWorkQ, wi))
         return true;
@@ -561,7 +591,7 @@ static bool attSrvSchedWriteCbk(struct attSrvRange *range, struct attSrvVal* val
     int tid;
 
 
-    wi = attWorkItemAlloc(WORK_TYPE_WRITE_CALL, len);
+    wi = attWorkItemAlloc(WORK_SRV_WRITE_CALL, len);
     if (!wi)
         return false;
 
@@ -569,13 +599,13 @@ static bool attSrvSchedWriteCbk(struct attSrvRange *range, struct attSrvVal* val
     sgSerialize(data, 0, len, wi + 1);
 
     wi->who = conn->conn;
-    wi->cid = conn->srv.cid;
-    wi->write.range = range->rangeRef;
-    wi->write.ofst = val->offset;
-    wi->write.transId = tid;
-    wi->write.byteOfst = byteOfst;
-    wi->write.len = len;
-    wi->write.reason = reason;
+    wi->srv.cid = conn->srv.cid;
+    wi->srvWrite.range = range->rangeRef;
+    wi->srvWrite.ofst = val->offset;
+    wi->srvWrite.transId = tid;
+    wi->srvWrite.byteOfst = byteOfst;
+    wi->srvWrite.len = len;
+    wi->srvWrite.reason = reason;
 
     if (workQueuePut(mWorkQ, wi)) {
         sgFree(data);
@@ -599,16 +629,16 @@ static bool attSrvSchedExecCbk(struct attConn* conn, bool exec)
     struct attWorkItem *wi;
     int tid;
 
-    wi = attWorkItemAlloc(WORK_TYPE_EXEC_WRITE_CALL, 0);
+    wi = attWorkItemAlloc(WORK_SRV_EXEC_WRITE_CALL, 0);
     if (!wi)
         return false;
 
     tid = attSrvSchedCbkGetNextTid(conn);
 
     wi->who = conn->conn;
-    wi->cid = conn->srv.cid;
-    wi->execWrite.transId = tid;
-    wi->execWrite.exec = exec;
+    wi->srv.cid = conn->srv.cid;
+    wi->srvExecWrite.transId = tid;
+    wi->srvExecWrite.exec = exec;
 
     if (workQueuePut(mWorkQ, wi))
         return true;
@@ -632,16 +662,16 @@ static bool attSrvSchedIndResultCbk(att_range_t rangeRef, uint16_t offst, struct
 {
     struct attWorkItem *wi;
 
-    wi = attWorkItemAlloc(WORK_TYPE_IND_RESULT, 0);
+    wi = attWorkItemAlloc(WORK_SRV_IND_RESULT, 0);
     if (!wi)
         return false;
 
     wi->who = conn->conn;
-    wi->cid = conn->srv.cid;
-    wi->indResult.range = rangeRef;
-    wi->indResult.ofst = offst;
-    wi->indResult.ref = ref;
-    wi->indResult.evt = evt;
+    wi->srv.cid = conn->srv.cid;
+    wi->srvIndResult.range = rangeRef;
+    wi->srvIndResult.ofst = offst;
+    wi->srvIndResult.ref = ref;
+    wi->srvIndResult.evt = evt;
 
     if (workQueuePut(mWorkQ, wi))
         return true;
@@ -663,12 +693,12 @@ static bool attSrvSchedMtuCbk(struct attConn* conn, uint32_t mtu, bool asServer)
 {
     struct attWorkItem *wi;
     
-    wi = attWorkItemAlloc(WORK_TYPE_MTU_INFO, 0);
+    wi = attWorkItemAlloc(WORK_ATT_MTU_INFO, 0);
     if (!wi)
         return false;
 
     wi->who = conn->conn;
-    wi->cid = conn->srv.cid;
+    wi->srv.cid = conn->srv.cid;
     wi->mtuInfo.mtu = mtu;
     wi->mtuInfo.asServer = asServer;
 
@@ -691,7 +721,7 @@ bool attSync(void)
     struct attWorkItem *wi;
     sem_t sem;
 
-    wi = attWorkItemAlloc(WORK_TYPE_SYNC, 0);
+    wi = attWorkItemAlloc(WORK_ATT_SYNC, 0);
     if (!wi)
         goto fail_alloc;
 
@@ -3062,6 +3092,8 @@ void attSrvCbkReply(int cid, int transId, uint16_t handle, uint8_t err, const vo
 static void* attWorker(void *unused)
 {
     struct attWorkItem *wi;
+    struct uuid uuid;
+    uint8_t format;
     int status;
 
     pthread_setname_np(pthread_self(), "att_worker");
@@ -3074,32 +3106,78 @@ static void* attWorker(void *unused)
             break;
 
         switch (wi->type) {
-        case WORK_TYPE_READ_CALL:
-            if (!mReadCbk(wi->who, wi->cid, wi->read.range, wi->read.ofst, wi->read.transId, wi->read.byteOfst, wi->read.reason, wi->read.maxLen))
-                attSrvCbkReply(wi->cid, wi->read.transId, 0, ATT_ERROR_UNLIKELY_ERROR, NULL, 0);
-            break;
-
-        case WORK_TYPE_WRITE_CALL:
-            if (!mWriteCbk(wi->who, wi->cid, wi->write.range, wi->write.ofst, wi->write.transId, wi->write.byteOfst, wi->write.reason, wi->write.len, wi + 1))
-                attSrvCbkReply(wi->cid, wi->write.transId, 0, ATT_ERROR_UNLIKELY_ERROR, NULL, 0);
-            break;
-
-        case WORK_TYPE_EXEC_WRITE_CALL:
-            if (!mExecCbk(wi->who, wi->cid, wi->execWrite.transId, wi->execWrite.exec))
-                attSrvCbkReply(wi->cid, wi->execWrite.transId, 0, ATT_ERROR_UNLIKELY_ERROR, NULL, 0);
-            break;
-
-        case WORK_TYPE_IND_RESULT:
-            mIndCbk(wi->who, wi->cid, wi->indResult.range, wi->indResult.ofst, wi->indResult.evt, wi->indResult.ref);
-            break;
-
-        case WORK_TYPE_MTU_INFO:
+        case WORK_ATT_MTU_INFO:
             (wi->mtuInfo.asServer ? mSrvMtuCbk : mCliMtuCbk)(wi->who, wi->mtuInfo.mtu);
             break;
 
-        case WORK_TYPE_SYNC:
+        case WORK_ATT_SYNC:
             sem_post(wi->sync.sem);
             break;
+
+        case WORK_SRV_READ_CALL:
+            if (!mReadCbk(wi->who, wi->srv.cid, wi->srvRead.range, wi->srvRead.ofst, wi->srvRead.transId, wi->srvRead.byteOfst, wi->srvRead.reason, wi->srvRead.maxLen))
+                attSrvCbkReply(wi->srv.cid, wi->srvRead.transId, 0, ATT_ERROR_UNLIKELY_ERROR, NULL, 0);
+            break;
+
+        case WORK_SRV_WRITE_CALL:
+            if (!mWriteCbk(wi->who, wi->srv.cid, wi->srvWrite.range, wi->srvWrite.ofst, wi->srvWrite.transId, wi->srvWrite.byteOfst, wi->srvWrite.reason, wi->srvWrite.len, wi + 1))
+                attSrvCbkReply(wi->srv.cid, wi->srvWrite.transId, 0, ATT_ERROR_UNLIKELY_ERROR, NULL, 0);
+            break;
+
+        case WORK_SRV_EXEC_WRITE_CALL:
+            if (!mExecCbk(wi->who, wi->srv.cid, wi->srvExecWrite.transId, wi->srvExecWrite.exec))
+                attSrvCbkReply(wi->srv.cid, wi->srvExecWrite.transId, 0, ATT_ERROR_UNLIKELY_ERROR, NULL, 0);
+            break;
+
+        case WORK_SRV_IND_RESULT:
+            mIndCbk(wi->who, wi->srv.cid, wi->srvIndResult.range, wi->srvIndResult.ofst, wi->srvIndResult.evt, wi->srvIndResult.ref);
+            break;
+
+        case WORK_CLI_FIND_INFO_CALL:
+            if (!sgSerializeCutFront(wi->cliFind.data, &format, sizeof(format)))
+                logw("Failed to get format from received data for Find\n");
+            else if (format != ATT_FIND_INFO_RSP_FMT_16 && format != ATT_FIND_INFO_RSP_FMT_128)
+                logw("Format %u unknown for Find\n", format);
+            else {
+                bool haveMore;
+
+                do {
+                    uint16_t handle;
+
+                    if (format == ATT_FIND_INFO_RSP_FMT_16) {
+                        uint8_t buf[sizeof(uint16_t)];
+
+                        if (!sgSerializeCutFront(wi->cliFind.data, buf, sizeof(handle)))
+                            break;
+                        handle = utilGetLE16(buf);
+                        if (!sgSerializeCutFront(wi->cliFind.data, buf, sizeof(buf)))
+                            break;
+                        uuidFromUuid16(&uuid, utilGetLE16(buf));
+                        haveMore = sgLength(wi->cliFind.data) >= sizeof(buf) + sizeof(handle);
+                    } else {
+                        uint8_t buf[sizeof(struct uuid)];
+
+                        if (!sgSerializeCutFront(wi->cliFind.data, buf, sizeof(handle)))
+                            break;
+                        handle = utilGetLE16(buf);
+                        if (!sgSerializeCutFront(wi->cliFind.data, &buf, sizeof(buf)))
+                            break;
+                        uuidReadLE(&uuid, buf);
+                        haveMore = sgLength(wi->cliFind.data) >= sizeof(buf) + sizeof(handle);
+                    }
+                    mCliFindInfoCbk(handle, &uuid, haveMore);
+                } while (haveMore);
+                if (sgLength(wi->cliFind.data))
+                    logw("Unexpected leftover data for Find: %ub\n", sgLength(wi->cliFind.data));
+            }
+            sgFree(wi->cliFind.data);
+            break;
+         
+        case WORK_CLI_FIND_BY_TYPE_VAL_CALL:
+        case WORK_CLI_READ_CALL:
+        case WORK_CLI_WRITE_CALL:
+        case WORK_CLI_ERR_CALL:
+        case WORK_CLI_IND_NOTIF_CALL:
 
         default:
             loge("Unknown work type %d\n", wi->type);
