@@ -3227,6 +3227,40 @@ static void* attWorker(void *unused)
             break;
 
         case WORK_CLI_READ_BY_GRP_TYPE_CALL:
+            if (!sgSerializeCutFront(wi->cliJustData.data, &length, sizeof(length)))
+                logw("Failed to get length from received data for ReadByGroupType\n");
+            else if (length < sizeof(uint16_t) * 2)
+                logw("Length %u impossible for ReadByGroupType\n", length);
+            else if (sgLength(wi->cliJustData.data) < length)
+                logw("Sg length %u impossible for ReadByGroupType (expected %u+)\n", sgLength(wi->cliJustData.data), length);
+            else {
+                uint8_t buf[sizeof(uint16_t)];
+                uint16_t handle, grpEndHandle;
+                sg s;
+
+                do {
+                    if (!sgSerializeCutFront(wi->cliJustData.data, buf, sizeof(buf)))
+                        break;
+                    handle = utilGetLE16(buf);
+
+                    if (!sgSerializeCutFront(wi->cliJustData.data, buf, sizeof(buf)))
+                        break;
+                    grpEndHandle = utilGetLE16(buf);
+
+                    s = sgSplit(wi->cliJustData.data, length - sizeof(buf) * 2);
+                    if (!s)
+                        break;
+                    sgSwap(wi->cliJustData.data, s);
+
+                    haveMore = sgLength(wi->cliJustData.data) >= length;
+                    mCliReadF(wi->cli.trans, wi->who, &handle, &grpEndHandle, s, haveMore);
+                } while(haveMore);
+            }
+            if (sgLength(wi->cliJustData.data))
+                logw("Unexpected leftover data for ReadByGroupType: %ub\n", sgLength(wi->cliJustData.data));
+            sgFree(wi->cliJustData.data);
+            break;
+
         case WORK_CLI_WRITE_CALL:
         case WORK_CLI_ERR_CALL:
         case WORK_CLI_IND_NOTIF_CALL:
