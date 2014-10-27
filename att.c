@@ -3262,7 +3262,13 @@ static void* attWorker(void *unused)
             break;
 
         case WORK_CLI_WRITE_CALL:
+            mCliWriteF(wi->cli.trans, wi->who);
+            break;
+
         case WORK_CLI_ERR_CALL:
+            mCliErrF(wi->cli.trans, wi->who, wi->cliErr.isAttErr ? &wi->cliErr.handle : NULL, wi->cliErr.isAttErr ? &wi->cliErr.err : NULL);
+            break;
+
         case WORK_CLI_IND_NOTIF_CALL:
 
         default:
