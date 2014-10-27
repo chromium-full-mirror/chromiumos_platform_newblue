@@ -3222,8 +3222,10 @@ static void* attWorker(void *unused)
             sgFree(wi->cliJustData.data);
             break;
 
-
         case WORK_CLI_READ_CALL:
+            mCliReadF(wi->cli.trans, wi->who, NULL, NULL, wi->cliJustData.data, false);
+            break;
+
         case WORK_CLI_READ_BY_GRP_TYPE_CALL:
         case WORK_CLI_WRITE_CALL:
         case WORK_CLI_ERR_CALL:
