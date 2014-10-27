@@ -136,7 +136,7 @@ typedef void (*attCliFindByTypeValCbk)(uniq_t trans, l2c_handle_t to, uint16_t h
 typedef void (*attCliReadCbk)(uniq_t trans, l2c_handle_t to, const uint16_t *handleP, const uint16_t *endGrpHandleP, sg data, bool haveMore); /* haveMore s used for requests that can return more than one item per read, handleP & endGrpHandleP are non-null when available */
 typedef void (*attCliWriteCbk)(uniq_t trans, l2c_handle_t to); /* prepare write data is not sent to you */
 typedef void (*attCliError)(uniq_t trans, l2c_handle_t to, uint16_t *handleP, uint8_t *errP); /* will be called with NULLs if case of timeout */
-typedef void (*attCliIndNotif)(l2c_handle_t to, bool needsAck, uint16_t handle, const void *data, uint32_t len);
+typedef void (*attCliIndNotif)(l2c_handle_t to, bool needsAck, uint16_t handle, sg data);
 
 bool attCliInit(attMtuCbk cliMtuF, attCliFindInfoCbk cliFindInfoCbk, attCliFindByTypeValCbk cliFindByTypeValCbk, attCliReadCbk cliReadF, attCliWriteCbk cliWriteF, attCliError cliErrF, attCliIndNotif cliIndNotifF);
 void attCliDeinit(void);

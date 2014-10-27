@@ -3270,6 +3270,8 @@ static void* attWorker(void *unused)
             break;
 
         case WORK_CLI_IND_NOTIF_CALL:
+            mCliIndNotifF(wi->who, wi->cliIndNotif.needsAck, wi->cliIndNotif.handle, wi->cliIndNotif.data);
+            break;
 
         default:
             loge("Unknown work type %d\n", wi->type);
