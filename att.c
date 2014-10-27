@@ -3094,6 +3094,7 @@ static void* attWorker(void *unused)
     struct attWorkItem *wi;
     struct uuid uuid;
     uint8_t format;
+    bool haveMore;
     int status;
 
     pthread_setname_np(pthread_self(), "att_worker");
@@ -3139,7 +3140,6 @@ static void* attWorker(void *unused)
             else if (format != ATT_FIND_INFO_RSP_FMT_16 && format != ATT_FIND_INFO_RSP_FMT_128)
                 logw("Format %u unknown for Find\n", format);
             else {
-                bool haveMore;
 
                 do {
                     uint16_t handle;
@@ -3165,7 +3165,7 @@ static void* attWorker(void *unused)
                         uuidReadLE(&uuid, buf);
                         haveMore = sgLength(wi->cliFind.data) >= sizeof(buf) + sizeof(handle);
                     }
-                    mCliFindInfoCbk(handle, &uuid, haveMore);
+                    mCliFindInfoCbk(wi->cli.trans, handle, &uuid, haveMore);
                 } while (haveMore);
                 if (sgLength(wi->cliFind.data))
                     logw("Unexpected leftover data for Find: %ub\n", sgLength(wi->cliFind.data));
@@ -3174,6 +3174,25 @@ static void* attWorker(void *unused)
             break;
          
         case WORK_CLI_FIND_BY_TYPE_VAL_CALL:
+            do {
+                uint16_t attrH, grpEndH;
+                uint8_t buf[sizeof(uint16_t) * 2];
+
+                if (!sgSerializeCutFront(wi->cliFind.data, buf, sizeof(buf)))
+                    break;
+
+                haveMore = sgLength(wi->cliFind.data) >= sizeof(buf);
+                attrH = utilGetLE16(buf);
+                grpEndH = utilGetLE16(buf + sizeof(attrH));
+
+                mCliFindByTypeValCbk(wi->cli.trans, attrH, grpEndH, haveMore);
+            } while (haveMore);
+            if (sgLength(wi->cliFind.data))
+                logw("Unexpected leftover data for FindByTypeValue: %ub\n", sgLength(wi->cliFind.data));
+            sgFree(wi->cliFind.data);
+            break;
+
+
         case WORK_CLI_READ_CALL:
         case WORK_CLI_WRITE_CALL:
         case WORK_CLI_ERR_CALL:
