@@ -343,11 +343,7 @@ struct attWorkItem {
         } sync;
         struct {
             sg                   data;
-        } cliFind;
-        struct {
-            uint8_t              opcode; /* why parse packets with a lock taken when we can do it in a worker thread? */
-            sg                   data;
-        } cliRead;
+        } cliJustData;
         struct {
             uint16_t             handle;
             uint8_t              err;
@@ -369,10 +365,12 @@ struct attWorkItem {
 #define WORK_SRV_IND_RESULT              5
 #define WORK_CLI_FIND_INFO_CALL          6
 #define WORK_CLI_FIND_BY_TYPE_VAL_CALL   7
-#define WORK_CLI_READ_CALL               8
-#define WORK_CLI_WRITE_CALL              9
-#define WORK_CLI_ERR_CALL                10
-#define WORK_CLI_IND_NOTIF_CALL          11
+#define WORK_CLI_READ_BY_TYPE_CALL       8
+#define WORK_CLI_READ_CALL               9 /* or read blob */
+#define WORK_CLI_READ_BY_GRP_TYPE_CALL   10
+#define WORK_CLI_WRITE_CALL              11
+#define WORK_CLI_ERR_CALL                12
+#define WORK_CLI_IND_NOTIF_CALL          13
 
 
 /* our state */
@@ -3093,7 +3091,7 @@ static void* attWorker(void *unused)
 {
     struct attWorkItem *wi;
     struct uuid uuid;
-    uint8_t format;
+    uint8_t format, length;
     bool haveMore;
     int status;
 
@@ -3135,7 +3133,7 @@ static void* attWorker(void *unused)
             break;
 
         case WORK_CLI_FIND_INFO_CALL:
-            if (!sgSerializeCutFront(wi->cliFind.data, &format, sizeof(format)))
+            if (!sgSerializeCutFront(wi->cliJustData.data, &format, sizeof(format)))
                 logw("Failed to get format from received data for Find\n");
             else if (format != ATT_FIND_INFO_RSP_FMT_16 && format != ATT_FIND_INFO_RSP_FMT_128)
                 logw("Format %u unknown for Find\n", format);
@@ -3147,30 +3145,30 @@ static void* attWorker(void *unused)
                     if (format == ATT_FIND_INFO_RSP_FMT_16) {
                         uint8_t buf[sizeof(uint16_t)];
 
-                        if (!sgSerializeCutFront(wi->cliFind.data, buf, sizeof(handle)))
+                        if (!sgSerializeCutFront(wi->cliJustData.data, buf, sizeof(handle)))
                             break;
                         handle = utilGetLE16(buf);
-                        if (!sgSerializeCutFront(wi->cliFind.data, buf, sizeof(buf)))
+                        if (!sgSerializeCutFront(wi->cliJustData.data, buf, sizeof(buf)))
                             break;
                         uuidFromUuid16(&uuid, utilGetLE16(buf));
-                        haveMore = sgLength(wi->cliFind.data) >= sizeof(buf) + sizeof(handle);
+                        haveMore = sgLength(wi->cliJustData.data) >= sizeof(buf) + sizeof(handle);
                     } else {
                         uint8_t buf[sizeof(struct uuid)];
 
-                        if (!sgSerializeCutFront(wi->cliFind.data, buf, sizeof(handle)))
+                        if (!sgSerializeCutFront(wi->cliJustData.data, buf, sizeof(handle)))
                             break;
                         handle = utilGetLE16(buf);
-                        if (!sgSerializeCutFront(wi->cliFind.data, &buf, sizeof(buf)))
+                        if (!sgSerializeCutFront(wi->cliJustData.data, &buf, sizeof(buf)))
                             break;
                         uuidReadLE(&uuid, buf);
-                        haveMore = sgLength(wi->cliFind.data) >= sizeof(buf) + sizeof(handle);
+                        haveMore = sgLength(wi->cliJustData.data) >= sizeof(buf) + sizeof(handle);
                     }
-                    mCliFindInfoCbk(wi->cli.trans, handle, &uuid, haveMore);
+                    mCliFindInfoCbk(wi->cli.trans, wi->who, handle, &uuid, haveMore);
                 } while (haveMore);
-                if (sgLength(wi->cliFind.data))
-                    logw("Unexpected leftover data for Find: %ub\n", sgLength(wi->cliFind.data));
+                if (sgLength(wi->cliJustData.data))
+                    logw("Unexpected leftover data for Find: %ub\n", sgLength(wi->cliJustData.data));
             }
-            sgFree(wi->cliFind.data);
+            sgFree(wi->cliJustData.data);
             break;
          
         case WORK_CLI_FIND_BY_TYPE_VAL_CALL:
@@ -3178,22 +3176,55 @@ static void* attWorker(void *unused)
                 uint16_t attrH, grpEndH;
                 uint8_t buf[sizeof(uint16_t) * 2];
 
-                if (!sgSerializeCutFront(wi->cliFind.data, buf, sizeof(buf)))
+                if (!sgSerializeCutFront(wi->cliJustData.data, buf, sizeof(buf)))
                     break;
 
-                haveMore = sgLength(wi->cliFind.data) >= sizeof(buf);
+                haveMore = sgLength(wi->cliJustData.data) >= sizeof(buf);
                 attrH = utilGetLE16(buf);
                 grpEndH = utilGetLE16(buf + sizeof(attrH));
 
-                mCliFindByTypeValCbk(wi->cli.trans, attrH, grpEndH, haveMore);
+                mCliFindByTypeValCbk(wi->cli.trans, wi->who, attrH, grpEndH, haveMore);
             } while (haveMore);
-            if (sgLength(wi->cliFind.data))
-                logw("Unexpected leftover data for FindByTypeValue: %ub\n", sgLength(wi->cliFind.data));
-            sgFree(wi->cliFind.data);
+            if (sgLength(wi->cliJustData.data))
+                logw("Unexpected leftover data for FindByTypeValue: %ub\n", sgLength(wi->cliJustData.data));
+            sgFree(wi->cliJustData.data);
+            break;
+
+
+        case WORK_CLI_READ_BY_TYPE_CALL:
+            if (!sgSerializeCutFront(wi->cliJustData.data, &length, sizeof(length)))
+                logw("Failed to get length from received data for ReadByType\n");
+            else if (length < sizeof(uint16_t))
+                logw("Length %u impossible for ReadByType\n", length);
+            else if (sgLength(wi->cliJustData.data) < length)
+                logw("Sg length %u impossible for ReadByType (expected %u+)\n", sgLength(wi->cliJustData.data), length);
+            else {
+                uint8_t buf[sizeof(uint16_t)];
+                uint16_t handle;
+                sg s;
+
+                do {
+                    if (!sgSerializeCutFront(wi->cliJustData.data, buf, sizeof(buf)))
+                        break;
+                    handle = utilGetLE16(buf);
+
+                    s = sgSplit(wi->cliJustData.data, length - sizeof(buf));
+                    if (!s)
+                        break;
+                    sgSwap(wi->cliJustData.data, s);
+
+                    haveMore = sgLength(wi->cliJustData.data) >= length;
+                    mCliReadF(wi->cli.trans, wi->who, &handle, NULL, s, haveMore);
+                } while(haveMore);
+            }
+            if (sgLength(wi->cliJustData.data))
+                logw("Unexpected leftover data for ReadByGroupType: %ub\n", sgLength(wi->cliJustData.data));
+            sgFree(wi->cliJustData.data);
             break;
 
 
         case WORK_CLI_READ_CALL:
+        case WORK_CLI_READ_BY_GRP_TYPE_CALL:
         case WORK_CLI_WRITE_CALL:
         case WORK_CLI_ERR_CALL:
         case WORK_CLI_IND_NOTIF_CALL:
