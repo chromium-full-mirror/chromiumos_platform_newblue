@@ -347,7 +347,8 @@ struct attWorkItem {
         struct {
             uint16_t             handle;
             uint8_t              err;
-            bool                 isAttErr; /* else is timout and no err info is avail */
+            uint8_t              errOpcode;
+            bool                 isLocalErr;
         } cliErr;
         struct {
             uint16_t             handle;
@@ -527,8 +528,44 @@ static int attSrvSchedCbkGetNextTid(struct attConn* conn)
 }
 
 /*
+ * FUNCTION: attCliScheduleErrorCbk
+ * USE:      Schedule a call to the error callback
+ * PARAMS:   trans - the transaction
+ *           who - the peer connection handle
+ *           handle - the handle value (ignored if local stack error)
+ *           err - error number (ignored if local stack error)
+ *           errOpcode - the opcode that caused the error
+ *           isLocalErr - local error?
+ * RETURN:   false on immediate failure
+ * NOTES:
+ */
+static bool attCliScheduleErrorCbk(uniq_t trans, l2c_handle_t who, uint16_t handle, uint8_t err, uint8_t errOpcode, bool isLocalErr)
+{
+    struct attWorkItem *wi;
+    int tid;
+
+    wi = attWorkItemAlloc(WORK_CLI_ERR_CALL, 0);
+    if (!wi)
+        return false;
+
+    wi->who = who;
+    wi->cli.trans = trans;
+    wi->cliErr.handle = handle;
+    wi->cliErr.err = err;
+    wi->cliErr.errOpcode = errOpcode;
+    wi->cliErr.isLocalErr = isLocalErr;
+    
+    if (workQueuePut(mWorkQ, wi))
+        return true;
+
+    free(wi);
+    return false;
+}
+
+/*
  * FUNCTION: attSrvSchedReadCbk
  * USE:      Schedule a call to the read callback
+
  * PARAMS:   range - the handle range
  *           val - the value struct
  *           conn - the per-connection structure
@@ -2825,8 +2862,9 @@ static void attCliTransTimeout(uniq_t timer,  uint64_t cbkData)
     else if (conn->cli.ongoingTrans != timer)
         logw("Wrong timer for transaction fired\n");
     else {
+        if (!attCliScheduleErrorCbk(conn->cli.ongoingTrans, to, 0, 0, 0, true))
+            loge("Failed to enqueue a timeout\n");
         conn->cli.ongoingTrans = 0;
-        //TODO: schedule callback for timeout error
     }
     pthread_mutex_unlock(&mAttLock);
 }
@@ -2903,16 +2941,18 @@ void attSrvDataRx(l2c_handle_t from, sg s)
     struct attPduReadByTypeReq readByTypeReq;
     struct attPduFindInfoReq findInfoReq;
     struct attPduReadBlobReq readBlobReq;
+    struct attPduHandleValueNotif notif;
     struct attPduWriteReq writeReq;
     struct attPduWriteCmd writeCmd;
     struct attPduReadReq readReq;
+    uint8_t opcode, wiType = 0;
+    struct attPduError errRsp;
     struct attPduMtu mtuExch;
     struct attWorkItem *wi;
     struct uuid uuid;
     struct attHdr hdr;
     bool ret = false;
     uint32_t newMtu;
-    uint8_t opcode;
     uint32_t mtu;
     uniq_t trans;
 
@@ -2929,6 +2969,17 @@ void attSrvDataRx(l2c_handle_t from, sg s)
     attConnListAddIfNew(from);
 
     switch (opcode) {
+    case ATT_OPCODE_ERROR:
+        if (!sgSerializeCutFront(s, &errRsp, sizeof(errRsp)))
+            logw("Invalid error packet gotten: too short\n");
+        else if (sgLength(s))
+            logw("Invalid error packet gotten: too long (by %ub)\n", sgLength(s));
+        else if (!(trans = attCliReqStop(from)))
+            logw("Got reply from no transaction in progress\n");
+        else if (!attCliScheduleErrorCbk(trans, from, utilGetLE16(&errRsp.handle), utilGetLE16(&errRsp.err), utilGetLE16(&errRsp.reqOpcode), false))
+            loge("Failed to schedule an error callback\n");
+        break;
+
     case ATT_OPCODE_MTU_EXCH_REQ:
     case ATT_OPCODE_MTU_EXCH_RSP:
         mtu = attConnMtuGetByL2c(from, true);
@@ -2964,11 +3015,35 @@ void attSrvDataRx(l2c_handle_t from, sg s)
         break;
 
     case ATT_OPCODE_FIND_INFO_RSP:
-        wi = attWorkItemAlloc(WORK_CLI_FIND_INFO_CALL, 0);
-        if (!wi)
+        if (!wiType)
+            wiType = WORK_CLI_FIND_INFO_CALL;
+        /* fall through */
+
+    case ATT_OPCODE_FIND_BY_TYPE_VAL_RSP:
+        if (!wiType)
+            wiType = WORK_CLI_FIND_BY_TYPE_VAL_CALL;
+        /* fall through */
+
+    case ATT_OPCODE_READ_BY_TYPE_RSP:
+        if (!wiType)
+            wiType = WORK_CLI_READ_BY_TYPE_CALL;
+        /* fall through */
+
+    case ATT_OPCODE_READ_RSP:
+    case ATT_OPCODE_READ_BLOB_RSP:
+        if (!wiType)
+            wiType = WORK_CLI_READ_CALL;
+        /* fall through */
+
+    case ATT_OPCODE_READ_BY_GRP_TYPE_RSP:
+        if (!wiType)
+            wiType = WORK_CLI_READ_BY_GRP_TYPE_CALL;
+
+        /* common code for all client-mode response packets */
+        if (!(trans = attCliReqStop(from)))
+            logw("Got reply from no transaction in progress\n");
+        else if (!(wi = attWorkItemAlloc(wiType, 0)))
             loge("Failed to make a work item\n");
-        else if (!(trans = attCliReqStop(from)))
-            loge("Got reply from no transaction in progress\n");
         else {
             wi->who = from;
             wi->cli.trans = trans;
@@ -3051,6 +3126,23 @@ void attSrvDataRx(l2c_handle_t from, sg s)
         }
         break;
 
+    case ATT_OPCODE_WRITE_RSP:
+        if (!(trans = attCliReqStop(from)))
+            logw("Got reply from no transaction in progress\n");
+        else if (!(wi = attWorkItemAlloc(WORK_CLI_WRITE_CALL, 0)))
+            loge("Failed to make a work item\n");
+        else {
+            wi->who = from;
+            wi->cli.trans = trans;
+            if (workQueuePut(mWorkQ, wi))
+                s = NULL;
+            else {
+                free(wi);
+                loge("Failed to enqueue work item\n");
+            }
+        }
+        break;
+
     case ATT_OPCODE_PREPARE_WRITE_REQ:
         mtu = attConnMtuGetByL2c(from, true);
         if (!sgSerializeCutFront(s, &prepareWriteReq, sizeof(prepareWriteReq)))
@@ -3069,6 +3161,26 @@ void attSrvDataRx(l2c_handle_t from, sg s)
             ret = attSrvSendPacketErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
             ret = attSrvOpExecuteWriteStart(from, mtu, utilGetLE16(&execWriteReq.flags));
+        break;
+
+    case ATT_OPCODE_HANDLE_VALUE_NOTIF:
+    case ATT_OPCODE_HANDLE_VALUE_IND:
+        if (!sgSerializeCutFront(s, &notif, sizeof(notif)))
+            loge("Failed to get notification header\n");
+        if (!(wi = attWorkItemAlloc(WORK_CLI_IND_NOTIF_CALL, 0)))
+            loge("Failed to make a work item\n");
+        else {
+            wi->who = from;
+            wi->cliIndNotif.needsAck = opcode == ATT_OPCODE_HANDLE_VALUE_IND;
+            wi->cliIndNotif.data = s;
+            wi->cliIndNotif.handle = utilGetLE16(&notif.handle);
+            if (workQueuePut(mWorkQ, wi))
+                s = NULL;
+            else {
+                free(wi);
+                loge("Failed to enqueue work item\n");
+            }
+        }
         break;
 
     case ATT_OPCODE_HANDLE_VALUE_CONF:
@@ -3368,7 +3480,7 @@ static void* attWorker(void *unused)
             break;
 
         case WORK_CLI_ERR_CALL:
-            mCliErrF(wi->cli.trans, wi->who, wi->cliErr.isAttErr ? &wi->cliErr.handle : NULL, wi->cliErr.isAttErr ? &wi->cliErr.err : NULL);
+            mCliErrF(wi->cli.trans, wi->who, wi->cliErr.isLocalErr ? NULL : &wi->cliErr.handle, wi->cliErr.isLocalErr ? NULL : &wi->cliErr.err, wi->cliErr.isLocalErr ? NULL : &wi->cliErr.errOpcode);
             break;
 
         case WORK_CLI_IND_NOTIF_CALL:
