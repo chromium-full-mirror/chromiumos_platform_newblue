@@ -2805,6 +2805,87 @@ static bool attSrvOpHandleValueConf(l2c_handle_t to, uint32_t mtu)
 }
 
 /*
+ * FUNCTION: attCliTransTimeout
+ * USE:      Timer callback for ATT trasnaction timer
+ * PARAMS:   timer - the timer
+ *           cbkData - the L2C connection handle
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void attCliTransTimeout(uniq_t timer,  uint64_t cbkData)
+{
+    l2c_handle_t to = (l2c_handle_t)cbkData;
+    struct attConn* conn;
+    pthread_mutex_lock(&mAttLock);
+    conn = attConnFindByL2cConn(to);
+    if (!conn)
+        logw("Timer for transaction to for unknown connection\n");
+    else if (!conn->cli.ongoingTrans)
+        logw("Stale timer for transaction fired\n");
+    else if (conn->cli.ongoingTrans != timer)
+        logw("Wrong timer for transaction fired\n");
+    else {
+        conn->cli.ongoingTrans = 0;
+        //TODO: schedule callback for timeout error
+    }
+    pthread_mutex_unlock(&mAttLock);
+}
+
+/*
+ * FUNCTION: attCliReqStart
+ * USE:      Prepare to send a request that we expect a response for
+ * PARAMS:   to - whom to
+ * RETURN:   non-zero transaction ID or 0 on failure
+ * NOTES:    call with mAttLock held
+ */
+static uniq_t attCliReqStart(l2c_handle_t to)
+{
+    struct attConn* conn;
+
+    attConnListAddIfNew(to);
+    conn = attConnFindByL2cConn(to);
+
+    if (!conn)
+        loge("Cannot find connection for new ATT transaction\n");
+    else if (conn->cli.ongoingTrans)
+        logw("Refusing to start ATT transaction while another inflight\n");
+    else {
+        conn->cli.ongoingTrans = timerSet(ATT_REQ_TIMOUT, attCliTransTimeout, (uint64_t)to);
+        return conn->cli.ongoingTrans;
+    }
+
+    return 0;
+}
+
+/*
+ * FUNCTION: attCliReqStop
+ * USE:      Clean up state for a sent transaction for ATT client
+ * PARAMS:   to - whom to
+ * RETURN:   transaction ID that was in-progress or 0 if none
+ * NOTES:    call with mAttLock held
+ */
+static uniq_t attCliReqStop(l2c_handle_t to)
+{
+    struct attConn* conn;
+    uniq_t ret = 0;
+
+    attConnListAddIfNew(to);
+    conn = attConnFindByL2cConn(to);
+
+    if (!conn)
+        loge("Cannot find connection for enw ATT transaction\n");
+    else if (!conn->cli.ongoingTrans)
+        logw("Refusing to stop ATT transaction while none inflight\n");
+    else {
+        ret = conn->cli.ongoingTrans;
+        timerCancel(conn->cli.ongoingTrans);
+        conn->cli.ongoingTrans = 0;
+    }
+
+    return ret;
+}
+
+/*
  * FUNCTION: attSrvDataRx
  * USE:      Called when data arrives from a given connection
  * PARAMS:   from - whom the data arived from
@@ -2826,12 +2907,14 @@ void attSrvDataRx(l2c_handle_t from, sg s)
     struct attPduWriteCmd writeCmd;
     struct attPduReadReq readReq;
     struct attPduMtu mtuExch;
+    struct attWorkItem *wi;
     struct uuid uuid;
     struct attHdr hdr;
     bool ret = false;
     uint32_t newMtu;
     uint8_t opcode;
     uint32_t mtu;
+    uniq_t trans;
 
     if (!sgSerializeCutFront(s, &hdr, sizeof(hdr))) {
         loge("ATT cannot find header\n");
@@ -2878,6 +2961,25 @@ void attSrvDataRx(l2c_handle_t from, sg s)
             ret = attSrvSendPacketErrorReply(from, ATT_ERROR_INVALID_PDU, opcode, 0);
         else
             ret = attSrvOpFindInfo(from, mtu, utilGetLE16(&findInfoReq.startHandle), utilGetLE16(&findInfoReq.endHandle));
+        break;
+
+    case ATT_OPCODE_FIND_INFO_RSP:
+        wi = attWorkItemAlloc(WORK_CLI_FIND_INFO_CALL, 0);
+        if (!wi)
+            loge("Failed to make a work item\n");
+        else if (!(trans = attCliReqStop(from)))
+            loge("Got reply from no transaction in progress\n");
+        else {
+            wi->who = from;
+            wi->cli.trans = trans;
+            wi->cliJustData.data = s;
+            if (workQueuePut(mWorkQ, wi))
+                s = NULL;
+            else {
+                free(wi);
+                loge("Failed to enqueue work item\n");
+            }
+        }
         break;
 
     case ATT_OPCODE_FIND_BY_TYPE_VAL_REQ:
@@ -3423,83 +3525,6 @@ void attCliDeinit(void)
 bool attCliSendIndicationAck(l2c_handle_t to)
 {
     return attSendPacketEmptyPacket(to, ATT_OPCODE_HANDLE_VALUE_CONF);
-}
-
-/*
- * FUNCTION: attCliTransTimeout
- * USE:      Timer callback for ATT trasnaction timer
- * PARAMS:   timer - the timer
- *           cbkData - the L2C connection handle
- * RETURN:   NONE
- * NOTES:
- */
-static void attCliTransTimeout(uniq_t timer,  uint64_t cbkData)
-{
-    l2c_handle_t to = (l2c_handle_t)cbkData;
-    struct attConn* conn;
-    pthread_mutex_lock(&mAttLock);
-    conn = attConnFindByL2cConn(to);
-    if (!conn)
-        logw("Timer for transaction to for unknown connection\n");
-    else if (!conn->cli.ongoingTrans)
-        logw("Stale timer for transaction fired\n");
-    else if (conn->cli.ongoingTrans != timer)
-        logw("Wrong timer for transaction fired\n");
-    else {
-        conn->cli.ongoingTrans = 0;
-        //TODO: schedule callback for timeout error
-    }
-    pthread_mutex_unlock(&mAttLock);
-}
-
-/*
- * FUNCTION: attCliReqStart
- * USE:      Prepare to send a request that we expect a response for
- * PARAMS:   to - whom to
- * RETURN:   non-zero transaction ID or 0 on failure
- * NOTES:    call with mAttLock held
- */
-static uniq_t attCliReqStart(l2c_handle_t to)
-{
-    struct attConn* conn;
-
-    attConnListAddIfNew(to);
-    conn = attConnFindByL2cConn(to);
-
-    if (!conn)
-        loge("Cannot find connection for enw ATT transaction\n");
-    else if (conn->cli.ongoingTrans)
-        logw("Refusing to start ATT transaction while another inflight\n");
-    else {
-        conn->cli.ongoingTrans = timerSet(ATT_REQ_TIMOUT, attCliTransTimeout, (uint64_t)to);
-        return conn->cli.ongoingTrans;
-    }
-
-    return 0;
-}
-
-/*
- * FUNCTION: attCliReqStop
- * USE:      Clean up state for a sent transaction for ATT client
- * PARAMS:   to - whom to
- * RETURN:   NONE
- * NOTES:    call with mAttLock held
- */
-static void attCliReqStop(l2c_handle_t to)
-{
-    struct attConn* conn;
-
-    attConnListAddIfNew(to);
-    conn = attConnFindByL2cConn(to);
-
-    if (!conn)
-        loge("Cannot find connection for enw ATT transaction\n");
-    else if (!conn->cli.ongoingTrans)
-        logw("Refusing to stop ATT transaction while none inflight\n");
-    else {
-        timerCancel(conn->cli.ongoingTrans);
-        conn->cli.ongoingTrans = 0;
-    }
 }
 
 /*
