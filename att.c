@@ -3854,30 +3854,28 @@ uniq_t attCliReadBlob(l2c_handle_t to, uint16_t handle, uint16_t offset)
  * PARAMS:   to - whom to
  *           handle - the handle
  *           data - the data
- *           len - the len
- * RETURN:   non-zero transaction ID or 0 on failure (transaction ID is fake for write command)
- * NOTES:    write or error callbacks passed to attCliInit may be called in case of request. none for command
+ *           cmd - use a write command? (else we'll use request)
+ * RETURN:   non-zero transaction ID or 0 on failure (transaction ID returned is fake for write command)
+ * NOTES:    write or error callbacks passed to attCliInit may be called in case of request.
+ *           none will be for command. Passed-in SG may be truncated to MTU-3 even in cases of failure
  */
-uniq_t attCliWriteInt(l2c_handle_t to, uint16_t handle, const void* data, uint32_t len, bool cmd)
+uniq_t attCliWriteInt(l2c_handle_t to, uint16_t handle, sg data, bool cmd)
 {
-    uint8_t buf[sizeof(struct attHdr) + sizeof(struct attPduWriteCmd)];
-    struct attHdr *hdr = (struct attHdr*)buf;
-    struct attPduWriteCmd *req = (struct attPduWriteCmd*)(hdr + 1);
+    struct attPduWriteCmd req;
     uint32_t mtu;
     uniq_t ret;
 
-    utilSetLE8(&hdr->opcode, cmd ? ATT_OPCODE_WRITE_CMD : ATT_OPCODE_WRITE_REQ);
-    utilSetLE16(&req->handle, handle);
+    utilSetLE16(&req.handle, handle);
 
     pthread_mutex_lock(&mAttLock);
     mtu = attConnMtuGetByL2c(to, true);
-    if (sizeof(buf) + len > mtu) {
-        logw("Truncating value in Write to fit into mtu %u -> %u\n", len, mtu - sizeof(req));
-        len = mtu - sizeof(buf);
+    if (sizeof(req) + sizeof(struct attHdr) + sgLength(data) > mtu) {
+        logw("Truncating value in Write to fit into mtu %u -> %u\n", sgLength(data), mtu - sizeof(req) - sizeof(struct attHdr));
+        sgTruncBack(data, sgLength(data) + sizeof(req) + sizeof(struct attHdr) - mtu);
     }
 
     ret = cmd ? 1 : attCliReqStart(to);
-    if (ret && attSendPacketRaw(to, buf, sizeof(buf), NULL, data, len) != ATT_TX_RET_ACCEPTED) {
+    if (ret && !attSendPacket(to, cmd ? ATT_OPCODE_WRITE_CMD : ATT_OPCODE_WRITE_REQ, &req, sizeof(req), data)) {
         if (!cmd)
             attCliReqStop(to);
         ret = 0;
@@ -3893,13 +3891,12 @@ uniq_t attCliWriteInt(l2c_handle_t to, uint16_t handle, const void* data, uint32
  * PARAMS:   to - whom to
  *           handle - the handle
  *           data - the data
- *           len - the len
  * RETURN:   non-zero transaction ID or 0 on failure
  * NOTES:    write or error callbacks passed to attCliInit may be called
  */
-uniq_t attCliWrite(l2c_handle_t to, uint16_t handle, const void* data, uint32_t len)
+uniq_t attCliWrite(l2c_handle_t to, uint16_t handle, sg data)
 {
-    return attCliWriteInt(to, handle, data, len, false);
+    return attCliWriteInt(to, handle, data, false);
 }
 
 /*
@@ -3908,13 +3905,12 @@ uniq_t attCliWrite(l2c_handle_t to, uint16_t handle, const void* data, uint32_t 
  * PARAMS:   to - whom to
  *           handle - the handle
  *           data - the data
- *           len - the len
  * RETURN:   false on failure
  * NOTES:    no callbacks will be called.
  */
-bool attCliWriteNoAck(l2c_handle_t to, uint16_t handle, const void* data, uint32_t len)
+bool attCliWriteNoAck(l2c_handle_t to, uint16_t handle, sg data)
 {
-    return !!attCliWriteInt(to, handle, data, len, true);
+    return !!attCliWriteInt(to, handle, data, true);
 }
 
 /*

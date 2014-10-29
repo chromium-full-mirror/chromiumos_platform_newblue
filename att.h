@@ -150,8 +150,8 @@ uniq_t attCliReadByType(l2c_handle_t to, uint16_t hStart, uint16_t hEnd, const s
 uniq_t attCliReadByGroupType(l2c_handle_t to, uint16_t hStart, uint16_t hEnd, const struct uuid *type);
 uniq_t attCliRead(l2c_handle_t to, uint16_t handle);
 uniq_t attCliReadBlob(l2c_handle_t to, uint16_t handle, uint16_t offset);
-uniq_t attCliWrite(l2c_handle_t to, uint16_t handle, const void* data, uint32_t len);
-bool attCliWriteNoAck(l2c_handle_t to, uint16_t handle, const void* data, uint32_t len);
+uniq_t attCliWrite(l2c_handle_t to, uint16_t handle, sg data);
+bool attCliWriteNoAck(l2c_handle_t to, uint16_t handle, sg data);
 bool attCliSignedWriteNoAck(l2c_handle_t to, uint16_t handle, const void* data, uint32_t len);
 uniq_t attCliPrepareWrite(l2c_handle_t to, uint16_t handle, uint16_t offset, const void* data, uint32_t len);
 uniq_t attCliExecuteStagedWrites(l2c_handle_t to, bool commit);
