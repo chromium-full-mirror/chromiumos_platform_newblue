@@ -866,27 +866,19 @@ bool attEncrAuthUpdate(l2c_handle_t who, bool encr, bool mitmSafe)
  *           execF - callback to execute or cancel pending writes
  *           readF - read callback
  *           writeF - write callback
- * RETURN:   success
+ * RETURN:   NONE
  * NOTES:
  */
-bool attSrvInit(attSrvTxCbk txF, attMtuCbk srvMtuF, attSrvIndResultCbk indF, attSrvValueExecWriteCbk execF, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF)
+void attSrvInit(attSrvTxCbk txF, attMtuCbk srvMtuF, attSrvIndResultCbk indF, attSrvValueExecWriteCbk execF, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF)
 {
-    bool ret = false;
-
     pthread_mutex_lock(&mAttLock);
-    if (mTxCbk)
-        loge("RE-initing ATT server\n");
-    else {
-        mTxCbk = txF;
-        mSrvMtuCbk = srvMtuF;
-        mIndCbk = indF;
-        mExecCbk = execF;
-        mReadCbk = readF;
-        mWriteCbk = writeF;
-        ret = true;
-    }
+    mTxCbk = txF;
+    mSrvMtuCbk = srvMtuF;
+    mIndCbk = indF;
+    mExecCbk = execF;
+    mReadCbk = readF;
+    mWriteCbk = writeF;
     pthread_mutex_unlock(&mAttLock);
-    return ret;
 }
 
 /*
@@ -3597,10 +3589,10 @@ bool attCliRequestMtu(l2c_handle_t to, uint32_t mtu)
  *           cliReadF - read callback for clients
  *           cliWriteF - write callabck for clients
  *           cliErrF - error callback for clients
- * RETURN:   false on error, true if will try
+ * RETURN:   NONE
  * NOTES:
  */
-bool attCliInit(attMtuCbk cliMtuF, attCliFindInfoCbk cliFindInfoCbk, attCliFindByTypeValCbk cliFindByTypeValCbk, attCliReadCbk cliReadF, attCliWriteCbk cliWriteF, attCliError cliErrF, attCliIndNotif cliIndNotifF)
+void attCliInit(attMtuCbk cliMtuF, attCliFindInfoCbk cliFindInfoCbk, attCliFindByTypeValCbk cliFindByTypeValCbk, attCliReadCbk cliReadF, attCliWriteCbk cliWriteF, attCliError cliErrF, attCliIndNotif cliIndNotifF)
 {
     pthread_mutex_lock(&mAttLock);
     mCliMtuCbk = cliMtuF;
@@ -3611,8 +3603,6 @@ bool attCliInit(attMtuCbk cliMtuF, attCliFindInfoCbk cliFindInfoCbk, attCliFindB
     mCliErrF = cliErrF;
     mCliIndNotifF = cliIndNotifF;
     pthread_mutex_unlock(&mAttLock);
-
-    return true;
 }
 
 /*

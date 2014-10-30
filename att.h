@@ -108,7 +108,7 @@ typedef uint8_t (*attSrvTxCbk)(l2c_handle_t to, sg s); /* -> ATT_TX_RET_* */
 
 typedef void (*attSrvIndResultCbk)(l2c_handle_t to, int cid, att_range_t rangeRef, uint16_t offset, uint8_t evt, uint64_t ref);
 
-bool attSrvInit(attSrvTxCbk txF, attMtuCbk srvMtuF, attSrvIndResultCbk indF, attSrvValueExecWriteCbk execF, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF);
+void attSrvInit(attSrvTxCbk txF, attMtuCbk srvMtuF, attSrvIndResultCbk indF, attSrvValueExecWriteCbk execF, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF);
 void attSrvDeinit(void);
 
 l2c_handle_t attSrvCidResolve(int cid); //or 0 on failure
@@ -138,7 +138,7 @@ typedef void (*attCliWriteCbk)(uniq_t trans, l2c_handle_t to); /* prepare write 
 typedef void (*attCliError)(uniq_t trans, l2c_handle_t to, const uint16_t *handleP, const uint8_t *errP, const uint8_t *errOpcodeP); /* will be called with NULLs if case of timeout */
 typedef void (*attCliIndNotif)(l2c_handle_t to, bool needsAck, uint16_t handle, sg data);
 
-bool attCliInit(attMtuCbk cliMtuF, attCliFindInfoCbk cliFindInfoCbk, attCliFindByTypeValCbk cliFindByTypeValCbk, attCliReadCbk cliReadF, attCliWriteCbk cliWriteF, attCliError cliErrF, attCliIndNotif cliIndNotifF);
+void attCliInit(attMtuCbk cliMtuF, attCliFindInfoCbk cliFindInfoCbk, attCliFindByTypeValCbk cliFindByTypeValCbk, attCliReadCbk cliReadF, attCliWriteCbk cliWriteF, attCliError cliErrF, attCliIndNotif cliIndNotifF);
 void attCliDeinit(void);
 
 bool attCliRequestMtu(l2c_handle_t to, uint32_t mtu); /* LE only. once per connection only */
