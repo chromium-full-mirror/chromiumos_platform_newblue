@@ -712,14 +712,14 @@ static bool gattAttExecWriteCbk(l2c_handle_t who, int cid, int transId, bool exe
 }
 
 /*
- * FUNCTION: gattAttSrvMtuCbk
+ * FUNCTION: gattAttMtuCbk
  * USE:      ATT calls this with results of MTU negotiation
  * PARAMS:   who - whom the MTU is to
  *           mtu - the mtu to the client
  * RETURN:   NONE
  * NOTES:
  */
-static void gattAttSrvMtuCbk(l2c_handle_t who, uint32_t mtu)
+static void gattAttMtuCbk(l2c_handle_t who, uint32_t mtu)
 {
     struct gattConnState* state;
 
@@ -770,7 +770,7 @@ static void gattConnEvt(void *userData, void *instance, uint8_t evt, const void 
         }
         mtu = *(uint16_t*)data;
         attSetMtu(state->conn, mtu);
-        gattAttSrvMtuCbk(state->conn, mtu);
+        gattAttMtuCbk(state->conn, mtu);
         break;
 
     case L2C_STATE_ENCR:
@@ -1024,6 +1024,99 @@ static void* gattWorker(void *param)
 }
 
 /*
+ * FUNCTION: gattAttCliFindInfoCbk
+ * USE:      Called by ATT as a reply to our Find request, if results were provided
+ * PARAMS:   trans - transaction id
+ *           to - peer's connection handle
+ *           handle - the handle that was found
+ *           uuid - the uuid that was found
+ *           haveMore - will there be more calls to this func from the same ATT reply packet?
+ * RETURN:   success
+ * NOTES:
+ */
+static void gattAttCliFindInfoCbk(uniq_t trans, l2c_handle_t to, uint16_t handle, const struct uuid *uuid, bool haveMore)
+{
+
+}
+
+/*
+ * FUNCTION: gattAttCliFindByTypeValCbk
+ * USE:      Called by ATT as a reply to our FindByType request, if results were provided
+ * PARAMS:   trans - transaction id
+ *           to - peer's connection handle
+ *           handle - the handle that was found
+ *           grpEndHandle - group end handle that was found
+ *           haveMore - will there be more calls to this func from the same ATT reply packet?
+ * RETURN:   success
+ * NOTES:
+ */
+static void gattAttCliFindByTypeValCbk(uniq_t trans, l2c_handle_t to, uint16_t handle, uint16_t grpEndHandle, bool haveMore)
+{
+
+}
+
+/*
+ * FUNCTION: gattAttCliReadCbk
+ * USE:      Called by ATT as a reply to our Read/ReadBlob/ReadByType/ReadByGroupType request, if results were provided
+ * PARAMS:   trans - transaction id
+ *           to - peer's connection handle
+ *           handleP - points to the handle that was found or NULL if none provided for this type of read frequest
+ *           endGrpHandleP - points to the group end handle that was found or NULL if none provided for this type of read frequest
+ *           data - the data that was read
+ *           haveMore - will there be more calls to this func from the same ATT reply packet?
+ * RETURN:   success
+ * NOTES:
+ */
+static void gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *handleP, const uint16_t *endGrpHandleP, sg data, bool haveMore)
+{
+
+}
+
+/*
+ * FUNCTION: gattAttCliWriteCbk
+ * USE:      Called by ATT as a reply to our Write requests/commands and PrepareWrite
+ * PARAMS:   trans - transaction id
+ *           to - peer's connection handle
+ * RETURN:   success
+ * NOTES:    data from PrepareWrite reply is not provided.
+ */
+static void gattAttCliWriteCbk(uniq_t trans, l2c_handle_t to)
+{
+
+}
+
+/*
+ * FUNCTION: gattAttCliError
+ * USE:      Called by ATT as a result of an error occuring
+ * PARAMS:   trans - transaction id
+ *           to - peer's connection handle
+ *           handleP - points to the handle from the error message or NULL on local stack errors
+ *           errP - points to the errno from the error message or NULL on local stack errors
+ *           errOpcodeP - points to the error opcode from the error message or NULL on local stack errors
+ * RETURN:   success
+ * NOTES:
+ */
+static void gattAttCliError(uniq_t trans, l2c_handle_t to, const uint16_t *handleP, const uint8_t *errP, const uint8_t *errOpcodeP)
+{
+
+}
+
+/*
+ * FUNCTION: gattAttCliIndNotif
+ * USE:      Called by ATT as a result of getting a notification or indication
+ * PARAMS:   to - peer's connection handle
+ *           needsAck - set for indications
+ *           handle - the handle value that changed
+ *           data - the data that was sent by the server
+ * RETURN:   success
+ * NOTES:
+ */
+static void gattAttCliIndNotif(l2c_handle_t to, bool needsAck, uint16_t handle, sg data)
+{
+
+}
+
+/*
  * FUNCTION: gattProfileInit
  * USE:      Initialize GATT
  * PARAMS:   NONE
@@ -1042,10 +1135,8 @@ bool gattProfileInit(void)
         .serviceFixedChStateCbk = gattConnEvt,
     };
 
-    if (!attSrvInit(gattAttSrvTxCbk, gattAttSrvMtuCbk, gattAttSrvIndCbk, gattAttExecWriteCbk, gattAttSvrReadCbk, gattAttSvrWriteCbk)) {
-        loge("Failed init the ATT server\n");
-        goto out_att;
-    }
+    attSrvInit(gattAttSrvTxCbk, gattAttMtuCbk, gattAttSrvIndCbk, gattAttExecWriteCbk, gattAttSvrReadCbk, gattAttSvrWriteCbk);
+    attCliInit(gattAttMtuCbk, gattAttCliFindInfoCbk, gattAttCliFindByTypeValCbk, gattAttCliReadCbk, gattAttCliWriteCbk, gattAttCliError, gattAttCliIndNotif);
 
     mWorkQ = workQueueAlloc(GATT_WORK_Q_SIZE);
     if (!mWorkQ) {
@@ -1093,8 +1184,8 @@ out_thread:
 
 out_workq:
     attSrvDeinit();
+    attCliDeinit();
 
-out_att:
     return false;
 }
 
