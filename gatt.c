@@ -1857,20 +1857,27 @@ static void gattCliTodoNext(struct gattCliCon *clicon)
  * USE:      Enqueue a gatt to-do item
  * PARAMS:   clicon - the client-connection structure
  *           todo - the item
+ *           inFront - add it in front (instead of in order) this is used for confirmations
  * RETURN:   NONE
  * NOTES:    Call with mGattLock held
  */
-static void gattCliTodoEnqItem(struct gattCliCon *clicon, struct gattCliTodoItem *todo)
+static void gattCliTodoEnqItem(struct gattCliCon *clicon, struct gattCliTodoItem *todo, bool inFront)
 {
     struct gattConnState *conn = clicon->conn;
 
-    if (conn->todoListT) {
-        conn->todoListT->next = todo;
-        conn->todoListT = todo;
+    todo->next = NULL;
+    if (conn->todoListH) { /* have items in list already? */
+        if (inFront) {
+            todo->next = conn->todoListH;
+            conn->todoListH = todo;
+        } else {
+            conn->todoListT->next = todo;
+            conn->todoListT = todo;
+        }
     } else {
         conn->todoListT = todo;
         conn->todoListH = todo;
-        if (!conn->todoCurr) /* if no current task, start one */
+        if (!conn->todoCurTransId) /* if no current task, start one */
             gattCliTodoNext(clicon);
     }
 }
@@ -1907,7 +1914,7 @@ static bool gattCliTodoEnqWriteReq(struct gattCliCon *clicon, uint16_t handle, c
     todo->write.doneD = cbkData;
     todo->write.withReply = withReply;
 
-    gattCliTodoEnqItem(clicon, todo);
+    gattCliTodoEnqItem(clicon, todo, false);
     return true;
 
 
