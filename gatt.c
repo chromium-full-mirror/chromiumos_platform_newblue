@@ -22,6 +22,7 @@
 #define GATT_HDR_HANDLES           1 /* handles required for a service header */
 struct gattService;
 struct gattCliNotif;
+struct gattClient;
 
 struct gattIncludeDefHdr {
     uint16_t startHandle;
@@ -35,16 +36,42 @@ struct gattCharDefHdr {
     /* uuid here */
 } __packed;
 
-struct gattConnState {
-    struct gattConnState *next;
-    struct gattConnState *prev;
+typedef void (*gattCliWriteDone)(void* userData, const uint8_t *err); /* err is null on local stack error, else ATT_ERR_* */
 
-    struct gattCliNotif  *cliNotifs; /* things we as a client are subscribed to */
-    struct bt_addr        addr;
-    l2c_handle_t          conn;
-    uint32_t              mtu;
-    bool                  encr;
-    /* more here later */
+/* we can have one transaction outstanding per connection. This list serializes them */
+struct gattCliTodoItem {
+
+    struct gattCliTodoItem   *next;
+    uint8_t                   type;
+
+    union {
+        struct {
+            uint16_t          handle;
+            sg                data;
+            gattCliWriteDone  doneF;
+            void             *doneD;
+            bool              withReply; /* use a write request or command? */
+        } write;
+    };
+};
+
+#define GATT_CLI_TODO_WRITE   0
+
+
+struct gattConnState {
+    struct gattConnState     *next;
+    struct gattConnState     *prev;
+
+    struct gattCliNotif      *cliNotifs; /* things we as a client are subscribed to */
+    struct bt_addr            addr;
+    l2c_handle_t              conn;
+    uint32_t                  mtu;
+    bool                      encr;
+
+    struct gattCliTodoItem   *todoListH;
+    struct gattCliTodoItem   *todoListT;
+    struct gattCliTodoItem   *todoCurr; /* or null if none */
+    uniq_t                    todoCurTransId;
 };
 
 struct gattItem { /* a list of these exists in a a gett service */
@@ -95,14 +122,21 @@ struct gattService {
 struct gattCliNotif { /* keeps track of all notifications all clients are subscribed to */
     struct gattCliNotif     *prev;
     struct gattCliNotif     *next;
-    uint32_t                 refCt;
-    uint16_t                 handle;
+    uint32_t                 refCtInd;         /* how many clients want indication */
+    uint32_t                 refCtNotif;       /* how many clients want notification */
+
+    /* cache of relevant values for speed and convenience. spec promises these can never change */
+    uint16_t                 charHeaderHandle; /* first handle for this characteristic */
+    uint16_t                 charValueHandle;  /* characteristic's actual value's handle */
+    uint16_t                 charConfigHandle; /* characteristic's "config" handle for unsubscribing */
+    bool                     supportsNotifs;
 };
 
 struct gattCliNotifRec { /* used to keep track of all notifications that a client is subscribed to */
     struct gattCliNotifRec  *next;
     struct gattCliNotifRec  *prev;
     struct gattCliNotif     *notif;
+    bool                     wantInd; /* else we'll ask for notif */
 };
 
 struct gattClient {
@@ -1766,6 +1800,122 @@ out:
     return ret;
 }
 
+/*
+ * FUNCTION: gattCliTodoEnqItem
+ * USE:      Start on the next to-do item for the connection
+ * PARAMS:   clicon - the client-connection structure
+ * RETURN:   NONE
+ * NOTES:    Call with mGattLock held. Do not call if there are no
+ *           todo items or if one is in progress! In fact, you probably
+ *           never want to call this directly, instead call
+ *           gattCliTodoEnqItem();
+ */
+static void gattCliTodoNext(struct gattCliCon *clicon)
+{
+    struct gattConnState *conn = clicon->conn;
+    struct gattCliTodoItem *now;
+    bool ongoing = false;
+
+    /* while we have nothing in progress, do things */
+    while (conn->todoListH && !conn->todoCurTransId) {
+
+        /* grab an item and remove it from the todo list */
+        now = conn->todoListH;
+        conn->todoListH = conn->todoListH->next;
+        if (!conn->todoListH)
+            conn->todoListT = NULL;
+
+        /* actually start it */
+        switch (now->type) {
+        case GATT_CLI_TODO_WRITE:
+            if (!now->write.withReply) {
+                if (!attCliWriteNoAck(conn->conn, now->write.handle, now->write.data)) {
+                    sgFree(now->write.data);
+                    logi("Write with no confirm failed\n");
+                }
+            } else {
+                uniq_t trans = attCliWrite(conn->conn, now->write.handle, now->write.data);
+                if (!trans) {
+                    sgFree(now->write.data);
+                    logw("Write with confirm failed\n");
+                } else {
+                    conn->todoCurr = now;
+                    conn->todoCurTransId = trans;
+                    now = NULL;
+                }
+            }
+            break;
+        }
+
+        if (now)
+            free(now);
+    }
+}
+
+/*
+ * FUNCTION: gattCliTodoEnqItem
+ * USE:      Enqueue a gatt to-do item
+ * PARAMS:   clicon - the client-connection structure
+ *           todo - the item
+ * RETURN:   NONE
+ * NOTES:    Call with mGattLock held
+ */
+static void gattCliTodoEnqItem(struct gattCliCon *clicon, struct gattCliTodoItem *todo)
+{
+    struct gattConnState *conn = clicon->conn;
+
+    if (conn->todoListT) {
+        conn->todoListT->next = todo;
+        conn->todoListT = todo;
+    } else {
+        conn->todoListT = todo;
+        conn->todoListH = todo;
+        if (!conn->todoCurr) /* if no current task, start one */
+            gattCliTodoNext(clicon);
+    }
+}
+
+/*
+ * FUNCTION: gattCliEnqueueWriteReq
+ * USE:      Enqueue a gatt to-do item to perform a write 
+ * PARAMS:   clicon - the client-connection structure
+ *           handle - the handle to write
+ *           data - the data to write
+ *           len - length of said data
+ *           withReply - use write with reply? (if no, callback will not be fired on success, but may be on failure)
+ *           cbk - callback to call when done
+ *           cbkData - data to pass to said callback
+ * RETURN:   false on immediate failure
+ * NOTES:    If this returns true, the callback WILL be called (but it may be a while). Call with mGattLock held
+ */
+static bool gattCliTodoEnqWriteReq(struct gattCliCon *clicon, uint16_t handle, const void *data, uint32_t len, bool withReply, gattCliWriteDone cbk, void *cbkData)
+{
+    struct gattCliTodoItem *todo = (struct gattCliTodoItem*)calloc(1, sizeof(struct gattCliTodoItem));
+    sg s;
+
+    if (!todo)
+        goto fail_todo;
+
+    s = sgNewWithCopyData(data, len);
+    if (!s)
+        goto fail_s;
+
+    todo->type = GATT_CLI_TODO_WRITE;
+    todo->write.handle = handle;
+    todo->write.data = s;
+    todo->write.doneF = cbk;
+    todo->write.doneD = cbkData;
+    todo->write.withReply = withReply;
+
+    gattCliTodoEnqItem(clicon, todo);
+    return true;
+
+
+fail_s:
+    free(todo);
+fail_todo:
+    return false;
+}
 
 /*
  * FUNCTION: gattClientNotifUnsubscribe
@@ -1778,6 +1928,9 @@ out:
 static void gattClientNotifUnsubscribe(struct gattCliCon *clicon, struct gattCliNotifRec *nr)
 {
     struct gattCliNotif *n = nr->notif;
+    uint8_t newFlags[sizeof(uint16_t)];
+    uint16_t writeHandle;
+    bool doUpdate = true;
 
     /* unlink */
     if (nr->prev)
@@ -1787,9 +1940,28 @@ static void gattClientNotifUnsubscribe(struct gattCliCon *clicon, struct gattCli
     if (nr->next)
         nr->next->prev = nr->prev;
 
-    /* update refcount for this characteristic's notif subscription and unsub if needed */
-    if (!--n->refCt) {
+    if (nr->wantInd)
+        n->refCtInd--;
+    else
+        n->refCtNotif--;
 
+    /*
+     * See if we need to change our notif/ind subscription. There are three cases:
+     * 1. Nobody wants anything anymore - unsubscribe alltogether
+     * 2. The last guy wh wanted indications went away, but we still have
+     *    clients who want notifications. In this case we'll unsubscribe from
+     *    indications and subscribe to notifications if the given characteristic
+     *    supports it. Else we'll keep it as is.
+     * 3. We still have clients for whatever mode we're currently in and thus
+     *    we do nothing.
+     * Note that if we were subscribed already we are guaranteed to be secured/authed
+     * enough to change said subscription since LE does not allow us to ever drop
+     * security once connection is secure. This is why there are no checks here.
+     */
+
+    writeHandle = n->charConfigHandle;
+
+    if (!n->refCtInd && !n->refCtNotif) { /* case 1 */
         if (n->prev)
             n->prev->next = n->next;
         else
@@ -1797,10 +1969,20 @@ static void gattClientNotifUnsubscribe(struct gattCliCon *clicon, struct gattCli
         if (n->next)
             n->next->prev = n->prev;
 
-        //TODO: unsubscribe from notification using ATT's api
-
+        utilSetLE16(newFlags, 0);
         free(n);
+
+    } else if (!n->refCtInd && nr->wantInd && n->supportsNotifs) { /* case 2 */
+
+        utilSetLE16(newFlags, GATT_CLI_CFG_BIT_NOTIFS);
+
+    } else { /* case 3 */
+        doUpdate = false;
     }
+
+    /* we do not bother with callbacks since there are no errors that can happen that we can actually handle */
+    if (doUpdate && !gattCliTodoEnqWriteReq(clicon, writeHandle, newFlags, sizeof(newFlags), true, NULL, NULL))
+        loge("Failed to update notification settings on client unsubscription\n");
 
     free(nr);
 }
