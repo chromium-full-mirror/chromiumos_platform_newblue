@@ -3909,11 +3909,10 @@ bool attCliWriteNoAck(l2c_handle_t to, uint16_t handle, sg data)
  * PARAMS:   to - whom to
  *           handle - the handle
  *           data - the data
- *           len - the len
  * RETURN:   false on failure
  * NOTES:    no callbacks will be called.
  */
-bool attCliSignedWriteNoAck(l2c_handle_t to, uint16_t handle, const void* data, uint32_t len)
+bool attCliSignedWriteNoAck(l2c_handle_t to, uint16_t handle, sg data)
 {
     uint8_t hdr[sizeof(struct attHdr) + sizeof(struct attPduSignedWriteCmd)];
     struct attHdr *attHdr = (struct attHdr*)hdr;
@@ -3922,7 +3921,6 @@ bool attCliSignedWriteNoAck(l2c_handle_t to, uint16_t handle, const void* data, 
     uint8_t k[SM_BLOCK_LEN];
     bool ret = false;
     uint32_t mtu;
-    sg s;
 
     utilSetLE8(&attHdr->opcode, ATT_OPCODE_SIGNED_WRITE_CMD);
     utilSetLE16(&cmd->handle, handle);
@@ -3934,28 +3932,23 @@ bool attCliSignedWriteNoAck(l2c_handle_t to, uint16_t handle, const void* data, 
 
     pthread_mutex_lock(&mAttLock);
     mtu = attConnMtuGetByL2c(to, true);
-    if (sizeof(hdr) + sizeof(sig) + len > mtu) {
-        logw("Truncating value in SignedWrite to fit into mtu %u -> %u\n", len, mtu - sizeof(hdr) - sizeof(sig));
-        len = mtu - sizeof(hdr) - sizeof(sig);
+    if (sizeof(hdr) + sizeof(sig) + sgLength(data) > mtu) {
+        logw("Truncating value in SignedWrite to fit into mtu %u -> %u\n", sgLength(data), mtu - sizeof(hdr) - sizeof(sig));
+        sgTruncBack(data, sgLength(data) + sizeof(hdr) + sizeof(sig) - mtu);
     }
 
-    s = sgNewWithCopyData(data, len);
-    if (!s)
-        loge("Failed to alloc SG for signed write\n");
-    else if (!sgConcatFrontCopy(s, hdr, sizeof(hdr)))
+    if (!sgConcatFrontCopy(data, hdr, sizeof(hdr)))
         loge("Failed to concat SG for signed write\n");
     else {
-        smSignatureCalc(s, k, sig);
+        smSignatureCalc(data, k, sig);
 
-        ret = attSendPacketRaw(to, NULL, 0, s, sig, sizeof(sig)) == ATT_TX_RET_ACCEPTED;
-        if (ret)
-            s = NULL;
+        ret = attSendPacketRaw(to, NULL, 0, data, sig, sizeof(sig)) == ATT_TX_RET_ACCEPTED;
+        if (!ret)
+            sgTruncFront(data, sizeof(hdr));
     }
 
     pthread_mutex_unlock(&mAttLock);
 
-    if (s)
-        sgFree(s);
     return ret;
 }
 
@@ -3966,34 +3959,31 @@ bool attCliSignedWriteNoAck(l2c_handle_t to, uint16_t handle, const void* data, 
  *           handle - the handle
  *           offset - the offset into the data to write
  *           data - the data
- *           len - the len
  * RETURN:   transaction id or 0 on failure
  * NOTES:    write or error callbacks passed to attCliInit may be called
  */
-uniq_t attCliPrepareWrite(l2c_handle_t to, uint16_t handle, uint16_t offset, const void* data, uint32_t len)
+uniq_t attCliPrepareWrite(l2c_handle_t to, uint16_t handle, uint16_t offset, sg data)
 {
-    uint8_t buf[sizeof(struct attHdr) + sizeof(struct attPduPrepareWriteReq)];
-    struct attHdr *hdr = (struct attHdr*)buf;
-    struct attPduPrepareWriteReq *req = (struct attPduPrepareWriteReq*)(hdr + 1);
+    struct attPduPrepareWriteReq req;
     uint32_t mtu;
     uniq_t ret;
 
-    utilSetLE8(&hdr->opcode, ATT_OPCODE_PREPARE_WRITE_REQ);
-    utilSetLE16(&req->handle, handle);
-    utilSetLE16(&req->offset, offset);
+    utilSetLE16(&req.handle, handle);
+    utilSetLE16(&req.offset, offset);
 
     pthread_mutex_lock(&mAttLock);
     mtu = attConnMtuGetByL2c(to, true);
-    if (sizeof(buf) + len > mtu) {
-        logw("Truncating value in PrepareWrite to fit into mtu %u -> %u\n", len, mtu - sizeof(req));
-        len = mtu - sizeof(buf);
+    if (sizeof(req) + sizeof(struct attHdr) + sgLength(data) > mtu) {
+        logw("Truncating value in PrepareWrite to fit into mtu %u -> %u\n", sgLength(data), mtu - sizeof(req) - sizeof(struct attHdr));
+        sgTruncBack(data, sgLength(data) + sizeof(req) + sizeof(struct attHdr) - mtu);
     }
 
     ret = attCliReqStart(to);
-    if (ret && attSendPacketRaw(to, buf, sizeof(buf), NULL, data, len) != ATT_TX_RET_ACCEPTED) {
+    if (ret && !attSendPacket(to, ATT_OPCODE_PREPARE_WRITE_REQ, &req, sizeof(req), data)) {
         attCliReqStop(to);
         ret = 0;
     }
+
     pthread_mutex_unlock(&mAttLock);
 
     return ret;
