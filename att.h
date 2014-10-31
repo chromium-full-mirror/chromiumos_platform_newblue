@@ -145,7 +145,7 @@ bool attCliRequestMtu(l2c_handle_t to, uint32_t mtu); /* LE only. once per conne
 
 /* these all return the Id of this transaction and callback will have it too for matching. zero is returned in case of failure to start operation */
 uniq_t attCliFindInformation(l2c_handle_t to, uint16_t hStart, uint16_t hEnd);
-uniq_t attCliFindByTypeValue(l2c_handle_t to, uint16_t hStart, uint16_t hEnd, uint16_t typeUuid16, const void *valueData, uint32_t valueLen);
+uniq_t attCliFindByTypeValue(l2c_handle_t to, uint16_t hStart, uint16_t hEnd, uint16_t typeUuid16, sg value);
 uniq_t attCliReadByType(l2c_handle_t to, uint16_t hStart, uint16_t hEnd, const struct uuid *type);
 uniq_t attCliReadByGroupType(l2c_handle_t to, uint16_t hStart, uint16_t hEnd, const struct uuid *type);
 uniq_t attCliRead(l2c_handle_t to, uint16_t handle);

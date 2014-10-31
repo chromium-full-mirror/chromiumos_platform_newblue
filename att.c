@@ -3664,33 +3664,29 @@ uniq_t attCliFindInformation(l2c_handle_t to, uint16_t hStart, uint16_t hEnd)
  *           hStart - start handle
  *           hEnd - end handle
  *           typeUuid16 - type (must be a uuid16)
- *           valueData - the value to look for
- *           valueLen - the length of the abovementioned value
+ *           value - the value to look for
  * RETURN:   non-zero transaction ID or 0 on failure
  * NOTES:    find or error callbacks passed to attCliInit may be called
  */
-uniq_t attCliFindByTypeValue(l2c_handle_t to, uint16_t hStart, uint16_t hEnd, uint16_t typeUuid16, const void *valueData, uint32_t valueLen)
+uniq_t attCliFindByTypeValue(l2c_handle_t to, uint16_t hStart, uint16_t hEnd, uint16_t typeUuid16, sg value)
 {
-    uint8_t buf[sizeof(struct attHdr) + sizeof(struct attPduFindByTypeValReq)];
-    struct attHdr *hdr = (struct attHdr*)buf;
-    struct attPduFindByTypeValReq *req = (struct attPduFindByTypeValReq*)(hdr + 1);
+    struct attPduFindByTypeValReq req;
     uint32_t mtu;
     uniq_t ret;
 
-    utilSetLE8(&hdr->opcode, ATT_OPCODE_FIND_BY_TYPE_VAL_REQ);
-    utilSetLE16(&req->startHandle, hStart);
-    utilSetLE16(&req->endHandle, hEnd);
-    utilSetLE16(&req->uuid16, typeUuid16);
+    utilSetLE16(&req.startHandle, hStart);
+    utilSetLE16(&req.endHandle, hEnd);
+    utilSetLE16(&req.uuid16, typeUuid16);
 
     pthread_mutex_lock(&mAttLock);
     mtu = attConnMtuGetByL2c(to, true);
-    if (sizeof(req) + valueLen > mtu) {
-        logw("Truncating value in FindByTypeValue to fit into mtu %u -> %u\n", valueLen, mtu - sizeof(req));
-        valueLen = mtu - sizeof(req);
+    if (sizeof(req) + sizeof(struct attHdr) + sgLength(value) > mtu) {
+        logw("Truncating value in FindByTypeValue to fit into mtu %u -> %u\n", sgLength(value), mtu - sizeof(req) - sizeof(struct attHdr));
+        sgTruncBack(value, sgLength(value) + sizeof(req) + sizeof(struct attHdr) - mtu);
     }
 
     ret = attCliReqStart(to);
-    if (ret && attSendPacketRaw(to, buf, sizeof(buf), NULL, valueData, valueLen) != ATT_TX_RET_ACCEPTED) {
+    if (ret && !attSendPacket(to, ATT_OPCODE_FIND_BY_TYPE_VAL_REQ, &req, sizeof(req), value)) {
         attCliReqStop(to);
         ret = 0;
     }
