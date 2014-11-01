@@ -1051,7 +1051,7 @@ static void* gattWorker(void *param)
 /*
  * FUNCTION: gattAttCallbackCommon
  * USE:      Common code for all GATT ATT client callbacks. Some basic checks mostly
- * PARAMS:   trans - transaction id
+ * PARAMS:   trans - transaction id (or 0 if none)
  *           to - peer's connection handle
  *           expectedWorkItemTypes - list of acceptable work item types (NULL if we have no expectations)
  *           numExpTypes - size of the above list
@@ -1067,7 +1067,7 @@ static struct gattConnState* gattAttCallbackCommon(uniq_t trans, l2c_handle_t to
     conn = gattConnFind(to);
     if (!conn)
         logw("%s callback on a nonexistent connection\n", cbkName);
-    else if (conn->todoCurTransId != trans)
+    else if (trans && conn->todoCurTransId != trans)
         logw("%s callback with wrong trans ID\n", cbkName);
     else if (!conn->todoCurr)
         logw("%s callback with no todo item\n", cbkName);
@@ -1096,11 +1096,11 @@ static struct gattConnState* gattAttCallbackCommon(uniq_t trans, l2c_handle_t to
  */
 static void gattAttCliFindInfoCbk(uniq_t trans, l2c_handle_t to, uint16_t handle, const struct uuid *uuid, bool haveMore)
 {
-    static const uint8_t expectedWorkTypeFind = GATT_CLI_TODO_FIND_INFO;
+    static const uint8_t expectedWorkTypes[] = {GATT_CLI_TODO_FIND_INFO};
     struct gattConnState *conn;
 
     pthread_mutex_lock(&mGattLock);
-    conn = gattAttCallbackCommon(trans, to, &expectedWorkTypeFind, 1, "Find");
+    conn = gattAttCallbackCommon(trans, to, expectedWorkTypes, sizeof(expectedWorkTypes), "Find");
     if (conn) {
         ///todo
     }
@@ -1120,11 +1120,11 @@ static void gattAttCliFindInfoCbk(uniq_t trans, l2c_handle_t to, uint16_t handle
  */
 static void gattAttCliFindByTypeValCbk(uniq_t trans, l2c_handle_t to, uint16_t handle, uint16_t grpEndHandle, bool haveMore)
 {
-    static const uint8_t expectedWorkTypeFindByType = GATT_CLI_TODO_FIND_BY_TYPE_VAL;
+    static const uint8_t expectedWorkTypes[] = {GATT_CLI_TODO_FIND_BY_TYPE_VAL};
     struct gattConnState *conn;
 
     pthread_mutex_lock(&mGattLock);
-    conn = gattAttCallbackCommon(trans, to, &expectedWorkTypeFindByType, 1, "Find");
+    conn = gattAttCallbackCommon(trans, to, expectedWorkTypes, sizeof(expectedWorkTypes), "FindByTypeVal");
     if (conn) {
         ///todo
     }
@@ -1166,7 +1166,15 @@ static void gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *han
  */
 static void gattAttCliWriteCbk(uniq_t trans, l2c_handle_t to)
 {
+    static const uint8_t expectedWorkTypes[] = {GATT_CLI_TODO_WRITE, GATT_CLI_TODO_PREPARE_WRITE, GATT_CLI_TOTO_WRITE_EXEC};
+    struct gattConnState *conn;
 
+    pthread_mutex_lock(&mGattLock);
+    conn = gattAttCallbackCommon(trans, to, expectedWorkTypes, sizeof(expectedWorkTypes), "Write");
+    if (conn) {
+        ///todo
+    }
+    pthread_mutex_unlock(&mGattLock);
 }
 
 /*
@@ -1182,7 +1190,16 @@ static void gattAttCliWriteCbk(uniq_t trans, l2c_handle_t to)
  */
 static void gattAttCliError(uniq_t trans, l2c_handle_t to, const uint16_t *handleP, const uint8_t *errP, const uint8_t *errOpcodeP)
 {
+    static const uint8_t expectedWorkTypes[] = {GATT_CLI_TODO_FIND_INFO, GATT_CLI_TODO_FIND_BY_TYPE_VAL, GATT_CLI_TODO_READ_BY_TYPE, GATT_CLI_TODO_READ, GATT_CLI_TODO_READ_BLOB,
+                                                GATT_CLI_TODO_READ_BY_GRP_TYPE, GATT_CLI_TODO_WRITE, GATT_CLI_TODO_PREPARE_WRITE, GATT_CLI_TOTO_WRITE_EXEC};
+    struct gattConnState *conn;
 
+    pthread_mutex_lock(&mGattLock);
+    conn = gattAttCallbackCommon(trans, to, expectedWorkTypes, sizeof(expectedWorkTypes), "Error");
+    if (conn) {
+        ///todo
+    }
+    pthread_mutex_unlock(&mGattLock);
 }
 
 /*
@@ -1197,7 +1214,14 @@ static void gattAttCliError(uniq_t trans, l2c_handle_t to, const uint16_t *handl
  */
 static void gattAttCliIndNotif(l2c_handle_t to, bool needsAck, uint16_t handle, sg data)
 {
-///aaa
+    struct gattConnState *conn;
+
+    pthread_mutex_lock(&mGattLock);
+    conn = gattAttCallbackCommon(0, to, NULL, 0, "Notif");
+    if (conn) {
+        ///todo
+    }
+    pthread_mutex_unlock(&mGattLock);
 }
 
 /*
@@ -1977,17 +2001,17 @@ out:
 
 /*
  * FUNCTION: gattCliTodoEnqItem
- * USE:      Start on the next to-do item for the connection
- * PARAMS:   clicon - the client-connection structure
+ * USE:      Start on the next to-do item for the connection. If it can be completed
+ *           immediately, start on the next one, etc...
+ * PARAMS:   conn - the per-connection structure
  * RETURN:   NONE
  * NOTES:    Call with mGattLock held. Do not call if there are no
  *           todo items or if one is in progress! In fact, you probably
  *           never want to call this directly, instead call
  *           gattCliTodoEnqItem();
  */
-static void gattCliTodoNext(struct gattCliCon *clicon)
+static void gattCliTodoNext(struct gattConnState *conn)
 {
-    struct gattConnState *conn = clicon->conn;
     struct gattCliTodoItem *now;
     uniq_t trans;
 
@@ -2149,7 +2173,7 @@ static void gattCliTodoEnqItem(struct gattCliCon *clicon, struct gattCliTodoItem
         conn->todoListT = todo;
         conn->todoListH = todo;
         if (!conn->todoCurTransId) /* if no current task, start one */
-            gattCliTodoNext(clicon);
+            gattCliTodoNext(clicon->conn);
     }
 }
 
