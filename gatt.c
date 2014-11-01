@@ -46,16 +46,41 @@ struct gattCliTodoItem {
 
     union {
         struct {
+            uint16_t          startHandle;
+            uint16_t          endHandle;
+            uint16_t          uuid16; /* for findByTypeValue only */
+            sg                val;    /* for findByTypeValue only */
+        } find;
+        struct {
+            uint16_t          handle;
+            uint16_t          ofst;      /* used for read-blob */
+            uint16_t          endHandle; /* used for read-by-type, read-by-group-type */
+            struct uuid       type;      /* used for read-by-type, read-by-group-type */
+        } read;
+        struct {
             uint16_t          handle;
             sg                data;
             gattCliWriteDone  doneF;
             void             *doneD;
-            bool              withReply; /* use a write request or command? */
+            uint16_t          ofst; /* only used for prepare-write */
         } write;
+        struct {
+            bool              commit;
+        } exec;
     };
 };
 
-#define GATT_CLI_TODO_WRITE   0
+#define GATT_CLI_TODO_FIND_INFO          0
+#define GATT_CLI_TODO_FIND_BY_TYPE_VAL   1
+#define GATT_CLI_TODO_READ_BY_TYPE       2
+#define GATT_CLI_TODO_READ               3
+#define GATT_CLI_TODO_READ_BLOB          4
+#define GATT_CLI_TODO_READ_BY_GRP_TYPE   5
+#define GATT_CLI_TODO_WRITE              6
+#define GATT_CLI_TODO_WRITE_NO_ACK       7
+#define GATT_CLI_TODO_SIGNED_WRITE       8
+#define GATT_CLI_TODO_PREPARE_WRITE      9
+#define GATT_CLI_TOTO_WRITE_EXEC         10
 
 
 struct gattConnState {
@@ -1024,6 +1049,41 @@ static void* gattWorker(void *param)
 }
 
 /*
+ * FUNCTION: gattAttCallbackCommon
+ * USE:      Common code for all GATT ATT client callbacks. Some basic checks mostly
+ * PARAMS:   trans - transaction id
+ *           to - peer's connection handle
+ *           expectedWorkItemTypes - list of acceptable work item types (NULL if we have no expectations)
+ *           numExpTypes - size of the above list
+ *           cbkName - name (used for message printing only)
+ * RETURN:   gattConnState if all is OK, NULL else
+ * NOTES:    call with mGattLock held
+ */
+static struct gattConnState* gattAttCallbackCommon(uniq_t trans, l2c_handle_t to, const uint8_t *expectedWorkItemTypes, unsigned numExpTypes, const char* cbkName)
+{
+    struct gattConnState *conn;
+    unsigned i;
+
+    conn = gattConnFind(to);
+    if (!conn)
+        logw("%s callback on a nonexistent connection\n", cbkName);
+    else if (conn->todoCurTransId != trans)
+        logw("%s callback with wrong trans ID\n", cbkName);
+    else if (!conn->todoCurr)
+        logw("%s callback with no todo item\n", cbkName);
+    else {
+        if (!numExpTypes)
+            return conn;
+        for (i = 0; i < numExpTypes; i++)
+            if (*expectedWorkItemTypes++ == conn->todoCurr->type)
+                return conn;
+        logw("%s callback with wrong work type (%u)\n", cbkName, conn->todoCurr->type);
+    }
+
+    return NULL;
+}
+
+/*
  * FUNCTION: gattAttCliFindInfoCbk
  * USE:      Called by ATT as a reply to our Find request, if results were provided
  * PARAMS:   trans - transaction id
@@ -1036,7 +1096,15 @@ static void* gattWorker(void *param)
  */
 static void gattAttCliFindInfoCbk(uniq_t trans, l2c_handle_t to, uint16_t handle, const struct uuid *uuid, bool haveMore)
 {
+    static const uint8_t expectedWorkTypeFind = GATT_CLI_TODO_FIND_INFO;
+    struct gattConnState *conn;
 
+    pthread_mutex_lock(&mGattLock);
+    conn = gattAttCallbackCommon(trans, to, &expectedWorkTypeFind, 1, "Find");
+    if (conn) {
+        ///todo
+    }
+    pthread_mutex_unlock(&mGattLock);
 }
 
 /*
@@ -1052,7 +1120,15 @@ static void gattAttCliFindInfoCbk(uniq_t trans, l2c_handle_t to, uint16_t handle
  */
 static void gattAttCliFindByTypeValCbk(uniq_t trans, l2c_handle_t to, uint16_t handle, uint16_t grpEndHandle, bool haveMore)
 {
+    static const uint8_t expectedWorkTypeFindByType = GATT_CLI_TODO_FIND_BY_TYPE_VAL;
+    struct gattConnState *conn;
 
+    pthread_mutex_lock(&mGattLock);
+    conn = gattAttCallbackCommon(trans, to, &expectedWorkTypeFindByType, 1, "Find");
+    if (conn) {
+        ///todo
+    }
+    pthread_mutex_unlock(&mGattLock);
 }
 
 /*
@@ -1069,7 +1145,15 @@ static void gattAttCliFindByTypeValCbk(uniq_t trans, l2c_handle_t to, uint16_t h
  */
 static void gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *handleP, const uint16_t *endGrpHandleP, sg data, bool haveMore)
 {
+    static const uint8_t expectedWorkTypes[] = {GATT_CLI_TODO_READ_BY_TYPE, GATT_CLI_TODO_READ, GATT_CLI_TODO_READ_BLOB, GATT_CLI_TODO_READ_BY_GRP_TYPE};
+    struct gattConnState *conn;
 
+    pthread_mutex_lock(&mGattLock);
+    conn = gattAttCallbackCommon(trans, to, expectedWorkTypes, sizeof(expectedWorkTypes), "Read");
+    if (conn) {
+        ///todo
+    }
+    pthread_mutex_unlock(&mGattLock);
 }
 
 /*
@@ -1113,7 +1197,7 @@ static void gattAttCliError(uniq_t trans, l2c_handle_t to, const uint16_t *handl
  */
 static void gattAttCliIndNotif(l2c_handle_t to, bool needsAck, uint16_t handle, sg data)
 {
-
+///aaa
 }
 
 /*
@@ -1905,7 +1989,7 @@ static void gattCliTodoNext(struct gattCliCon *clicon)
 {
     struct gattConnState *conn = clicon->conn;
     struct gattCliTodoItem *now;
-    bool ongoing = false;
+    uniq_t trans;
 
     /* while we have nothing in progress, do things */
     while (conn->todoListH && !conn->todoCurTransId) {
@@ -1918,26 +2002,122 @@ static void gattCliTodoNext(struct gattCliCon *clicon)
 
         /* actually start it */
         switch (now->type) {
+        case GATT_CLI_TODO_FIND_INFO:
+            trans = attCliFindInformation(conn->conn, now->find.startHandle, now->find.endHandle);
+            if (!trans)
+                logw("FindInfo failed\n");
+            else {
+                conn->todoCurr = now;
+                conn->todoCurTransId = trans;
+                now = NULL;
+            }
+            break;
+
+        case GATT_CLI_TODO_FIND_BY_TYPE_VAL:
+            trans = attCliFindByTypeValue(conn->conn, now->find.startHandle, now->find.endHandle, now->find.uuid16, now->find.val);
+            if (!trans) {
+                sgFree(now->find.val);
+                logw("FindByTypeValue failed\n");
+             } else {
+                conn->todoCurr = now;
+                conn->todoCurTransId = trans;
+                now = NULL;
+            }
+            break;
+
+        case GATT_CLI_TODO_READ_BY_TYPE:
+            trans = attCliReadByType(conn->conn, now->read.handle, now->read.endHandle, &now->read.type);
+            if (!trans)
+                logw("ReadByType failed\n");
+            else {
+                conn->todoCurr = now;
+                conn->todoCurTransId = trans;
+                now = NULL;
+            }
+            break;
+
+        case GATT_CLI_TODO_READ:
+            trans = attCliRead(conn->conn, now->read.handle);
+            if (!trans)
+                logw("Read failed\n");
+            else {
+                conn->todoCurr = now;
+                conn->todoCurTransId = trans;
+                now = NULL;
+            }
+            break;
+
+        case GATT_CLI_TODO_READ_BLOB:
+            trans = attCliReadBlob(conn->conn, now->read.handle, now->read.ofst);
+            if (!trans)
+                logw("ReadBlob failed\n");
+            else {
+                conn->todoCurr = now;
+                conn->todoCurTransId = trans;
+                now = NULL;
+            }
+            break;
+
+        case GATT_CLI_TODO_READ_BY_GRP_TYPE:
+            trans = attCliReadByGroupType(conn->conn, now->read.handle, now->read.endHandle, &now->read.type);
+            if (!trans)
+                logw("ReadByGroupType failed\n");
+            else {
+                conn->todoCurr = now;
+                conn->todoCurTransId = trans;
+                now = NULL;
+            }
+            break;
+
         case GATT_CLI_TODO_WRITE:
-            if (!now->write.withReply) {
-                if (!attCliWriteNoAck(conn->conn, now->write.handle, now->write.data)) {
-                    sgFree(now->write.data);
-                    logi("Write with no confirm failed\n");
-                }
+            trans = attCliWrite(conn->conn, now->write.handle, now->write.data);
+            if (!trans) {
+                sgFree(now->write.data);
+                logw("Write with confirm failed\n");
             } else {
-                uniq_t trans = attCliWrite(conn->conn, now->write.handle, now->write.data);
-                if (!trans) {
-                    sgFree(now->write.data);
-                    logw("Write with confirm failed\n");
-                } else {
-                    conn->todoCurr = now;
-                    conn->todoCurTransId = trans;
-                    now = NULL;
-                }
+                conn->todoCurr = now;
+                conn->todoCurTransId = trans;
+                now = NULL;
+            }
+            break;
+
+        case GATT_CLI_TODO_WRITE_NO_ACK:
+            if (!attCliWriteNoAck(conn->conn, now->write.handle, now->write.data)) {
+                sgFree(now->write.data);
+                logi("Write with no confirm failed\n");
+            }
+            break;
+
+        case GATT_CLI_TODO_SIGNED_WRITE:
+            if (!attCliSignedWriteNoAck(conn->conn, now->write.handle, now->write.data)) {
+                sgFree(now->write.data);
+                logi("Write with signature failed\n");
+            }
+            break;
+
+        case GATT_CLI_TODO_PREPARE_WRITE:
+            trans = attCliPrepareWrite(conn->conn, now->write.handle, now->write.ofst, now->write.data);
+            if (!trans) {
+                sgFree(now->write.data);
+                logw("PrepareWrite failed\n");
+            } else {
+                conn->todoCurr = now;
+                conn->todoCurTransId = trans;
+                now = NULL;
+            }
+            break;
+
+        case GATT_CLI_TOTO_WRITE_EXEC:
+            trans = attCliExecuteStagedWrites(conn->conn, now->exec.commit);
+            if (!trans)
+                logw("ExecWrite failed\n");
+            else {
+                conn->todoCurr = now;
+                conn->todoCurTransId = trans;
+                now = NULL;
             }
             break;
         }
-
         if (now)
             free(now);
     }
@@ -1975,7 +2155,7 @@ static void gattCliTodoEnqItem(struct gattCliCon *clicon, struct gattCliTodoItem
 
 /*
  * FUNCTION: gattCliEnqueueWriteReq
- * USE:      Enqueue a gatt to-do item to perform a write 
+ * USE:      Enqueue a gatt to-do item to perform a write command or request
  * PARAMS:   clicon - the client-connection structure
  *           handle - the handle to write
  *           data - the data to write
@@ -1998,12 +2178,11 @@ static bool gattCliTodoEnqWriteReq(struct gattCliCon *clicon, uint16_t handle, c
     if (!s)
         goto fail_s;
 
-    todo->type = GATT_CLI_TODO_WRITE;
+    todo->type = withReply ? GATT_CLI_TODO_WRITE : GATT_CLI_TODO_WRITE_NO_ACK;
     todo->write.handle = handle;
     todo->write.data = s;
     todo->write.doneF = cbk;
     todo->write.doneD = cbkData;
-    todo->write.withReply = withReply;
 
     gattCliTodoEnqItem(clicon, todo, false);
     return true;
@@ -2046,7 +2225,7 @@ static void gattClientNotifUnsubscribe(struct gattCliCon *clicon, struct gattCli
     /*
      * See if we need to change our notif/ind subscription. There are three cases:
      * 1. Nobody wants anything anymore - unsubscribe alltogether
-     * 2. The last guy wh wanted indications went away, but we still have
+     * 2. The last guy who wanted indications went away, but we still have
      *    clients who want notifications. In this case we'll unsubscribe from
      *    indications and subscribe to notifications if the given characteristic
      *    supports it. Else we'll keep it as is.
