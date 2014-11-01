@@ -1049,7 +1049,7 @@ static void* gattWorker(void *param)
 }
 
 /*
- * FUNCTION: gattAttCallbackCommon
+ * FUNCTION: gattAttCbkCheckState
  * USE:      Common code for all GATT ATT client callbacks. Some basic checks mostly
  * PARAMS:   trans - transaction id (or 0 if none)
  *           to - peer's connection handle
@@ -1059,7 +1059,7 @@ static void* gattWorker(void *param)
  * RETURN:   gattConnState if all is OK, NULL else
  * NOTES:    call with mGattLock held
  */
-static struct gattConnState* gattAttCallbackCommon(uniq_t trans, l2c_handle_t to, const uint8_t *expectedWorkItemTypes, unsigned numExpTypes, const char* cbkName)
+static struct gattConnState* gattAttCbkCheckState(uniq_t trans, l2c_handle_t to, const uint8_t *expectedWorkItemTypes, unsigned numExpTypes, const char* cbkName)
 {
     struct gattConnState *conn;
     unsigned i;
@@ -1100,7 +1100,7 @@ static void gattAttCliFindInfoCbk(uniq_t trans, l2c_handle_t to, uint16_t handle
     struct gattConnState *conn;
 
     pthread_mutex_lock(&mGattLock);
-    conn = gattAttCallbackCommon(trans, to, expectedWorkTypes, sizeof(expectedWorkTypes), "Find");
+    conn = gattAttCbkCheckState(trans, to, expectedWorkTypes, sizeof(expectedWorkTypes), "Find");
     if (conn) {
         ///todo
     }
@@ -1124,7 +1124,7 @@ static void gattAttCliFindByTypeValCbk(uniq_t trans, l2c_handle_t to, uint16_t h
     struct gattConnState *conn;
 
     pthread_mutex_lock(&mGattLock);
-    conn = gattAttCallbackCommon(trans, to, expectedWorkTypes, sizeof(expectedWorkTypes), "FindByTypeVal");
+    conn = gattAttCbkCheckState(trans, to, expectedWorkTypes, sizeof(expectedWorkTypes), "FindByTypeVal");
     if (conn) {
         ///todo
     }
@@ -1149,7 +1149,7 @@ static void gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *han
     struct gattConnState *conn;
 
     pthread_mutex_lock(&mGattLock);
-    conn = gattAttCallbackCommon(trans, to, expectedWorkTypes, sizeof(expectedWorkTypes), "Read");
+    conn = gattAttCbkCheckState(trans, to, expectedWorkTypes, sizeof(expectedWorkTypes), "Read");
     if (conn) {
         ///todo
     }
@@ -1170,7 +1170,7 @@ static void gattAttCliWriteCbk(uniq_t trans, l2c_handle_t to)
     struct gattConnState *conn;
 
     pthread_mutex_lock(&mGattLock);
-    conn = gattAttCallbackCommon(trans, to, expectedWorkTypes, sizeof(expectedWorkTypes), "Write");
+    conn = gattAttCbkCheckState(trans, to, expectedWorkTypes, sizeof(expectedWorkTypes), "Write");
     if (conn) {
         ///todo
     }
@@ -1195,7 +1195,7 @@ static void gattAttCliError(uniq_t trans, l2c_handle_t to, const uint16_t *handl
     struct gattConnState *conn;
 
     pthread_mutex_lock(&mGattLock);
-    conn = gattAttCallbackCommon(trans, to, expectedWorkTypes, sizeof(expectedWorkTypes), "Error");
+    conn = gattAttCbkCheckState(trans, to, expectedWorkTypes, sizeof(expectedWorkTypes), "Error");
     if (conn) {
         ///todo
     }
@@ -1217,7 +1217,7 @@ static void gattAttCliIndNotif(l2c_handle_t to, bool needsAck, uint16_t handle, 
     struct gattConnState *conn;
 
     pthread_mutex_lock(&mGattLock);
-    conn = gattAttCallbackCommon(0, to, NULL, 0, "Notif");
+    conn = gattAttCbkCheckState(0, to, NULL, 0, "Notif");
     if (conn) {
         ///todo
     }
