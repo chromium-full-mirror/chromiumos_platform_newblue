@@ -1102,7 +1102,8 @@ static void gattAttCliFindInfoCbk(uniq_t trans, l2c_handle_t to, uint16_t handle
     pthread_mutex_lock(&mGattLock);
     conn = gattAttCbkCheckState(trans, to, expectedWorkTypes, sizeof(expectedWorkTypes), "Find");
     if (conn) {
-        ///todo
+        /* in the future we might use find info requests. For now we do not */
+        loge("Unexpected FindInfo request reply\n");
     }
     pthread_mutex_unlock(&mGattLock);
 }
@@ -1126,7 +1127,7 @@ static void gattAttCliFindByTypeValCbk(uniq_t trans, l2c_handle_t to, uint16_t h
     pthread_mutex_lock(&mGattLock);
     conn = gattAttCbkCheckState(trans, to, expectedWorkTypes, sizeof(expectedWorkTypes), "FindByTypeVal");
     if (conn) {
-        ///todo
+        /* we used these for gattClientEnumServices() if asked to look for a particular uuid and it fits in a uuid16 */
     }
     pthread_mutex_unlock(&mGattLock);
 }
