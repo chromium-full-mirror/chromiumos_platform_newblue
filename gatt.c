@@ -83,6 +83,50 @@ struct gattCliTodoItem {
 #define GATT_CLI_TOTO_WRITE_EXEC         10
 
 
+#define CACHE_DESCR_VAL_LEN              2
+
+struct gattCacheDescr {
+    struct gattCacheDescr    *next;
+
+    struct uuid               type;
+    uint16_t                  handle;
+    bool                      haveVal; /* if val is complete and correct */
+    uint8_t                   val[CACHE_DESCR_VAL_LEN];
+};
+
+struct gattCacheChar {
+    struct gattCacheChar     *next;
+
+    struct uuid               uuid;
+    uint16_t                  handle;
+    uint16_t                  valHandle;
+    uint16_t                  grpEndHandle;
+
+    uint8_t                   props;
+
+    struct gattCacheDescr    *descrs;
+};
+
+struct gattCacheInclSvc {
+    struct gattCacheInclSvc  *next;
+
+    struct uuid               uuid;
+    uint16_t                  handle;
+    uint16_t                  grpEndHandle;
+};
+
+struct gattCacheSvc {
+    struct gattCacheSvc      *next;
+
+    struct uuid               uuid;
+    uint16_t                  handle;
+    uint16_t                  grpEndHandle;
+    bool                      primary;
+
+    struct gattCacheInclSvc  *inclSvcs;
+    struct gattCacheChar     *chars;
+};
+
 struct gattConnState {
     struct gattConnState     *next;
     struct gattConnState     *prev;
@@ -97,6 +141,8 @@ struct gattConnState {
     struct gattCliTodoItem   *todoListT;
     struct gattCliTodoItem   *todoCurr; /* or null if none */
     uniq_t                    todoCurTransId;
+
+    struct gattCacheSvc      *cachedSvcs;
 };
 
 struct gattItem { /* a list of these exists in a a gett service */
@@ -252,6 +298,46 @@ static struct gattConnState* gattConnFind(l2c_handle_t conn)
     return state;
 }
 
+/*
+ * FUNCTION: gattConnStructCacheFree
+ * USE:      Free the GATT cache for the connection
+ * PARAMS:   conn - said struct
+ * RETURN:   NONE
+ * NOTES:    call with mGattLock held
+ */
+static void gattConnStructCacheFree(struct gattConnState *conn)
+{
+    struct gattCacheSvc *svcC = conn->cachedSvcs, *svcN;
+    struct gattCacheInclSvc *incC, *incN;
+    struct gattCacheChar *chrC, *chrN;
+    struct gattCacheDescr *dscC, *dscN;
+
+    for (svcC = conn->cachedSvcs; svcC; svcC = svcN) {
+
+        svcN = svcC->next;
+
+        for (incC = svcC->inclSvcs; incC; incC = incN) {
+
+            incN = incC->next;
+            free(incC);
+        }
+
+        for (chrC = svcC->chars; chrC; chrC = chrN) {
+
+            chrN = chrC->next;
+
+            for (dscC = chrC->descrs; dscC; dscC = dscN) {
+
+                dscN = dscC->next;
+                free(dscC);
+            }
+
+            free(chrC);
+        }
+
+        free(svcC);
+    }
+}
 
 /*
  * FUNCTION: gattConnStructDelete
@@ -262,6 +348,8 @@ static struct gattConnState* gattConnFind(l2c_handle_t conn)
  */
 static void gattConnStructDelete(struct gattConnState *state)
 {
+    gattConnStructCacheFree(state);
+
     if (state->next)
         state->next->prev = state->prev;
     if (state->prev)
@@ -817,8 +905,8 @@ static void gattConnEvt(void *userData, void *instance, uint8_t evt, const void 
 
     case L2C_STATE_CLOSED:
         attNotifConnClose(state->conn);
-        sendQueueDelPackets(mSendQ, state->conn);
         pthread_mutex_lock(&mGattLock);
+        sendQueueDelPackets(mSendQ, state->conn);
         gattConnStructDelete(state);
         pthread_mutex_unlock(&mGattLock);
         break;
