@@ -120,7 +120,7 @@ uint8_t gattClientConnect(int cli, const struct bt_addr *to, gattCliConnectResul
 uint8_t gattClientDisconnect(int conn); /* calls the gattCliConnectResultCbk passed to gattClientConnect() with GATT_CLI_OTHER_SIDE_DISC */
 
 /* cache maintenance */
-void gattClientInvalidateCache(const struct bt_addr *whomTo);
+bool gattClientInvalidateCache(const struct bt_addr *whomTo); //true if process started
 
 /* service search */
 uint8_t gattClientEnumServices(int conn, const struct uuid *searchForThis, gattCliSvcEnumCbk cbk); /* searchForThis can be null to enumerate all services without filtering for that uuid. if another enumeration is ongoing, yours will wait till that one is done */

@@ -14,6 +14,11 @@
 #include "bt.h"
 
 
+#define CACHE_FILL_STAGE_PRIMARY_SERVICES     0
+#define CACHE_FILL_STAGE_SECONDARY_SERVICES   1
+#define CACHE_FILL_STAGE_CHARACTERISTICS      2
+#define CACHE_FILL_STAGE_DESCRIPTORS          3
+
 #define GATT_ITEM_TYPE_INCLUDE     1
 #define GATT_ITEM_TYPE_CHAR_DECL   2
 #define GATT_ITEM_TYPE_CHAR_VAL    3
@@ -283,17 +288,33 @@ static struct gattCliCon *mCliCons = NULL;
 
 
 /*
- * FUNCTION: gattConnFind
+ * FUNCTION: gattConnFindByL2cConn
  * USE:      find a per-connection structure for a given l2c handle
  * PARAMS:   conn - the l2c connection handle
  * RETURN:   connection structure or NULL if not found
  * NOTES:    call with mGattLock held
  */
-static struct gattConnState* gattConnFind(l2c_handle_t conn)
+static struct gattConnState* gattConnFindByL2cConn(l2c_handle_t conn)
 {
     struct gattConnState *state;
 
     for (state = mConns; state && state->conn != conn; state = state->next);
+
+    return state;
+}
+
+/*
+ * FUNCTION: gattConnFindByAddr
+ * USE:      find a per-connection structure for a given address
+ * PARAMS:   addr - the address
+ * RETURN:   connection structure or NULL if not found
+ * NOTES:    call with mGattLock held
+ */
+static struct gattConnState* gattConnFindByAddr(const struct bt_addr *addr)
+{
+    struct gattConnState *state;
+
+    for (state = mConns; state && memcmp(addr, &state->addr, sizeof(struct bt_addr)); state = state->next);
 
     return state;
 }
@@ -837,7 +858,7 @@ static void gattAttMtuCbk(l2c_handle_t who, uint32_t mtu)
     struct gattConnState* state;
 
     pthread_mutex_lock(&mGattLock);
-    state = gattConnFind(who);
+    state = gattConnFindByL2cConn(who);
     if (!state)
         loge("Unknown connection for MTU change event\n");
     else if (state->mtu > mtu)
@@ -1152,7 +1173,7 @@ static struct gattConnState* gattAttCbkCheckState(uniq_t trans, l2c_handle_t to,
     struct gattConnState *conn;
     unsigned i;
 
-    conn = gattConnFind(to);
+    conn = gattConnFindByL2cConn(to);
     if (!conn)
         logw("%s callback on a nonexistent connection\n", cbkName);
     else if (trans && conn->todoCurTransId != trans)
@@ -2485,7 +2506,44 @@ void gattClientDestroy(int clientId)
     pthread_mutex_unlock(&mGattLock);
 }
 
+/*
+ * FUNCTION: gattConnStructCacheFill
+ * USE:      Perform a given piece of a given stage of cache fill
+ * PARAMS:   conn - the connection
+ *           stage - the stage we're in
+ *           handleStart - handle to start at
+ *           handleEnd - handle to end at
+ * RETURN:   false on immediate failure
+ * NOTES:    call with mGattlockHeld
+ */
+static bool gattConnStructCacheFill(struct gattConnState *conn, unsigned stage, uint16_t handleStart, uint16_t handleEnd)
+{
+    //TODO: this
+    return false;
+}
 
+/*
+ * FUNCTION: gattClientInvalidateCache
+ * USE:      Invalidate cache and repopulate it
+ * PARAMS:   whomTo - cache of what device to invalidate
+ * RETURN:   false on immediate failure
+ * NOTES:    process proceeds in background, all other queries will wait till this is done
+ */
+bool gattClientInvalidateCache(const struct bt_addr *whomTo)
+{
+    struct gattConnState *conn;
+
+    pthread_mutex_lock(&mGattLock);
+    conn = gattConnFindByAddr(whomTo);
+    if (conn) {
+        gattConnStructCacheFree(conn);
+        if (!gattConnStructCacheFill(conn, CACHE_FILL_STAGE_PRIMARY_SERVICES, 0, 0xffff))
+            conn = NULL;
+    }
+    pthread_mutex_unlock(&mGattLock);
+
+    return !!conn;
+}
 
 
 
