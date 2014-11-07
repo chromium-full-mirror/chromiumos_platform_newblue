@@ -14,11 +14,6 @@
 #include "bt.h"
 
 
-#define CACHE_FILL_STAGE_PRIMARY_SERVICES     0
-#define CACHE_FILL_STAGE_SECONDARY_SERVICES   1
-#define CACHE_FILL_STAGE_CHARACTERISTICS      2
-#define CACHE_FILL_STAGE_DESCRIPTORS          3
-
 #define GATT_ITEM_TYPE_INCLUDE     1
 #define GATT_ITEM_TYPE_CHAR_DECL   2
 #define GATT_ITEM_TYPE_CHAR_VAL    3
@@ -41,14 +36,13 @@ struct gattCharDefHdr {
     /* uuid here */
 } __packed;
 
-typedef void (*gattCliWriteDone)(void* userData, const uint8_t *err); /* err is null on local stack error, else ATT_ERR_* */
-
 /* we can have one transaction outstanding per connection. This list serializes them */
 struct gattCliTodoItem {
 
     struct gattCliTodoItem   *next;
-    uint8_t                   type;
+    uint8_t                   type; /* GATT_CLI_TODO_* */
 
+    /* this describes what to do */
     union {
         struct {
             uint16_t          startHandle;
@@ -65,14 +59,19 @@ struct gattCliTodoItem {
         struct {
             uint16_t          handle;
             sg                data;
-            gattCliWriteDone  doneF;
-            void             *doneD;
             uint16_t          ofst; /* only used for prepare-write */
         } write;
         struct {
             bool              commit;
         } exec;
     };
+
+    /* this describes why and whom for */
+    int                       clientId;
+    uint8_t                   reqType; /* GATT_INTENT_* */
+    struct uuid               uuidSvc;
+    struct uuid               uuidChr;
+    struct uuid               uuidDsc;
 };
 
 #define GATT_CLI_TODO_FIND_INFO          0
@@ -87,50 +86,9 @@ struct gattCliTodoItem {
 #define GATT_CLI_TODO_PREPARE_WRITE      9
 #define GATT_CLI_TOTO_WRITE_EXEC         10
 
+#define GATT_INTENT_INTERNAL             0 /* not a user request but an internal one - no further ation needed */
 
 #define CACHE_DESCR_VAL_LEN              2
-
-struct gattCacheDescr {
-    struct gattCacheDescr    *next;
-
-    struct uuid               type;
-    uint16_t                  handle;
-    bool                      haveVal; /* if val is complete and correct */
-    uint8_t                   val[CACHE_DESCR_VAL_LEN];
-};
-
-struct gattCacheChar {
-    struct gattCacheChar     *next;
-
-    struct uuid               uuid;
-    uint16_t                  handle;
-    uint16_t                  valHandle;
-    uint16_t                  grpEndHandle;
-
-    uint8_t                   props;
-
-    struct gattCacheDescr    *descrs;
-};
-
-struct gattCacheInclSvc {
-    struct gattCacheInclSvc  *next;
-
-    struct uuid               uuid;
-    uint16_t                  handle;
-    uint16_t                  grpEndHandle;
-};
-
-struct gattCacheSvc {
-    struct gattCacheSvc      *next;
-
-    struct uuid               uuid;
-    uint16_t                  handle;
-    uint16_t                  grpEndHandle;
-    bool                      primary;
-
-    struct gattCacheInclSvc  *inclSvcs;
-    struct gattCacheChar     *chars;
-};
 
 struct gattConnState {
     struct gattConnState     *next;
@@ -146,11 +104,9 @@ struct gattConnState {
     struct gattCliTodoItem   *todoListT;
     struct gattCliTodoItem   *todoCurr; /* or null if none */
     uniq_t                    todoCurTransId;
-
-    struct gattCacheSvc      *cachedSvcs;
 };
 
-struct gattItem { /* a list of these exists in a a gett service */
+struct gattItem { /* a list of these exists in a a gatt service */
     struct gattItem    *next;
     struct gattItem    *prev;
     uint8_t             type;
@@ -320,47 +276,6 @@ static struct gattConnState* gattConnFindByAddr(const struct bt_addr *addr)
 }
 
 /*
- * FUNCTION: gattConnStructCacheFree
- * USE:      Free the GATT cache for the connection
- * PARAMS:   conn - said struct
- * RETURN:   NONE
- * NOTES:    call with mGattLock held
- */
-static void gattConnStructCacheFree(struct gattConnState *conn)
-{
-    struct gattCacheSvc *svcC = conn->cachedSvcs, *svcN;
-    struct gattCacheInclSvc *incC, *incN;
-    struct gattCacheChar *chrC, *chrN;
-    struct gattCacheDescr *dscC, *dscN;
-
-    for (svcC = conn->cachedSvcs; svcC; svcC = svcN) {
-
-        svcN = svcC->next;
-
-        for (incC = svcC->inclSvcs; incC; incC = incN) {
-
-            incN = incC->next;
-            free(incC);
-        }
-
-        for (chrC = svcC->chars; chrC; chrC = chrN) {
-
-            chrN = chrC->next;
-
-            for (dscC = chrC->descrs; dscC; dscC = dscN) {
-
-                dscN = dscC->next;
-                free(dscC);
-            }
-
-            free(chrC);
-        }
-
-        free(svcC);
-    }
-}
-
-/*
  * FUNCTION: gattConnStructDelete
  * USE:      Delete and unlink a connection struct
  * PARAMS:   state - said struct
@@ -369,7 +284,21 @@ static void gattConnStructCacheFree(struct gattConnState *conn)
  */
 static void gattConnStructDelete(struct gattConnState *state)
 {
-    gattConnStructCacheFree(state);
+    struct gattCliNotif *nC, *nN;
+    struct gattCliTodoItem *tC, *tN;
+
+    for (nC = state->cliNotifs; nC; nC = nN) {
+        nN = nC->next;
+        free(nC);
+    }
+
+    for (tC = state->todoListH; tC; tC = tN) {
+        tN = tC->next;
+        free(tC);
+    }
+
+    if (state->todoCurr)
+        free(state->todoCurr);
 
     if (state->next)
         state->next->prev = state->prev;
@@ -1307,7 +1236,7 @@ static void gattAttCliError(uniq_t trans, l2c_handle_t to, const uint16_t *handl
     pthread_mutex_lock(&mGattLock);
     conn = gattAttCbkCheckState(trans, to, expectedWorkTypes, sizeof(expectedWorkTypes), "Error");
     if (conn) {
-        ///todo
+        //todo
     }
     pthread_mutex_unlock(&mGattLock);
 }
@@ -2110,7 +2039,7 @@ out:
 }
 
 /*
- * FUNCTION: gattCliTodoEnqItem
+ * FUNCTION: gattCliTodoNext
  * USE:      Start on the next to-do item for the connection. If it can be completed
  *           immediately, start on the next one, etc...
  * PARAMS:   conn - the per-connection structure
@@ -2118,7 +2047,7 @@ out:
  * NOTES:    Call with mGattLock held. Do not call if there are no
  *           todo items or if one is in progress! In fact, you probably
  *           never want to call this directly, instead call
- *           gattCliTodoEnqItem();
+ *           gattCliTodoNext();
  */
 static void gattCliTodoNext(struct gattConnState *conn)
 {
@@ -2262,15 +2191,34 @@ static void gattCliTodoNext(struct gattConnState *conn)
  * USE:      Enqueue a gatt to-do item
  * PARAMS:   clicon - the client-connection structure
  *           todo - the item
+ *           intent - the intended request type (in gatt terms) GATT_INTENT_*
+ *           uuidSvc - the uuid for the service we INTEND to act on (or NULL if none)
+ *           uuidChr - the uuid for the characteristic we INTEND to act on (or NULL if none)
+ *           uuidDsc - the uuid for the descriptor we INTEND to act on (or NULL if none)
  *           inFront - add it in front (instead of in order) this is used for confirmations
  * RETURN:   NONE
  * NOTES:    Call with mGattLock held
  */
-static void gattCliTodoEnqItem(struct gattCliCon *clicon, struct gattCliTodoItem *todo, bool inFront)
+static void gattCliTodoEnqItem(struct gattCliCon *clicon, struct gattCliTodoItem *todo, uint8_t intent, const struct uuid *uuidSvc, const struct uuid *uuidChr, const struct uuid *uuidDsc, bool inFront)
 {
     struct gattConnState *conn = clicon->conn;
 
+
     todo->next = NULL;
+    todo->clientId = clicon->cli->clientId;
+    if (uuidSvc)
+        memcpy(&todo->uuidSvc, uuidSvc, sizeof(struct uuid));
+    else
+        uuidZero(&todo->uuidSvc);
+    if (uuidChr)
+        memcpy(&todo->uuidChr, uuidChr, sizeof(struct uuid));
+    else
+        uuidZero(&todo->uuidChr);
+    if (uuidDsc)
+        memcpy(&todo->uuidDsc, uuidDsc, sizeof(struct uuid));
+    else
+        uuidZero(&todo->uuidDsc);
+
     if (conn->todoListH) { /* have items in list already? */
         if (inFront) {
             todo->next = conn->todoListH;
@@ -2295,12 +2243,16 @@ static void gattCliTodoEnqItem(struct gattCliCon *clicon, struct gattCliTodoItem
  *           data - the data to write
  *           len - length of said data
  *           withReply - use write with reply? (if no, callback will not be fired on success, but may be on failure)
- *           cbk - callback to call when done
- *           cbkData - data to pass to said callback
+ *           intent - the intended request type (in gatt terms) GATT_INTENT_*
+ *           uuidSvc - the uuid for the service we INTEND to act on (or NULL if none)
+ *           uuidChr - the uuid for the characteristic we INTEND to act on (or NULL if none)
+ *           uuidDsc - the uuid for the descriptor we INTEND to act on (or NULL if none)
+ *           inFront - add it in front (instead of in order) this is used for confirmations
  * RETURN:   false on immediate failure
  * NOTES:    If this returns true, the callback WILL be called (but it may be a while). Call with mGattLock held
  */
-static bool gattCliTodoEnqWriteReq(struct gattCliCon *clicon, uint16_t handle, const void *data, uint32_t len, bool withReply, gattCliWriteDone cbk, void *cbkData)
+static bool gattCliTodoEnqWriteReq(struct gattCliCon *clicon, uint16_t handle, const void *data, uint32_t len, bool withReply, uint8_t intent,
+                                   const struct uuid *uuidSvc, const struct uuid *uuidChr, const struct uuid *uuidDsc)
 {
     struct gattCliTodoItem *todo = (struct gattCliTodoItem*)calloc(1, sizeof(struct gattCliTodoItem));
     sg s;
@@ -2315,10 +2267,8 @@ static bool gattCliTodoEnqWriteReq(struct gattCliCon *clicon, uint16_t handle, c
     todo->type = withReply ? GATT_CLI_TODO_WRITE : GATT_CLI_TODO_WRITE_NO_ACK;
     todo->write.handle = handle;
     todo->write.data = s;
-    todo->write.doneF = cbk;
-    todo->write.doneD = cbkData;
 
-    gattCliTodoEnqItem(clicon, todo, false);
+    gattCliTodoEnqItem(clicon, todo, intent, uuidSvc, uuidChr, uuidDsc, false);
     return true;
 
 
@@ -2392,7 +2342,7 @@ static void gattClientNotifUnsubscribe(struct gattCliCon *clicon, struct gattCli
     }
 
     /* we do not bother with callbacks since there are no errors that can happen that we can actually handle */
-    if (doUpdate && !gattCliTodoEnqWriteReq(clicon, writeHandle, newFlags, sizeof(newFlags), true, NULL, NULL))
+    if (doUpdate && !gattCliTodoEnqWriteReq(clicon, writeHandle, newFlags, sizeof(newFlags), true, GATT_INTENT_INTERNAL, NULL, NULL, NULL))
         loge("Failed to update notification settings on client unsubscription\n");
 
     free(nr);
@@ -2408,6 +2358,7 @@ static void gattClientNotifUnsubscribe(struct gattCliCon *clicon, struct gattCli
  */
 static void gattClientConnClose(struct gattCliCon *clicon, uint8_t status)
 {
+    struct gattCliTodoItem *tC, *tN, *tP = NULL;
 
     /* notify client if needed */
     if (status != GATT_CLI_STATUS_OK && !gattEnqueueCliConnStatusCall(clicon, GATT_CLI_STATUS_OK))
@@ -2416,6 +2367,26 @@ static void gattClientConnClose(struct gattCliCon *clicon, uint8_t status)
     /* enumerate all notifications this client had and unsubscribe from them. */
     while (clicon->notifs)
         gattClientNotifUnsubscribe(clicon, clicon->notifs);
+
+    /*
+     * Remove all todo list items that are in client's name. If one is
+     * inflight, it will gracefully fail when it fails to find a client
+     * on completion, so we need not do much for that case. In reality
+     * this is all an optimization. We could leave all these items here
+     * and let them all fail safely. But since it is easy to get rid of
+     * them, we do.
+     */
+    for (tC = clicon->conn->todoListH; tC; tC = tN) {
+        tN = tC->next;
+        if (tC->clientId == clicon->cli->clientId) {
+            if (tC == clicon->conn->todoListH)
+                clicon->conn->todoListH = tN;
+            if (tC == clicon->conn->todoListT)
+                clicon->conn->todoListT = tP;
+            free(tC);
+        } else
+            tP = tC;
+    }
 
     /* destroy the structure(s) */
     if (clicon->next)
@@ -2507,22 +2478,6 @@ void gattClientDestroy(int clientId)
 }
 
 /*
- * FUNCTION: gattConnStructCacheFill
- * USE:      Perform a given piece of a given stage of cache fill
- * PARAMS:   conn - the connection
- *           stage - the stage we're in
- *           handleStart - handle to start at
- *           handleEnd - handle to end at
- * RETURN:   false on immediate failure
- * NOTES:    call with mGattlockHeld
- */
-static bool gattConnStructCacheFill(struct gattConnState *conn, unsigned stage, uint16_t handleStart, uint16_t handleEnd)
-{
-    //TODO: this
-    return false;
-}
-
-/*
  * FUNCTION: gattClientInvalidateCache
  * USE:      Invalidate cache and repopulate it
  * PARAMS:   whomTo - cache of what device to invalidate
@@ -2531,18 +2486,9 @@ static bool gattConnStructCacheFill(struct gattConnState *conn, unsigned stage, 
  */
 bool gattClientInvalidateCache(const struct bt_addr *whomTo)
 {
-    struct gattConnState *conn;
+    //todo
 
-    pthread_mutex_lock(&mGattLock);
-    conn = gattConnFindByAddr(whomTo);
-    if (conn) {
-        gattConnStructCacheFree(conn);
-        if (!gattConnStructCacheFill(conn, CACHE_FILL_STAGE_PRIMARY_SERVICES, 0, 0xffff))
-            conn = NULL;
-    }
-    pthread_mutex_unlock(&mGattLock);
-
-    return !!conn;
+    return true;
 }
 
 
