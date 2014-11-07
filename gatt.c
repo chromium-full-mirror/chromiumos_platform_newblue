@@ -1258,9 +1258,40 @@ static void gattAttCliIndNotif(l2c_handle_t to, bool needsAck, uint16_t handle, 
     pthread_mutex_lock(&mGattLock);
     conn = gattAttCbkCheckState(0, to, NULL, 0, "Notif");
     if (conn) {
-        ///todo
+        struct gattCliNotif *n;
+
+        /* find the per-connection notif structure */
+        for (n = conn->cliNotifs; n && n->charValueHandle != handle; n = n->next);
+        if (!n)
+            logw("Got notif/ind which we have no record of\n");
+        else {
+
+            struct gattCliCon *clicon;
+            struct gattCliNotifRec *nr;
+
+            /* find all clients who are subscribed and notify them */
+            for (clicon = mCliCons; clicon; clicon = clicon->next) {
+                /* skip all clients not connected to this connection */
+                if (clicon->conn != conn)
+                    continue;
+
+                /* skip all clients who are not subscribed to this notif */
+                for (nr = clicon->notifs; nr && nr->notif != n; nr = nr->next);
+                if (!nr)
+                    continue;
+
+                /* now we have a client who cares, tell them about this glorious event */
+                ///TODO
+            }
+
+        }
     }
+
     pthread_mutex_unlock(&mGattLock);
+
+    /* since multiple (or no) clients may be subscribedat this very moment, we generate the ACK ourselves */
+    if (needsAck)
+        attCliSendIndicationAck(to);
 }
 
 /*
