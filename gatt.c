@@ -2486,8 +2486,17 @@ void gattClientDestroy(int clientId)
  */
 bool gattClientInvalidateCache(const struct bt_addr *whomTo)
 {
-    //todo
+    struct gattConnState *conn;
+    bool ret = true;
 
+    pthread_mutex_lock(&mGattLock);
+    conn = gattConnFindByAddr(whomTo);
+    if (!conn)
+        logw("Caches of nonexistent GATT connections are by definition always clean :)\n");
+    else
+        ret = attClientInvalidateCache(conn->conn);
+
+    pthread_mutex_unlock(&mGattLock);
     return true;
 }
 

@@ -142,6 +142,7 @@ void attCliInit(attMtuCbk cliMtuF, attCliFindInfoCbk cliFindInfoCbk, attCliFindB
 void attCliDeinit(void);
 
 bool attCliRequestMtu(l2c_handle_t to, uint32_t mtu); /* LE only. once per connection only */
+bool attClientInvalidateCache(l2c_handle_t to);
 
 /* these all return the Id of this transaction and callback will have it too for matching. zero is returned in case of failure to start operation */
 uniq_t attCliFindInformation(l2c_handle_t to, uint16_t hStart, uint16_t hEnd);

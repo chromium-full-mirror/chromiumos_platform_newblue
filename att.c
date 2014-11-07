@@ -4011,7 +4011,29 @@ uniq_t attCliExecuteStagedWrites(l2c_handle_t to, bool commit)
     return ret;
 }
 
+/*
+ * FUNCTION: attClientInvalidateCache
+ * USE:      Invalidate the cache for a given connection
+ * PARAMS:   to - whom to
+ * RETURN:   success?
+ * NOTES:
+ */
+bool attClientInvalidateCache(l2c_handle_t to)
+{
+    struct attConn* conn;
+    bool ret = true;
 
+    pthread_mutex_lock(&mAttLock);
+    conn = attConnFindByL2cConn(to);
+    if (!conn)
+        logw("Caches of nonexistent AATT connections are by definition always clean :)\n");
+    else {
+        //TODO: this
+    }
+    pthread_mutex_unlock(&mAttLock);
+
+    return ret;
+}
 
 
 
