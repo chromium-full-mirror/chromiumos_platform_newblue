@@ -158,4 +158,29 @@ void uuidReadBE(struct uuid *dst, const void *src)
     dst->lo = utilGetLE64(&srcP->hi);
 }
 
+/*
+ * FUNCTION: uuidIsZero
+ * USE:      See if a given UUID is all zeroes
+ * PARAMS:   uuid - the uuid
+ * RETURN:   true if all bits of the uuid are zeroes
+ * NOTES:
+ */
+bool uuidIsZero(const struct uuid *uuid)
+{
+    return !(uuid->lo | uuid->hi);
+}
+
+/*
+ * FUNCTION: uuidZero
+ * USE:      Set a given uuid to be all zero bits
+ * PARAMS:   dst - the destination uuid
+ * RETURN:   NONE
+ * NOTES:
+ */
+void uuidZero(struct uuid *dst)
+{
+    dst->hi = 0;
+    dst->lo = 0;
+}
+
 

@@ -26,6 +26,8 @@ void uuidWriteLE(void *dst, const struct uuid *src);
 void uuidReadLE(struct uuid *dst, const void *src);
 void uuidWriteBE(void *dst, const struct uuid *src);
 void uuidReadBE(struct uuid *dst, const void *src);
+bool uuidIsZero(const struct uuid *uuid);
+void uuidZero(struct uuid *dst);
 
 
 #endif
