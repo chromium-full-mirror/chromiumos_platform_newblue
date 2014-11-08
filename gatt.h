@@ -6,6 +6,7 @@
 #include "uniq.h"
 #include "att.h"
 #include "sdp.h"
+#include "sg.h"
 
 /* sadly android interface stop sus from using uniq_t for handles here */
 
@@ -92,23 +93,23 @@ bool gattServiceSendInd(int svc, int cid, uint16_t handle, const void *data, uin
 
 /* ==== GATT CLIENT CODE (AKA CENTRAL MODE) ==== */
 
-#define GATT_CLI_STATUS_OK        0
-#define GATT_CLI_OTHER_SIDE_DISC  1 /* the peer told us to go away */
-#define GATT_CLI_STATUS_ERR       2 /* an unknown error type. USe donyl whe nno other error type makes sense */
+#define GATT_CLI_STATUS_OK               0
+#define GATT_CLI_STATUS_OTHER_SIDE_DISC  1 /* the peer told us to go away */
+#define GATT_CLI_STATUS_ERR              2 /* an unknown error type. Used only when no other error type makes sense */
 
 /* various callbacks */
 typedef void (*gattCliConnectResultCbk)(int cli, int conn, const struct bt_addr *to, uint8_t status);
-typedef void (*gattCliSvcEnumCbk)(int cli, int con, const struct uuid *uuid, bool primary, uint16_t firstHandle, uint16_t numHandles, uint8_t status); /* uuid passed as set to null for final result */
+typedef void (*gattCliSvcEnumCbk)(int cli, int con, const struct uuid *uuid, bool primary, uint16_t firstHandle, uint16_t numHandles, uint8_t status); /* uuid passed as set to null after final result */
 typedef void (*gattCliEnumIncludedSvcsCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *uuid, uint16_t firstHandle, uint16_t numHandles, uint8_t status);
 typedef void (*gattCliEnumCharacteristicsCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *uuid, uint16_t firstHandle, uint16_t numHandles, uint8_t status);
 typedef void (*gattCliEnumCharDescrsCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *uuid, uint16_t firstHandle, uint16_t numHandles, uint8_t status);
 typedef void (*gattCliCharReadCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t status, const void *data, uint32_t len);
 typedef void (*gattCliCharWriteCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t status);
-typedef void (*gattCliCharDescrReadCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t status, const void *data, uint32_t len);
+typedef void (*gattCliCharDescrReadCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t status, sg data);
 typedef void (*gattCliCharDescrWriteCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t status);
 typedef void (*gattCliStagedWriteExecuteCb)(int cli, int con, bool success);
 typedef void (*gattCliNotifSubscribeStateCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *thisChar, bool forSubscribe, uint8_t status);
-typedef void (*gattCliNotifArrivedCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *thisChar, bool reliable, const void *data, uint32_t len);
+typedef void (*gattCliNotifArrivedCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *thisChar, bool reliable, sg data);
 
 
 /* client lifecycle */
@@ -132,9 +133,9 @@ uint8_t gattClientEnumCharDescriptors(int conn, const struct uuid *inThisService
 
 /* reads/writes */
 uint8_t gattClientCharRead(int conn, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t authReq, gattCliCharReadCbk cbk);
-uint8_t gattClientCharWrite(int conn, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t authReq, uint8_t writeType, const void *data, uint32_t len, gattCliCharWriteCbk cbk);
+uint8_t gattClientCharWrite(int conn, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t authReq, uint8_t writeType, uint16_t ofst, sg data, gattCliCharWriteCbk cbk);
 uint8_t gattClientCharDescrRead(int conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t authReq, gattCliCharDescrReadCbk cbk);
-uint8_t gattClientCharDescrWrite(int conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t authReq, uint8_t writeType, const void *data, uint32_t len, gattCliCharDescrWriteCbk cbk);
+uint8_t gattClientCharDescrWrite(int conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t authReq, uint8_t writeType, uint16_t ofst, sg data, gattCliCharDescrWriteCbk cbk);
 uint8_t gattClientStagedWritesExecute(int conn, bool execute, gattCliStagedWriteExecuteCb cbk); //if not execute then drop them all
 
 /* notification subscription/unsubscription */

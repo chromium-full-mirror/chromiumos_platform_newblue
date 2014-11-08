@@ -2513,7 +2513,7 @@ void gattClientDestroy(int clientId)
  * USE:      Invalidate cache and repopulate it
  * PARAMS:   whomTo - cache of what device to invalidate
  * RETURN:   false on immediate failure
- * NOTES:    process proceeds in background, all other queries will wait till this is done
+ * NOTES:
  */
 bool gattClientInvalidateCache(const struct bt_addr *whomTo)
 {
@@ -2531,8 +2531,191 @@ bool gattClientInvalidateCache(const struct bt_addr *whomTo)
     return true;
 }
 
+/*
+ * FUNCTION: gattClientEnumServices
+ * USE:      Find all services (or a particular one) on a server
+ * PARAMS:   conn - the connection id
+ *           searchForThis - uuid of service to find or NULL if we want them all
+ *           cbk - the callback to call with results (we'll call it with NULL after all results have been returned)
+ * RETURN:   GATT_CLI_STATUS_*
+ * NOTES:
+ */
+uint8_t gattClientEnumServices(int conn, const struct uuid *searchForThis, gattCliSvcEnumCbk cbk)
+{
+    //todo
+    return GATT_CLI_STATUS_ERR;
+}
 
+/*
+ * FUNCTION: gattClientEnumIncludedServices
+ * USE:      Find the next included service in a service given the previous one
+ * PARAMS:   conn - the connection id
+ *           inThisService - in what service are we looking?
+ *           prev - previous included service (pass NULL to get the first)
+ *           cbk - the callback to call with results (UUID will be passed as NULL if no more were found)
+ * RETURN:   GATT_CLI_STATUS_*
+ * NOTES:
+ */
+uint8_t gattClientEnumIncludedServices(int conn, const struct uuid *inThisService, const struct uuid *prev, gattCliEnumIncludedSvcsCbk cbk)
+{
+    //todo
+    return GATT_CLI_STATUS_ERR;
+}
 
+/*
+ * FUNCTION: gattClientEnumCharacteristics
+ * USE:      Find the next characteristic in a service given the previous one
+ * PARAMS:   conn - the connection id
+ *           inThisService - in what service are we looking?
+ *           prev - previous characteristic (pass NULL to get the first)
+ *           cbk - the callback to call with results (UUID will be passed as NULL if no more were found)
+ * RETURN:   GATT_CLI_STATUS_*
+ * NOTES:
+ */
+uint8_t gattClientEnumCharacteristics(int conn, const struct uuid *inThisService, const struct uuid *prev, gattCliEnumCharacteristicsCbk cbk)
+{
+    //todo
+    return GATT_CLI_STATUS_ERR;
+}
+
+/*
+ * FUNCTION: gattClientEnumCharDescriptors
+ * USE:      Find the next characteristic descriptor in a characteristic given the previous one
+ * PARAMS:   conn - the connection id
+ *           inThisService - in what service are we looking?
+ *           inThisChar - in what characteristic are we looking?
+ *           prev - previous characteristic descriptor (pass NULL to get the first)
+ *           cbk - the callback to call with results (UUID will be passed as NULL if no more were found)
+ * RETURN:   GATT_CLI_STATUS_*
+ * NOTES:
+ */
+uint8_t gattClientEnumCharDescriptors(int conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *prev, gattCliEnumCharDescrsCbk cbk)
+{
+    //todo
+    return GATT_CLI_STATUS_ERR;
+}
+
+/*
+ * FUNCTION: gattClientCharRead
+ * USE:      Read a characteristic
+ * PARAMS:   conn - the connection id
+ *           inThisService - in what service?
+ *           thisChar - what characteristic?
+ *           authReq - authentication requirements (//TODO)
+ *           cbk - the callback to call with results
+ * RETURN:   GATT_CLI_STATUS_*
+ * NOTES:
+ */
+uint8_t gattClientCharRead(int conn, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t authReq, gattCliCharReadCbk cbk)
+{
+    //todo
+    return GATT_CLI_STATUS_ERR;
+}
+
+/*
+ * FUNCTION: gattClientCharWrite
+ * USE:      Write a characteristic
+ * PARAMS:   conn - the connection id
+ *           inThisService - in what service?
+ *           thisChar - what characteristic?
+ *           authReq - authentication requirements (//TODO)
+ *           writeType - cmd? req? prepare?
+ *           ofst - write offset (used only for prepare write)
+ *           cbk - the callback to call with results
+ * RETURN:   GATT_CLI_STATUS_*
+ * NOTES:
+ */
+uint8_t gattClientCharWrite(int conn, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t authReq, uint8_t writeType, uint16_t ofst, sg data, gattCliCharWriteCbk cbk)
+{
+    //todo
+    return GATT_CLI_STATUS_ERR;
+}
+
+/*
+ * FUNCTION: gattClientCharDescrRead
+ * USE:      Read a characteristic descriptor
+ * PARAMS:   conn - the connection id
+ *           inThisService - in what service?
+ *           inThisChar - what characteristic?
+ *           thisDescr - what descriptor?
+ *           authReq - authentication requirements (//TODO)
+ *           cbk - the callback to call with results
+ * RETURN:   GATT_CLI_STATUS_*
+ * NOTES:
+ */
+uint8_t gattClientCharDescrRead(int conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t authReq, gattCliCharDescrReadCbk cbk)
+{
+    //todo
+    return GATT_CLI_STATUS_ERR;
+}
+
+/*
+ * FUNCTION: gattClientCharWrite
+ * USE:      Write a characteristic descriptor
+ * PARAMS:   conn - the connection id
+ *           inThisService - in what service?
+ *           inThisChar - what characteristic?
+ *           thisDescr - what descriptor?
+ *           authReq - authentication requirements (//TODO)
+ *           writeType - cmd? req? prepare?
+ *           ofst - write offset (used only for prepare write)
+ *           cbk - the callback to call with results
+ * RETURN:   GATT_CLI_STATUS_*
+ * NOTES:
+ */
+uint8_t gattClientCharDescrWrite(int conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t authReq, uint8_t writeType, uint16_t ofst, sg data, gattCliCharDescrWriteCbk cbk)
+{
+    //todo
+    return GATT_CLI_STATUS_ERR;
+}
+
+/*
+ * FUNCTION: gattClientStagedWritesExecute
+ * USE:      Execute or abandon previously staged writes
+ * PARAMS:   conn - the connection id
+ *           execute - true to commit them, false to abandon
+ *           cbk - the callback to call with results
+ * RETURN:   GATT_CLI_STATUS_*
+ * NOTES:
+ */
+uint8_t gattClientStagedWritesExecute(int conn, bool execute, gattCliStagedWriteExecuteCb cbk)
+{
+    //todo
+    return GATT_CLI_STATUS_ERR;
+}
+
+/*
+ * FUNCTION: gattClientNotifsSubscribe
+ * USE:      Subscribe to a notification or indication
+ * PARAMS:   conn - the connection id
+ *           inThisService - in what service?
+ *           thisChar - what characteristic?
+ *           stateCbk - callback to call when subscription state changes
+ *           arrivedCbk - callback to call when notif/ind arrives
+ * RETURN:   GATT_CLI_STATUS_*
+ * NOTES:
+ */
+bool gattClientNotifsSubscribe(int conn, const struct uuid *inThisService, const struct uuid *thisChar, gattCliNotifSubscribeStateCbk stateCbk, gattCliNotifArrivedCbk arrivedCbk)
+{
+    //todo
+    return GATT_CLI_STATUS_ERR;
+}
+
+/*
+ * FUNCTION: gattClientNotifsUnsubscribe
+ * USE:      Unsubscribe from a notification or indication
+ * PARAMS:   conn - the connection id
+ *           inThisService - in what service?
+ *           thisChar - what characteristic?
+ *           stateCbk - callback to call when subscription state changes
+ * RETURN:   GATT_CLI_STATUS_*
+ * NOTES:
+ */
+bool gattClientNotifsUnsubscribe(int conn, const struct uuid *inThisService, const struct uuid *thisChar, gattCliNotifSubscribeStateCbk stateCbk)
+{
+    //todo
+    return GATT_CLI_STATUS_ERR;
+}
 
 
 
