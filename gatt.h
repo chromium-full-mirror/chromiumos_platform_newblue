@@ -95,7 +95,7 @@ bool gattServiceSendInd(int svc, int cid, uint16_t handle, const void *data, uin
 
 #define GATT_CLI_STATUS_OK               0
 #define GATT_CLI_STATUS_OTHER_SIDE_DISC  1 /* the peer told us to go away */
-#define GATT_CLI_STATUS_ERR              2 /* an unknown error type. Used only when no other error type makes sense */
+#define GATT_CLI_STATUS_ERR              2 /* an unknown error type in the local stack */
 
 /* various callbacks */
 typedef void (*gattCliConnectResultCbk)(int cli, int conn, const struct bt_addr *to, uint8_t status);
@@ -139,8 +139,8 @@ uint8_t gattClientCharDescrWrite(int conn, const struct uuid *inThisService, con
 uint8_t gattClientStagedWritesExecute(int conn, bool execute, gattCliStagedWriteExecuteCb cbk); //if not execute then drop them all
 
 /* notification subscription/unsubscription */
-bool gattClientNotifsSubscribe(int conn, const struct uuid *inThisService, const struct uuid *thisChar, gattCliNotifSubscribeStateCbk stateCbk, gattCliNotifArrivedCbk arrivedCbk);
-bool gattClientNotifsUnsubscribe(int conn, const struct uuid *inThisService, const struct uuid *thisChar, gattCliNotifSubscribeStateCbk stateCbk);
+uint8_t gattClientNotifsSubscribe(int conn, const struct uuid *inThisService, const struct uuid *thisChar, gattCliNotifSubscribeStateCbk stateCbk, gattCliNotifArrivedCbk arrivedCbk);
+uint8_t gattClientNotifsUnsubscribe(int conn, const struct uuid *inThisService, const struct uuid *thisChar, gattCliNotifSubscribeStateCbk stateCbk);
 
 
 

@@ -42,7 +42,7 @@ struct gattCliTodoItem {
     struct gattCliTodoItem   *next;
     uint8_t                   type; /* GATT_CLI_TODO_* */
 
-    /* this describes what to do */
+    /* this describes what to do (per-type data) */
     union {
         struct {
             uint16_t          startHandle;
@@ -68,10 +68,34 @@ struct gattCliTodoItem {
 
     /* this describes why and whom for */
     int                       clientId;
-    uint8_t                   reqType; /* GATT_INTENT_* */
+    uint8_t                   reqIntent; /* GATT_INTENT_* */
+    uint8_t                   reqStep;
     struct uuid               uuidSvc;
     struct uuid               uuidChr;
     struct uuid               uuidDsc;
+
+    /* per-intent data */
+    union {
+        gattCliSvcEnumCbk                 enumSvcsCbk;
+        gattCliEnumIncludedSvcsCbk        enumIncSvcsCbk;
+        gattCliEnumCharacteristicsCbk     enumCharsCbk;
+        gattCliEnumCharDescrsCbk          enumCharDscrsCbk;
+        struct {
+            gattCliCharReadCbk            cbk;
+            uint8_t                       authReq;
+        } read;
+        struct {
+            gattCliCharWriteCbk           cbk;
+            sg                            data; /* data remainng to send */
+            uint16_t                      ofst; /* always up to date offset of where to write */
+            uint8_t                       authReq;
+            uint8_t                       writeType; //TODO: may not be needed
+        } write;
+        struct {
+            gattCliNotifSubscribeStateCbk stateCbk;
+            gattCliNotifArrivedCbk        arrivedCbk; /* may be NULL in case of unsubscribe */
+        } notif;
+    } intentData;
 };
 
 #define GATT_CLI_TODO_FIND_INFO          0
@@ -87,6 +111,23 @@ struct gattCliTodoItem {
 #define GATT_CLI_TOTO_WRITE_EXEC         10
 
 #define GATT_INTENT_INTERNAL             0 /* not a user request but an internal one - no further ation needed */
+#define GATT_INTENT_ENUM_SVCS            1
+#define GATT_INTENT_ENUM_INCL_SVCS       2
+#define GATT_INTENT_ENUM_CHARS           3
+#define GATT_INTENT_ENUM_CHAR_DESCRS     4
+#define GATT_INTENT_READ                 5
+#define GATT_INTENT_WRITE                6
+#define GATT_INTENT_EXECUTE              7
+#define GATT_INTENT_NOTIF_SUB            8
+#define GATT_INTENT_NOTIF_UNSUB          9
+
+#define GATT_INTENT_STEP_FIND_SVC        0
+#define GATT_INTENT_STEP_FIND_INCL_SVC   1
+#define GATT_INTENT_STEP_FIND_CHAR       2
+#define GATT_INTENT_STEP_FIND_DESCR      3
+#define GATT_INTENT_STEP_FINAL           4 /* this step was the actual thing we expected to do. Action will depend on intent */
+
+
 
 #define CACHE_DESCR_VAL_LEN              2
 
@@ -2223,6 +2264,7 @@ static void gattCliTodoNext(struct gattConnState *conn)
  * PARAMS:   clicon - the client-connection structure
  *           todo - the item
  *           intent - the intended request type (in gatt terms) GATT_INTENT_*
+ *           step - the step number in the intent
  *           uuidSvc - the uuid for the service we INTEND to act on (or NULL if none)
  *           uuidChr - the uuid for the characteristic we INTEND to act on (or NULL if none)
  *           uuidDsc - the uuid for the descriptor we INTEND to act on (or NULL if none)
@@ -2230,13 +2272,14 @@ static void gattCliTodoNext(struct gattConnState *conn)
  * RETURN:   NONE
  * NOTES:    Call with mGattLock held
  */
-static void gattCliTodoEnqItem(struct gattCliCon *clicon, struct gattCliTodoItem *todo, uint8_t intent, const struct uuid *uuidSvc, const struct uuid *uuidChr, const struct uuid *uuidDsc, bool inFront)
+static void gattCliTodoEnqItem(struct gattCliCon *clicon, struct gattCliTodoItem *todo, uint8_t intent, uint8_t step, const struct uuid *uuidSvc, const struct uuid *uuidChr, const struct uuid *uuidDsc, bool inFront)
 {
     struct gattConnState *conn = clicon->conn;
 
 
     todo->next = NULL;
     todo->clientId = clicon->cli->clientId;
+    todo->reqIntent = intent;
     if (uuidSvc)
         memcpy(&todo->uuidSvc, uuidSvc, sizeof(struct uuid));
     else
@@ -2275,6 +2318,7 @@ static void gattCliTodoEnqItem(struct gattCliCon *clicon, struct gattCliTodoItem
  *           len - length of said data
  *           withReply - use write with reply? (if no, callback will not be fired on success, but may be on failure)
  *           intent - the intended request type (in gatt terms) GATT_INTENT_*
+ *           step - the step number in the intent
  *           uuidSvc - the uuid for the service we INTEND to act on (or NULL if none)
  *           uuidChr - the uuid for the characteristic we INTEND to act on (or NULL if none)
  *           uuidDsc - the uuid for the descriptor we INTEND to act on (or NULL if none)
@@ -2283,7 +2327,7 @@ static void gattCliTodoEnqItem(struct gattCliCon *clicon, struct gattCliTodoItem
  * NOTES:    If this returns true, the callback WILL be called (but it may be a while). Call with mGattLock held
  */
 static bool gattCliTodoEnqWriteReq(struct gattCliCon *clicon, uint16_t handle, const void *data, uint32_t len, bool withReply, uint8_t intent,
-                                   const struct uuid *uuidSvc, const struct uuid *uuidChr, const struct uuid *uuidDsc)
+                                   uint8_t step, const struct uuid *uuidSvc, const struct uuid *uuidChr, const struct uuid *uuidDsc)
 {
     struct gattCliTodoItem *todo = (struct gattCliTodoItem*)calloc(1, sizeof(struct gattCliTodoItem));
     sg s;
@@ -2299,7 +2343,7 @@ static bool gattCliTodoEnqWriteReq(struct gattCliCon *clicon, uint16_t handle, c
     todo->write.handle = handle;
     todo->write.data = s;
 
-    gattCliTodoEnqItem(clicon, todo, intent, uuidSvc, uuidChr, uuidDsc, false);
+    gattCliTodoEnqItem(clicon, todo, intent, step, uuidSvc, uuidChr, uuidDsc, false);
     return true;
 
 
@@ -2373,7 +2417,7 @@ static void gattClientNotifUnsubscribe(struct gattCliCon *clicon, struct gattCli
     }
 
     /* we do not bother with callbacks since there are no errors that can happen that we can actually handle */
-    if (doUpdate && !gattCliTodoEnqWriteReq(clicon, writeHandle, newFlags, sizeof(newFlags), true, GATT_INTENT_INTERNAL, NULL, NULL, NULL))
+    if (doUpdate && !gattCliTodoEnqWriteReq(clicon, writeHandle, newFlags, sizeof(newFlags), true, GATT_INTENT_INTERNAL, 0, NULL, NULL, NULL))
         loge("Failed to update notification settings on client unsubscription\n");
 
     free(nr);
@@ -2532,6 +2576,47 @@ bool gattClientInvalidateCache(const struct bt_addr *whomTo)
 }
 
 /*
+ * FUNCTION: gattCliTodoMakeFindByGroupType
+ * USE:      Enqueue a read-by-group-type (uuid16) todo item
+ * PARAMS:   conn - the connection id
+ *           type - the type of attribute to read
+ *           svc - in what service (or NULL)
+ *           charOrIncSvc - what characteristic/incl service (or NULL)
+ *           descr - what descriptor (or NULL)
+ *           intent - the intent of this request
+ *           step - the step of this request
+ *           firstHandle - first handle to consider
+ *           lastHandle - last handle to consider
+ * RETURN:   todo item or NULL.
+ * NOTES:    call with mGattLock held, item WILL be added to the queue, but since the queue will
+ *           not move while the lock is held by you, you can customize the item safely after this
+ *           func gives it to you
+ */
+static struct gattCliTodoItem* gattCliTodoMakeFindByGroupType(int conn, uint16_t type, const struct uuid *svc, const struct uuid *charOrIncSvc, const struct uuid *descr,
+                                                              uint8_t intent,  uint8_t step, uint16_t firstHandle, uint16_t lastHandle)
+{
+    struct gattCliTodoItem *todo;
+    struct gattCliCon *clicon;
+
+    clicon = gattCliconFindById(conn);
+    if (!clicon)
+        return NULL;
+
+    todo = calloc(1, sizeof(struct gattCliTodoItem));
+    if (!todo)
+        return NULL;
+
+    todo->type = GATT_CLI_TODO_READ_BY_GRP_TYPE;
+    todo->read.handle = firstHandle;
+    todo->read.endHandle = lastHandle;
+    uuidFromUuid16(&todo->read.type, type);
+
+    gattCliTodoEnqItem(clicon, todo, intent, step, svc, charOrIncSvc, descr, false);
+
+    return todo;
+}
+
+/*
  * FUNCTION: gattClientEnumServices
  * USE:      Find all services (or a particular one) on a server
  * PARAMS:   conn - the connection id
@@ -2542,8 +2627,15 @@ bool gattClientInvalidateCache(const struct bt_addr *whomTo)
  */
 uint8_t gattClientEnumServices(int conn, const struct uuid *searchForThis, gattCliSvcEnumCbk cbk)
 {
-    //todo
-    return GATT_CLI_STATUS_ERR;
+    struct gattCliTodoItem *todo;
+
+    pthread_mutex_lock(&mGattLock);
+    todo = gattCliTodoMakeFindByGroupType(conn, GATT_UUID_SVC_PRIMARY, searchForThis, NULL, NULL, GATT_INTENT_ENUM_SVCS, GATT_INTENT_STEP_FINAL, 0x0001, 0xffff);
+    if (todo)
+        todo->intentData.enumSvcsCbk = cbk;
+    pthread_mutex_unlock(&mGattLock);
+
+    return todo ? GATT_CLI_STATUS_OK : GATT_CLI_STATUS_ERR;
 }
 
 /*
@@ -2558,8 +2650,15 @@ uint8_t gattClientEnumServices(int conn, const struct uuid *searchForThis, gattC
  */
 uint8_t gattClientEnumIncludedServices(int conn, const struct uuid *inThisService, const struct uuid *prev, gattCliEnumIncludedSvcsCbk cbk)
 {
-    //todo
-    return GATT_CLI_STATUS_ERR;
+    struct gattCliTodoItem *todo;
+
+    pthread_mutex_lock(&mGattLock);
+    todo = gattCliTodoMakeFindByGroupType(conn, GATT_UUID_SVC_PRIMARY, inThisService, prev, NULL, GATT_INTENT_ENUM_INCL_SVCS, GATT_INTENT_STEP_FIND_SVC, 0x0001, 0xffff);
+    if (todo)
+        todo->intentData.enumIncSvcsCbk = cbk;
+    pthread_mutex_unlock(&mGattLock);
+
+    return todo ? GATT_CLI_STATUS_OK : GATT_CLI_STATUS_ERR;
 }
 
 /*
@@ -2574,8 +2673,15 @@ uint8_t gattClientEnumIncludedServices(int conn, const struct uuid *inThisServic
  */
 uint8_t gattClientEnumCharacteristics(int conn, const struct uuid *inThisService, const struct uuid *prev, gattCliEnumCharacteristicsCbk cbk)
 {
-    //todo
-    return GATT_CLI_STATUS_ERR;
+    struct gattCliTodoItem *todo;
+
+    pthread_mutex_lock(&mGattLock);
+    todo = gattCliTodoMakeFindByGroupType(conn, GATT_UUID_SVC_PRIMARY, inThisService, prev, NULL, GATT_INTENT_ENUM_CHARS, GATT_INTENT_STEP_FIND_SVC, 0x0001, 0xffff);
+    if (todo)
+        todo->intentData.enumCharsCbk = cbk;
+    pthread_mutex_unlock(&mGattLock);
+
+    return todo ? GATT_CLI_STATUS_OK : GATT_CLI_STATUS_ERR;
 }
 
 /*
@@ -2591,8 +2697,15 @@ uint8_t gattClientEnumCharacteristics(int conn, const struct uuid *inThisService
  */
 uint8_t gattClientEnumCharDescriptors(int conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *prev, gattCliEnumCharDescrsCbk cbk)
 {
-    //todo
-    return GATT_CLI_STATUS_ERR;
+    struct gattCliTodoItem *todo;
+
+    pthread_mutex_lock(&mGattLock);
+    todo = gattCliTodoMakeFindByGroupType(conn, GATT_UUID_SVC_PRIMARY, inThisService, inThisChar, prev, GATT_INTENT_ENUM_CHAR_DESCRS, GATT_INTENT_STEP_FIND_SVC, 0x0001, 0xffff);
+    if (todo)
+        todo->intentData.enumCharDscrsCbk = cbk;
+    pthread_mutex_unlock(&mGattLock);
+
+    return todo ? GATT_CLI_STATUS_OK : GATT_CLI_STATUS_ERR;
 }
 
 /*
@@ -2608,8 +2721,17 @@ uint8_t gattClientEnumCharDescriptors(int conn, const struct uuid *inThisService
  */
 uint8_t gattClientCharRead(int conn, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t authReq, gattCliCharReadCbk cbk)
 {
-    //todo
-    return GATT_CLI_STATUS_ERR;
+    struct gattCliTodoItem *todo;
+
+    pthread_mutex_lock(&mGattLock);
+    todo = gattCliTodoMakeFindByGroupType(conn, GATT_UUID_SVC_PRIMARY, inThisService, thisChar, NULL, GATT_INTENT_READ, GATT_INTENT_STEP_FIND_SVC, 0x0001, 0xffff);
+    if (todo) {
+        todo->intentData.read.cbk = cbk;
+        todo->intentData.read.authReq = authReq;
+    }
+    pthread_mutex_unlock(&mGattLock);
+
+    return todo ? GATT_CLI_STATUS_OK : GATT_CLI_STATUS_ERR;
 }
 
 /*
@@ -2634,7 +2756,7 @@ uint8_t gattClientCharWrite(int conn, const struct uuid *inThisService, const st
 /*
  * FUNCTION: gattClientCharDescrRead
  * USE:      Read a characteristic descriptor
- * PARAMS:   conn - the connection id
+ * PARAMS:   conn - the connstruct gattCliTodoItem*ection id
  *           inThisService - in what service?
  *           inThisChar - what characteristic?
  *           thisDescr - what descriptor?
@@ -2695,10 +2817,19 @@ uint8_t gattClientStagedWritesExecute(int conn, bool execute, gattCliStagedWrite
  * RETURN:   GATT_CLI_STATUS_*
  * NOTES:
  */
-bool gattClientNotifsSubscribe(int conn, const struct uuid *inThisService, const struct uuid *thisChar, gattCliNotifSubscribeStateCbk stateCbk, gattCliNotifArrivedCbk arrivedCbk)
+uint8_t gattClientNotifsSubscribe(int conn, const struct uuid *inThisService, const struct uuid *thisChar, gattCliNotifSubscribeStateCbk stateCbk, gattCliNotifArrivedCbk arrivedCbk)
 {
-    //todo
-    return GATT_CLI_STATUS_ERR;
+    struct gattCliTodoItem *todo;
+
+    pthread_mutex_lock(&mGattLock);
+    todo = gattCliTodoMakeFindByGroupType(conn, GATT_UUID_SVC_PRIMARY, inThisService, thisChar, NULL, GATT_INTENT_NOTIF_SUB, GATT_INTENT_STEP_FIND_SVC, 0x0001, 0xffff);
+    if (todo) {
+        todo->intentData.notif.stateCbk = stateCbk;
+        todo->intentData.notif.arrivedCbk = arrivedCbk;
+    }
+    pthread_mutex_unlock(&mGattLock);
+
+    return todo ? GATT_CLI_STATUS_OK : GATT_CLI_STATUS_ERR;
 }
 
 /*
@@ -2711,14 +2842,19 @@ bool gattClientNotifsSubscribe(int conn, const struct uuid *inThisService, const
  * RETURN:   GATT_CLI_STATUS_*
  * NOTES:
  */
-bool gattClientNotifsUnsubscribe(int conn, const struct uuid *inThisService, const struct uuid *thisChar, gattCliNotifSubscribeStateCbk stateCbk)
+uint8_t gattClientNotifsUnsubscribe(int conn, const struct uuid *inThisService, const struct uuid *thisChar, gattCliNotifSubscribeStateCbk stateCbk)
 {
-    //todo
-    return GATT_CLI_STATUS_ERR;
+    struct gattCliTodoItem *todo;
+
+    pthread_mutex_lock(&mGattLock);
+    todo = gattCliTodoMakeFindByGroupType(conn, GATT_UUID_SVC_PRIMARY, inThisService, thisChar, NULL, GATT_INTENT_NOTIF_UNSUB, GATT_INTENT_STEP_FIND_SVC, 0x0001, 0xffff);
+    if (todo)
+        todo->intentData.notif.stateCbk = stateCbk;
+
+    pthread_mutex_unlock(&mGattLock);
+
+    return todo ? GATT_CLI_STATUS_OK : GATT_CLI_STATUS_ERR;
 }
-
-
-
 
 
 
