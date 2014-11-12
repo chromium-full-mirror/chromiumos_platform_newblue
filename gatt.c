@@ -13,6 +13,7 @@
 #include "mt.h"
 #include "bt.h"
 
+//TODO: if multiple clients stage writes/try to commit them, we do not arbitrate that. Depending on android's use of this, we may have to
 
 #define GATT_ITEM_TYPE_INCLUDE     1
 #define GATT_ITEM_TYPE_CHAR_DECL   2
@@ -23,6 +24,7 @@
 struct gattService;
 struct gattCliNotif;
 struct gattClient;
+struct gattCliCon;
 
 struct gattIncludeDefHdr {
     uint16_t startHandle;
@@ -80,17 +82,30 @@ struct gattCliTodoItem {
         gattCliEnumIncludedSvcsCbk        enumIncSvcsCbk;
         gattCliEnumCharacteristicsCbk     enumCharsCbk;
         gattCliEnumCharDescrsCbk          enumCharDscrsCbk;
+        gattCliStagedWriteExecuteCb       executeCbk;
+
         struct {
             gattCliCharReadCbk            cbk;
             uint8_t                       authReq;
         } read;
         struct {
+            gattCliCharDescrReadCbk       cbk;
+            uint8_t                       authReq;
+        } readDescr;
+        struct {
             gattCliCharWriteCbk           cbk;
-            sg                            data; /* data remainng to send */
-            uint16_t                      ofst; /* always up to date offset of where to write */
+            sg                            data;
+            uint16_t                      ofst;
             uint8_t                       authReq;
             uint8_t                       writeType; //TODO: may not be needed
         } write;
+        struct {
+            gattCliCharDescrWriteCbk      cbk;
+            sg                            data;
+            uint16_t                      ofst;
+            uint8_t                       authReq;
+            uint8_t                       writeType; //TODO: may not be needed
+        } writeDescr;
         struct {
             gattCliNotifSubscribeStateCbk stateCbk;
             gattCliNotifArrivedCbk        arrivedCbk; /* may be NULL in case of unsubscribe */
@@ -2749,8 +2764,20 @@ uint8_t gattClientCharRead(int conn, const struct uuid *inThisService, const str
  */
 uint8_t gattClientCharWrite(int conn, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t authReq, uint8_t writeType, uint16_t ofst, sg data, gattCliCharWriteCbk cbk)
 {
-    //todo
-    return GATT_CLI_STATUS_ERR;
+    struct gattCliTodoItem *todo;
+
+    pthread_mutex_lock(&mGattLock);
+    todo = gattCliTodoMakeFindByGroupType(conn, GATT_UUID_SVC_PRIMARY, inThisService, thisChar, NULL, GATT_INTENT_WRITE, GATT_INTENT_STEP_FIND_SVC, 0x0001, 0xffff);
+    if (todo) {
+        todo->intentData.write.cbk = cbk;
+        todo->intentData.write.authReq = authReq;
+        todo->intentData.write.writeType = writeType;
+        todo->intentData.write.ofst = ofst;
+        todo->intentData.write.data = data;
+    }
+    pthread_mutex_unlock(&mGattLock);
+
+    return todo ? GATT_CLI_STATUS_OK : GATT_CLI_STATUS_ERR;
 }
 
 /*
@@ -2767,8 +2794,17 @@ uint8_t gattClientCharWrite(int conn, const struct uuid *inThisService, const st
  */
 uint8_t gattClientCharDescrRead(int conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t authReq, gattCliCharDescrReadCbk cbk)
 {
-    //todo
-    return GATT_CLI_STATUS_ERR;
+    struct gattCliTodoItem *todo;
+
+    pthread_mutex_lock(&mGattLock);
+    todo = gattCliTodoMakeFindByGroupType(conn, GATT_UUID_SVC_PRIMARY, inThisService, inThisChar, thisDescr, GATT_INTENT_READ, GATT_INTENT_STEP_FIND_SVC, 0x0001, 0xffff);
+    if (todo) {
+        todo->intentData.readDescr.cbk = cbk;
+        todo->intentData.readDescr.authReq = authReq;
+    }
+    pthread_mutex_unlock(&mGattLock);
+
+    return todo ? GATT_CLI_STATUS_OK : GATT_CLI_STATUS_ERR;
 }
 
 /*
@@ -2787,8 +2823,20 @@ uint8_t gattClientCharDescrRead(int conn, const struct uuid *inThisService, cons
  */
 uint8_t gattClientCharDescrWrite(int conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t authReq, uint8_t writeType, uint16_t ofst, sg data, gattCliCharDescrWriteCbk cbk)
 {
-    //todo
-    return GATT_CLI_STATUS_ERR;
+    struct gattCliTodoItem *todo;
+
+    pthread_mutex_lock(&mGattLock);
+    todo = gattCliTodoMakeFindByGroupType(conn, GATT_UUID_SVC_PRIMARY, inThisService, inThisChar, thisDescr, GATT_INTENT_WRITE, GATT_INTENT_STEP_FIND_SVC, 0x0001, 0xffff);
+    if (todo) {
+        todo->intentData.writeDescr.cbk = cbk;
+        todo->intentData.writeDescr.authReq = authReq;
+        todo->intentData.writeDescr.writeType = writeType;
+        todo->intentData.writeDescr.ofst = ofst;
+        todo->intentData.writeDescr.data = data;
+    }
+    pthread_mutex_unlock(&mGattLock);
+
+    return todo ? GATT_CLI_STATUS_OK : GATT_CLI_STATUS_ERR;
 }
 
 /*
@@ -2802,8 +2850,28 @@ uint8_t gattClientCharDescrWrite(int conn, const struct uuid *inThisService, con
  */
 uint8_t gattClientStagedWritesExecute(int conn, bool execute, gattCliStagedWriteExecuteCb cbk)
 {
-    //todo
-    return GATT_CLI_STATUS_ERR;
+    uint8_t ret = GATT_CLI_STATUS_ERR;
+    struct gattCliTodoItem *todo;
+    struct gattCliCon *clicon;
+
+    pthread_mutex_lock(&mGattLock);
+    clicon = gattCliconFindById(conn);
+    if (!clicon)
+        goto out;
+
+    todo = calloc(1, sizeof(struct gattCliTodoItem));
+    if (!todo)
+        goto out;
+
+    todo->type = GATT_CLI_TOTO_WRITE_EXEC;
+    todo->exec.commit = execute;
+    todo->intentData.executeCbk = cbk;
+
+    gattCliTodoEnqItem(clicon, todo, GATT_INTENT_EXECUTE, GATT_INTENT_STEP_FINAL, NULL, NULL, NULL, false);
+
+out:
+    pthread_mutex_unlock(&mGattLock);
+    return ret;
 }
 
 /*
