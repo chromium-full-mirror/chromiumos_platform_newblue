@@ -1234,7 +1234,21 @@ static bool gattAttCliFindByTypeValCbk(uniq_t trans, l2c_handle_t to, uint16_t h
 }
 
 /*
- * FUNCTION: gattCliStepDone
+ * FUNCTION: gattCliStepFailed
+ * USE:      Called when a step of the form "find *" fails
+ * PARAMS:   conn - the conenction structure
+ *           todo - the to-do item
+ * RETURN:   true to destroy the todo list item. false to keep it (only makes sense if you re-enqueued it)
+ * NOTES:
+ */
+static bool gattCliStepFailed(struct gattConnState *conn, struct gattCliTodoItem *todo)
+{
+    //todo
+    return true;
+}
+
+/*
+ * FUNCTION: gattCliStepSucceeded
  * USE:      Called when a step of the form "find *" succeeds. should take the next stepe needed for the intent
  * PARAMS:   conn - the conenction structure
  *           todo - the to-do item
@@ -1245,7 +1259,7 @@ static bool gattAttCliFindByTypeValCbk(uniq_t trans, l2c_handle_t to, uint16_t h
  * RETURN:   true to destroy the todo list item. false to keep it (only makes sense if you re-enqueued it)
  * NOTES:
  */
-static bool gattCliStepDone(struct gattConnState *conn, struct gattCliTodoItem *todo, uint16_t handle, uint16_t endGrpHandle, uint8_t charProps, uint16_t valHandle)
+static bool gattCliStepSucceeded(struct gattConnState *conn, struct gattCliTodoItem *todo, uint16_t handle, uint16_t endGrpHandle, uint8_t charProps, uint16_t valHandle)
 {
     //todo
     return true;
@@ -1300,12 +1314,12 @@ static bool gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *han
             if (!handleP || !endGrpHandleP || !attReadUuid(&uuid, data))
                 loge("Invalid reply type for this step\n");
             else if (uuidCmp(&todo->uuidSvc, &uuid))
-                killTodoItem = gattCliStepDone(conn, todo, *handleP, *endGrpHandleP, 0, 0); //returns false to stop current thing
+                killTodoItem = gattCliStepSucceeded(conn, todo, *handleP, *endGrpHandleP, 0, 0); //returns false to stop current thing
             else if (haveMore)
                 ret = true;
             else { /* keep trying further down if there is more to try */
                 if (*handleP == todo->read.endHandle) { //no more
-                    //todo
+                    killTodoItem = gattCliStepFailed(conn, todo);
                 } else { // keep going
                     todo->read.handle = *handleP + 1;
                     killTodoItem = false;
@@ -1318,12 +1332,12 @@ static bool gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *han
             if (!handleP || !endGrpHandleP || !sgSerializeCutFront(data, &charDefHdr, sizeof(charDefHdr)) || !attReadUuid(&uuid, data))
                 loge("Invalid reply type for this step\n");
             else if (uuidCmp(&todo->uuidChr, &uuid))
-                killTodoItem = gattCliStepDone(conn, todo, *handleP, *endGrpHandleP, utilGetLE8(&charDefHdr.charProps), utilGetLE16(&charDefHdr.valHandle));
+                killTodoItem = gattCliStepSucceeded(conn, todo, *handleP, *endGrpHandleP, utilGetLE8(&charDefHdr.charProps), utilGetLE16(&charDefHdr.valHandle));
             else if (haveMore)
                 ret = true;
             else { /* keep trying further down if there is more to try */
                 if (*handleP == todo->read.endHandle) { //no more
-                    //todo
+                    killTodoItem = gattCliStepFailed(conn, todo);
                 } else { // keep going
                     todo->read.handle = *handleP + 1;
                     killTodoItem = false;
