@@ -1755,7 +1755,7 @@ void attSetMtu(l2c_handle_t to, uint32_t mtu)
  * RETURN:   success
  * NOTES:
  */
-static bool attReadUuid(struct uuid *dst, sg s)
+bool attReadUuid(struct uuid *dst, sg s)
 {
     uint8_t buf[16];
     struct uuid *ru = (struct uuid*)buf;

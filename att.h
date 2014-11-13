@@ -159,4 +159,8 @@ uniq_t attCliExecuteStagedWrites(l2c_handle_t to, bool commit);
 bool attCliSendIndicationAck(l2c_handle_t to);
 
 
+
+/* completely stateless helpers */
+bool attReadUuid(struct uuid *dst, sg s); //read uuid-16 or uuid-128 from an sg assuming it is the only thing in there
+
 #endif
