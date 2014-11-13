@@ -130,10 +130,10 @@ void attSrvCbkReply(int cid, int transId, uint16_t handle, uint8_t err, const vo
 
 
 /* att client api */
-
-typedef void (*attCliFindInfoCbk)(uniq_t trans, l2c_handle_t to, uint16_t handle, const struct uuid *uuid, bool haveMore);
-typedef void (*attCliFindByTypeValCbk)(uniq_t trans, l2c_handle_t to, uint16_t handle, uint16_t grpEndHandle, bool haveMore);
-typedef void (*attCliReadCbk)(uniq_t trans, l2c_handle_t to, const uint16_t *handleP, const uint16_t *endGrpHandleP, sg data, bool haveMore); /* haveMore s used for requests that can return more than one item per read, handleP & endGrpHandleP are non-null when available */
+/* haveMore is used for requests that can return more than one item per read, handleP & endGrpHandleP are non-null when available. return false to get no more even if haveMore is true */
+typedef bool (*attCliFindInfoCbk)(uniq_t trans, l2c_handle_t to, uint16_t handle, const struct uuid *uuid, bool haveMore);
+typedef bool (*attCliFindByTypeValCbk)(uniq_t trans, l2c_handle_t to, uint16_t handle, uint16_t grpEndHandle, bool haveMore);
+typedef bool (*attCliReadCbk)(uniq_t trans, l2c_handle_t to, const uint16_t *handleP, const uint16_t *endGrpHandleP, sg data, bool haveMore);
 typedef void (*attCliWriteCbk)(uniq_t trans, l2c_handle_t to); /* prepare write data is not sent to you */
 typedef void (*attCliError)(uniq_t trans, l2c_handle_t to, const uint16_t *handleP, const uint8_t *errP, const uint8_t *errOpcodeP); /* will be called with NULLs if case of timeout */
 typedef void (*attCliIndNotif)(l2c_handle_t to, bool needsAck, uint16_t handle, sg data);

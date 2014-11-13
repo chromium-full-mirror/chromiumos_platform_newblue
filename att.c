@@ -3295,9 +3295,10 @@ void attSrvCbkReply(int cid, int transId, uint16_t handle, uint8_t err, const vo
  */
 static void* attWorker(void *unused)
 {
-    struct attWorkItem *wi;
-    struct uuid uuid;
     uint8_t format, length;
+    struct attWorkItem *wi;
+    bool keepGoing = true;
+    struct uuid uuid;
     bool haveMore;
     int status;
 
@@ -3344,7 +3345,6 @@ static void* attWorker(void *unused)
             else if (format != ATT_FIND_INFO_RSP_FMT_16 && format != ATT_FIND_INFO_RSP_FMT_128)
                 logw("Format %u unknown for Find\n", format);
             else {
-
                 do {
                     uint16_t handle;
 
@@ -3369,9 +3369,9 @@ static void* attWorker(void *unused)
                         uuidReadLE(&uuid, buf);
                         haveMore = sgLength(wi->cliJustData.data) >= sizeof(buf) + sizeof(handle);
                     }
-                    mCliFindInfoCbk(wi->cli.trans, wi->who, handle, &uuid, haveMore);
-                } while (haveMore);
-                if (sgLength(wi->cliJustData.data))
+                    keepGoing = mCliFindInfoCbk(wi->cli.trans, wi->who, handle, &uuid, haveMore);
+                } while (haveMore && keepGoing);
+                if (sgLength(wi->cliJustData.data) && keepGoing)
                     logw("Unexpected leftover data for Find: %ub\n", sgLength(wi->cliJustData.data));
             }
             sgFree(wi->cliJustData.data);
@@ -3389,9 +3389,9 @@ static void* attWorker(void *unused)
                 attrH = utilGetLE16(buf);
                 grpEndH = utilGetLE16(buf + sizeof(attrH));
 
-                mCliFindByTypeValCbk(wi->cli.trans, wi->who, attrH, grpEndH, haveMore);
-            } while (haveMore);
-            if (sgLength(wi->cliJustData.data))
+                keepGoing = mCliFindByTypeValCbk(wi->cli.trans, wi->who, attrH, grpEndH, haveMore);
+            } while (haveMore && keepGoing);
+            if (sgLength(wi->cliJustData.data) && keepGoing)
                 logw("Unexpected leftover data for FindByTypeValue: %ub\n", sgLength(wi->cliJustData.data));
             sgFree(wi->cliJustData.data);
             break;
@@ -3420,10 +3420,10 @@ static void* attWorker(void *unused)
                     sgSwap(wi->cliJustData.data, s);
 
                     haveMore = sgLength(wi->cliJustData.data) >= length;
-                    mCliReadF(wi->cli.trans, wi->who, &handle, NULL, s, haveMore);
-                } while(haveMore);
+                    keepGoing = mCliReadF(wi->cli.trans, wi->who, &handle, NULL, s, haveMore);
+                } while(haveMore && keepGoing);
             }
-            if (sgLength(wi->cliJustData.data))
+            if (sgLength(wi->cliJustData.data) && keepGoing)
                 logw("Unexpected leftover data for ReadByGroupType: %ub\n", sgLength(wi->cliJustData.data));
             sgFree(wi->cliJustData.data);
             break;
@@ -3459,10 +3459,10 @@ static void* attWorker(void *unused)
                     sgSwap(wi->cliJustData.data, s);
 
                     haveMore = sgLength(wi->cliJustData.data) >= length;
-                    mCliReadF(wi->cli.trans, wi->who, &handle, &grpEndHandle, s, haveMore);
-                } while(haveMore);
+                    keepGoing = mCliReadF(wi->cli.trans, wi->who, &handle, &grpEndHandle, s, haveMore);
+                } while(haveMore && keepGoing);
             }
-            if (sgLength(wi->cliJustData.data))
+            if (sgLength(wi->cliJustData.data) && keepGoing)
                 logw("Unexpected leftover data for ReadByGroupType: %ub\n", sgLength(wi->cliJustData.data));
             sgFree(wi->cliJustData.data);
             break;
