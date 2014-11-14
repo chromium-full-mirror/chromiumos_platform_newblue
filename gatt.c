@@ -1261,9 +1261,107 @@ static bool gattCliStepFailed(struct gattConnState *conn, struct gattCliTodoItem
  */
 static bool gattCliStepSucceeded(struct gattConnState *conn, struct gattCliTodoItem *todo, uint16_t handle, uint16_t endGrpHandle, uint8_t charProps, uint16_t valHandle)
 {
-    //todo
+    if (todo->reqStep == GATT_INTENT_STEP_FIND_SVC) { //we found the wanted service. let's see what's next
+        switch (todo->reqIntent) {
+        case GATT_INTENT_ENUM_INCL_SVCS:
+            todo->reqStep = GATT_INTENT_STEP_FINAL;
+            uuidFromUuid16(&todo->read.type, GATT_UUID_INCLUDE);
+            break;
+
+        case GATT_INTENT_ENUM_CHARS:
+            todo->reqStep = GATT_INTENT_STEP_FINAL;
+            uuidFromUuid16(&todo->read.type, GATT_UUID_CHARACTERISTIC);
+            break;
+
+        case GATT_INTENT_ENUM_CHAR_DESCRS:
+        case GATT_INTENT_READ:
+        case GATT_INTENT_WRITE:
+        case GATT_INTENT_NOTIF_SUB:
+        case GATT_INTENT_NOTIF_UNSUB:
+            todo->reqStep = GATT_INTENT_STEP_FIND_CHAR;
+            uuidFromUuid16(&todo->read.type, GATT_UUID_CHARACTERISTIC);
+            break;
+
+        default:
+            logw("Strange intent & step: %u.%u. Dropping\n", todo->reqIntent, todo->reqStep);
+            return true;
+        }
+
+        todo->read.handle = handle + 1;
+        todo->read.endHandle = endGrpHandle;
+        gattCliTodoEnqItem(conn, todo, false);
+        return false;
+    }
+    if (todo->reqStep == GATT_INTENT_STEP_FIND_CHAR) { //we found the wanted char. let's see what's next
+
+//todo: use charprops to enforce security for the other side to avoid needless trips there. also check on authReq
+
+        switch (todo->reqIntent) {
+        case GATT_INTENT_ENUM_CHAR_DESCRS:
+            todo->reqStep = GATT_INTENT_STEP_FINAL;
+            todo->find.startHandle = valHandle + 1; //descriptos MUST follow value
+            todo->find.endHandle = endGrpHandle;
+            todo->type = GATT_CLI_TODO_FIND_INFO;
+            break;
+
+        case GATT_INTENT_READ:
+            todo->reqStep = GATT_INTENT_STEP_FINAL;
+            todo->type = GATT_CLI_TODO_READ; /* we start with a normal read, and continue with read-blob if the reply is long enough to warrant it */
+            todo->read.handle = valHandle;
+            break;
+
+        case GATT_INTENT_WRITE:
+            todo->reqStep = GATT_INTENT_STEP_FINAL;
+            switch (todo->intentData.writeType) {
+            case GATT_CLI_WRITE_TYPE_SIGNED:  //todo: make sure write with no reply calls our done callback anyways!
+                todo->type = GATT_CLI_TODO_SIGNED_WRITE;
+                break;
+            case GATT_CLI_WRITE_TYPE_WRITE_NO_RSP:
+                todo->type = GATT_CLI_TODO_WRITE;
+                break;
+            case GATT_CLI_WRITE_TYPE_WRITE:
+                todo->type = GATT_CLI_TODO_WRITE_NO_ACK;
+                break;
+            case GATT_CLI_WRITE_TYPE_PREPARE:
+                todo->type = GATT_CLI_TODO_PREPARE_WRITE;
+                break;
+            }
+            todo->write.handle = valHandle;
+            todo->write.data = todo->intentData.write.data; 
+
+XXX: this needs to get the data, but we're not wure between todo->intentData.write.data; and todo->intentData.writeDescr.data
+oops...same is true for reads in fact...
+
+
+        case GATT_INTENT_NOTIF_SUB:
+        case GATT_INTENT_NOTIF_UNSUB: /* we issue a read to find the client config descriptor */
+            todo->reqStep = GATT_INTENT_STEP_FINAL;
+            todo->type = GATT_CLI_TODO_READ_BY_TYPE;
+            todo->read.handle = valHandle + 1;
+            todo->read.endHandle = endGrpHandle;
+            uuidFromUuid16(&todo->read.type, GATT_UUID_CHAR_CLI_CHAR_CFG);
+            break;
+
+        default:
+            logw("Strange intent & step: %u.%u. Dropping\n", todo->reqIntent, todo->reqStep);
+            return true;
+        }
+        gattCliTodoEnqItem(conn, todo, false);
+        return false;
+todo
+    }
+
     return true;
 }
+
+
+
+#define GATT_INTENT_READ                 5
+#define GATT_INTENT_WRITE                6
+#define GATT_INTENT_NOTIF_SUB            8
+#define GATT_INTENT_NOTIF_UNSUB          9
+
+///aaa
 
 /*
  * FUNCTION: gattCliFinalStep
@@ -2860,6 +2958,48 @@ uint8_t gattClientEnumCharDescriptors(int conn, const struct uuid *inThisService
 }
 
 /*
+ * FUNCTION: gattClientVerifyAuthReq
+ * USE:      Verify an authReq param given to us is valid (simply numerically)
+ * PARAMS:   authReq - said param
+ * RETURN:   true if it is a valid value
+ * NOTES:
+ */
+static bool gattClientVerifyAuthReq(uint8_t authReq)
+{
+    switch (authReq) {
+    case GATT_CLI_AUTH_REQ_NONE:
+    case GATT_CLI_AUTH_REQ_NO_MITM:
+    case GATT_CLI_AUTH_REQ_MITM:
+    case GATT_CLI_AUTH_REQ_SIGNED_NO_MITM:
+    case GATT_CLI_AUTH_REQ_SIGNED_MITM:
+        return true;
+    default:
+        return false;
+    }
+}
+
+
+/*
+ * FUNCTION: gattClientVerifyWriteType
+ * USE:      Verify an writeType param given to us is valid (simply numerically)
+ * PARAMS:   writeType - said param
+ * RETURN:   true if it is a valid value
+ * NOTES:
+ */
+static bool gattClientVerifyWriteType(uint8_t writeType)
+{
+    switch (writeType) {
+    case GATT_CLI_WRITE_TYPE_SIGNED:
+    case GATT_CLI_WRITE_TYPE_WRITE_NO_RSP:
+    case GATT_CLI_WRITE_TYPE_WRITE:
+    case GATT_CLI_WRITE_TYPE_PREPARE:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/*
  * FUNCTION: gattClientCharRead
  * USE:      Read a characteristic
  * PARAMS:   conn - the connection id
@@ -2873,6 +3013,9 @@ uint8_t gattClientEnumCharDescriptors(int conn, const struct uuid *inThisService
 uint8_t gattClientCharRead(int conn, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t authReq, gattCliCharReadCbk cbk)
 {
     struct gattCliTodoItem *todo;
+
+    if (!gattClientVerifyAuthReq(authReq))
+        return GATT_CLI_STATUS_ERR;
 
     pthread_mutex_lock(&mGattLock);
     todo = gattCliTodoMakeFindByGroupType(conn, GATT_UUID_SVC_PRIMARY, inThisService, thisChar, NULL, GATT_INTENT_READ, GATT_INTENT_STEP_FIND_SVC, 0x0001, 0xffff);
@@ -2901,6 +3044,9 @@ uint8_t gattClientCharRead(int conn, const struct uuid *inThisService, const str
 uint8_t gattClientCharWrite(int conn, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t authReq, uint8_t writeType, uint16_t ofst, sg data, gattCliCharWriteCbk cbk)
 {
     struct gattCliTodoItem *todo;
+
+    if (!gattClientVerifyWriteType(writeType) || !gattClientVerifyAuthReq(authReq))
+        return GATT_CLI_STATUS_ERR;
 
     pthread_mutex_lock(&mGattLock);
     todo = gattCliTodoMakeFindByGroupType(conn, GATT_UUID_SVC_PRIMARY, inThisService, thisChar, NULL, GATT_INTENT_WRITE, GATT_INTENT_STEP_FIND_SVC, 0x0001, 0xffff);
@@ -2932,6 +3078,9 @@ uint8_t gattClientCharDescrRead(int conn, const struct uuid *inThisService, cons
 {
     struct gattCliTodoItem *todo;
 
+    if (!gattClientVerifyAuthReq(authReq))
+        return GATT_CLI_STATUS_ERR;
+
     pthread_mutex_lock(&mGattLock);
     todo = gattCliTodoMakeFindByGroupType(conn, GATT_UUID_SVC_PRIMARY, inThisService, inThisChar, thisDescr, GATT_INTENT_READ, GATT_INTENT_STEP_FIND_SVC, 0x0001, 0xffff);
     if (todo) {
@@ -2960,6 +3109,9 @@ uint8_t gattClientCharDescrRead(int conn, const struct uuid *inThisService, cons
 uint8_t gattClientCharDescrWrite(int conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t authReq, uint8_t writeType, uint16_t ofst, sg data, gattCliCharDescrWriteCbk cbk)
 {
     struct gattCliTodoItem *todo;
+
+    if (!gattClientVerifyWriteType(writeType) || !gattClientVerifyAuthReq(authReq))
+        return GATT_CLI_STATUS_ERR;
 
     pthread_mutex_lock(&mGattLock);
     todo = gattCliTodoMakeFindByGroupType(conn, GATT_UUID_SVC_PRIMARY, inThisService, inThisChar, thisDescr, GATT_INTENT_WRITE, GATT_INTENT_STEP_FIND_SVC, 0x0001, 0xffff);

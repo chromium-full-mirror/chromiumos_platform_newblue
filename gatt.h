@@ -97,6 +97,17 @@ bool gattServiceSendInd(int svc, int cid, uint16_t handle, const void *data, uin
 #define GATT_CLI_STATUS_OTHER_SIDE_DISC  1 /* the peer told us to go away */
 #define GATT_CLI_STATUS_ERR              2 /* an unknown error type in the local stack */
 
+#define GATT_CLI_WRITE_TYPE_SIGNED       0 /* bluedroid has no support of this so we can assign this value to whatever we want. we pick zero for better switch() compilation */
+#define GATT_CLI_WRITE_TYPE_WRITE_NO_RSP 1 /* these next values must match undocumented in the *android* includes values that bluedroid uses */
+#define GATT_CLI_WRITE_TYPE_WRITE        2
+#define GATT_CLI_WRITE_TYPE_PREPARE      3
+
+#define GATT_CLI_AUTH_REQ_NONE           0 /* these next values must match undocumented in the *android* includes values that bluedroid uses */
+#define GATT_CLI_AUTH_REQ_NO_MITM        1 /* the following 4 options are all meant to be encrypted */
+#define GATT_CLI_AUTH_REQ_MITM           2
+#define GATT_CLI_AUTH_REQ_SIGNED_NO_MITM 3
+#define GATT_CLI_AUTH_REQ_SIGNED_MITM    4
+
 /* various callbacks */
 typedef void (*gattCliConnectResultCbk)(int cli, int conn, const struct bt_addr *to, uint8_t status);
 typedef void (*gattCliSvcEnumCbk)(int cli, int con, const struct uuid *uuid, bool primary, uint16_t firstHandle, uint16_t numHandles, uint8_t status); /* uuid passed as set to null after final result */
