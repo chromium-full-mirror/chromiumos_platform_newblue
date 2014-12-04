@@ -160,7 +160,6 @@ struct gattConnState {
     struct gattCliTodoItem   *todoListH;
     struct gattCliTodoItem   *todoListT;
     struct gattCliTodoItem   *todoCurr; /* or null if none */
-    uniq_t                    todoCurTransId;
 };
 
 struct gattItem { /* a list of these exists in a a gatt service */
@@ -1270,8 +1269,6 @@ static struct gattConnState* gattAttCbkCheckState(uniq_t trans, l2c_handle_t to,
     conn = gattConnFindByL2cConn(to);
     if (!conn)
         logw("%s callback on a nonexistent connection\n", cbkName);
-    else if (trans && conn->todoCurTransId != trans)
-        logw("%s callback with wrong trans ID\n", cbkName);
     else if (!conn->todoCurr)
         logw("%s callback with no todo item\n", cbkName);
     else {
@@ -1612,12 +1609,10 @@ static bool gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *han
         }
 
         if (!ret || !haveMore) { /* aka "if for whatever reasons we expect no more callbacks for this todo item" */
-            conn->todoCurTransId = 0;
             conn->todoCurr = NULL;
             if (killTodoItem)
-                free(todo);
-            if (!conn->todoCurTransId) /* if no current task, start one */
-                gattEnqueueCliDoNextTodoItem(conn);
+                gattTodoItemFree(todo);
+            gattEnqueueCliDoNextTodoItem(conn);
         } else if (killTodoItem)
             logw("Cannot kill todo item if we expect more callbacks on it!\n");
     }
@@ -2606,8 +2601,7 @@ static void gattCliTodoNext(l2c_handle_t conn, struct gattCliTodoItem *now)
             connState->todoCurr = NULL;
             gattEnqueueCliDoNextTodoItem(connState);
         }
-    } else if (connState)
-        connState->todoCurTransId = trans;
+    }
     pthread_mutex_unlock(&mGattLock);
 }
 
