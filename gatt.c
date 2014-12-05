@@ -69,7 +69,8 @@ struct gattCliTodoItem {
     };
 
     /* this describes why and whom for */
-    int                       clientId;
+    int                       clientId;  /* higher level ID - unused by us */
+    int                       connId;    /* higher level ID - unused by us */
     uint8_t                   reqIntent; /* GATT_INTENT_* */
     uint8_t                   reqStep;
     struct uuid               uuidSvc;
@@ -1502,19 +1503,47 @@ static bool gattCliStepSucceeded(struct gattConnState *conn, struct gattCliTodoI
  *           endGrpHandle - the end group handle in the reply or NULL if none
  *           haveMore - is there more in this same reply packet?
  *           killTodoItem - set to true to destroy the todo list item. false to keep it (only makes sense if you re-enqueued it). only used if func itself returns false or haveMore is false
- * RETURN:   true to allow further calls here false to stop (in cases of multiple replies in a radio packet)
+ * RETURN:   true to allow further calls here false to stop (in cases of multiple replies in a radio packet). ignored if haveMore is false
  * NOTES:
  */
 static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem *todo, const uint16_t *handle, const uint16_t *endGrpHandle, sg data, bool haveMore, bool *killTodoItem)
 {
+    struct uuid uuid;
+
     switch (todo->reqIntent) {
     case GATT_INTENT_INTERNAL:
         /* nothing to do here, really */
+        if (data) {
+            loge("Unexpected data for internal intent completion. Would leak\n");
+            sgFree(data);
+        }
         *killTodoItem = true;
         return false;
 
-    case GATT_INTENT_ENUM_SVCS: /* we get a call for each found service. callbacks are ok here (we are in ATT's thread) */
-        //todo: schedule callback that we found it
+    case GATT_INTENT_ENUM_SVCS: /* we get a call for each found service. callbacks are ok here (we are in ATT's thread and hold no locks) */
+        if (!attReadUuid(&uuid, data)) {
+            sgFree(data);
+            logw("Service definition is not a uuid\n");
+            *killTodoItem = true;
+            return false;
+        }
+        sgFree(data);
+
+        if (uuidIsZero(&todo->uuidSvc) || uuidCmp(&todo->uuidSvc, &uuid))
+            todo->intentData.enumSvcsCbk(todo->clientId, todo->connId, &uuid, true /*we always find a primary here. Is that wrong? */, *handle, *endGrpHandle - *handle + 1, GATT_CLI_STATUS_OK);
+
+        if (!haveMore) {
+            if (*endGrpHandle == 0xffff) { //the rare case when we're done here
+                todo->intentData.enumSvcsCbk(todo->clientId, todo->connId, NULL, true, 0, 0, GATT_CLI_STATUS_OK);
+                *killTodoItem = true;
+            } else {
+                todo->read.handle = *endGrpHandle + 1;
+                pthread_mutex_lock(&mGattLock);
+                gattCliTodoEnqItem(conn, todo, false);
+                pthread_mutex_unlock(&mGattLock);
+            }
+        }
+        return true;
 
     case GATT_INTENT_ENUM_INCL_SVCS:
     case GATT_INTENT_ENUM_CHARS:
@@ -2637,6 +2666,7 @@ static void gattCliTodoEnqItem(struct gattConnState *conn, struct gattCliTodoIte
  * USE:      Enqueue a gatt to-do item after filling it with proper uuids & intents
  * PARAMS:   conn - the connection structure
  *           clientId - the client ID
+ *           connId - the connection ID
  *           todo - the item
  *           intent - the intended request type (in gatt terms) GATT_INTENT_*
  *           step - the step number in the intent
@@ -2647,11 +2677,12 @@ static void gattCliTodoEnqItem(struct gattConnState *conn, struct gattCliTodoIte
  * RETURN:   NONE
  * NOTES:    Call with mGattLock held
  */
-static void gattCliTodoEnqItemWithData(struct gattConnState *conn, int clientId, struct gattCliTodoItem *todo, uint8_t intent, uint8_t step,
+static void gattCliTodoEnqItemWithData(struct gattConnState *conn, int clientId, int connId, struct gattCliTodoItem *todo, uint8_t intent, uint8_t step,
                                const struct uuid *uuidSvc, const struct uuid *uuidChr, const struct uuid *uuidDsc, bool inFront)
 {
     todo->next = NULL;
     todo->clientId = clientId;
+    todo->connId = connId;
     todo->reqIntent = intent;
     if (uuidSvc)
         memcpy(&todo->uuidSvc, uuidSvc, sizeof(struct uuid));
@@ -2703,7 +2734,7 @@ static bool gattCliTodoEnqWriteReq(struct gattCliCon *clicon, uint16_t handle, c
     todo->write.handle = handle;
     todo->write.data = s;
 
-    gattCliTodoEnqItemWithData(clicon->conn, clicon->cli->clientId, todo, intent, step, uuidSvc, uuidChr, uuidDsc, false);
+    gattCliTodoEnqItemWithData(clicon->conn, clicon->cli->clientId, clicon->connId, todo, intent, step, uuidSvc, uuidChr, uuidDsc, false);
     return true;
 
 
@@ -2971,7 +3002,7 @@ static struct gattCliTodoItem* gattCliTodoMakeFindByGroupType(int conn, uint16_t
     todo->read.endHandle = lastHandle;
     uuidFromUuid16(&todo->read.type, type);
 
-    gattCliTodoEnqItemWithData(clicon->conn, clicon->cli->clientId, todo, intent, step, svc, charOrIncSvc, descr, false);
+    gattCliTodoEnqItemWithData(clicon->conn, clicon->cli->clientId, clicon->connId, todo, intent, step, svc, charOrIncSvc, descr, false);
 
     return todo;
 }
@@ -3266,7 +3297,7 @@ uint8_t gattClientStagedWritesExecute(int conn, bool execute, gattCliStagedWrite
     todo->exec.commit = execute;
     todo->intentData.executeCbk = cbk;
 
-    gattCliTodoEnqItemWithData(clicon->conn, clicon->cli->clientId, todo, GATT_INTENT_EXECUTE, GATT_INTENT_STEP_FINAL, NULL, NULL, NULL, false);
+    gattCliTodoEnqItemWithData(clicon->conn, clicon->cli->clientId, clicon->connId, todo, GATT_INTENT_EXECUTE, GATT_INTENT_STEP_FINAL, NULL, NULL, NULL, false);
 
 out:
     pthread_mutex_unlock(&mGattLock);
