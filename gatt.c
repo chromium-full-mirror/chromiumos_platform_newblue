@@ -80,11 +80,16 @@ struct gattCliTodoItem {
     /* per-intent data */
     union {
         gattCliSvcEnumCbk                 enumSvcsCbk;
-        gattCliEnumIncludedSvcsCbk        enumIncSvcsCbk;
         gattCliEnumCharacteristicsCbk     enumCharsCbk;
         gattCliEnumCharDescrsCbk          enumCharDscrsCbk;
         gattCliStagedWriteExecuteCb       executeCbk;
 
+        struct {
+            gattCliEnumIncludedSvcsCbk    enumIncSvcsCbk;
+            uint16_t                      curH; /* this and the next one used to save progress while looking for included uuid-128 services */
+            uint16_t                      lastH;
+            uint16_t                      inclEndH;
+        } enumInclSvcs;
         struct {
             gattCliCharReadCbk            cbk;
             uint8_t                       authReq;
@@ -142,7 +147,8 @@ struct gattCliTodoItem {
 #define GATT_INTENT_STEP_FIND_SVC        0
 #define GATT_INTENT_STEP_FIND_CHAR       1
 #define GATT_INTENT_STEP_FIND_DESCR      2
-#define GATT_INTENT_STEP_FINAL           3 /* this step was the actual thing we expected to do. Action will depend on intent */
+#define GATT_INTENT_STEP_GET_INCL_UUID   3 /* used to find UUID of included services that are not uuid-16 */
+#define GATT_INTENT_STEP_FINAL           4 /* this step was the actual thing we expected to do. Action will depend on intent */
 
 
 
@@ -1508,6 +1514,8 @@ static bool gattCliStepSucceeded(struct gattConnState *conn, struct gattCliTodoI
  */
 static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem *todo, const uint16_t *handle, const uint16_t *endGrpHandle, sg data, bool haveMore, bool *killTodoItem)
 {
+    struct gattIncludeDefHdr inclDef;
+    struct gattCharDefHdr charDef;
     struct uuid uuid;
 
     switch (todo->reqIntent) {
@@ -1544,9 +1552,93 @@ static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem 
             }
         }
         return true;
-
+ /*
+  * When we're doing enumerations that have a "prev" we have the uuid stored
+  * till we find the prev, then we clear it and report the next as result.
+  * This work well since to get first we get NULL in, which becomes a zero.
+  * Cool. This means that arriving here we have three cases:
+  *  1. We have a uuid and the one we just found does not match - we go on
+  *  2. We have a uuid and the one we just found matches - we zero ours and go on
+  *  3. We have no uuid and we just found one - we return it
+  */
     case GATT_INTENT_ENUM_INCL_SVCS:
+        if (!sgSerializeCutFront(data, &inclDef, sizeof(inclDef))) {
+            sgFree(data);
+            logw("Invalid include def\n");
+            *killTodoItem = true;
+            return false;
+        }
+        /*
+         * includes are weird in that they may have a uuid-16 of the service but may
+         * not have a uuid128, so we have special code to get those for us. For that we
+         * use the GATT_INTENT_STEP_GET_INCL_UUID step and a read command.
+         */
+        if (sgLength(data) == sizeof(uint16_t)) { /* has a uuid-16 */
+            attReadUuid(&uuid, data);
+            sgFree(data);
+        } else if (sgLength(data)) { 
+            sgFree(data);
+            logw("Invalid include def (uuid area)\n");
+            *killTodoItem = true;
+            return false;
+        } else { /* does not have uuid - save state an dbranch off to get uuid */
+            todo->reqStep = GATT_INTENT_STEP_GET_INCL_UUID;
+            todo->type = GATT_CLI_TODO_READ;
+            todo->intentData.enumInclSvcs.curH = *handle;
+            todo->intentData.enumInclSvcs.lastH = todo->read.endHandle;
+            todo->intentData.enumInclSvcs.inclEndH = utilGetLE16(&inclDef.endHandle);
+
+            todo->read.handle = utilGetLE16(&inclDef.startHandle);
+            *killTodoItem = false;
+
+            pthread_mutex_lock(&mGattLock);
+            gattCliTodoEnqItem(conn, todo, false);
+            pthread_mutex_unlock(&mGattLock);
+            return false;
+        }
+        /* at this point we have a valid complete service include info - deal with it */
+        return gattCliFinalStepSvcIncludeFound(todo, utilGetLE16(&inclDef.startHandle), utilGetLE16(&inclDef.endHandle), &uuid, killTodoItem);
+        break;
+
     case GATT_INTENT_ENUM_CHARS:
+        if (!sgSerializeCutFront(data, &charDef, sizeof(charDef))) {
+            sgFree(data);
+            logw("Invalid char def\n");
+            *killTodoItem = true;
+            return false;
+        }
+        if (!attReadUuid(&uuid, data)) {
+            sgFree(data);
+            logw("Char definition does not end in a uuid\n");
+            *killTodoItem = true;
+            return false;
+        }
+        sgFree(data);
+
+        if (uuidIsZero(&todo->uuidChr)) { //case 3
+            todo->intentData.enumCharsCbk(todo->clientId, todo->connId, &todo->uuidSvc, &uuid, *handle, *endGrpHandle - *handle + 1, GATT_CLI_STATUS_OK);
+            *killTodoItem = true;
+            return false;
+        } else { //cases 2 and 1
+            if (uuidCmp(&todo->uuidChr, &uuid)) //case 2
+                uuidZero(&todo->uuidChr);
+
+            /* go on searching */
+            if (!haveMore) {
+                if (*endGrpHandle == todo->read.endHandle) { //the rare case when we're done here
+                    todo->intentData.enumCharsCbk(todo->clientId, todo->connId, &todo->uuidSvc, NULL, 0, 0, GATT_CLI_STATUS_OK);
+                    *killTodoItem = true;
+                } else {
+                    todo->read.handle = *endGrpHandle + 1;
+                    pthread_mutex_lock(&mGattLock);
+                    gattCliTodoEnqItem(conn, todo, false);
+                    pthread_mutex_unlock(&mGattLock);
+                }
+            }
+        }
+        return true;
+
+
     case GATT_INTENT_ENUM_CHAR_DESCRS:
     case GATT_INTENT_READ_CHAR:
     case GATT_INTENT_WRITE_CHAR:
@@ -1556,8 +1648,15 @@ static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem 
     case GATT_INTENT_NOTIF_SUB:
     case GATT_INTENT_NOTIF_UNSUB:
 
-;//todo
+;///aaa
+//todo
 
+
+//struct gattCharDefHdr {
+//    uint8_t charProps;
+//    uint16_t valHandle;
+//    /* uuid here */
+//} __packed;
 
     }
     return true;
@@ -3046,7 +3145,7 @@ uint8_t gattClientEnumIncludedServices(int conn, const struct uuid *inThisServic
     pthread_mutex_lock(&mGattLock);
     todo = gattCliTodoMakeFindByGroupType(conn, GATT_UUID_SVC_PRIMARY, inThisService, prev, NULL, GATT_INTENT_ENUM_INCL_SVCS, GATT_INTENT_STEP_FIND_SVC, 0x0001, 0xffff);
     if (todo)
-        todo->intentData.enumIncSvcsCbk = cbk;
+        todo->intentData.enumInclSvcs.enumIncSvcsCbk = cbk;
     pthread_mutex_unlock(&mGattLock);
 
     return todo ? GATT_CLI_STATUS_OK : GATT_CLI_STATUS_ERR;
