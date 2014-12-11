@@ -1358,7 +1358,7 @@ static bool gattCliStepFailed(struct gattConnState *conn, struct gattCliTodoItem
 
 /*
  * FUNCTION: gattCliStepSucceeded
- * USE:      Called when a step of the form "find *" succeeds. should take the next stepe needed for the intent
+ * USE:      Called when a step of the form "find *" succeeds. should take the next step needed for the intent
  * PARAMS:   conn - the conenction structure
  *           todo - the to-do item
  *           handle - the handle in the reply
@@ -1507,16 +1507,20 @@ static bool gattCliStepSucceeded(struct gattConnState *conn, struct gattCliTodoI
  *           todo - the to-do item
  *           handle - the handle in the reply or NULL if none
  *           endGrpHandle - the end group handle in the reply or NULL if none
+ *           uu - uuid (if relevant for this kind of request)
+ *           data - if relevant for this kind of request
  *           haveMore - is there more in this same reply packet?
  *           killTodoItem - set to true to destroy the todo list item. false to keep it (only makes sense if you re-enqueued it). only used if func itself returns false or haveMore is false
  * RETURN:   true to allow further calls here false to stop (in cases of multiple replies in a radio packet). ignored if haveMore is false
  * NOTES:
  */
-static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem *todo, const uint16_t *handle, const uint16_t *endGrpHandle, sg data, bool haveMore, bool *killTodoItem)
+static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem *todo, const uint16_t *handle, const uint16_t *endGrpHandle, const struct uuid *uu, sg data, bool haveMore, bool *killTodoItem)
 {
     struct gattIncludeDefHdr inclDef;
     struct gattCharDefHdr charDef;
     struct uuid uuid;
+    uint16_t uuid16;
+    uint8_t aByte;
 
     switch (todo->reqIntent) {
     case GATT_INTENT_INTERNAL:
@@ -1638,8 +1642,31 @@ static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem 
         }
         return true;
 
-
     case GATT_INTENT_ENUM_CHAR_DESCRS:
+        if (uuidIsZero(&todo->uuidDsc)) { //case 3
+            todo->intentData.enumCharDscrsCbk(todo->clientId, todo->connId, &todo->uuidSvc, &todo->uuidChr, uu, *handle, *endGrpHandle - *handle + 1, GATT_CLI_STATUS_OK);
+            *killTodoItem = true;
+            return false;
+        } else { //cases 2 and 1
+            if (uuidCmp(&todo->uuidDsc, uu)) //case 2
+                uuidZero(&todo->uuidDsc);
+
+            /* go on searching */
+            if (!haveMore) {
+                if (*endGrpHandle == todo->read.endHandle) { //the rare case when we're done here
+                    todo->intentData.enumCharDscrsCbk(todo->clientId, todo->connId, &todo->uuidSvc, &todo->uuidChr, NULL, 0, 0, GATT_CLI_STATUS_OK);
+                    *killTodoItem = true;
+                } else {
+                    todo->find.startHandle = *endGrpHandle + 1;
+                    pthread_mutex_lock(&mGattLock);
+                    gattCliTodoEnqItem(conn, todo, false);
+                    pthread_mutex_unlock(&mGattLock);
+                }
+            }
+        }
+        return true;
+
+
     case GATT_INTENT_READ_CHAR:
     case GATT_INTENT_WRITE_CHAR:
     case GATT_INTENT_READ_DESCR:
@@ -1727,7 +1754,7 @@ static bool gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *han
             break;
 
         case GATT_INTENT_STEP_FINAL:
-            ret = gattCliFinalStep(conn, todo, handleP, endGrpHandleP, data, haveMore, &killTodoItem); 
+            ret = gattCliFinalStep(conn, todo, handleP, endGrpHandleP, NULL, data, haveMore, &killTodoItem); 
             data = NULL;
             break;
 
