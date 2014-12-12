@@ -1666,11 +1666,26 @@ static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem 
         }
         return true;
 
-
     case GATT_INTENT_READ_CHAR:
+        todo->intentData.read.cbk(todo->clientId, todo->connId, &todo->uuidSvc, &todo->uuidChr, GATT_CLI_STATUS_OK, data);
+        *killTodoItem = true;
+        return false;
+
     case GATT_INTENT_WRITE_CHAR:
+        todo->intentData.write.cbk(todo->clientId, todo->connId, &todo->uuidSvc, &todo->uuidChr, GATT_CLI_STATUS_OK);
+        *killTodoItem = true;
+        return false;
+
     case GATT_INTENT_READ_DESCR:
+        todo->intentData.readDescr.cbk(todo->clientId, todo->connId, &todo->uuidSvc, &todo->uuidChr, &todo->uuidDsc, GATT_CLI_STATUS_OK, data);
+        *killTodoItem = true;
+        return false;
+
     case GATT_INTENT_WRITE_DESCR:
+        todo->intentData.writeDescr.cbk(todo->clientId, todo->connId, &todo->uuidSvc, &todo->uuidChr, &todo->uuidDsc, GATT_CLI_STATUS_OK);
+        *killTodoItem = true;
+        return false;
+
     case GATT_INTENT_EXECUTE:
     case GATT_INTENT_NOTIF_SUB:
     case GATT_INTENT_NOTIF_UNSUB:

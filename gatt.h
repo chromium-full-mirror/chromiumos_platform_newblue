@@ -114,7 +114,7 @@ typedef void (*gattCliSvcEnumCbk)(int cli, int con, const struct uuid *uuid, boo
 typedef void (*gattCliEnumIncludedSvcsCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *uuid, uint16_t firstHandle, uint16_t numHandles, uint8_t status);
 typedef void (*gattCliEnumCharacteristicsCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *uuid, uint16_t firstHandle, uint16_t numHandles, uint8_t status);
 typedef void (*gattCliEnumCharDescrsCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *uuid, uint16_t firstHandle, uint16_t numHandles, uint8_t status);
-typedef void (*gattCliCharReadCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t status, const void *data, uint32_t len);
+typedef void (*gattCliCharReadCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t status, sg data);
 typedef void (*gattCliCharWriteCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t status);
 typedef void (*gattCliCharDescrReadCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t status, sg data);
 typedef void (*gattCliCharDescrWriteCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t status);
