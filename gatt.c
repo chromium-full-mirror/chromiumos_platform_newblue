@@ -74,7 +74,7 @@ struct gattCliTodoItem {
     uint8_t                   reqIntent; /* GATT_INTENT_* */
     uint8_t                   reqStep;
     struct uuid               uuidSvc;
-    struct uuid               uuidChr;
+    struct uuid               uuidChr; // or included service
     struct uuid               uuidDsc;
 
     /* per-intent data */
@@ -85,7 +85,7 @@ struct gattCliTodoItem {
         gattCliStagedWriteExecuteCb       executeCbk;
 
         struct {
-            gattCliEnumIncludedSvcsCbk    enumIncSvcsCbk;
+            gattCliEnumIncludedSvcsCbk    cbk;
             uint16_t                      curH; /* this and the next one used to save progress while looking for included uuid-128 services */
             uint16_t                      lastH;
             uint16_t                      inclEndH;
@@ -1374,6 +1374,7 @@ static bool gattCliStepSucceeded(struct gattConnState *conn, struct gattCliTodoI
         switch (todo->reqIntent) {
         case GATT_INTENT_ENUM_INCL_SVCS:
             todo->reqStep = GATT_INTENT_STEP_FINAL;
+            todo->type = GATT_CLI_TODO_READ_BY_TYPE;
             uuidFromUuid16(&todo->read.type, GATT_UUID_INCLUDE);
             break;
 
@@ -1501,6 +1502,52 @@ static bool gattCliStepSucceeded(struct gattConnState *conn, struct gattCliTodoI
 }
 
 /*
+ * FUNCTION: gattCliFinalStepSvcIncludeFound
+ * USE:      Called when a final step results arrive for finding a service include
+ * PARAMS:   conn - the conenction structure
+ *           todo - the to-do item
+ *           startHandle - the handle in the reply
+ *           endHandle - the end group handle in the reply
+ *           uu - uuid
+ *           haveMore - is there more in this same reply packet?
+ *           killTodoItemP - set to true to destroy the todo list item. false to keep it (only makes sense if you re-enqueued it). only used if func itself returns false or haveMore is false
+ * RETURN:   true to allow further calls here false to stop (in cases of multiple replies in a radio packet). ignored if haveMore is false
+ * NOTES:    this is a separate func since we can get here via two ways (depending on whether the included servive has a uuid-16 or a uuid-128)
+ */
+static bool gattCliFinalStepSvcIncludeFound(struct gattConnState *conn, struct gattCliTodoItem *todo, uint16_t startHandle, uint16_t endHandle, const struct uuid *uu, bool haveMore, bool *killTodoItemP)
+{
+    if (uuidIsZero(&todo->uuidChr)) { //case 3
+        todo->intentData.enumInclSvcs.cbk(todo->clientId, todo->connId, &todo->uuidSvc, uu, startHandle, endHandle - startHandle + 1, GATT_CLI_STATUS_OK);
+        *killTodoItemP = true;
+        return false;
+    } else { //cases 2 and 1
+        if (uuidCmp(&todo->uuidChr, uu)) //case 2
+            uuidZero(&todo->uuidChr);
+
+        /* go on searching */
+        if (!haveMore) {
+
+            if (todo->intentData.enumInclSvcs.curH == todo->intentData.enumInclSvcs.lastH) { //done
+                todo->intentData.enumInclSvcs.cbk(todo->clientId, todo->connId, &todo->uuidSvc, NULL, 0, 0, GATT_CLI_STATUS_OK);
+                *killTodoItemP = true;
+                return false;
+            }
+
+            todo->reqStep = GATT_INTENT_STEP_FINAL;
+            todo->type = GATT_CLI_TODO_READ_BY_TYPE;
+            todo->read.handle = todo->intentData.enumInclSvcs.curH + 1;
+            todo->read.endHandle = todo->intentData.enumInclSvcs.lastH;
+            uuidFromUuid16(&todo->read.type, GATT_UUID_INCLUDE);
+
+            pthread_mutex_lock(&mGattLock);
+            gattCliTodoEnqItem(conn, todo, false);
+            pthread_mutex_unlock(&mGattLock);
+        }
+    }
+    return true;
+}
+
+/*
  * FUNCTION: gattCliFinalStep
  * USE:      Called when a final step results arrive
  * PARAMS:   conn - the conenction structure
@@ -1601,7 +1648,7 @@ static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem 
             return false;
         }
         /* at this point we have a valid complete service include info - deal with it */
-        return gattCliFinalStepSvcIncludeFound(todo, utilGetLE16(&inclDef.startHandle), utilGetLE16(&inclDef.endHandle), &uuid, killTodoItem);
+        return gattCliFinalStepSvcIncludeFound(conn, todo, utilGetLE16(&inclDef.startHandle), utilGetLE16(&inclDef.endHandle), &uuid, haveMore, killTodoItem);
         break;
 
     case GATT_INTENT_ENUM_CHARS:
@@ -1687,22 +1734,27 @@ static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem 
         return false;
 
     case GATT_INTENT_EXECUTE:
+        todo->intentData.executeCbk(todo->clientId, todo->connId, GATT_CLI_STATUS_OK);
+        *killTodoItem = true;
+        return false;
+
     case GATT_INTENT_NOTIF_SUB:
+        todo->intentData.notif.stateCbk(todo->clientId, todo->connId, &todo->uuidSvc, &todo->uuidChr, true, GATT_CLI_STATUS_OK);
+        //todo: save handles?
+        *killTodoItem = true;
+        return false;
+
     case GATT_INTENT_NOTIF_UNSUB:
-
-;///aaa
-//todo
-
-
-//struct gattCharDefHdr {
-//    uint8_t charProps;
-//    uint16_t valHandle;
-//    /* uuid here */
-//} __packed;
-
+        todo->intentData.notif.stateCbk(todo->clientId, todo->connId, &todo->uuidSvc, &todo->uuidChr, false, GATT_CLI_STATUS_OK);
+        //todo: free state structs?
+        *killTodoItem = true;
+        return false;
+    default:
+        loge("Unknonw intent %u in final step\n", todo->reqIntent);
+        *killTodoItem = true;
+        return false;
     }
     return true;
-///aaa
 }
 
 /*
@@ -3187,7 +3239,7 @@ uint8_t gattClientEnumIncludedServices(int conn, const struct uuid *inThisServic
     pthread_mutex_lock(&mGattLock);
     todo = gattCliTodoMakeFindByGroupType(conn, GATT_UUID_SVC_PRIMARY, inThisService, prev, NULL, GATT_INTENT_ENUM_INCL_SVCS, GATT_INTENT_STEP_FIND_SVC, 0x0001, 0xffff);
     if (todo)
-        todo->intentData.enumInclSvcs.enumIncSvcsCbk = cbk;
+        todo->intentData.enumInclSvcs.cbk = cbk;
     pthread_mutex_unlock(&mGattLock);
 
     return todo ? GATT_CLI_STATUS_OK : GATT_CLI_STATUS_ERR;
