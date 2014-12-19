@@ -169,6 +169,7 @@ struct gattConnState {
     struct gattCliTodoItem   *todoListH;
     struct gattCliTodoItem   *todoListT;
     struct gattCliTodoItem   *todoCurr; /* or null if none */
+    bool                      inFinalStep; /* used to syncronize who frees "todoCurr" */
 };
 
 struct gattItem { /* a list of these exists in a a gatt service */
@@ -1541,7 +1542,9 @@ static bool gattCliFinalStepSvcIncludeFound(struct gattConnState *conn, struct g
             todo->read.endHandle = todo->intentData.enumInclSvcs.lastH;
             uuidFromUuid16(&todo->read.type, GATT_UUID_INCLUDE);
 
+            pthread_mutex_lock(&mGattLock);
             gattCliTodoEnqItem(conn, todo, false);
+            pthread_mutex_unlock(&mGattLock);
         }
     }
     return true;
@@ -1559,7 +1562,7 @@ static bool gattCliFinalStepSvcIncludeFound(struct gattConnState *conn, struct g
  *           haveMore - is there more in this same reply packet?
  *           killTodoItem - set to true to destroy the todo list item. false to keep it (only makes sense if you re-enqueued it). only used if func itself returns false or haveMore is false
  * RETURN:   true to allow further calls here false to stop (in cases of multiple replies in a radio packet). ignored if haveMore is false
- * NOTES:    call with mGattLock held
+ * NOTES:
  */
 static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem *todo, const uint16_t *handle, const uint16_t *endGrpHandle, const struct uuid *uu, sg data, bool haveMore, bool *killTodoItem)
 {
@@ -1597,7 +1600,9 @@ static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem 
                 *killTodoItem = true;
             } else {
                 todo->read.handle = *endGrpHandle + 1;
+                pthread_mutex_lock(&mGattLock);
                 gattCliTodoEnqItem(conn, todo, false);
+                pthread_mutex_unlock(&mGattLock);
             }
         }
         return true;
@@ -1640,7 +1645,9 @@ static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem 
             todo->read.handle = utilGetLE16(&inclDef.startHandle);
             *killTodoItem = false;
 
+            pthread_mutex_lock(&mGattLock);
             gattCliTodoEnqItem(conn, todo, false);
+            pthread_mutex_unlock(&mGattLock);
             return false;
         }
         /* at this point we have a valid complete service include info - deal with it */
@@ -1677,7 +1684,9 @@ static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem 
                     *killTodoItem = true;
                 } else {
                     todo->read.handle = *endGrpHandle + 1;
+                    pthread_mutex_lock(&mGattLock);
                     gattCliTodoEnqItem(conn, todo, false);
+                    pthread_mutex_unlock(&mGattLock);
                 }
             }
         }
@@ -1699,7 +1708,9 @@ static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem 
                     *killTodoItem = true;
                 } else {
                     todo->find.startHandle = *endGrpHandle + 1;
+                    pthread_mutex_lock(&mGattLock);
                     gattCliTodoEnqItem(conn, todo, false);
+                    pthread_mutex_unlock(&mGattLock);
                 }
             }
         }
@@ -1813,7 +1824,22 @@ static bool gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *han
             break;
 
         case GATT_INTENT_STEP_FINAL:
+            /*
+             * This takes some careful thought. Really we're only operating on conn->todoCurr,
+             * and no external call can change it, so this is safe to do here. We have to drop
+             * the lock to make it ok to make callbacks to higher layer directly from here.
+             */
+            conn->inFinalStep = true;
+            pthread_mutex_unlock(&mGattLock);
             ret = gattCliFinalStep(conn, todo, handleP, endGrpHandleP, NULL, data, haveMore, &killTodoItem); 
+            pthread_mutex_lock(&mGattLock);
+            conn = gattConnFindByL2cConn(to);
+            if (conn)
+                conn->inFinalStep = true;
+            else {
+                gattTodoItemFree(todo);
+                logd("Connection went away while processing final step\n");
+            }
             data = NULL;
             break;
 
@@ -1822,13 +1848,15 @@ static bool gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *han
             break;
         }
 
-        if (!ret || !haveMore) { /* aka "if for whatever reasons we expect no more callbacks for this todo item" */
-            conn->todoCurr = NULL;
-            if (killTodoItem)
-                gattTodoItemFree(todo);
-            gattEnqueueCliDoNextTodoItem(conn);
-        } else if (killTodoItem)
-            logw("Cannot kill todo item if we expect more callbacks on it!\n");
+        if (conn) {
+            if (!ret || !haveMore) { /* aka "if for whatever reasons we expect no more callbacks for this todo item" */
+                conn->todoCurr = NULL;
+                if (killTodoItem)
+                    gattTodoItemFree(todo);
+                gattEnqueueCliDoNextTodoItem(conn);
+            } else if (killTodoItem)
+                logw("Cannot kill todo item if we expect more callbacks on it!\n");
+        }
     }
     if (data)
         sgFree(data);
