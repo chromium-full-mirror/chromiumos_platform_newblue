@@ -14,6 +14,8 @@
 #include "bt.h"
 
 //TODO: if multiple clients stage writes/try to commit them, we do not arbitrate that. Depending on android's use of this, we may have to
+//This code RELIES on ATT layer having some heavy caching. Without that, this will be woefully inefficient!
+
 
 #define GATT_ITEM_TYPE_INCLUDE     1
 #define GATT_ITEM_TYPE_CHAR_DECL   2
@@ -1539,9 +1541,7 @@ static bool gattCliFinalStepSvcIncludeFound(struct gattConnState *conn, struct g
             todo->read.endHandle = todo->intentData.enumInclSvcs.lastH;
             uuidFromUuid16(&todo->read.type, GATT_UUID_INCLUDE);
 
-            pthread_mutex_lock(&mGattLock);
             gattCliTodoEnqItem(conn, todo, false);
-            pthread_mutex_unlock(&mGattLock);
         }
     }
     return true;
@@ -1559,7 +1559,7 @@ static bool gattCliFinalStepSvcIncludeFound(struct gattConnState *conn, struct g
  *           haveMore - is there more in this same reply packet?
  *           killTodoItem - set to true to destroy the todo list item. false to keep it (only makes sense if you re-enqueued it). only used if func itself returns false or haveMore is false
  * RETURN:   true to allow further calls here false to stop (in cases of multiple replies in a radio packet). ignored if haveMore is false
- * NOTES:
+ * NOTES:    call with mGattLock held
  */
 static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem *todo, const uint16_t *handle, const uint16_t *endGrpHandle, const struct uuid *uu, sg data, bool haveMore, bool *killTodoItem)
 {
@@ -1597,9 +1597,7 @@ static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem 
                 *killTodoItem = true;
             } else {
                 todo->read.handle = *endGrpHandle + 1;
-                pthread_mutex_lock(&mGattLock);
                 gattCliTodoEnqItem(conn, todo, false);
-                pthread_mutex_unlock(&mGattLock);
             }
         }
         return true;
@@ -1632,7 +1630,7 @@ static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem 
             logw("Invalid include def (uuid area)\n");
             *killTodoItem = true;
             return false;
-        } else { /* does not have uuid - save state an dbranch off to get uuid */
+        } else { /* does not have uuid - save state and branch off to get uuid */
             todo->reqStep = GATT_INTENT_STEP_GET_INCL_UUID;
             todo->type = GATT_CLI_TODO_READ;
             todo->intentData.enumInclSvcs.curH = *handle;
@@ -1642,9 +1640,7 @@ static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem 
             todo->read.handle = utilGetLE16(&inclDef.startHandle);
             *killTodoItem = false;
 
-            pthread_mutex_lock(&mGattLock);
             gattCliTodoEnqItem(conn, todo, false);
-            pthread_mutex_unlock(&mGattLock);
             return false;
         }
         /* at this point we have a valid complete service include info - deal with it */
@@ -1681,9 +1677,7 @@ static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem 
                     *killTodoItem = true;
                 } else {
                     todo->read.handle = *endGrpHandle + 1;
-                    pthread_mutex_lock(&mGattLock);
                     gattCliTodoEnqItem(conn, todo, false);
-                    pthread_mutex_unlock(&mGattLock);
                 }
             }
         }
@@ -1705,9 +1699,7 @@ static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem 
                     *killTodoItem = true;
                 } else {
                     todo->find.startHandle = *endGrpHandle + 1;
-                    pthread_mutex_lock(&mGattLock);
                     gattCliTodoEnqItem(conn, todo, false);
-                    pthread_mutex_unlock(&mGattLock);
                 }
             }
         }
