@@ -1296,209 +1296,6 @@ static struct gattConnState* gattAttCbkCheckState(uniq_t trans, l2c_handle_t to,
 
 
 /*
- * FUNCTION: gattAttCliFindInfoCbk
- * USE:      Called by ATT as a reply to our Find request, if results were provided
- * PARAMS:   trans - transaction id
- *           to - peer's connection handle
- *           handle - the handle that was found
- *           uuid - the uuid that was found
- *           haveMore - will there be more calls to this func from the same ATT reply packet?
- * RETURN:   false to receive no more callbacks
- * NOTES:
- */
-static bool gattAttCliFindInfoCbk(uniq_t trans, l2c_handle_t to, uint16_t handle, const struct uuid *uuid, bool haveMore)
-{
-    static const uint8_t expectedWorkTypes[] = {GATT_CLI_TODO_FIND_INFO};
-   return false;
-
-}
-
-/*
- * FUNCTION: gattAttCliFindByTypeValCbk
- * USE:      Called by ATT as a reply to our FindByType request, if results were provided
- * PARAMS:   trans - transaction id
- *           to - peer's connection handle
- *           handle - the handle that was found
- *           grpEndHandle - group end handle that was found
- *           haveMore - will there be more calls to this func from the same ATT reply packet?
- * RETURN:   false to receive no more callbacks
- * NOTES:
- */
-static bool gattAttCliFindByTypeValCbk(uniq_t trans, l2c_handle_t to, uint16_t handle, uint16_t grpEndHandle, bool haveMore)
-{
-    static const uint8_t expectedWorkTypes[] = {GATT_CLI_TODO_FIND_BY_TYPE_VAL};
-    struct gattCliTodoItem *todo;
-    struct gattConnState *conn;
-
-    pthread_mutex_lock(&mGattLock);
-    conn = gattAttCbkCheckState(trans, to, expectedWorkTypes, sizeof(expectedWorkTypes), "FindByTypeVal");
-    if (conn) {
-        //todo
-    }
-    pthread_mutex_unlock(&mGattLock);
-    return true;
-}
-
-/*
- * FUNCTION: gattCliStepFailed
- * USE:      Called when a step of the form "find *" fails
- * PARAMS:   conn - the conenction structure
- *           todo - the to-do item
- * RETURN:   true to destroy the todo list item. false to keep it (only makes sense if you re-enqueued it)
- * NOTES:
- */
-static bool gattCliStepFailed(struct gattConnState *conn, struct gattCliTodoItem *todo)
-{
-    //todo
-    return true;
-}
-
-/*
- * FUNCTION: gattCliStepSucceeded
- * USE:      Called when a step of the form "find *" succeeds. should take the next step needed for the intent
- * PARAMS:   conn - the conenction structure
- *           todo - the to-do item
- *           handle - the handle in the reply
- *           endGrpHandle - the end group handle in the reply
- *           charProps - character properties if this is a "find char" step else unused
- *           valHandle - character value handle if this is a "find char" step else unused
- * RETURN:   true to destroy the todo list item. false to keep it (only makes sense if you re-enqueued it)
- * NOTES:
- */
-static bool gattCliStepSucceeded(struct gattConnState *conn, struct gattCliTodoItem *todo, uint16_t handle, uint16_t endGrpHandle, uint8_t charProps, uint16_t valHandle)
-{
-    if (todo->reqStep == GATT_INTENT_STEP_FIND_SVC) { //we found the wanted service. let's see what's next
-        switch (todo->reqIntent) {
-        case GATT_INTENT_ENUM_INCL_SVCS:
-            todo->reqStep = GATT_INTENT_STEP_FINAL;
-            todo->type = GATT_CLI_TODO_READ_BY_TYPE;
-            uuidFromUuid16(&todo->read.type, GATT_UUID_INCLUDE);
-            break;
-
-        case GATT_INTENT_ENUM_CHARS:
-            todo->reqStep = GATT_INTENT_STEP_FINAL;
-            uuidFromUuid16(&todo->read.type, GATT_UUID_CHARACTERISTIC);
-            break;
-
-        case GATT_INTENT_ENUM_CHAR_DESCRS:
-        case GATT_INTENT_READ_CHAR:
-        case GATT_INTENT_READ_DESCR:
-        case GATT_INTENT_WRITE_CHAR:
-        case GATT_INTENT_WRITE_DESCR:
-        case GATT_INTENT_NOTIF_SUB:
-        case GATT_INTENT_NOTIF_UNSUB:
-            todo->reqStep = GATT_INTENT_STEP_FIND_CHAR;
-            uuidFromUuid16(&todo->read.type, GATT_UUID_CHARACTERISTIC);
-            break;
-        }
-
-        todo->read.handle = handle + 1;
-        todo->read.endHandle = endGrpHandle;
-    } else if (todo->reqStep == GATT_INTENT_STEP_FIND_CHAR) { //we found the wanted char. let's see what's next
-
-//todo: use charprops to enforce security for the other side to avoid needless trips there. also check on authReq
-
-        switch (todo->reqIntent) {
-        case GATT_INTENT_ENUM_CHAR_DESCRS:
-            todo->reqStep = GATT_INTENT_STEP_FINAL;
-            todo->find.startHandle = valHandle + 1; //descriptos MUST follow value
-            todo->find.endHandle = endGrpHandle;
-            todo->type = GATT_CLI_TODO_FIND_INFO;
-            break;
-
-        case GATT_INTENT_READ_CHAR:
-            todo->reqStep = GATT_INTENT_STEP_FINAL;
-            todo->type = GATT_CLI_TODO_READ; /* we start with a normal read, and continue with read-blob if the reply is long enough to warrant it */
-            todo->read.handle = valHandle;
-            break;
-
-        case GATT_INTENT_READ_DESCR:
-        case GATT_INTENT_WRITE_DESCR:
-            todo->reqStep = GATT_INTENT_STEP_FIND_DESCR;
-            todo->find.startHandle = valHandle + 1; //descriptos MUST follow value
-            todo->find.endHandle = endGrpHandle;
-            todo->type = GATT_CLI_TODO_FIND_INFO;
-            break;
-
-        case GATT_INTENT_WRITE_CHAR:
-            todo->reqStep = GATT_INTENT_STEP_FINAL;
-            switch (todo->intentData.write.writeType) {
-            case GATT_CLI_WRITE_TYPE_SIGNED:  //todo: make sure write with no reply calls our done callback anyways!
-                todo->type = GATT_CLI_TODO_SIGNED_WRITE;
-                break;
-            case GATT_CLI_WRITE_TYPE_WRITE_NO_RSP:
-                todo->type = GATT_CLI_TODO_WRITE;
-                break;
-            case GATT_CLI_WRITE_TYPE_WRITE:
-                todo->type = GATT_CLI_TODO_WRITE_NO_ACK;
-                break;
-            case GATT_CLI_WRITE_TYPE_PREPARE:
-                todo->type = GATT_CLI_TODO_PREPARE_WRITE;
-                break;
-            }
-            todo->write.handle = valHandle;
-            todo->write.data = todo->intentData.write.data; 
-            todo->write.ofst = todo->intentData.write.ofst;
-            todo->intentData.write.data = NULL;
-            break;
-
-        case GATT_INTENT_NOTIF_SUB:
-        case GATT_INTENT_NOTIF_UNSUB: /* we issue a read to find the client config descriptor */
-            todo->reqStep = GATT_INTENT_STEP_FINAL;
-            todo->type = GATT_CLI_TODO_READ_BY_TYPE;
-            todo->read.handle = valHandle + 1;
-            todo->read.endHandle = endGrpHandle;
-            uuidFromUuid16(&todo->read.type, GATT_UUID_CHAR_CLI_CHAR_CFG);
-            break;
-        }
-
-    } else if (todo->reqStep == GATT_INTENT_STEP_FIND_DESCR) { //we found the wanted descriptor. let's see what's next
-
-//todo: use charprops to enforce security for the other side to avoid needless trips there. also check on authReq
-
-        switch (todo->reqIntent) {
-
-        case GATT_INTENT_READ_DESCR:
-            todo->reqStep = GATT_INTENT_STEP_FINAL;
-            todo->type = GATT_CLI_TODO_READ; /* we start with a normal read, and continue with read-blob if the reply is long enough to warrant it */
-            todo->read.handle = valHandle;
-            break;
-
-        case GATT_INTENT_WRITE_DESCR:
-            todo->reqStep = GATT_INTENT_STEP_FINAL;
-            switch (todo->intentData.write.writeType) {
-            case GATT_CLI_WRITE_TYPE_SIGNED:  //todo: make sure write with no reply calls our done callback anyways!
-                todo->type = GATT_CLI_TODO_SIGNED_WRITE;
-                break;
-            case GATT_CLI_WRITE_TYPE_WRITE_NO_RSP:
-                todo->type = GATT_CLI_TODO_WRITE;
-                break;
-            case GATT_CLI_WRITE_TYPE_WRITE:
-                todo->type = GATT_CLI_TODO_WRITE_NO_ACK;
-                break;
-            case GATT_CLI_WRITE_TYPE_PREPARE:
-                todo->type = GATT_CLI_TODO_PREPARE_WRITE;
-                break;
-            }
-            todo->write.handle = valHandle;
-            todo->write.data = todo->intentData.writeDescr.data; 
-            todo->write.ofst = todo->intentData.writeDescr.ofst;
-            todo->intentData.writeDescr.data = NULL;
-            break;
-        }
-
-        gattCliTodoEnqItem(conn, todo, false);
-        return false;
-    } else {
-        logw("Strange intent & step: %u.%u. Dropping\n", todo->reqIntent, todo->reqStep);
-        return true;
-    }
-
-    gattCliTodoEnqItem(conn, todo, false);
-    return false;
-}
-
-/*
  * FUNCTION: gattCliFinalStepSvcIncludeFound
  * USE:      Called when a final step results arrive for finding a service include
  * PARAMS:   conn - the conenction structure
@@ -1766,6 +1563,259 @@ static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem 
         return false;
     }
     return true;
+}
+
+/*
+ * FUNCTION: gattAttCliFindInfoCbk
+ * USE:      Called by ATT as a reply to our Find request, if results were provided
+ * PARAMS:   trans - transaction id
+ *           to - peer's connection handle
+ *           handle - the handle that was found
+ *           uuid - the uuid that was found
+ *           haveMore - will there be more calls to this func from the same ATT reply packet?
+ * RETURN:   false to receive no more callbacks
+ * NOTES:
+ */
+static bool gattAttCliFindInfoCbk(uniq_t trans, l2c_handle_t to, uint16_t handle, const struct uuid *uuid, bool haveMore)
+{
+    static const uint8_t expectedWorkTypes[] = {GATT_CLI_TODO_FIND_INFO};
+    struct gattConnState *conn;
+    bool killTodoItem = false;
+    bool ret = false;
+
+    pthread_mutex_lock(&mGattLock);
+    conn = gattAttCbkCheckState(trans, to, expectedWorkTypes, sizeof(expectedWorkTypes), "Read");
+    if (conn) {
+        struct gattCliTodoItem *todo = conn->todoCurr;
+
+        switch (todo->reqStep) {
+        case GATT_INTENT_STEP_FINAL:
+            /*
+             * This takes some careful thought. Really we're only operating on conn->todoCurr,
+             * and no external call can change it, so this is safe to do here. We have to drop
+             * the lock to make it ok to make callbacks to higher layer directly from here. One
+             * must note, however, that the connection itself might go away. In that case
+             * it is not clear who'll free conn->todoCurr. We use the conn->inFinalStep var
+             * to provide this arbitration. If it is set, connection destruction will NOT free
+             * conn->todoCurr and instead this code will. This leaves no ambiguities and is safe
+             */
+            conn->inFinalStep = true;
+            pthread_mutex_unlock(&mGattLock);
+            ret = gattCliFinalStep(conn, todo, &handle, NULL, uuid, NULL, haveMore, &killTodoItem); 
+            pthread_mutex_lock(&mGattLock);
+            conn = gattConnFindByL2cConn(to);
+            if (conn)
+                conn->inFinalStep = true;
+            else {
+                gattTodoItemFree(todo);
+                logd("Connection went away while processing final step\n");
+            }
+            break;
+
+        default:
+            logw("Unexpected step %u in FindInfoCbk. Dropping\n", todo->reqStep);
+            break;
+        }
+
+        if (conn) {
+            if (!ret || !haveMore) { /* aka "if for whatever reasons we expect no more callbacks for this todo item" */
+                conn->todoCurr = NULL;
+                if (killTodoItem)
+                    gattTodoItemFree(todo);
+                gattEnqueueCliDoNextTodoItem(conn);
+            } else if (killTodoItem)
+                logw("Cannot kill todo item if we expect more callbacks on it!\n");
+        }
+    }
+
+    pthread_mutex_unlock(&mGattLock);
+
+    return ret;
+}
+
+/*
+ * FUNCTION: gattAttCliFindByTypeValCbk
+ * USE:      Called by ATT as a reply to our FindByType request, if results were provided
+ * PARAMS:   trans - transaction id
+ *           to - peer's connection handle
+ *           handle - the handle that was found
+ *           grpEndHandle - group end handle that was found
+ *           haveMore - will there be more calls to this func from the same ATT reply packet?
+ * RETURN:   false to receive no more callbacks
+ * NOTES:
+ */
+static bool gattAttCliFindByTypeValCbk(uniq_t trans, l2c_handle_t to, uint16_t handle, uint16_t grpEndHandle, bool haveMore)
+{
+    static const uint8_t expectedWorkTypes[] = {GATT_CLI_TODO_FIND_BY_TYPE_VAL};
+    struct gattCliTodoItem *todo;
+    struct gattConnState *conn;
+
+    pthread_mutex_lock(&mGattLock);
+    conn = gattAttCbkCheckState(trans, to, expectedWorkTypes, sizeof(expectedWorkTypes), "FindByTypeVal");
+    if (conn) {
+        //todo
+    }
+    pthread_mutex_unlock(&mGattLock);
+    return true;
+}
+
+/*
+ * FUNCTION: gattCliStepFailed
+ * USE:      Called when a step of the form "find *" fails
+ * PARAMS:   conn - the conenction structure
+ *           todo - the to-do item
+ * RETURN:   true to destroy the todo list item. false to keep it (only makes sense if you re-enqueued it)
+ * NOTES:
+ */
+static bool gattCliStepFailed(struct gattConnState *conn, struct gattCliTodoItem *todo)
+{
+    //todo
+    return true;
+}
+
+/*
+ * FUNCTION: gattCliStepSucceeded
+ * USE:      Called when a step of the form "find *" succeeds. should take the next step needed for the intent
+ * PARAMS:   conn - the conenction structure
+ *           todo - the to-do item
+ *           handle - the handle in the reply
+ *           endGrpHandle - the end group handle in the reply
+ *           charProps - character properties if this is a "find char" step else unused
+ *           valHandle - character value handle if this is a "find char" step else unused
+ * RETURN:   true to destroy the todo list item. false to keep it (only makes sense if you re-enqueued it)
+ * NOTES:
+ */
+static bool gattCliStepSucceeded(struct gattConnState *conn, struct gattCliTodoItem *todo, uint16_t handle, uint16_t endGrpHandle, uint8_t charProps, uint16_t valHandle)
+{
+    if (todo->reqStep == GATT_INTENT_STEP_FIND_SVC) { //we found the wanted service. let's see what's next
+        switch (todo->reqIntent) {
+        case GATT_INTENT_ENUM_INCL_SVCS:
+            todo->reqStep = GATT_INTENT_STEP_FINAL;
+            todo->type = GATT_CLI_TODO_READ_BY_TYPE;
+            uuidFromUuid16(&todo->read.type, GATT_UUID_INCLUDE);
+            break;
+
+        case GATT_INTENT_ENUM_CHARS:
+            todo->reqStep = GATT_INTENT_STEP_FINAL;
+            uuidFromUuid16(&todo->read.type, GATT_UUID_CHARACTERISTIC);
+            break;
+
+        case GATT_INTENT_ENUM_CHAR_DESCRS:
+        case GATT_INTENT_READ_CHAR:
+        case GATT_INTENT_READ_DESCR:
+        case GATT_INTENT_WRITE_CHAR:
+        case GATT_INTENT_WRITE_DESCR:
+        case GATT_INTENT_NOTIF_SUB:
+        case GATT_INTENT_NOTIF_UNSUB:
+            todo->reqStep = GATT_INTENT_STEP_FIND_CHAR;
+            uuidFromUuid16(&todo->read.type, GATT_UUID_CHARACTERISTIC);
+            break;
+        }
+
+        todo->read.handle = handle + 1;
+        todo->read.endHandle = endGrpHandle;
+    } else if (todo->reqStep == GATT_INTENT_STEP_FIND_CHAR) { //we found the wanted char. let's see what's next
+
+//todo: use charprops to enforce security for the other side to avoid needless trips there. also check on authReq
+
+        switch (todo->reqIntent) {
+        case GATT_INTENT_ENUM_CHAR_DESCRS:
+            todo->reqStep = GATT_INTENT_STEP_FINAL;
+            todo->find.startHandle = valHandle + 1; //descriptos MUST follow value
+            todo->find.endHandle = endGrpHandle;
+            todo->type = GATT_CLI_TODO_FIND_INFO;
+            break;
+
+        case GATT_INTENT_READ_CHAR:
+            todo->reqStep = GATT_INTENT_STEP_FINAL;
+            todo->type = GATT_CLI_TODO_READ; /* we start with a normal read, and continue with read-blob if the reply is long enough to warrant it */
+            todo->read.handle = valHandle;
+            break;
+
+        case GATT_INTENT_READ_DESCR:
+        case GATT_INTENT_WRITE_DESCR:
+            todo->reqStep = GATT_INTENT_STEP_FIND_DESCR;
+            todo->find.startHandle = valHandle + 1; //descriptos MUST follow value
+            todo->find.endHandle = endGrpHandle;
+            todo->type = GATT_CLI_TODO_FIND_INFO;
+            break;
+
+        case GATT_INTENT_WRITE_CHAR:
+            todo->reqStep = GATT_INTENT_STEP_FINAL;
+            switch (todo->intentData.write.writeType) {
+            case GATT_CLI_WRITE_TYPE_SIGNED:  //todo: make sure write with no reply calls our done callback anyways!
+                todo->type = GATT_CLI_TODO_SIGNED_WRITE;
+                break;
+            case GATT_CLI_WRITE_TYPE_WRITE_NO_RSP:
+                todo->type = GATT_CLI_TODO_WRITE;
+                break;
+            case GATT_CLI_WRITE_TYPE_WRITE:
+                todo->type = GATT_CLI_TODO_WRITE_NO_ACK;
+                break;
+            case GATT_CLI_WRITE_TYPE_PREPARE:
+                todo->type = GATT_CLI_TODO_PREPARE_WRITE;
+                break;
+            }
+            todo->write.handle = valHandle;
+            todo->write.data = todo->intentData.write.data; 
+            todo->write.ofst = todo->intentData.write.ofst;
+            todo->intentData.write.data = NULL;
+            break;
+
+        case GATT_INTENT_NOTIF_SUB:
+        case GATT_INTENT_NOTIF_UNSUB: /* we issue a read to find the client config descriptor */
+            todo->reqStep = GATT_INTENT_STEP_FINAL;
+            todo->type = GATT_CLI_TODO_READ_BY_TYPE;
+            todo->read.handle = valHandle + 1;
+            todo->read.endHandle = endGrpHandle;
+            uuidFromUuid16(&todo->read.type, GATT_UUID_CHAR_CLI_CHAR_CFG);
+            break;
+        }
+
+    } else if (todo->reqStep == GATT_INTENT_STEP_FIND_DESCR) { //we found the wanted descriptor. let's see what's next
+
+//todo: use charprops to enforce security for the other side to avoid needless trips there. also check on authReq
+
+        switch (todo->reqIntent) {
+
+        case GATT_INTENT_READ_DESCR:
+            todo->reqStep = GATT_INTENT_STEP_FINAL;
+            todo->type = GATT_CLI_TODO_READ; /* we start with a normal read, and continue with read-blob if the reply is long enough to warrant it */
+            todo->read.handle = valHandle;
+            break;
+
+        case GATT_INTENT_WRITE_DESCR:
+            todo->reqStep = GATT_INTENT_STEP_FINAL;
+            switch (todo->intentData.write.writeType) {
+            case GATT_CLI_WRITE_TYPE_SIGNED:  //todo: make sure write with no reply calls our done callback anyways!
+                todo->type = GATT_CLI_TODO_SIGNED_WRITE;
+                break;
+            case GATT_CLI_WRITE_TYPE_WRITE_NO_RSP:
+                todo->type = GATT_CLI_TODO_WRITE;
+                break;
+            case GATT_CLI_WRITE_TYPE_WRITE:
+                todo->type = GATT_CLI_TODO_WRITE_NO_ACK;
+                break;
+            case GATT_CLI_WRITE_TYPE_PREPARE:
+                todo->type = GATT_CLI_TODO_PREPARE_WRITE;
+                break;
+            }
+            todo->write.handle = valHandle;
+            todo->write.data = todo->intentData.writeDescr.data; 
+            todo->write.ofst = todo->intentData.writeDescr.ofst;
+            todo->intentData.writeDescr.data = NULL;
+            break;
+        }
+
+        gattCliTodoEnqItem(conn, todo, false);
+        return false;
+    } else {
+        logw("Strange intent & step: %u.%u. Dropping\n", todo->reqIntent, todo->reqStep);
+        return true;
+    }
+
+    gattCliTodoEnqItem(conn, todo, false);
+    return false;
 }
 
 /*
