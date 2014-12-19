@@ -1169,14 +1169,14 @@ static void gattTodoItemFree(struct gattCliTodoItem *todo)
 {
     switch (todo->type) {
     case GATT_CLI_TODO_FIND_BY_TYPE_VAL:
-        if (todo->find.val) /* we claer it whenwe use it */
+        if (todo->find.val) /* we clear it when we use it */
             sgFree(todo->find.val);
         break;
     case GATT_CLI_TODO_WRITE:
     case GATT_CLI_TODO_WRITE_NO_ACK:
     case GATT_CLI_TODO_SIGNED_WRITE:
     case GATT_CLI_TODO_PREPARE_WRITE:
-        if (todo->write.data) /* we claer it whenwe use it */
+        if (todo->write.data) /* we clear it when we use it */
             sgFree(todo->write.data);
         break;
     }
@@ -1654,7 +1654,11 @@ static bool gattAttCliFindByTypeValCbk(uniq_t trans, l2c_handle_t to, uint16_t h
     pthread_mutex_lock(&mGattLock);
     conn = gattAttCbkCheckState(trans, to, expectedWorkTypes, sizeof(expectedWorkTypes), "FindByTypeVal");
     if (conn) {
-        //todo
+        struct gattCliTodoItem *todo = conn->todoCurr;
+
+        logw("Unexpected FindByTypeValCbk. Dropping\n");
+        gattTodoItemFree(todo);
+        gattEnqueueCliDoNextTodoItem(conn);
     }
     pthread_mutex_unlock(&mGattLock);
     return true;
