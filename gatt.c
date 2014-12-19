@@ -1958,12 +1958,55 @@ static void gattAttCliWriteCbk(uniq_t trans, l2c_handle_t to)
 {
     static const uint8_t expectedWorkTypes[] = {GATT_CLI_TODO_WRITE, GATT_CLI_TODO_PREPARE_WRITE, GATT_CLI_TOTO_WRITE_EXEC};
     struct gattConnState *conn;
+    bool killTodoItem = false;
+    bool ret = false;
 
     pthread_mutex_lock(&mGattLock);
     conn = gattAttCbkCheckState(trans, to, expectedWorkTypes, sizeof(expectedWorkTypes), "Write");
     if (conn) {
-        ///todo
+        struct gattCliTodoItem *todo = conn->todoCurr;
+
+        switch (todo->reqStep) {
+        case GATT_INTENT_STEP_FINAL:
+            /*
+             * This takes some careful thought. Really we're only operating on conn->todoCurr,
+             * and no external call can change it, so this is safe to do here. We have to drop
+             * the lock to make it ok to make callbacks to higher layer directly from here. One
+             * must note, however, that the connection itself might go away. In that case
+             * it is not clear who'll free conn->todoCurr. We use the conn->inFinalStep var
+             * to provide this arbitration. If it is set, connection destruction will NOT free
+             * conn->todoCurr and instead this code will. This leaves no ambiguities and is safe
+             */
+            conn->inFinalStep = true;
+            pthread_mutex_unlock(&mGattLock);
+            ret = gattCliFinalStep(conn, todo, NULL, NULL, NULL, NULL, false, &killTodoItem); 
+            pthread_mutex_lock(&mGattLock);
+            conn = gattConnFindByL2cConn(to);
+            if (conn)
+                conn->inFinalStep = true;
+            else {
+                gattTodoItemFree(todo);
+                logd("Connection went away while processing final step\n");
+            }
+            break;
+
+        default:
+            killTodoItem = true;
+            logw("Unexpected step %u in WriteCbk. Dropping\n", todo->reqStep);
+            break;
+        }
+
+        if (conn) {
+            if (!ret) { /* aka "if for whatever reasons we expect no more callbacks for this todo item" */
+                conn->todoCurr = NULL;
+                if (killTodoItem)
+                    gattTodoItemFree(todo);
+                gattEnqueueCliDoNextTodoItem(conn);
+            } else if (killTodoItem)
+                logw("Cannot kill todo item if we expect more callbacks on it!\n");
+        }
     }
+
     pthread_mutex_unlock(&mGattLock);
 }
 
