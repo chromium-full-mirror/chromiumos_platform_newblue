@@ -1613,6 +1613,7 @@ static bool gattAttCliFindInfoCbk(uniq_t trans, l2c_handle_t to, uint16_t handle
             break;
 
         default:
+            killTodoItem = true;
             logw("Unexpected step %u in FindInfoCbk. Dropping\n", todo->reqStep);
             break;
         }
@@ -1918,6 +1919,7 @@ static bool gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *han
             break;
 
         default:
+            killTodoItem = true;
             logw("Unexpected step %u in ReadCbk. Dropping\n", todo->reqStep);
             break;
         }
