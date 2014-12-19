@@ -90,6 +90,7 @@ struct gattCliTodoItem {
             gattCliEnumIncludedSvcsCbk    cbk;
             uint16_t                      curH; /* this and the next one used to save progress while looking for included uuid-128 services */
             uint16_t                      lastH;
+            uint16_t                      inclStartH;
             uint16_t                      inclEndH;
         } enumInclSvcs;
         struct {
@@ -1293,6 +1294,7 @@ static struct gattConnState* gattAttCbkCheckState(uniq_t trans, l2c_handle_t to,
     return NULL;
 }
 
+
 /*
  * FUNCTION: gattAttCliFindInfoCbk
  * USE:      Called by ATT as a reply to our Find request, if results were provided
@@ -1307,16 +1309,8 @@ static struct gattConnState* gattAttCbkCheckState(uniq_t trans, l2c_handle_t to,
 static bool gattAttCliFindInfoCbk(uniq_t trans, l2c_handle_t to, uint16_t handle, const struct uuid *uuid, bool haveMore)
 {
     static const uint8_t expectedWorkTypes[] = {GATT_CLI_TODO_FIND_INFO};
-    struct gattConnState *conn;
+   return false;
 
-    pthread_mutex_lock(&mGattLock);
-    conn = gattAttCbkCheckState(trans, to, expectedWorkTypes, sizeof(expectedWorkTypes), "Find");
-    if (conn) {
-        /* in the future we might use find info requests. For now we do not */
-        loge("Unexpected FindInfo request reply\n");
-    }
-    pthread_mutex_unlock(&mGattLock);
-    return true;
 }
 
 /*
@@ -1569,7 +1563,7 @@ static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem 
     struct gattIncludeDefHdr inclDef;
     struct gattCharDefHdr charDef;
     struct uuid uuid;
-    uint16_t uuid16;
+    uint16_t uuid16, inclStartH, inclEndH;
     uint8_t aByte;
 
     switch (todo->reqIntent) {
@@ -1616,42 +1610,56 @@ static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem 
   *  3. We have no uuid and we just found one - we return it
   */
     case GATT_INTENT_ENUM_INCL_SVCS:
-        if (!sgSerializeCutFront(data, &inclDef, sizeof(inclDef))) {
-            sgFree(data);
-            logw("Invalid include def\n");
-            *killTodoItem = true;
-            return false;
-        }
         /*
          * includes are weird in that they may have a uuid-16 of the service but may
          * not have a uuid128, so we have special code to get those for us. For that we
-         * use the GATT_INTENT_STEP_GET_INCL_UUID step and a read command.
+         * use the GATT_INTENT_STEP_GET_INCL_UUID step and a read command. We end up back
+         * here with data == NULL and uu being our uuid. we must handle this gracefully.
+         * The service start/end handles are stashed in todo->intentData.enumInclSvcs
          */
-        if (sgLength(data) == sizeof(uint16_t)) { /* has a uuid-16 */
-            attReadUuid(&uuid, data);
-            sgFree(data);
-        } else if (sgLength(data)) { 
-            sgFree(data);
-            logw("Invalid include def (uuid area)\n");
-            *killTodoItem = true;
-            return false;
-        } else { /* does not have uuid - save state and branch off to get uuid */
-            todo->reqStep = GATT_INTENT_STEP_GET_INCL_UUID;
-            todo->type = GATT_CLI_TODO_READ;
-            todo->intentData.enumInclSvcs.curH = *handle;
-            todo->intentData.enumInclSvcs.lastH = todo->read.endHandle;
-            todo->intentData.enumInclSvcs.inclEndH = utilGetLE16(&inclDef.endHandle);
+        if (!data && uu) {
+            inclStartH = todo->intentData.enumInclSvcs.inclStartH;
+            inclEndH = todo->intentData.enumInclSvcs.inclEndH;
+            memcpy(&uuid, uu, sizeof(struct uuid));
+        } else {
 
-            todo->read.handle = utilGetLE16(&inclDef.startHandle);
-            *killTodoItem = false;
+            if (!sgSerializeCutFront(data, &inclDef, sizeof(inclDef))) {
+                sgFree(data);
+                logw("Invalid include def\n");
+                *killTodoItem = true;
+                return false;
+            }
 
-            pthread_mutex_lock(&mGattLock);
-            gattCliTodoEnqItem(conn, todo, false);
-            pthread_mutex_unlock(&mGattLock);
-            return false;
+            inclStartH = utilGetLE16(&inclDef.startHandle);
+            inclEndH = utilGetLE16(&inclDef.endHandle);
+
+            if (sgLength(data) == sizeof(uint16_t)) { /* has a uuid-16 */
+                attReadUuid(&uuid, data);
+                sgFree(data);
+            } else if (sgLength(data)) { 
+                sgFree(data);
+                logw("Invalid include def (uuid area)\n");
+                *killTodoItem = true;
+                return false;
+            } else { /* does not have uuid - save state and branch off to get uuid */
+                todo->reqStep = GATT_INTENT_STEP_GET_INCL_UUID;
+                todo->type = GATT_CLI_TODO_READ;
+                todo->intentData.enumInclSvcs.curH = *handle;
+                todo->intentData.enumInclSvcs.lastH = todo->read.endHandle;
+                todo->intentData.enumInclSvcs.inclStartH = inclStartH;
+                todo->intentData.enumInclSvcs.inclEndH = inclEndH;
+
+                todo->read.handle = inclStartH;
+                *killTodoItem = false;
+
+                pthread_mutex_lock(&mGattLock);
+                gattCliTodoEnqItem(conn, todo, false);
+                pthread_mutex_unlock(&mGattLock);
+                return false;
+            }
         }
         /* at this point we have a valid complete service include info - deal with it */
-        return gattCliFinalStepSvcIncludeFound(conn, todo, utilGetLE16(&inclDef.startHandle), utilGetLE16(&inclDef.endHandle), &uuid, haveMore, killTodoItem);
+        return gattCliFinalStepSvcIncludeFound(conn, todo, inclStartH, inclEndH, &uuid, haveMore, killTodoItem);
         break;
 
     case GATT_INTENT_ENUM_CHARS:
@@ -1775,6 +1783,7 @@ static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem 
 static bool gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *handleP, const uint16_t *endGrpHandleP, sg data, bool haveMore)
 {
     static const uint8_t expectedWorkTypes[] = {GATT_CLI_TODO_READ_BY_TYPE, GATT_CLI_TODO_READ, GATT_CLI_TODO_READ_BLOB, GATT_CLI_TODO_READ_BY_GRP_TYPE};
+    struct uuid uuid, *finalStepUuidP = NULL;
     struct gattConnState *conn;
     bool killTodoItem = false;
     bool ret = false;
@@ -1823,15 +1832,30 @@ static bool gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *han
             }
             break;
 
+        case GATT_INTENT_STEP_GET_INCL_UUID:
+            /* change it back to final step enum incl req and call into final step */
+            finalStepUuidP = &uuid;
+            todo->read.handle = todo->intentData.enumInclSvcs.curH;
+            todo->read.endHandle = todo->intentData.enumInclSvcs.lastH;
+            todo->reqStep = GATT_INTENT_STEP_FINAL;
+            todo->type = GATT_CLI_TODO_READ_BY_TYPE;
+            uuidFromUuid16(&todo->read.type, GATT_UUID_INCLUDE);
+            //fall through (data shuold be NULL in this case)
+
+
         case GATT_INTENT_STEP_FINAL:
             /*
              * This takes some careful thought. Really we're only operating on conn->todoCurr,
              * and no external call can change it, so this is safe to do here. We have to drop
-             * the lock to make it ok to make callbacks to higher layer directly from here.
+             * the lock to make it ok to make callbacks to higher layer directly from here. One
+             * must note, however, that the connection itself might go away. In that case
+             * it is not clear who'll free conn->todoCurr. We use the conn->inFinalStep var
+             * to provide this arbitration. If it is set, connection destruction will NOT free
+             * conn->todoCurr and instead this code will. This leaves no ambiguities and is safe
              */
             conn->inFinalStep = true;
             pthread_mutex_unlock(&mGattLock);
-            ret = gattCliFinalStep(conn, todo, handleP, endGrpHandleP, NULL, data, haveMore, &killTodoItem); 
+            ret = gattCliFinalStep(conn, todo, handleP, endGrpHandleP, finalStepUuidP, data, haveMore, &killTodoItem); 
             pthread_mutex_lock(&mGattLock);
             conn = gattConnFindByL2cConn(to);
             if (conn)
