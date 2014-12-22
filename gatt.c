@@ -225,6 +225,8 @@ struct gattCliNotif { /* keeps track of all notifications all clients are subscr
     uint32_t                 refCtNotif;       /* how many clients want notification */
 
     /* cache of relevant values for speed and convenience. spec promises these can never change */
+    struct uuid              svc;              /* the uuid of the service */ //TODO: fill this
+    struct uuid              chr;              /* the uuid of the char */ //TODO: fill this
     uint16_t                 charHeaderHandle; /* first handle for this characteristic */
     uint16_t                 charValueHandle;  /* characteristic's actual value's handle */
     uint16_t                 charConfigHandle; /* characteristic's "config" handle for unsubscribing */
@@ -236,6 +238,7 @@ struct gattCliNotifRec { /* used to keep track of all notifications that a clien
     struct gattCliNotifRec  *prev;
     struct gattCliNotif     *notif;
     bool                     wantInd; /* else we'll ask for notif */
+    gattCliNotifArrivedCbk   arrivedCbk; //TODO: init this
 };
 
 struct gattClient {
@@ -293,6 +296,15 @@ struct gattWorkItem {
             l2c_handle_t             conn;
             struct gattCliTodoItem  *todo;
         } cliDoNext;
+        struct {
+            gattCliNotifArrivedCbk   cbk;
+            int                      cli;
+            int                      con;
+            struct uuid              svc;
+            struct uuid              chr;
+            bool                     ind;
+            sg                       data;
+        } cliIndCall;
     };
 };
 
@@ -301,6 +313,7 @@ struct gattWorkItem {
 #define GATT_WORK_SRV_IND_CALL           2
 #define GATT_WORK_CLI_CONN_STATE_NOTIF   3
 #define GATT_WORK_CLI_DO_NEXT            4 /* run the next todo item, if none inflight currently */
+#define GATT_WORK_CLI_IND_CALL           5
 
 
 /* our state */
@@ -686,6 +699,40 @@ static bool gattEnqueueCliDoNextTodoItem(struct gattConnState *conn)
 
             return true;
        }
+    }
+
+    return false;
+}
+
+/*
+ * FUNCTION: gattEnqueueCliIndCall
+ * USE:      Enqueue a work item to perform a notif/ind callback to the caller
+ * PARAMS:   clicon - client-connection struct
+ *           nr - the notification record
+ *           data - the data to send
+ * RETURN:   false on immediate failure
+ * NOTES:    call with mGattLock held
+ */
+static bool gattEnqueueCliIndCall(struct gattCliCon *clicon, struct gattCliNotifRec *nr, sg data)
+{
+    struct gattWorkItem *wi;
+
+    wi = (struct gattWorkItem*)calloc(1, sizeof(struct gattWorkItem));
+    if (wi) {
+
+        wi->type = GATT_WORK_CLI_IND_CALL;
+        wi->cliIndCall.cbk = nr->arrivedCbk;
+        wi->cliIndCall.cli = clicon->cli->clientId;
+        wi->cliIndCall.con = clicon->connId;
+        memcpy(&wi->cliIndCall.svc, &nr->notif->svc, sizeof (struct uuid));
+        memcpy(&wi->cliIndCall.chr, &nr->notif->chr, sizeof (struct uuid));
+        wi->cliIndCall.ind = nr->wantInd;
+        wi->cliIndCall.data = data;
+
+        if (workQueuePut(mWorkQ, wi))
+            return true;
+
+        free(wi);
     }
 
     return false;
@@ -1206,6 +1253,8 @@ static void gattWorkItemFree(struct gattWorkItem *wi)
 {
     if (wi->type == GATT_WORK_CLI_DO_NEXT)
         gattTodoItemFree(wi->cliDoNext.todo);
+    else if (wi->type == GATT_WORK_CLI_IND_CALL)
+        sgFree(wi->cliIndCall.data);
     free(wi);
 }
 
@@ -1249,6 +1298,9 @@ static void* gattWorker(void *param)
             break;
         case GATT_WORK_CLI_DO_NEXT:
             gattCliTodoNext(wi->cliDoNext.conn, wi->cliDoNext.todo);
+            break;
+        case GATT_WORK_CLI_IND_CALL:
+            wi->cliIndCall.cbk(wi->cliIndCall.cli, wi->cliIndCall.con, &wi->cliIndCall.svc, &wi->cliIndCall.chr, wi->cliIndCall.ind, wi->cliIndCall.data);
             break;
         default:
             loge("Unknown work type %d\n", wi->type);
@@ -2062,6 +2114,7 @@ static void gattAttCliIndNotif(l2c_handle_t to, bool needsAck, uint16_t handle, 
 
             struct gattCliCon *clicon;
             struct gattCliNotifRec *nr;
+            sg dataCopy;
 
             /* find all clients who are subscribed and notify them */
             for (clicon = mCliCons; clicon; clicon = clicon->next) {
@@ -2075,13 +2128,21 @@ static void gattAttCliIndNotif(l2c_handle_t to, bool needsAck, uint16_t handle, 
                     continue;
 
                 /* now we have a client who cares, tell them about this glorious event */
-                ///TODO
+                dataCopy = sgDup(data);
+                if (!dataCopy)
+                    logw("Failed to copy data for ind/notif\n");
+                else if (!gattEnqueueCliIndCall(clicon, nr, dataCopy)) {
+                    logw("Failed to schedule a call for notif/ind\n");
+                    sgFree(dataCopy);
+                }
             }
 
         }
     }
 
     pthread_mutex_unlock(&mGattLock);
+
+    sgFree(data);
 
     /* since multiple (or no) clients may be subscribedat this very moment, we generate the ACK ourselves */
     if (needsAck)
