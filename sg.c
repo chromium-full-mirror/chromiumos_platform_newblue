@@ -706,4 +706,29 @@ bool sgSerializeCutFront(sg s, void *buf, uint32_t len)
     return true;
 }
 
+/*
+ * FUNCTION: sgDup
+ * USE:      Duplicate the data into another SG. current SG is untouched
+ * PARAMS:   from - the SG to duplicate
+ * RETURN:   new SG or NULL
+ * NOTES:
+ */
+sg sgDup(sg from)
+{
+    uint32_t len;
+    void *retData;
+    sg ret;
+
+    sgVerify(from);
+    len = sgLength(from);
+    retData = malloc(len);
+    if (retData) {
+        sgSerialize(from, 0, len, retData);
+        ret = sgNewWithAllocedData(retData, len);
+        if (ret)
+            return ret;
+        free(retData);
+    }
+    return NULL;
+}
 
