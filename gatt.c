@@ -3714,6 +3714,8 @@ out:
  */
 uint8_t gattClientNotifsSubscribe(int conn, const struct uuid *inThisService, const struct uuid *thisChar, gattCliNotifSubscribeStateCbk stateCbk, gattCliNotifArrivedCbk arrivedCbk)
 {
+    //todo: this is only the thing to do if we already do not have this notif subscribed to
+
     struct gattCliTodoItem *todo;
 
     pthread_mutex_lock(&mGattLock);
@@ -3739,16 +3741,31 @@ uint8_t gattClientNotifsSubscribe(int conn, const struct uuid *inThisService, co
  */
 uint8_t gattClientNotifsUnsubscribe(int conn, const struct uuid *inThisService, const struct uuid *thisChar, gattCliNotifSubscribeStateCbk stateCbk)
 {
-    struct gattCliTodoItem *todo;
+    uint8_t sta = GATT_CLI_STATUS_ERR;
+    struct gattCliNotifRec *nr;
+    struct gattCliCon *clicon;
+    int cli = 0;
 
     pthread_mutex_lock(&mGattLock);
-    todo = gattCliTodoMakeFindByGroupType(conn, GATT_UUID_SVC_PRIMARY, inThisService, thisChar, NULL, GATT_INTENT_NOTIF_UNSUB, GATT_INTENT_STEP_FIND_SVC, 0x0001, 0xffff);
-    if (todo)
-        todo->intentData.notif.stateCbk = stateCbk;
+    clicon = gattCliconFindById(conn);
+    if (!clicon)
+        logw("No conection for unsubscribe\n");
+    else {
+        cli = clicon->cli->clientId;
 
+        /* find the notif record, if one exists */
+        for (nr = clicon->notifs; nr && (!uuidCmp(inThisService, &nr->notif->svc) || !uuidCmp(thisChar, &nr->notif->chr)); nr = nr->next);
+
+        if (nr) {
+            gattClientNotifUnsubscribe(clicon, nr);
+            sta = GATT_CLI_STATUS_OK;
+        }
+    }
     pthread_mutex_unlock(&mGattLock);
 
-    return todo ? GATT_CLI_STATUS_OK : GATT_CLI_STATUS_ERR;
+    stateCbk(cli, conn, inThisService, thisChar, false, sta);
+
+    return sta;
 }
 
 
