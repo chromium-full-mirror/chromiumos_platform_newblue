@@ -1392,9 +1392,37 @@ static bool gattCliFinalStepSvcIncludeFound(struct gattConnState *conn, struct g
 }
 
 /*
+ * FUNCTION: gettCliNotifSubDone
+ * USE:      Called when the final step of notification subscription completes
+ * PARAMS:   conn - the connection structure
+ *           todo - the to-do item
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void gettCliNotifSubDone(struct gattConnState *conn, struct gattCliTodoItem *todo)
+{
+    //todo: save handles?
+    //todo: tell everyone
+}
+
+/*
+ * FUNCTION: gettCliNotifUnsubDone
+ * USE:      Called when the final step of notification unsubscription completes
+ * PARAMS:   conn - the connection structure
+ *           todo - the to-do item
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void gettCliNotifUnsubDone(struct gattConnState *conn, struct gattCliTodoItem *todo)
+{
+    //todo: free state structs?
+    //todo: tell everyone
+}
+
+/*
  * FUNCTION: gattCliFinalStep
  * USE:      Called when a final step results arrive
- * PARAMS:   conn - the conenction structure
+ * PARAMS:   conn - the connection structure
  *           todo - the to-do item
  *           handle - the handle in the reply or NULL if none
  *           endGrpHandle - the end group handle in the reply or NULL if none
@@ -1597,14 +1625,12 @@ static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem 
         return false;
 
     case GATT_INTENT_NOTIF_SUB:
-        //todo: save handles?
-        //todo: tell everyone
+        gettCliNotifSubDone(conn, todo);
         *killTodoItem = true;
         return false;
 
     case GATT_INTENT_NOTIF_UNSUB:
-        //todo: free state structs?
-        //todo: tell everyone
+        gettCliNotifUnsubDone(conn, todo);
         *killTodoItem = true;
         return false;
     default:
@@ -3772,7 +3798,11 @@ uint8_t gattClientNotifsSubscribe(int conn, const struct uuid *inThisService, co
             /* caller wants reliable notifs but this is not possible. fail */
             callStateCbk = false;
         } else {
-            /* we need to resubscribe to reliable notifications and we can */
+            /*
+             * We need to resubscribe to reliable notifications and we can. Techncially, since
+             * we already know the handles, we can just do a write, but this makes the code
+             * simpler and thanks to mandatory caching in ATT, it is not really any slower.
+             */
             notif->ready = false;
             startSub = true;
         }
