@@ -150,7 +150,7 @@ uint8_t gattClientCharDescrWrite(int conn, const struct uuid *inThisService, con
 uint8_t gattClientStagedWritesExecute(int conn, bool execute, gattCliStagedWriteExecuteCb cbk); //if not execute then drop them all
 
 /* notification subscription/unsubscription */
-uint8_t gattClientNotifsSubscribe(int conn, const struct uuid *inThisService, const struct uuid *thisChar, gattCliNotifSubscribeStateCbk stateCbk, gattCliNotifArrivedCbk arrivedCbk);
+uint8_t gattClientNotifsSubscribe(int conn, const struct uuid *inThisService, const struct uuid *thisChar, bool reliable, gattCliNotifSubscribeStateCbk stateCbk, gattCliNotifArrivedCbk arrivedCbk);
 uint8_t gattClientNotifsUnsubscribe(int conn, const struct uuid *inThisService, const struct uuid *thisChar, gattCliNotifSubscribeStateCbk stateCbk);
 
 
