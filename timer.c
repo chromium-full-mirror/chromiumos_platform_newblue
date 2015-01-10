@@ -8,6 +8,7 @@
 #include "log.h"
 #include "mt.h"
 
+//TODO: wakelocks & alarms for android environment
 
 
 struct timer {
