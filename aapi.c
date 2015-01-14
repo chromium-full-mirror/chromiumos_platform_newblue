@@ -788,6 +788,8 @@ static int aapiDisable(void)
  */
 static const void* aapiGetProfileIface(const char *profile_id)
 {
+    logd("AAPI: aapiGetProfileIface('%s')\n", profile_id);
+
 //    if (!strcmp(profile_id, BT_PROFILE_HANDSFREE_ID))
 //        return &pHandsfree;
     if (!strcmp(profile_id, BT_PROFILE_SOCKETS_ID))
@@ -800,8 +802,8 @@ static const void* aapiGetProfileIface(const char *profile_id)
 //        return &pHidHost;
 //    if (!strcmp(profile_id, BT_PROFILE_HEALTH_ID))
 //        return &pHealth;
-    if (!strcmp(profile_id, BT_PROFILE_GATT_ID))
-        return aapiGetProfileIfaceGatt();
+//    if (!strcmp(profile_id, BT_PROFILE_GATT_ID))
+//        return aapiGetProfileIfaceGatt();
 //    if (!strcmp(profile_id, BT_PROFILE_AV_RC_ID))
 //        return &pAvrcp;
 
@@ -933,6 +935,32 @@ static void aapiCleanup(void)
 }
 
 /*
+ * FUNCTION: aapiSetOsCallouts
+ * USE:      Gives the stack callbacks into the OS for alarms and wakelocks
+ * PARAMS:   callouts - the struct for alarm & wakelock access
+ * RETURN:   BT_STATUS_*
+ * NOTES:
+ */
+static int aapiSetOsCallouts(bt_os_callouts_t *callouts)
+{
+    //XXX: TODO: use this eventually
+    return BT_STATUS_SUCCESS;
+}
+
+/*
+ * FUNCTION: aapiReadEnergyInfo
+ * USE:      Who knows???
+ * PARAMS:   NONE
+ * RETURN:   BT_STATUS_SUCCESS or BT_STATUS_NOT_READY
+ * NOTES:    "Success indicates that the VSC command was sent to controller"
+ */
+static int aapiReadEnergyInfo()
+{
+    //TODO: WTF is this???
+    return BT_STATUS_SUCCESS;
+}
+
+/*
  * FUNCTION: aapiGetBtIface
  * USE:      Return the bt_interface_t struct full of ways to call us
  * PARAMS:   NONE
@@ -967,6 +995,8 @@ static const bt_interface_t* aapiGetBtIface(void)
         .dut_mode_send = aapiDutSend,
         .le_test_mode = aapiLeTestMode,
         .config_hci_snoop_log = aapiHciLogEnable,
+        .set_os_callouts = aapiSetOsCallouts,
+        .read_energy_info = aapiReadEnergyInfo,
     };
 
     return &iface;
