@@ -1310,6 +1310,7 @@ void aapiBondStateChangedCbk(const struct bt_addr *peer, uint8_t state)
     }
 
     memcpy(&wi->stateCbk.remote_bd_addr.address, peer->addr, sizeof(wi->stateCbk.remote_bd_addr.address));
+
     aapiSendDeviceInfo(peer);
     aapiWorkItemEnqueue(wi);
 }
@@ -1333,6 +1334,7 @@ void aapiAclStateChanged(bt_status_t status, const struct bt_addr *peer, bool up
     wi->stateCbk.status = status;
     wi->stateCbk.state = up ? BT_ACL_STATE_CONNECTED : BT_ACL_STATE_DISCONNECTED;
     memcpy(&wi->stateCbk.remote_bd_addr.address, peer->addr, sizeof(wi->stateCbk.remote_bd_addr.address));
+
     aapiSendDeviceInfo(peer);
     aapiWorkItemEnqueue(wi);
 }
@@ -1402,15 +1404,6 @@ static void aapiSendDeviceInfo(const struct bt_addr *peer)
     }
 
     memcpy(addr.address, peer->addr, sizeof(addr.address));
-    props[numProps].type = BT_PROPERTY_BDADDR;
-    props[numProps].len = sizeof(mLocalMac);
-    props[numProps].val = &mLocalMac;
-    numProps++;
-
-    props[numProps].type = BT_PROPERTY_TYPE_OF_DEVICE;
-    props[numProps].len = sizeof(mDevType);
-    props[numProps].val = &mDevType;
-    numProps++;
 
     //TODO: collapse LE & EDR devices into one if really the same device
     devType = BT_ADDR_IS_EDR(*peer) ? BT_DEVICE_DEVTYPE_BREDR : BT_DEVICE_DEVTYPE_BLE;
