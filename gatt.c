@@ -15,6 +15,7 @@
 
 //TODO: if multiple clients stage writes/try to commit them, we do not arbitrate that. Depending on android's use of this, we may have to
 //This code RELIES on ATT layer having some heavy caching. Without that, this will be woefully inefficient!
+//TODO: it woudl help some if we coudl have notifrefs linked in a list per clicon. we do not expect too many notifrecs, so it is not a necessity. but it woudl be nice
 
 
 #define GATT_ITEM_TYPE_INCLUDE     1
@@ -233,6 +234,7 @@ struct gattCliNotif { /* keeps track of all notifications all clients are subscr
     uint16_t                 charValueHandle;  /* characteristic's actual value's handle */
     uint16_t                 charConfigHandle; /* characteristic's "config" handle for unsubscribing */
     bool                     supportsInds;
+    bool                     supportsNotifs;
 };
 
 struct gattCliNotifRec { /* used to keep track of all notifications that a client is subscribed to */
@@ -308,6 +310,15 @@ struct gattWorkItem {
             bool                     ind;
             sg                       data;
         } cliIndCall;
+        struct {
+            gattCliNotifSubscribeStateCbk  cbk;
+            int                      cli;
+            int                      con;
+            struct uuid              svc;
+            struct uuid              chr;
+            bool                     forSub;
+            uint8_t                  stat;
+        } cliSubUnsubCall;
     };
 };
 
@@ -317,6 +328,7 @@ struct gattWorkItem {
 #define GATT_WORK_CLI_CONN_STATE_NOTIF   3
 #define GATT_WORK_CLI_DO_NEXT            4 /* run the next todo item, if none inflight currently */
 #define GATT_WORK_CLI_IND_CALL           5
+#define GATT_WORK_CLI_SUB_UNSUB_CALL     6
 
 
 /* our state */
@@ -731,6 +743,42 @@ static bool gattEnqueueCliIndCall(struct gattCliCon *clicon, struct gattCliNotif
         memcpy(&wi->cliIndCall.chr, &nr->notif->chr, sizeof (struct uuid));
         wi->cliIndCall.ind = nr->wantInd;
         wi->cliIndCall.data = data;
+
+        if (workQueuePut(mWorkQ, wi))
+            return true;
+
+        free(wi);
+    }
+
+    return false;
+}
+
+/*
+ * FUNCTION: gattEnqueueCliSubUnsubCall
+ * USE:      Enqueue a work item to perform a subscribe/unsubscribe notification to a caller for ind/notifs
+ * PARAMS:   clicon - client-connection struct
+ *           nr - the notification record
+ *           cbk - the callback to call (passed directly as it is not always the one in nr that we want to call)
+ *           forSub - is this call for a subscribe or an unsubscribe request
+ *           stat - the statsu value to send
+ * RETURN:   false on immediate failure
+ * NOTES:    call with mGattLock held
+ */
+static bool gattEnqueueCliSubUnsubCall(struct gattCliCon *clicon, struct gattCliNotifRec *nr, gattCliNotifSubscribeStateCbk cbk, bool forSub, uint8_t stat)
+{
+    struct gattWorkItem *wi;
+
+    wi = (struct gattWorkItem*)calloc(1, sizeof(struct gattWorkItem));
+    if (wi) {
+
+        wi->type = GATT_WORK_CLI_SUB_UNSUB_CALL;
+        wi->cliSubUnsubCall.cbk = cbk;
+        wi->cliSubUnsubCall.cli = clicon->cli->clientId;
+        wi->cliSubUnsubCall.con = clicon->connId;
+        memcpy(&wi->cliSubUnsubCall.svc, &nr->notif->svc, sizeof (struct uuid));
+        memcpy(&wi->cliSubUnsubCall.chr, &nr->notif->chr, sizeof (struct uuid));
+        wi->cliSubUnsubCall.forSub = forSub;
+        wi->cliSubUnsubCall.stat = stat;
 
         if (workQueuePut(mWorkQ, wi))
             return true;
@@ -1305,6 +1353,9 @@ static void* gattWorker(void *param)
         case GATT_WORK_CLI_IND_CALL:
             wi->cliIndCall.cbk(wi->cliIndCall.cli, wi->cliIndCall.con, &wi->cliIndCall.svc, &wi->cliIndCall.chr, wi->cliIndCall.ind, wi->cliIndCall.data);
             break;
+        case GATT_WORK_CLI_SUB_UNSUB_CALL:
+            wi->cliSubUnsubCall.cbk(wi->cliSubUnsubCall.cli, wi->cliSubUnsubCall.con, &wi->cliSubUnsubCall.svc, &wi->cliSubUnsubCall.chr, wi->cliSubUnsubCall.forSub, wi->cliSubUnsubCall.stat);
+            break;
         default:
             loge("Unknown work type %d\n", wi->type);
             break;
@@ -1416,6 +1467,8 @@ static bool gettCliNotifSubDone(struct gattConnState *conn, struct gattCliTodoIt
 
         //todo: tell everyone, mark as ready, re-verify if we have notif/ind done correctly still (no more new ind subscribers, else we'll need to redo the write, which is easy here)
 
+
+
     } else { /* we found the descriptor but havent written yet */
 
         /* find the notif structure */
@@ -1424,32 +1477,84 @@ static bool gettCliNotifSubDone(struct gattConnState *conn, struct gattCliTodoIt
             logw("No notif structure at subscribe done time\n");
         else  if (notif->ready)
             logw("Notif already ready at subscribe done time\n");
-        else if (!notif->refCtInd && !notif->refCtNotif) {
-            //todo: delete struct since nobody wants it anymore
-        } else {
+        else if (notif->refCtInd || notif->refCtNotif) {
             bool notifAvail = false;
             bool indAvail = false;
+
+            indAvail = !!(todo->intentData.notif.charProps & GATT_PROP_INDICATE);
+            notifAvail = !!(todo->intentData.notif.charProps & GATT_PROP_NOTIFY);
 
             notif->charHeaderHandle = todo->intentData.notif.charHdrH;
             notif->charValueHandle = todo->intentData.notif.charValH;
             notif->charConfigHandle = cfgHandle;
-            notif->supportsInds = todo->intentData.notif.charProps & GATT_PROP_INDICATE;
+            notif->supportsInds = indAvail;
+            notif->supportsNotifs = notifAvail;
 
             /* now decide what to do */
-            indAvail = !!(todo->intentData.notif.charProps & GATT_PROP_INDICATE);
-            notifAvail = !!(todo->intentData.notif.charProps & GATT_PROP_NOTIFY);
-
             if (indAvail && (notif->refCtInd || !notifAvail))
-                cfgToWrite = GATT_CLI_CFG_BIT_NOTIFS;
-            else if (notifAvail) {
                 cfgToWrite = GATT_CLI_CFG_BIT_INDS;
+            else if (notifAvail) {
+                cfgToWrite = GATT_CLI_CFG_BIT_NOTIFS;
                 //todo: tell all ind clients they are SOL
             } else {
                 //tell all clients they are sol
             }
 
-            //todo: at this point we may have no clients left. we shoudl handle that
+            /* tell all clients with impossible requests that they are SOL */
+            if (!indAvail) {
+                struct gattCliCon *clicon;
+                struct gattCliNotifRec *nr, *t;
+
+                for (clicon = mCliCons; clicon; clicon = clicon->next) {
+                    if (clicon->conn != conn) /* we only care about this connection */
+                        continue;
+                    for (nr = clicon->notifs; nr; nr = nr->next) {
+                        if (nr->notif != notif) { /* we only care about this characteristic's notifs/inds */
+                            nr = nr->next;
+                            continue;
+                        }
+                        if (!nr->wantInd && notifAvail) { /* only send SOL messages to the deserving requestors */
+                            nr = nr->next;
+                            continue;
+                        }
+
+                        /* send SOL message */
+                        if (!nr->subStateCbk || !gattEnqueueCliSubUnsubCall(clicon, nr, nr->subStateCbk, true, GATT_CLI_STATUS_ERR))
+                            loge("Cannot send SOL message for failure to subscribe to notifs/inds\n");
+
+                        /* adjust refcount */
+                        if (nr->wantInd)
+                            notif->refCtInd--;
+                        else
+                            notif->refCtNotif--;
+
+                        /* unlink and free */
+                        if (nr->next)
+                            nr->next->prev = nr->prev;
+                        if (nr->prev)
+                            nr->prev->next = nr->next;
+                        else
+                            clicon->notifs = nr->next;
+                        t = nr;
+                        nr = nr->next;
+                        free(t);
+                    }
+                }
+            }
         }
+
+        /* if we somehow have no [more] clients, delete this struct */
+        if (!notif->refCtInd && !notif->refCtNotif) {
+            /* delete notif struct since nobody wants it anymore */
+            if (notif->prev)
+                notif->prev->next = notif->next;
+            else
+                conn->cliNotifs = notif->next;
+            if (notif->next)
+                notif->next->prev = notif->prev;
+            free(notif);
+        }
+
     }
     pthread_mutex_unlock(&mGattLock);
 
@@ -3294,7 +3399,7 @@ static void gattClientNotifUnsubscribe(struct gattCliCon *clicon, struct gattCli
         utilSetLE16(newFlags, 0);
         free(n);
 
-    } else if (!n->refCtInd && nr->wantInd && n->supportsInds) { /* case 2 */
+    } else if (!n->refCtInd && n->supportsNotifs) { /* case 2 */
 
         utilSetLE16(newFlags, GATT_CLI_CFG_BIT_NOTIFS);
 
@@ -3870,10 +3975,10 @@ uint8_t gattClientNotifsSubscribe(int conn, const struct uuid *inThisService, co
             sta = GATT_CLI_STATUS_OK;
         } else if (!notif->supportsInds) {
             /* caller wants reliable notifs but this is not possible. fail */
-            callStateCbk = false;
+            sta = GATT_CLI_STATUS_ERR;
         } else {
             /*
-             * We need to resubscribe to reliable notifications and we can. Techncially, since
+             * We need to resubscribe to reliable notifications and we can. Technically, since
              * we already know the handles, we can just do a write, but this makes the code
              * simpler and thanks to mandatory caching in ATT, it is not really any slower.
              */
