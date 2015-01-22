@@ -1483,6 +1483,7 @@ static bool gettCliNotifSubDone(struct gattConnState *conn, struct gattCliTodoIt
             struct gattCliCon *clicon;
             struct gattCliNotifRec *nr, *t;
 
+            /* tell everyone that their subscriptions are now valid */
             for (clicon = mCliCons; clicon; clicon = clicon->next) {
                 if (clicon->conn != conn) /* we only care about this connection */
                     continue;
@@ -1498,6 +1499,7 @@ static bool gettCliNotifSubDone(struct gattConnState *conn, struct gattCliTodoIt
                 }
             }
 
+            /* mark the struct itself as ready */
             notif->ready = true;
         }
 
