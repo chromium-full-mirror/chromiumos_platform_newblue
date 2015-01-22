@@ -228,8 +228,8 @@ struct gattCliNotif { /* keeps track of all notifications all clients are subscr
     bool                     ready;            /* set once actual subscription takes place */
 
     /* cache of relevant values for speed and convenience. spec promises these can never change */
-    struct uuid              svc;              /* the uuid of the service */ //TODO: fill this
-    struct uuid              chr;              /* the uuid of the char */ //TODO: fill this
+    struct uuid              svc;              /* the uuid of the service */
+    struct uuid              chr;              /* the uuid of the char */
     uint16_t                 charHeaderHandle; /* first handle for this characteristic */
     uint16_t                 charValueHandle;  /* characteristic's actual value's handle */
     uint16_t                 charConfigHandle; /* characteristic's "config" handle for unsubscribing */
@@ -1493,12 +1493,8 @@ static bool gettCliNotifSubDone(struct gattConnState *conn, struct gattCliTodoIt
             /* now decide what to do */
             if (indAvail && (notif->refCtInd || !notifAvail))
                 cfgToWrite = GATT_CLI_CFG_BIT_INDS;
-            else if (notifAvail) {
+            else if (notifAvail)
                 cfgToWrite = GATT_CLI_CFG_BIT_NOTIFS;
-                //todo: tell all ind clients they are SOL
-            } else {
-                //tell all clients they are sol
-            }
 
             /* tell all clients with impossible requests that they are SOL */
             if (!indAvail) {
