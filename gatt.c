@@ -1450,7 +1450,7 @@ static bool gattCliFinalStepSvcIncludeFound(struct gattConnState *conn, struct g
 
 /*
  * FUNCTION: gettCliNotifSubDone
- * USE:      Called when the final step of notification subscription completes
+ * USE:      Called when the final steps of notification subscription complete (there are two final steps, the second of which may happen more than once)
  * PARAMS:   conn - the connection structure
  *           todo - the to-do item
  *           cfgHandle - the handle for the configuration descriptor
@@ -1472,9 +1472,13 @@ static bool gettCliNotifSubDone(struct gattConnState *conn, struct gattCliTodoIt
             logw("No notif structure at subscribe done.2 time\n");
         else if (notif->ready)
             logw("Notif already ready at subscribe done.2 time\n");
-        else if (notif->refCtInd && !notif->isInd) /* an ind request came in while we werr busy subscribing to notifs. time to resubscribe */
+        else if (notif->refCtInd && !notif->isInd && notif->supportsInds) { /* an ind request came in while we were busy subscribing to notifs. time to resubscribe */
+            notif->isInd = true;
             cfgToWrite = GATT_CLI_CFG_BIT_INDS;
-        else if (notif->refCtInd || notif->refCtNotif) { /* if we still have clients - tell them all that we're ready! */
+        } else if (!notif->refCtInd && notif->isInd && notif->supportsNotifs) { /* all ind request died while we were busy subscribing to ind. time to resubscribe */
+            notif->isInd = false;
+            cfgToWrite = GATT_CLI_CFG_BIT_NOTIFS;
+        } else if (notif->refCtInd || notif->refCtNotif) { /* if we still have clients - tell them all that we're ready! */
  
             struct gattCliCon *clicon;
             struct gattCliNotifRec *nr, *t;
