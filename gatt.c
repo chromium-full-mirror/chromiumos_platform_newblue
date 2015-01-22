@@ -107,17 +107,17 @@ struct gattCliTodoItem {
             sg                            data;
             uint16_t                      ofst;
             uint8_t                       authReq;
-            uint8_t                       writeType; //TODO: may not be needed
+            uint8_t                       writeType;
         } write;
         struct {
             gattCliCharDescrWriteCbk      cbk;
             sg                            data;
             uint16_t                      ofst;
             uint8_t                       authReq;
-            uint8_t                       writeType; //TODO: may not be needed
+            uint8_t                       writeType;
         } writeDescr;
         struct {
-            uint16_t                      charHdrH; //these are collected as we go along
+            uint16_t                      charHdrH; /* these are collected as we go along */
             uint16_t                      charValH;
             uint8_t                       charProps;
         } notif;
