@@ -1,0 +1,53 @@
+PSMs in theory can be longer than 16 bits. We do not support PSMs over 16 bits,
+since nobody else (incl bluedroid) does either
+
+only basic l2cap mode is supported for now
+
+spec does not allow "fixed channels supported" to report real supported channels (says must be zero)
+since spec says unknown packets RXed shall be dropped,
+we do that, and assume any open()s to the other side are a success, since at worst other side will drop the data...
+
+timer support prefers system with at least Linux 2.6.39 kernel for CLOCK_BOOTTIME support
+all others will have verying degrees of issues...
+
+timer assumes pointers are no more than 64-bits on your system (who is using a 128-bit proc?)
+
+aapi* code is a big bessy since the android interface to the BT stack is a mess and not well documented. it gets cleaned up slowly
+aapiSock* currently only supports RFC sockets. only listening is tested for now
+
+
+bt 1.1 is minimum supported version
+
+
+
+TODOs:
+
+
+sniff mode for sleep mode?
+
+
+(when local services change - change the device class we send - it contains it)
+(when local services change - change EIR we send - it contains it)
+(when local name changes - change EIR we send - it contains it)
+
+dont bother name discovering if EIR nas name
+
+
+
+
+
+
+idea: sdp socket: open, write length, write record. till closed record is visible :)
+
+
+
+
+current gatt server api is unclear on how cross-service queued writes work. whom do you notify about execution?
+or perhaps we need to keep track and notify all? but them how do we maintain atomicity?
+
+
+
+[!!!]
+The Client Characteristic Configuration descriptor
+shall be persistent across connections for bonded devices. It is unique for each client.
+
