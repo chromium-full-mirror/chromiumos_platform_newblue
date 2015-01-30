@@ -102,9 +102,9 @@ static void *aapiSockWorker(void *pipe)
         free(fds);
         return NULL;
     }
-    fds[0].fd = (int) pipe;
+    fds[0].fd = (int)(uintptr_t)pipe;
     fds[0].events = POLLIN;
-    
+
 
     while (!quit) {
         int ret;
@@ -249,7 +249,7 @@ static void *aapiSockWorker(void *pipe)
     for (i = 1; i < arrNum; i++)
         aapiSockFree(socks[i]);
     pthread_mutex_unlock(&mSocksLock);
-    close((int)pipe);    
+    close((int)(uintptr_t)pipe);
 
     free(fds);
     free(socks);
@@ -270,7 +270,7 @@ static void aapiSockDoInit(void)
     if (pipe(pipes))
         return;
 
-    if (pthread_create(&mWorker, NULL, aapiSockWorker, (void*)pipes[0])) {
+    if (pthread_create(&mWorker, NULL, aapiSockWorker, (void*)(uintptr_t)pipes[0])) {
         close(pipes[0]);
         close(pipes[1]);
         return;
@@ -480,7 +480,7 @@ static bool aapiSockNotifyOfConnReq(struct aapiSock *srvSock, struct aapiSock *n
  * USE:      Called when a remote device tries to connect to our listening RFC socket
  * PARAMS:   userData - our socket
  *           peerAddr - the peer address
- *           chNum - the chNum 
+ *           chNum - the chNum
  * RETURN:   bt_status_t
  * NOTES:
  */
@@ -674,7 +674,7 @@ static bt_status_t aapiSockListen(btsock_type_t type, const char* serviceName, c
         sl->next = mListeners;
         mListeners = sl;
     }
-    
+
     *sockFdP = sock->java_fd;
     sock->java_fd = -1;
     aapiSockWorkerMsgSend(WORKER_MSG_SOCK_ADD, sock);

@@ -21,6 +21,8 @@
 #include <semaphore.h>
 #include <pthread.h>
 
+/* because phread.h is missing this somehow even though bionic implements this */
+int pthread_cond_timeout_np(pthread_cond_t *cond,  pthread_mutex_t * mutex, unsigned msecs);
 
 /* These handle EINTR */
 int r_sem_wait(sem_t* sem);
