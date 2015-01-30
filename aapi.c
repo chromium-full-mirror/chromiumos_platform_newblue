@@ -613,7 +613,7 @@ static int aapiSetAdapterProperty(const bt_property_t *property)
  */
 static void aapiEnableOpDoneCbk(void *cbkData, uint8_t status)
 {
-    unsigned step = (unsigned)cbkData;
+    unsigned long step = (unsigned long)cbkData;
 
     if (status) {
         loge("Enable failed on step %u with status %u\n", step, status);

@@ -10,10 +10,12 @@
 #include "log.h"
 #include "mt.h"
 
-#ifndef ANDROID
-#include <linux/unistd.h>
+#if !defined(ANDROID)
+#include <sys/syscall.h>
 inline int gettid() { return syscall(__NR_gettid); }
+#endif
 
+#if !defined(ANDROID) || defined(__LP64__)
 int pthread_cond_timeout_np(pthread_cond_t *c, pthread_mutex_t *m, unsigned msec) {
     struct timeval tv;
     struct timespec ts;
