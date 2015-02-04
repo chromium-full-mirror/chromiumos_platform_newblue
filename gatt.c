@@ -146,8 +146,7 @@ struct gattCliTodoItem {
 #define GATT_INTENT_READ_DESCR           7
 #define GATT_INTENT_WRITE_DESCR          8
 #define GATT_INTENT_EXECUTE              9
-#define GATT_INTENT_NOTIF_SUB            10
-#define GATT_INTENT_NOTIF_UNSUB          11
+#define GATT_INTENT_NOTIF_SUB_UNSUB      10
 
 #define GATT_INTENT_STEP_FIND_SVC        0
 #define GATT_INTENT_STEP_FIND_CHAR       1
@@ -225,7 +224,8 @@ struct gattCliNotif { /* keeps track of all notifications all clients are subscr
     struct gattCliNotif     *next;
     uint32_t                 refCtInd;         /* how many clients want indication */
     uint32_t                 refCtNotif;       /* how many clients want notification */
-    bool                     ready;            /* set once actual subscription takes place */
+    uint8_t                  curState;         /* NOTIF_C_STATE_* */
+    uint8_t                  subState;         /* NOTIF_S_STATE_* */
 
     /* cache of relevant values for speed and convenience. spec promises these can never change */
     struct uuid              svc;              /* the uuid of the service */
@@ -235,16 +235,28 @@ struct gattCliNotif { /* keeps track of all notifications all clients are subscr
     uint16_t                 charConfigHandle; /* characteristic's "config" handle for unsubscribing */
     bool                     supportsInds;
     bool                     supportsNotifs;
-    bool                     isInd;            /* are we currently subscribed to inds [or notifs?] */
 };
+
+#define NOTIF_C_STATE_DISCOVERY          0 /* we have not finished finding the handles */
+#define NOTIF_C_STATE_NOT_SUBBED         1
+#define NOTIF_C_STATE_SUBBED_TO_IND      2
+#define NOTIF_C_STATE_SUBBED_TO_NOTIF    3
+
+#define NOTIF_S_STATE_NONE               0 /* no transition taking place */
+#define NOTIF_S_STATE_SUBBING_TO_IND     1
+#define NOTIF_S_STATE_SUBBING_TO_NOTIF   2
+#define NOTIF_S_STATE_UNSUBBING          3
 
 struct gattCliNotifRec { /* used to keep track of all notifications that a client is subscribed to */
     struct gattCliNotifRec       *next;
     struct gattCliNotifRec       *prev;
     struct gattCliNotif          *notif;
     bool                          wantInd; /* else we'll ask for notif */
+
+    bool                          subCallMade;
+    bool                          unsubCallMade;
     gattCliNotifArrivedCbk        arrivedCbk;
-    gattCliNotifSubscribeStateCbk subStateCbk; /* only set if we haven't yet called it */
+    gattCliNotifSubscribeStateCbk stateCbk; /* only set if we haven't yet called it */
 };
 
 struct gattClient {
@@ -1449,18 +1461,158 @@ static bool gattCliFinalStepSvcIncludeFound(struct gattConnState *conn, struct g
 }
 
 /*
- * FUNCTION: gettCliNotifSubDone
- * USE:      Called when the final steps of notification subscription complete (there are two final steps, the second of which may happen more than once)
+ * FUNCTION: gattCliNotifSubUnsubIssueWriteIfNeeded
+ * USE:      Issue a write to the notif/ind subscription descriptor if needed
+ * PARAMS:   notif - the notif struct
+ *           todo - the to-do item to use if needed
+ * RETURN:   true if a write is needed and the todo item was modified, false else
+ * NOTES:    call with mGattLock held. When is a write needed? If we have clients
+ *           who need a different subscription model than we currently have, or all
+ *           clients go away.
+ */
+static bool gattCliNotifSubUnsubIssueWriteIfNeeded(struct gattCliNotif *notif, struct gattCliTodoItem *todo)
+{
+    uint8_t desiredState, desiredTransition;
+    uint8_t buf[sizeof(uint16_t)];
+    sg writeVal;
+
+    /* first, figure out the new desired state & transition */
+    if ((notif->refCtInd && notif->supportsInds) || (notif->refCtNotif && notif->supportsInds && !notif->supportsNotifs)) {
+        desiredState = NOTIF_C_STATE_SUBBED_TO_IND;
+        desiredTransition = NOTIF_S_STATE_SUBBING_TO_IND;
+        utilSetLE16(buf, GATT_CLI_CFG_BIT_INDS);
+    } else if (notif->refCtNotif && notif->supportsNotifs) {
+        desiredState = NOTIF_C_STATE_SUBBED_TO_NOTIF;
+        desiredTransition = NOTIF_S_STATE_SUBBING_TO_NOTIF;
+        utilSetLE16(buf, GATT_CLI_CFG_BIT_NOTIFS);
+    } else if (!notif->refCtNotif && !notif->refCtInd) {
+        desiredState = NOTIF_C_STATE_NOT_SUBBED;
+        desiredTransition = NOTIF_S_STATE_UNSUBBING;
+        utilSetLE16(buf, 0);
+    } else {
+        loge("Unknown desired state for notif sub. ref cts: {i %u, n %u}, support {i %c n %c}\n",notif->refCtInd, notif->refCtNotif, notif->supportsInds ? 'Y' : 'N', notif->supportsNotifs ? 'Y' : 'N');
+        desiredState = NOTIF_C_STATE_NOT_SUBBED;
+        desiredTransition = NOTIF_S_STATE_UNSUBBING;
+        utilSetLE16(buf, 0);
+    }
+
+    /* if desired state matches current state, do nothing */
+    if (notif->curState == desiredState)
+        return false;
+
+    /* if already in desired transition, do nothing */
+    if (notif->subState == desiredTransition)
+        return false;
+
+    /* we're now sure we need to issue a write */
+    writeVal = sgNewWithCopyData(buf, sizeof(buf));
+
+    if (!writeVal)
+        loge("Failed to alloc SG for notif/ind sub. You are probably screwed\n");
+    else {
+
+        todo->type = GATT_CLI_TODO_WRITE;
+        todo->write.handle = notif->charConfigHandle;
+        todo->write.data = writeVal;
+        return true;
+    }
+
+    return false;
+}
+
+/*
+ * FUNCTION: gattCliNotifSubUnsubIssueWriteIfNeededNewTodo
+ * USE:      Issue a write to the notif/ind subscription descriptor if needed
+ * PARAMS:   conn - the connection structure
+ *           notif - the notif struct
+ * RETURN:   true if a write is needed and the todo item was created and enqueued, also true if no write weas needed
+ * NOTES:    call with mGattLock held. When is a write needed (if we have clients
+ *           who need a different subscription model than we currently have, or all
+ *           clients go away)
+ */
+static bool gattCliNotifSubUnsubIssueWriteIfNeededNewTodo(struct gattConnState *conn, struct gattCliNotif *notif)
+{
+    struct gattCliTodoItem *todo = (struct gattCliTodoItem*)calloc(1, sizeof(struct gattCliTodoItem));
+
+    if (!todo)
+        return false;
+
+    todo->reqIntent = GATT_INTENT_NOTIF_SUB_UNSUB;
+    todo->reqStep = GATT_INTENT_STEP_FINAL;
+    memcpy(&todo->uuidSvc, &notif->svc, sizeof(struct uuid));
+    memcpy(&todo->uuidChr, &notif->chr, sizeof(struct uuid));
+
+    todo->intentData.notif.charHdrH = notif->charHeaderHandle;
+    todo->intentData.notif.charValH = notif->charValueHandle;
+    if (notif->supportsInds)
+        todo->intentData.notif.charProps |= GATT_PROP_INDICATE;
+    if (notif->supportsNotifs)
+        todo->intentData.notif.charProps |= GATT_PROP_NOTIFY;
+
+    if (gattCliNotifSubUnsubIssueWriteIfNeeded(notif, todo))
+        gattCliTodoEnqItem(conn, todo, false);
+    else
+        free(todo);
+
+    return true;
+}
+
+/*
+ * FUNCTION: gattCliNotifRecDelete
+ * USE:      Delete a gattCliNotifRec. If needed, schedule a deletion for gattCliNotif as well
+ * PARAMS:   clicon - the client-connection structure
+ *           nr - the notif rec
+ * RETURN:   NONE
+ * NOTES:    call with mGattLock held. "nr" WILL be invalid after this call, "notif" may be too
+ */
+static void gattCliNotifRecDelete(struct gattCliCon *clicon, struct gattCliNotifRec *nr)
+{
+    struct gattCliNotif *notif = nr->notif;
+
+    /* adjust refcount */
+    if (nr->wantInd)
+        notif->refCtInd--;
+    else
+        notif->refCtNotif--;
+
+    /* delete the notif rec itself */
+    if (nr->next)
+        nr->next->prev = nr->prev;
+    if (nr->prev)
+        nr->prev->next = nr->next;
+    else
+
+        clicon->notifs = nr->next;
+
+    free(nr);
+
+    /* see if notif itself needs deletion */
+    if (!notif->refCtInd && !notif->refCtNotif) {
+        if (clicon->conn->cliNotifs == notif)
+            clicon->conn->cliNotifs = notif->next;
+        else
+            notif->prev->next = notif->next;
+        if (notif->next)
+            notif->next->prev = notif->prev;
+
+        free(notif);
+    }
+}
+
+/*
+ * FUNCTION: gattCliNotifSubUnsubDone
+ * USE:      Called when the final steps of notification subscription/unsubscription complete (there are two final steps for initial subscription, the second of which may happen more than once)
  * PARAMS:   conn - the connection structure
  *           todo - the to-do item
  *           cfgHandle - the handle for the configuration descriptor
- * RETURN:   true to save the todo item, false to delete it
+ * RETURN:   true to save & re-enqueue the todo item, false to delete it
  * NOTES:    takes mGattLock. we come here twice. once after we found the descriptor and ocne when we're written it. yes, a bit messy
  */
-static bool gettCliNotifSubDone(struct gattConnState *conn, struct gattCliTodoItem *todo, uint16_t cfgHandle)
+static bool gattCliNotifSubUnsubDone(struct gattConnState *conn, struct gattCliTodoItem *todo, uint16_t cfgHandle)
 {
     struct gattCliNotif *notif;
-    uint16_t cfgToWrite = 0;
+    bool notfyEveryone = false;
+    bool ret = false;
 
     pthread_mutex_lock(&mGattLock);
 
@@ -1469,38 +1621,23 @@ static bool gettCliNotifSubDone(struct gattConnState *conn, struct gattCliTodoIt
         /* find the notif structure */
         for (notif = conn->cliNotifs; notif && (!uuidCmp(&todo->uuidSvc, &notif->svc) || !uuidCmp(&todo->uuidChr, &notif->chr)); notif = notif->next);
         if (!notif)
-            logw("No notif structure at subscribe done.2 time\n");
-        else if (notif->ready)
-            logw("Notif already ready at subscribe done.2 time\n");
-        else if (notif->refCtInd && !notif->isInd && notif->supportsInds) { /* an ind request came in while we were busy subscribing to notifs. time to resubscribe */
-            notif->isInd = true;
-            cfgToWrite = GATT_CLI_CFG_BIT_INDS;
-        } else if (!notif->refCtInd && notif->isInd && notif->supportsNotifs) { /* all ind request died while we were busy subscribing to ind. time to resubscribe */
-            notif->isInd = false;
-            cfgToWrite = GATT_CLI_CFG_BIT_NOTIFS;
-        } else if (notif->refCtInd || notif->refCtNotif) { /* if we still have clients - tell them all that we're ready! */
- 
-            struct gattCliCon *clicon;
-            struct gattCliNotifRec *nr, *t;
-
-            /* tell everyone that their subscriptions are now valid */
-            for (clicon = mCliCons; clicon; clicon = clicon->next) {
-                if (clicon->conn != conn) /* we only care about this connection */
-                    continue;
-                for (nr = clicon->notifs; nr; nr = nr->next) {
-                    if (nr->notif != notif) /* we only care about this characteristic's notifs/inds */
-                        continue;
-                    if (!nr->subStateCbk) /* only send messages to the deserving requestors */
-                        continue;
-
-                    /* send OK message */
-                    if (!gattEnqueueCliSubUnsubCall(clicon, nr, nr->subStateCbk, true, GATT_CLI_STATUS_OK))
-                        loge("Cannot send sub OK message for subscribe to notifs/inds\n");
-                }
-            }
-
-            /* mark the struct itself as ready */
-            notif->ready = true;
+            logw("No notif structure at [un]subscribe done.2 time\n");
+        else if (notif->curState == NOTIF_C_STATE_SUBBED_TO_IND && notif->subState == NOTIF_S_STATE_SUBBING_TO_IND)
+            logw("Ind already subbed at [un]subscribe done.2 time\n");
+        else if (notif->curState == NOTIF_C_STATE_SUBBED_TO_NOTIF && notif->subState == NOTIF_S_STATE_SUBBING_TO_NOTIF)
+            logw("Notif already subbed at [un]subscribe done.2 time\n");
+        else if (notif->subState == NOTIF_S_STATE_UNSUBBING && (notif->curState != NOTIF_C_STATE_SUBBED_TO_NOTIF && notif->curState != NOTIF_C_STATE_SUBBED_TO_IND))
+            logw("Already unsubbed at [un]subscribe done.2 time\n");
+        else if (notif->subState != NOTIF_S_STATE_SUBBING_TO_IND && notif->subState != NOTIF_S_STATE_SUBBING_TO_NOTIF && notif->subState != NOTIF_S_STATE_UNSUBBING)
+            logw("Unexpected transition in [un]subscribe call\n");
+        else if (notif->subState == NOTIF_S_STATE_UNSUBBING) {
+            notif->curState = NOTIF_C_STATE_NOT_SUBBED;
+            notif->subState = NOTIF_S_STATE_NONE;
+            notfyEveryone = true;
+        } else {
+            notif->curState = (notif->subState == NOTIF_S_STATE_SUBBING_TO_NOTIF) ? NOTIF_C_STATE_SUBBED_TO_NOTIF : NOTIF_C_STATE_SUBBED_TO_IND;
+            notif->subState = NOTIF_S_STATE_NONE;
+            notfyEveryone = true;
         }
 
     } else { /* we found the descriptor but havent written yet */
@@ -1509,119 +1646,82 @@ static bool gettCliNotifSubDone(struct gattConnState *conn, struct gattCliTodoIt
         for (notif = conn->cliNotifs; notif && (!uuidCmp(&todo->uuidSvc, &notif->svc) || !uuidCmp(&todo->uuidChr, &notif->chr)); notif = notif->next);
         if (!notif)
             logw("No notif structure at subscribe done.1 time\n");
-        else if (notif->ready)
-            logw("Notif already ready at subscribe done.1 time\n");
+        else if (notif->curState != NOTIF_C_STATE_NOT_SUBBED && notif->curState != NOTIF_C_STATE_DISCOVERY)
+            logw("Notif state wrong at subscribe done.1 time\n");
         else if (notif->refCtInd || notif->refCtNotif) {
-            bool notifAvail = false;
-            bool indAvail = false;
 
-            indAvail = !!(todo->intentData.notif.charProps & GATT_PROP_INDICATE);
-            notifAvail = !!(todo->intentData.notif.charProps & GATT_PROP_NOTIFY);
-
+            notif->curState = NOTIF_C_STATE_NOT_SUBBED;
             notif->charHeaderHandle = todo->intentData.notif.charHdrH;
             notif->charValueHandle = todo->intentData.notif.charValH;
             notif->charConfigHandle = cfgHandle;
-            notif->supportsInds = indAvail;
-            notif->supportsNotifs = notifAvail;
+            notif->supportsInds = !!(todo->intentData.notif.charProps & GATT_PROP_INDICATE);
+            notif->supportsNotifs = !!(todo->intentData.notif.charProps & GATT_PROP_NOTIFY);
+        }
 
-            /* now decide what to do */
-            if (indAvail && (notif->refCtInd || !notifAvail)) {
-                notif->isInd = true;
-                cfgToWrite = GATT_CLI_CFG_BIT_INDS;
-            } else if (notifAvail)
-                cfgToWrite = GATT_CLI_CFG_BIT_NOTIFS;
+        notfyEveryone = true;
+    }
 
-            /* tell all clients with impossible requests that they are SOL */
-            if (!indAvail) {
-                struct gattCliCon *clicon;
-                struct gattCliNotifRec *nr, *t;
+    /* see if a[nother] write is needed. If so, enqueue it */
+    ret = gattCliNotifSubUnsubIssueWriteIfNeeded(notif, todo);
 
-                for (clicon = mCliCons; clicon; clicon = clicon->next) {
-                    if (clicon->conn != conn) /* we only care about this connection */
+    /* fire callbacks if needed */
+    if (notfyEveryone) {
+
+        struct gattCliCon *clicon;
+        struct gattCliNotifRec *nr, *t;
+
+        /* now tell everyone who needs to know */
+        for (clicon = mCliCons; clicon; clicon = clicon->next) {
+            if (clicon->conn != conn) /* we only care about this connection */
+                continue;
+            for (nr = clicon->notifs; nr; ) {
+                if (nr->notif != notif) {
+                    /* we only care about *this* characteristic's notifs/inds */
+                } else if ((notif->curState == NOTIF_C_STATE_NOT_SUBBED && notif->subState == NOTIF_S_STATE_NONE) || (!notif->supportsInds && nr->wantInd)) {
+                    /*
+                     * if not subscribed & not going to, tell everyone they are SOL:
+                     *  - if we did not yet tell them they're subscribed, send an error as result
+                     *     of their subscription attempt.
+                     *  - if we already told them they're subscribed, send an error-free unsubscription
+                     *     message
+                     *
+                     * this also handles the case of impossible requests (those that cannot ever be satisfied),
+                     *  specicially that is requests wanting indications from chars that do not support them
+                     */
+                    if (!gattEnqueueCliSubUnsubCall(clicon, nr, nr->stateCbk, !nr->subCallMade, nr->subCallMade ? GATT_CLI_STATUS_OK : GATT_CLI_STATUS_ERR))
+                        loge("Cannot send sub state message for [un]subscribe to notifs/inds\n");
+
+                    /* no more calls needed, this struct will be deleted now */
+                    nr->subCallMade = true;
+                    nr->unsubCallMade = true;
+
+                    t = nr;
+                    nr = nr->next;
+                    /* this is safe to do thanks to refcounting */
+                    gattCliNotifRecDelete(clicon, t);
+                    continue;
+
+                } else if (notif->curState == NOTIF_C_STATE_SUBBED_TO_IND || notif->curState == NOTIF_C_STATE_SUBBED_TO_NOTIF) {
+                    /* if subbed to something, tell everyone who cares */
+
+                    if (nr->subCallMade)   /* only send messages to the requestors who still need them */
                         continue;
-                    for (nr = clicon->notifs; nr;) {
-                        if (nr->notif != notif) { /* we only care about this characteristic's notifs/inds */
-                            nr = nr->next;
-                            continue;
-                        }
-                        if (!nr->wantInd && notifAvail) { /* only send SOL messages to the deserving requestors */
-                            nr = nr->next;
-                            continue;
-                        }
+                    if (nr->wantInd && notif->curState != NOTIF_C_STATE_SUBBED_TO_IND) /* do no claim to be reliable if we're not */
+                        continue;
 
-                        /* send SOL message */
-                        if (!nr->subStateCbk || !gattEnqueueCliSubUnsubCall(clicon, nr, nr->subStateCbk, true, GATT_CLI_STATUS_ERR))
-                            loge("Cannot send SOL message for failure to subscribe to notifs/inds\n");
-
-                        /* adjust refcount */
-                        if (nr->wantInd)
-                            notif->refCtInd--;
-                        else
-                            notif->refCtNotif--;
-
-                        /* unlink and free */
-                        if (nr->next)
-                            nr->next->prev = nr->prev;
-                        if (nr->prev)
-                            nr->prev->next = nr->next;
-                        else
-                            clicon->notifs = nr->next;
-                        t = nr;
-                        nr = nr->next;
-                        free(t);
-                    }
+                    /* send OK message */
+                    if (!gattEnqueueCliSubUnsubCall(clicon, nr, nr->stateCbk, true, GATT_CLI_STATUS_OK))
+                        loge("Cannot send sub OK message for subscribe to notifs/inds\n");
+                    nr->subCallMade = true; /* we only tell them once */
                 }
+                nr = nr->next;
             }
         }
     }
 
-    /* if we somehow have no [more] clients, delete this struct */
-    if (!notif->refCtInd && !notif->refCtNotif) {
-        /* delete notif struct since nobody wants it anymore */
-        if (notif->prev)
-            notif->prev->next = notif->next;
-        else
-            conn->cliNotifs = notif->next;
-        if (notif->next)
-            notif->next->prev = notif->prev;
-        free(notif);
-    }
-
     pthread_mutex_unlock(&mGattLock);
 
-    if (cfgToWrite) {
-        uint8_t buf[sizeof(cfgToWrite)];
-        sg writeVal;
-
-        utilSetLE16(buf, cfgToWrite);
-        writeVal = sgNewWithCopyData(buf, sizeof(buf));
-
-        if (!writeVal)
-            loge("Failed to alloc SG for notif/ind sub. You are probably screwed\n");
-        else {
-
-            todo->type = GATT_CLI_TODO_WRITE;
-            todo->write.handle = cfgHandle;
-            todo->write.data = writeVal;
-            return true;
-        }
-    }
-
-    return false;
-}
-
-/*
- * FUNCTION: gettCliNotifUnsubDone
- * USE:      Called when the final step of notification unsubscription completes
- * PARAMS:   conn - the connection structure
- *           todo - the to-do item
- * RETURN:   NONE
- * NOTES:    takes mGattLock
- */
-static void gettCliNotifUnsubDone(struct gattConnState *conn, struct gattCliTodoItem *todo)
-{
-    //todo: free state structs?
-    //todo: tell everyone
+    return ret;
 }
 
 /*
@@ -1829,19 +1929,15 @@ static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem 
         *killTodoItem = true;
         return false;
 
-    case GATT_INTENT_NOTIF_SUB:
-        if (gettCliNotifSubDone(conn, todo, *handle))
+    case GATT_INTENT_NOTIF_SUB_UNSUB:
+        if (gattCliNotifSubUnsubDone(conn, todo, *handle))
             gattCliTodoEnqItem(conn, todo, false);
         else
             *killTodoItem = true;
         return false;
 
-    case GATT_INTENT_NOTIF_UNSUB:
-        gettCliNotifUnsubDone(conn, todo);
-        *killTodoItem = true;
-        return false;
     default:
-        loge("Unknonw intent %u in final step\n", todo->reqIntent);
+        loge("Unknown intent %u in final step\n", todo->reqIntent);
         *killTodoItem = true;
         return false;
     }
@@ -1993,8 +2089,7 @@ static bool gattCliStepSucceeded(struct gattConnState *conn, struct gattCliTodoI
         case GATT_INTENT_READ_DESCR:
         case GATT_INTENT_WRITE_CHAR:
         case GATT_INTENT_WRITE_DESCR:
-        case GATT_INTENT_NOTIF_SUB:
-        case GATT_INTENT_NOTIF_UNSUB:
+        case GATT_INTENT_NOTIF_SUB_UNSUB:
             todo->reqStep = GATT_INTENT_STEP_FIND_CHAR;
             uuidFromUuid16(&todo->read.type, GATT_UUID_CHARACTERISTIC);
             break;
@@ -2050,8 +2145,7 @@ static bool gattCliStepSucceeded(struct gattConnState *conn, struct gattCliTodoI
             todo->intentData.write.data = NULL;
             break;
 
-        case GATT_INTENT_NOTIF_SUB:
-        case GATT_INTENT_NOTIF_UNSUB: /* we issue a read to find the client config descriptor */
+        case GATT_INTENT_NOTIF_SUB_UNSUB: /* we issue a read to find the client config descriptor */
             todo->intentData.notif.charHdrH = handle;
             todo->intentData.notif.charValH = valHandle;
             todo->intentData.notif.charProps = charProps;
@@ -3385,64 +3479,14 @@ fail_todo:
  */
 static void gattClientNotifUnsubscribe(struct gattCliCon *clicon, struct gattCliNotifRec *nr)
 {
-    struct gattCliNotif *n = nr->notif;
-    uint8_t newFlags[sizeof(uint16_t)];
-    uint16_t writeHandle;
-    bool doUpdate = true;
+    struct gattCliNotif *notif = nr->notif;
 
-    /* unlink */
-    if (nr->prev)
-        nr->prev->next = nr->next;
-    else
-        clicon->notifs = nr->next;
-    if (nr->next)
-        nr->next->prev = nr->prev;
+    gattCliNotifRecDelete(clicon, nr);
 
-    if (nr->wantInd)
-        n->refCtInd--;
-    else
-        n->refCtNotif--;
-
-    /*
-     * See if we need to change our notif/ind subscription. There are three cases:
-     * 1. Nobody wants anything anymore - unsubscribe alltogether
-     * 2. The last guy who wanted indications went away, but we still have
-     *    clients who want notifications. In this case we'll unsubscribe from
-     *    indications and subscribe to notifications if the given characteristic
-     *    supports it. Else we'll keep it as is.
-     * 3. We still have clients for whatever mode we're currently in and thus
-     *    we do nothing.
-     * Note that if we were subscribed already we are guaranteed to be secured/authed
-     * enough to change said subscription since LE does not allow us to ever drop
-     * security once connection is secure. This is why there are no checks here.
-     */
-
-    writeHandle = n->charConfigHandle;
-
-    if (!n->refCtInd && !n->refCtNotif) { /* case 1 */
-        if (n->prev)
-            n->prev->next = n->next;
-        else
-            clicon->conn->cliNotifs = n->next;
-        if (n->next)
-            n->next->prev = n->prev;
-
-        utilSetLE16(newFlags, 0);
-        free(n);
-
-    } else if (!n->refCtInd && n->supportsNotifs) { /* case 2 */
-
-        utilSetLE16(newFlags, GATT_CLI_CFG_BIT_NOTIFS);
-
-    } else { /* case 3 */
-        doUpdate = false;
+    /* if needed, do [another] char descr write */
+    if (!gattCliNotifSubUnsubIssueWriteIfNeededNewTodo(clicon->conn, notif)) {
+        loge("Unnotif write enqueue failed\n");
     }
-
-    /* we do not bother with callbacks since there are no errors that can happen that we can actually handle */
-    if (doUpdate && !gattCliTodoEnqWriteReq(clicon, writeHandle, newFlags, sizeof(newFlags), true, GATT_INTENT_INTERNAL, 0, NULL, NULL, NULL))
-        loge("Failed to update notification settings on client unsubscription\n");
-
-    free(nr);
 }
 
 /*
@@ -3954,8 +3998,7 @@ uint8_t gattClientNotifsSubscribe(int conn, const struct uuid *inThisService, co
     struct gattCliNotif *notif;
     struct gattCliCon *clicon;
     uint32_t *relevantReftCtP;
-    bool callStateCbk = true;
-    bool startSub = false;
+    bool callStateCbk = false;
     int cli = 0;
 
     pthread_mutex_lock(&mGattLock);
@@ -3979,12 +4022,15 @@ uint8_t gattClientNotifsSubscribe(int conn, const struct uuid *inThisService, co
             goto out;
         }
         nr->wantInd = reliable;
+        nr->stateCbk = stateCbk;
         nr->arrivedCbk = arrivedCbk;
 
         /* find the notif structure, if it exists */
         for (notif = clicon->conn->cliNotifs; notif && (!uuidCmp(inThisService, &notif->svc) || !uuidCmp(thisChar, &notif->chr)); notif = notif->next);
 
-        if (!notif) { /* no structure? create it */
+        if (!notif) {
+
+            /* no structure? create it */
             notif = calloc(1, sizeof(struct gattCliNotif));
             if (!notif) {
                 free(nr);
@@ -3993,49 +4039,51 @@ uint8_t gattClientNotifsSubscribe(int conn, const struct uuid *inThisService, co
             }
             memcpy(&notif->svc, inThisService, sizeof(struct uuid));
             memcpy(&notif->chr, thisChar, sizeof(struct uuid));
-            startSub = true;
-        }
-        relevantReftCtP = reliable ? &notif->refCtInd : &notif->refCtNotif;
+            sta = GATT_CLI_STATUS_OK;
 
-        if (!notif->ready) {
-            /* if it is not yet ready, just add ourselves to the list and move on. cbk later */
-            callStateCbk = false;
-            sta = GATT_CLI_STATUS_OK;
-        } else if (*relevantReftCtP || !reliable) {
-            /* ready and correct or better type - we're done */
-            sta = GATT_CLI_STATUS_OK;
-        } else if (!notif->supportsInds) {
-            /* caller wants reliable notifs but this is not possible. fail */
-            sta = GATT_CLI_STATUS_ERR;
+            if (!gattCliTodoMakeFindByGroupType(conn, GATT_UUID_SVC_PRIMARY, inThisService, thisChar, NULL, GATT_INTENT_NOTIF_SUB_UNSUB, GATT_INTENT_STEP_FIND_SVC, 0x0001, 0xffff)) {
+                sta = GATT_CLI_STATUS_ERR;
+                loge("Notif todo allocation failed\n");
+                free(nr);
+                nr = NULL;
+            }
+
+        } else if (notif->curState != NOTIF_C_STATE_DISCOVERY && !notif->supportsInds && (reliable || !notif->supportsNotifs)) {
+
+            /* right away check for impossible requests */
+            free(nr);
+            nr = NULL;
+
         } else {
-            /*
-             * We need to resubscribe to reliable notifications and we can. Technically, since
-             * we already know the handles, we can just do a write, but this makes the code
-             * simpler and thanks to mandatory caching in ATT, it is not really any slower.
-             */
-            notif->ready = false;
-            startSub = true;
+
+            /* see if we can already tell them it's ready */
+            if (notif->curState == NOTIF_C_STATE_SUBBED_TO_IND || (!reliable && notif->curState == NOTIF_C_STATE_SUBBED_TO_NOTIF)) {
+                callStateCbk = true;
+                nr->subCallMade = true;
+                sta = GATT_CLI_STATUS_OK;
+            }
+
+            /* if needed, do [another] char descr write */
+            if (!gattCliNotifSubUnsubIssueWriteIfNeededNewTodo(clicon->conn, notif)) {
+                sta = GATT_CLI_STATUS_ERR;
+                loge("Notif write enqueue failed\n");
+                free(nr);
+                nr = NULL;
+                callStateCbk = false;
+            }
         }
 
-        /* if requested, start the actual [re]subscription process */
-        if (startSub) {
-            struct gattCliTodoItem *todo;
+        if (nr) {
+            nr->notif = notif;
+            if (reliable)
+                notif->refCtInd++;
+            else
+                notif->refCtNotif++;
 
-            todo = gattCliTodoMakeFindByGroupType(conn, GATT_UUID_SVC_PRIMARY, inThisService, thisChar, NULL, GATT_INTENT_NOTIF_SUB, GATT_INTENT_STEP_FIND_SVC, 0x0001, 0xffff);
-            if (!todo)
-                loge("Notif todo allocation failed. Leaks will result\n");
+            nr->next = clicon->notifs;
+            clicon->notifs = nr;
         }
-
-        /* if we are not calling the state callback now, we should later */
-        if (!callStateCbk)
-            nr->subStateCbk = stateCbk;
-
-        /* link ourselves into the struct and increment the refctr */
-        (*relevantReftCtP)++;
-        nr->next = clicon->notifs;
-        clicon->notifs = nr;
     }
-
 
 out:
     pthread_mutex_unlock(&mGattLock);
@@ -4052,12 +4100,12 @@ out:
  * PARAMS:   conn - the connection id
  *           inThisService - in what service?
  *           thisChar - what characteristic?
- *           stateCbk - callback to call when subscription state changes
  * RETURN:   GATT_CLI_STATUS_*
  * NOTES:
  */
-uint8_t gattClientNotifsUnsubscribe(int conn, const struct uuid *inThisService, const struct uuid *thisChar, gattCliNotifSubscribeStateCbk stateCbk)
+uint8_t gattClientNotifsUnsubscribe(int conn, const struct uuid *inThisService, const struct uuid *thisChar)
 {
+    gattCliNotifSubscribeStateCbk stateCbk = NULL;
     uint8_t sta = GATT_CLI_STATUS_ERR;
     struct gattCliNotifRec *nr;
     struct gattCliCon *clicon;
@@ -4074,13 +4122,18 @@ uint8_t gattClientNotifsUnsubscribe(int conn, const struct uuid *inThisService, 
         for (nr = clicon->notifs; nr && (!uuidCmp(inThisService, &nr->notif->svc) || !uuidCmp(thisChar, &nr->notif->chr)); nr = nr->next);
 
         if (nr) {
+            if (!nr->unsubCallMade)
+                stateCbk = nr->stateCbk;
+            nr->unsubCallMade = true;
+
             gattClientNotifUnsubscribe(clicon, nr);
             sta = GATT_CLI_STATUS_OK;
         }
     }
     pthread_mutex_unlock(&mGattLock);
 
-    stateCbk(cli, conn, inThisService, thisChar, false, sta);
+    if (stateCbk)
+        stateCbk(cli, conn, inThisService, thisChar, false, sta);
 
     return sta;
 }
