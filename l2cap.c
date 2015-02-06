@@ -294,7 +294,8 @@ struct l2cAclConn {
     uint16_t           nextChan; /* a guess to a currently-free channel */
     uint16_t           connectionlessMtu;
     uint16_t           sigMtu;
-    struct bt_addr     addr;
+    struct bt_addr     peerAddr; /* who the peer is */
+    struct bt_addr     selfAddr; /* who we were acting as when we made the connection */
     uint8_t            state;
     uint8_t            isMaster  : 1;
     uint8_t            encrypted : 1;
@@ -608,7 +609,7 @@ static struct l2cAclConn* l2cAclConnFindByAddr(const struct bt_addr* addr)
 {
     struct l2cAclConn *c = mAclConns;
 
-    while (c && memcmp(&c->addr, addr, sizeof(struct bt_addr)))
+    while (c && memcmp(&c->peerAddr, addr, sizeof(struct bt_addr)))
         c = c->next;
 
     return c;
@@ -1838,7 +1839,7 @@ bool l2cApiUpdateConnectionParams(l2c_handle_t handle, uint16_t intMin, uint16_t
         goto out;
     }
 
-    if (!BT_ADDR_IS_LE(aclConn->addr)) {
+    if (!BT_ADDR_IS_LE(aclConn->peerAddr)) {
         logw("Got a Connection Update Request API call on a non-LE link\n");
         goto out;
     }
@@ -2134,7 +2135,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, sg payload)
             struct l2cSigConnReq params;
 
             sgSerialize(payload, 0, sizeof(params), &params);
-            if (!BT_ADDR_IS_EDR(conn->addr)) {
+            if (!BT_ADDR_IS_EDR(conn->peerAddr)) {
                 logw("Got a Connection Request packet on a non-EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
@@ -2152,7 +2153,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, sg payload)
             struct l2cSigConnRsp params;
 
             sgSerialize(payload, 0, sizeof(params), &params);
-            if (!BT_ADDR_IS_EDR(conn->addr)) {
+            if (!BT_ADDR_IS_EDR(conn->peerAddr)) {
                 logw("Got a Connection Response packet on a non-EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
@@ -2172,7 +2173,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, sg payload)
             struct l2cSigConfReq params;
 
             sgSerialize(payload, 0, sizeof(params), &params);
-            if (!BT_ADDR_IS_EDR(conn->addr)) {
+            if (!BT_ADDR_IS_EDR(conn->peerAddr)) {
                 logw("Got a Configuration Request packet on a non-EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
@@ -2193,7 +2194,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, sg payload)
             struct l2cSigConfRsp params;
 
             sgSerialize(payload, 0, sizeof(params), &params);
-            if (!BT_ADDR_IS_EDR(conn->addr)) {
+            if (!BT_ADDR_IS_EDR(conn->peerAddr)) {
                 logw("Got a Configuration Response packet on a non-EDR link\n");
                if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
@@ -2215,7 +2216,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, sg payload)
             struct l2cSigDiscReq params;
 
             sgSerialize(payload, 0, sizeof(params), &params);
-            if (!BT_ADDR_IS_EDR(conn->addr)) {
+            if (!BT_ADDR_IS_EDR(conn->peerAddr)) {
                 logw("Got a Disconnect Request packet on a non-EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
@@ -2233,7 +2234,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, sg payload)
             struct l2cSigDiscRsp params;
 
             sgSerialize(payload, 0, sizeof(params), &params);
-            if (!BT_ADDR_IS_EDR(conn->addr)) {
+            if (!BT_ADDR_IS_EDR(conn->peerAddr)) {
                 logw("Got a Disconnect Response packet on a non-EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
@@ -2248,7 +2249,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, sg payload)
             break;
         }
         case L2C_SIG_ECHO_REQ: {
-            if (!BT_ADDR_IS_EDR(conn->addr)) {
+            if (!BT_ADDR_IS_EDR(conn->peerAddr)) {
                 logw("Got a Echo Request packet on a non-EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
@@ -2263,7 +2264,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, sg payload)
             struct l2cSigInfoReq params;
 
             sgSerialize(payload, 0, sizeof(params), &params);
-            if (!BT_ADDR_IS_EDR(conn->addr)) {
+            if (!BT_ADDR_IS_EDR(conn->peerAddr)) {
                 logw("Got a Info Request packet on a non-EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
@@ -2280,7 +2281,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, sg payload)
             struct l2cSigInfoRsp params;
 
             sgSerialize(payload, 0, sizeof(params), &params);
-            if (!BT_ADDR_IS_EDR(conn->addr)) {
+            if (!BT_ADDR_IS_EDR(conn->peerAddr)) {
                 logw("Got a Info Response packet on a non-EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
@@ -2302,7 +2303,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, sg payload)
             struct l2cSigChCreatReq params;
 
             sgSerialize(payload, 0, sizeof(params), &params);
-            if (!BT_ADDR_IS_EDR(conn->addr)) {
+            if (!BT_ADDR_IS_EDR(conn->peerAddr)) {
                 logw("Got a Channel Create Request packet on a non-EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
@@ -2321,7 +2322,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, sg payload)
             struct l2cSigChCreatRsp params;
 
             sgSerialize(payload, 0, sizeof(params), &params);
-            if (!BT_ADDR_IS_EDR(conn->addr)) {
+            if (!BT_ADDR_IS_EDR(conn->peerAddr)) {
                 logw("Got a Channel Create Response packet on a non-EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
@@ -2341,7 +2342,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, sg payload)
             struct l2cSigChMoveReq params;
 
             sgSerialize(payload, 0, sizeof(params), &params);
-            if (!BT_ADDR_IS_EDR(conn->addr)) {
+            if (!BT_ADDR_IS_EDR(conn->peerAddr)) {
                 logw("Got a Channel Move Request packet on a non-EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
@@ -2359,7 +2360,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, sg payload)
             struct l2cSigChMoveRsp params;
 
             sgSerialize(payload, 0, sizeof(params), &params);
-            if (!BT_ADDR_IS_EDR(conn->addr)) {
+            if (!BT_ADDR_IS_EDR(conn->peerAddr)) {
                 logw("Got a Channel Move Response packet on a non-EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
@@ -2377,7 +2378,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, sg payload)
             struct l2cSigChMoveCnfReq params;
 
             sgSerialize(payload, 0, sizeof(params), &params);
-            if (!BT_ADDR_IS_EDR(conn->addr)) {
+            if (!BT_ADDR_IS_EDR(conn->peerAddr)) {
                 logw("Got a Channel Move Confirmation packet on a non-EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
@@ -2395,7 +2396,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, sg payload)
             struct l2cSigChMoveCnfRsp params;
 
             sgSerialize(payload, 0, sizeof(params), &params);
-            if (!BT_ADDR_IS_EDR(conn->addr)) {
+            if (!BT_ADDR_IS_EDR(conn->peerAddr)) {
                 logw("Got a Channel Move Confirmation Response "
                     "packet on a non-EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
@@ -2414,7 +2415,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, sg payload)
             struct l2cSigConnUpdtReq params;
 
             sgSerialize(payload, 0, sizeof(params), &params);
-            if (!BT_ADDR_IS_EDR(conn->addr)) {
+            if (!BT_ADDR_IS_EDR(conn->peerAddr)) {
                 logw("Got a Connection Update Request packet on an EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
@@ -2434,7 +2435,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, sg payload)
             struct l2cSigConnUpdtRsp params;
 
             sgSerialize(payload, 0, sizeof(params), &params);
-            if (!BT_ADDR_IS_LE(conn->addr)) {
+            if (!BT_ADDR_IS_LE(conn->peerAddr)) {
                 logw("Got a Connection Update Response packet on a non-LE link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
@@ -2458,7 +2459,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, sg payload)
         if (!cmdParamsSkipped)
             sgTruncFront(payload, len);
 
-        if (!BT_ADDR_IS_EDR(conn->addr)) /* only EDR can put multiple commands here */
+        if (!BT_ADDR_IS_EDR(conn->peerAddr)) /* only EDR can put multiple commands here */
             break;
     }
 
@@ -3092,13 +3093,13 @@ static void l2cAclDataRxCompletePacket(struct l2cAclConn *aclConn, struct l2cFrm
     uint16_t cid = utilGetLE16(&frm->cid);
 
     if (cid == L2C_CH_SIGNALLING_EDR) {
-        if (!BT_ADDR_IS_EDR(aclConn->addr)) {
+        if (!BT_ADDR_IS_EDR(aclConn->peerAddr)) {
             loge("Received EDR signalling packet on non-EDR link. Dropping.\n");
             sgFree(packet);
         } else
             l2cSignallingRx(aclConn, packet);
     } else if (cid == L2C_CH_SIGNALLING_LE) {
-        if (!BT_ADDR_IS_LE(aclConn->addr)) {
+        if (!BT_ADDR_IS_LE(aclConn->peerAddr)) {
             loge("Received LE signalling packet on non-LE link. Dropping.\n");
             sgFree(packet);
         } else
@@ -3636,7 +3637,7 @@ static void* l2cSvcWorker(void* unused)
  */
 static bool l2cAclEnqueueSigTx(struct l2cAclConn *aclConn, sg pdu)
 {
-    bool isLE = BT_ADDR_IS_LE(aclConn->addr);
+    bool isLE = BT_ADDR_IS_LE(aclConn->peerAddr);
     bool useLeBuffers = isLE && !mChipJointBuffers;
     struct l2cSigPduSendItem **qH = isLE ? &sigSendHeadLe : &sigSendHeadEdr;
     struct l2cSigPduSendItem **qT = isLE ? &sigSendTailLe : &sigSendTailEdr;
@@ -3667,7 +3668,7 @@ static bool l2cAclEnqueueSigTx(struct l2cAclConn *aclConn, sg pdu)
     item->pdu = pdu;
     item->next = NULL;
     item->prev = (*qT);
-    item->cid = BT_ADDR_IS_LE(aclConn->addr) ? L2C_CH_SIGNALLING_LE : L2C_CH_SIGNALLING_EDR;
+    item->cid = BT_ADDR_IS_LE(aclConn->peerAddr) ? L2C_CH_SIGNALLING_LE : L2C_CH_SIGNALLING_EDR;
     item->hasL2cHdr = false;
     if (item->prev)
         item->prev->next = item;
@@ -4631,7 +4632,35 @@ bool l2cApiGetBtAddr(l2c_handle_t handle, struct bt_addr* addrP)
     if (conn) {
         aclConn = l2cAclConnFindByHandle(conn->acl);
         if (aclConn) {
-            memcpy(addrP, &aclConn->addr, sizeof(struct bt_addr));
+            memcpy(addrP, &aclConn->peerAddr, sizeof(struct bt_addr));
+            ret = true;
+        }
+    }
+    pthread_mutex_unlock(&mConnsLock);
+
+    return ret;
+}
+
+/*
+ * FUNCTION: l2cApiGetSelfBtAddr
+ * USE:      Get BT addr we presented when we made the connection
+ * PARAMS:   handle - the handle
+ *           addrP - here is stored the address
+ * RETURN:   true on success
+ * NOTES:
+ */
+bool l2cApiGetSelfBtAddr(l2c_handle_t handle, struct bt_addr *addrP)
+{
+    struct l2cAclConn *aclConn;
+    struct l2cConn* conn;
+    bool ret = false;
+
+    pthread_mutex_lock(&mConnsLock);
+    conn = l2cConnFindByHandle(handle);
+    if (conn) {
+        aclConn = l2cAclConnFindByHandle(conn->acl);
+        if (aclConn) {
+            memcpy(addrP, &aclConn->selfAddr, sizeof(struct bt_addr));
             ret = true;
         }
     }
@@ -4899,7 +4928,7 @@ static uint8_t l2cDataSendOnAclLink(struct l2cAclConn *aclConn, const void *hdr,
     bool freeData = false;
 
     /* see which queue (LE/EDR) we need to use */
-    useLeBuffers = BT_ADDR_IS_LE(aclConn->addr) && !mChipJointBuffers;
+    useLeBuffers = BT_ADDR_IS_LE(aclConn->peerAddr) && !mChipJointBuffers;
     if (useLeBuffers) {
         queueBufP = &mQueueBufLe;
         queueFirstP = &mQueueFirstLe;
@@ -5026,7 +5055,7 @@ uint8_t l2cApiConnectionlessDataTx(const struct bt_addr *addr, psm_t psm, sg dat
     if (!aclConn) {
         logw("Dropping connectionless send to a device whom we aren't connected to\n");
         ret = L2C_TX_ERROR;
-    } else if (!BT_ADDR_IS_EDR(aclConn->addr)) {
+    } else if (!BT_ADDR_IS_EDR(aclConn->peerAddr)) {
         logw("Dropping connectionless send to an LE device\n");
         ret = L2C_TX_ERROR;
     } else if (aclConn->connectionlessMtu < sgLength(data)) {
@@ -5064,7 +5093,7 @@ static void l2cAclLinkUpTimeout(uniq_t which,  uint64_t aclConnHandle)
     if (aclConn && aclConn->openTimer == which) {
         logi("ACL link open failed for "HANDLEFMT"\n", HANDLECNV(aclConn->handle));
         aclConn->state = L2C_ACL_STATE_TEARDOWN;
-        if (!l2cSvcWorkScheduleAclLinkClose(&aclConn->addr))
+        if (!l2cSvcWorkScheduleAclLinkClose(&aclConn->peerAddr))
             loge("Failed to schedule call to close ACL link "HANDLEFMT"\n", HANDLECNV(aclConn->handle));
         l2cAclLinkDownInt(aclConn, false);
     }
@@ -5099,14 +5128,14 @@ static struct l2cAclConn* l2cCreateAndOpenNewAclConn(const struct bt_addr* addr)
         return NULL;
     }
 
-    memcpy(&conn->addr, addr, sizeof(conn->addr));
+    memcpy(&conn->peerAddr, addr, sizeof(conn->peerAddr));
     conn->handle = uniqGetNext();
     conn->state = L2C_ACL_STATE_PENDING;
     conn->prev = NULL;
     conn->reassSg = NULL;
     conn->sigMtu = L2C_MIN_SIG_MTU;
 
-    if (!l2cSvcWorkScheduleAclLinkOpen(&conn->addr)) {
+    if (!l2cSvcWorkScheduleAclLinkOpen(&conn->peerAddr)) {
         free(conn);
         conn = NULL;
     } else {
@@ -5374,7 +5403,7 @@ static void l2cAclConnTeardownTimerCbk(uniq_t which, uint64_t cbkData)
     if (aclConn && aclConn->teardownTimer == which) {
         logd("Link timer expired for acl "HCI_CONN_FMT"x. Closing\n", HCI_CONN_CONV(aclConn->conn));
         aclConn->state = L2C_ACL_STATE_TEARDOWN;
-        if (!l2cSvcWorkScheduleAclLinkClose(&aclConn->addr))
+        if (!l2cSvcWorkScheduleAclLinkClose(&aclConn->peerAddr))
             loge("Failed to schedule call to close acl "HCI_CONN_FMT"x\n", HCI_CONN_CONV(aclConn->conn));
         l2cAclLinkDownInt(aclConn, true);
     }
@@ -5418,14 +5447,15 @@ static void l2cAclDownTimerStop(struct l2cAclConn *aclConn)
  * FUNCTION: l2cAclLinkUp
  * USE:      Called when a new ACL link comes up
  * PARAMS:   aclConn - the conection ID
- *           addr - the peer address
+ *           peerAddr - the peer address
+ *           selfAddr - whom we pretended to be when we connected
  *           isMaster - are we the master on the link?
  *           isEncrypted - is link encrypted?
  *           isMitmSafe - is link MITM safe?
  * RETURN:   NONE
  * NOTES:
  */
-void l2cAclLinkUp(hci_conn_t aclConnID, const struct bt_addr* addr, bool isMaster, bool isEncrypted, bool isMitmSafe)
+void l2cAclLinkUp(hci_conn_t aclConnID, const struct bt_addr *peerAddr, const struct bt_addr *selfAddr, bool isMaster, bool isEncrypted, bool isMitmSafe)
 {
     struct l2cAclConn *aclConn;
     struct l2cConn *connIter;
@@ -5436,8 +5466,8 @@ void l2cAclLinkUp(hci_conn_t aclConnID, const struct bt_addr* addr, bool isMaste
     if (l2cAclConnFindById(aclConnID))
         loge("Duplicate ID up (acl "HCI_CONN_FMT"x)\n", HCI_CONN_CONV(aclConnID));
     else {
-        aapiAclStateChanged(0, addr, true);
-        aclConn = l2cAclConnFindByAddr(addr);
+        aapiAclStateChanged(0, peerAddr, true);
+        aclConn = l2cAclConnFindByAddr(peerAddr);
         if (aclConn) {
             if (aclConn->state == L2C_ACL_STATE_PENDING) {
                 aclConn->openTimer = 0;
@@ -5464,7 +5494,8 @@ void l2cAclLinkUp(hci_conn_t aclConnID, const struct bt_addr* addr, bool isMaste
                 goto out;
             }
         }
-        memcpy(&aclConn->addr, addr, sizeof(aclConn->addr));
+        memcpy(&aclConn->peerAddr, peerAddr, sizeof(aclConn->peerAddr));
+        memcpy(&aclConn->selfAddr, selfAddr, sizeof(aclConn->selfAddr));
         aclConn->ident = 1;
         aclConn->teardownTimer = 0;
         aclConn->isMaster = isMaster ? 1 : 0;
@@ -5476,7 +5507,7 @@ void l2cAclLinkUp(hci_conn_t aclConnID, const struct bt_addr* addr, bool isMaste
         aclConn->mitmSafe = isMitmSafe;
 
         /* send an info req if EDR */
-        if (BT_ADDR_IS_EDR(*addr)) {
+        if (BT_ADDR_IS_EDR(*peerAddr)) {
             aclConn->state = L2C_ACL_STATE_CFG;
             aclConn->reqIdent = l2cSigSendInfoReq(aclConn, L2C_SIG_INFO_TYPE_UNCONN_MTU);
             if (!aclConn->reqIdent) {
@@ -5647,7 +5678,7 @@ void l2cAclLinkDown(hci_conn_t aclConnID)
     pthread_mutex_lock(&mConnsLock);
     aclConn = l2cAclConnFindById(aclConnID);
     if (aclConn) {
-        aapiAclStateChanged(0, &aclConn->addr, false);
+        aapiAclStateChanged(0, &aclConn->peerAddr, false);
         logd("Link acl "HCI_CONN_FMT"x actually down. Handling\n", HCI_CONN_CONV(aclConn->conn));
         l2cAclLinkDownInt(aclConn, false);
     } else

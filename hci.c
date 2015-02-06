@@ -179,7 +179,8 @@ struct hciCbkWorkItem {
 
         struct {
             hci_conn_t                    conn;
-            struct bt_addr                addr;
+            struct bt_addr                peerAddr;
+            struct bt_addr                selfAddr;
             bool                          isMaster;
             bool                          isEncrypted;
             bool                          isMitmSafe;
@@ -229,7 +230,8 @@ struct hciSimpleCbkData {
 struct hciAclConn {
     struct hciAclConn *next;
     struct hciAclConn *prev;
-    struct bt_addr     addr;
+    struct bt_addr     peerAddr;
+    struct bt_addr     selfAddr; /* XXX */
     hci_conn_t         handle;
 
     uint16_t           id;
@@ -249,7 +251,6 @@ struct hciAclConn {
             uint16_t   latency;
             uint16_t   timeout;
             uint8_t    mca;
-            struct bt_addr self; /* what address we were using when the connection was formed */
         } le;
         struct {
             uint64_t   ftrs[MAX_FTR_PAGES];
@@ -334,7 +335,7 @@ static uint8_t mLocalAddr[BT_MAC_LEN];
 
 /* fwd declarations */
 static bool hciBtStackUp(void);
-static bool hciScheduleConnUpNotif(hci_conn_t conn, const struct bt_addr *addr, bool isMaster, bool isEncrypted, bool isMitmSafe);
+static bool hciScheduleConnUpNotif(hci_conn_t conn, const struct bt_addr *peerAddr, const struct bt_addr *selfAddr, bool isMaster, bool isEncrypted, bool isMitmSafe);
 static bool hciScheduleConnDownNotif(hci_conn_t conn);
 static bool hciScheduleConnDataRx(hci_conn_t conn, sg packet, bool first);
 static bool hciCmdSubmitSimpleWithStatusWithDoneCbk(uint8_t ogf, uint16_t ocf, const void* paramData, uint8_t paramLen, hciOpDoneCbk cbk, void *cbkData);
@@ -400,7 +401,7 @@ static struct hciAclConn* hciConnFindByAddr(const struct bt_addr *addr)
 {
     struct hciAclConn *c = mConns;
 
-    while (c && memcmp(&c->addr, addr, sizeof(c->addr)))
+    while (c && memcmp(&c->peerAddr, addr, sizeof(c->peerAddr)))
         c = c->next;
 
     return c;
@@ -727,7 +728,7 @@ static void hciRxEvt(sg packet)
                 logw("Accepting %d credits for unknown packets\n", numPackets - acceptCredits);
                 acceptCredits = numPackets;
             }
-            if (BT_ADDR_IS_LE(conn->addr) && !mBtJointBuffers) {
+            if (BT_ADDR_IS_LE(conn->peerAddr) && !mBtJointBuffers) {
                 hadLeCreds = true;
                 newCreditsLe += acceptCredits;
             } else {
@@ -970,7 +971,7 @@ static void* hciCbkWorker(void *unused)
             sem_post(w->flush.sem);
             break;
         case CBK_WORK_CONN_UP:
-            l2cAclLinkUp(w->connUp.conn, &w->connUp.addr, w->connUp.isMaster, w->connUp.isEncrypted, w->connUp.isMitmSafe);
+            l2cAclLinkUp(w->connUp.conn, &w->connUp.peerAddr, &w->connUp.selfAddr, w->connUp.isMaster, w->connUp.isEncrypted, w->connUp.isMitmSafe);
             break;
         case CBK_WORK_CONN_DOWN:
             l2cAclLinkDown(w->connDown.conn);
@@ -1114,14 +1115,15 @@ static bool hciWorkFlush(void)
  * FUNCTION: hciScheduleConnUpNotif
  * USE:      Enqueue a call to the ACL link up notif
  * PARAMS:   conn - the connection
- *           addr - peer address
+ *           peerAddr - peer address
+ *           selfAddr - whom we were being when we made the connection
  *           isMaster - are we master on the link
  *           isEncrypted - is the link encrypted
  *           isMitmSafe - is th elink MITM-safe?
  * RETURN:   true if enqueued, false else
  * NOTES:
  */
-static bool hciScheduleConnUpNotif(hci_conn_t conn, const struct bt_addr *addr, bool isMaster, bool isEncrypted, bool isMitmSafe)
+static bool hciScheduleConnUpNotif(hci_conn_t conn, const struct bt_addr *peerAddr, const struct bt_addr *selfAddr, bool isMaster, bool isEncrypted, bool isMitmSafe)
 {
     struct hciCbkWorkItem *w;
 
@@ -1134,7 +1136,8 @@ static bool hciScheduleConnUpNotif(hci_conn_t conn, const struct bt_addr *addr, 
     w->connUp.isMaster = isMaster;
     w->connUp.isEncrypted = isEncrypted;
 
-    memcpy(&w->connUp.addr, addr, sizeof(w->connUp.addr));
+    memcpy(&w->connUp.peerAddr, peerAddr, sizeof(w->connUp.peerAddr));
+    memcpy(&w->connUp.selfAddr, selfAddr, sizeof(w->connUp.selfAddr));
 
     if (workQueuePut(mCallbackWork, w))
         return true;
@@ -4218,7 +4221,7 @@ static bool hciConnectLe(const uint8_t *mac, bool randomAddr, uint16_t scanInt, 
 static void hciConnAclStructDel(struct hciAclConn* conn)
 {
     if (conn->outstandingPackets) {
-        if (BT_ADDR_IS_EDR(conn->addr)) {
+        if (BT_ADDR_IS_EDR(conn->peerAddr)) {
             while (conn->outstandingPackets--)
                 sem_post(&mAclPacketsEdr);
             l2cAclCreditAvail(false);
@@ -4239,7 +4242,7 @@ static void hciConnAclStructDel(struct hciAclConn* conn)
     if (conn->rxBacklog)
         sgFree(conn->rxBacklog);
 
-    logd("deleting conn struct for "ADDRFMT" h="HANDLEFMT"\n", ADDRCONV(conn->addr), HANDLECNV(conn->handle));
+    logd("deleting conn struct for "ADDRFMT" h="HANDLEFMT"\n", ADDRCONV(conn->peerAddr), HANDLECNV(conn->handle));
     free(conn);
 }
 
@@ -4259,7 +4262,7 @@ static struct hciAclConn* hciConnAclStructNew(uint16_t id, const struct bt_addr 
     if (!conn)
         return NULL;
 
-    memcpy(&conn->addr, addr, sizeof(conn->addr));
+    memcpy(&conn->peerAddr, addr, sizeof(conn->peerAddr));
     conn->state = state;
     conn->isMaster = isMaster;
     conn->id = id;
@@ -4324,13 +4327,13 @@ bool hciDisconnect(const struct bt_addr* addr)
     if (!conn)
         logw("Failed to find connection to disconnect "ADDRFMT"\n", ADDRCONV(*addr));
     else {
-        bool isLE = BT_ADDR_IS_LE(conn->addr);
+        bool isLE = BT_ADDR_IS_LE(conn->peerAddr);
 
         switch (conn->state) {
         case CONN_STATE_WAIT:
             if (isLE) {
                 if (!hciConnLeCancel())
-                    loge("Failed to request LE conection cancellation for "ADDRFMT"\n", ADDRCONV(conn->addr));
+                    loge("Failed to request LE conection cancellation for "ADDRFMT"\n", ADDRCONV(conn->peerAddr));
             } else
                 logd("cannot cancel in-progress EDR connection\n");
             conn->state = CONN_STATE_DELETING;
@@ -4402,7 +4405,7 @@ bool hciDemandEncr(hci_conn_t aclConn, bool demandMitmSafe)
         logw("Cannot update encryption for not-yet-established connection\n");
     else if (conn->encrypted && (conn->mitmSafe || !demandMitmSafe))
         logw("Connection already encrypted up to requested level\n");
-    else if (BT_ADDR_IS_LE(conn->addr))
+    else if (BT_ADDR_IS_LE(conn->peerAddr))
         ret = hciConnEncryptLe(conn, demandMitmSafe);
     else
         ret = hciConnEncryptEdr(conn, demandMitmSafe);
@@ -4421,11 +4424,10 @@ bool hciDemandEncr(hci_conn_t aclConn, bool demandMitmSafe)
  *           latP - where to sotre connectio nlatency (or NULL)
  *           toP - where to store connection timeout (or NULL)
  *           mcaP - where to store MCA (meaningless if we're master) (or NULL)
- *           selfAddrP - where to store the address we used to make the connection (or NULL)
  * RETURN:   true if connection was found and results have been returned
  * NOTES:
  */
-bool hciLeConnGetInfo(hci_conn_t aclConn, bool *masterP, uint64_t *peerFtrsP, uint16_t *intP, uint16_t *latP, uint16_t *toP, uint8_t *mcaP, struct bt_addr *selfAddrP)
+bool hciLeConnGetInfo(hci_conn_t aclConn, bool *masterP, uint64_t *peerFtrsP, uint16_t *intP, uint16_t *latP, uint16_t *toP, uint8_t *mcaP)
 {
     struct hciAclConn* conn;
     bool ret = false;
@@ -4434,7 +4436,7 @@ bool hciLeConnGetInfo(hci_conn_t aclConn, bool *masterP, uint64_t *peerFtrsP, ui
     conn = hciConnFindByHandle(aclConn);
     if (!conn)
         logw("Conection for encrypt not found\n");
-    else if (!BT_ADDR_IS_LE(conn->addr))
+    else if (!BT_ADDR_IS_LE(conn->peerAddr))
         logw("Not an LE connection\n");
     else {
         if (masterP)
@@ -4449,8 +4451,6 @@ bool hciLeConnGetInfo(hci_conn_t aclConn, bool *masterP, uint64_t *peerFtrsP, ui
             *toP = conn->le.timeout;
         if (mcaP)
             *mcaP = conn->le.mca;
-        if (selfAddrP)
-            memcpy(selfAddrP, &conn->le.self, sizeof(struct bt_addr));
         ret = true;
     }
     pthread_mutex_unlock(&mConnsLock);
@@ -4481,7 +4481,7 @@ uint8_t hciTryToTx(hci_conn_t aclConn, sg data, uint8_t boundary)
         ret = HCI_TX_SEND_NO_CONN;
         logw("Cannot send on a not-yet-established connection\n");
     } else {
-        bool isLE = BT_ADDR_IS_LE(conn->addr);
+        bool isLE = BT_ADDR_IS_LE(conn->peerAddr);
         bool useLeBuffers = isLE && !mBtJointBuffers;
         sem_t *relevantSem = useLeBuffers ? &mAclPacketsLe : &mAclPacketsEdr;
         int rv;
@@ -4769,7 +4769,7 @@ static void hciConnCfg(struct hciAclConn *c, uint32_t step, uint32_t aux)
         break;
 
     case CONN_CFG_STEP_EDR + 0: /* first EDR step = get name */
-        memcpy(&fng.mac, c->addr.addr, sizeof(fng.mac));
+        memcpy(&fng.mac, c->peerAddr.addr, sizeof(fng.mac));
         hciDiscoverEdrGetName(hciConnCfgEdrNameCbk, userData, &fng);
         return;
 
@@ -4833,7 +4833,7 @@ static void hciConnCfg(struct hciAclConn *c, uint32_t step, uint32_t aux)
     /* if we got here, the configuration step ended and it is time to proceed */
     if (success) {
         c->state = CONN_STATE_RUNNING; 
-        if (hciScheduleConnUpNotif(c->handle, &c->addr, c->isMaster, c->encrypted, c->mitmSafe)) {
+        if (hciScheduleConnUpNotif(c->handle, &c->peerAddr, &c->selfAddr, c->isMaster, c->encrypted, c->mitmSafe)) {
             /* if there are any backlogged RX messages, queue them up too */
             while (c->rxBacklog) {
                 struct hciBacklogItemHdr itemHdr;
@@ -4864,13 +4864,13 @@ static void hciConnCfg(struct hciAclConn *c, uint32_t step, uint32_t aux)
             /* if there is a backlogged PIN or SSP request, fulfill them */
             if (c->pinPending) {
                 logd("Fulfilling pending PIN request\n");
-                aapiBondStateChangedCbk(&c->addr, AAPI_BOND_STATE_INPROGRESS);
-                aapiPinReqCbk(&c->addr);
+                aapiBondStateChangedCbk(&c->peerAddr, AAPI_BOND_STATE_INPROGRESS);
+                aapiPinReqCbk(&c->peerAddr);
                 c->pinPending = false;
             }
             if (c->sspPending) {
                 logd("Fulfilling pending SSP request\n");
-                hciSecUserCbkSspIoCapabilityReq(&c->addr, mIoCapability, false, HCI_AUTH_REQMENT_MITM_PROT_GENERAL_BOND);
+                hciSecUserCbkSspIoCapabilityReq(&c->peerAddr, mIoCapability, false, HCI_AUTH_REQMENT_MITM_PROT_GENERAL_BOND);
                 c->sspPending = false;
             }
             return;
@@ -4955,6 +4955,8 @@ static bool hciHandleConnAclEdrUp(uint8_t status, uint16_t id, const uint8_t *ma
     struct hciAclConn *c;
 
     pthread_mutex_lock(&mConnsLock);
+    memcpy(c->selfAddr.addr, mLocalAddr, sizeof(c->selfAddr.addr));
+    c->selfAddr.type = BT_ADDR_TYPE_EDR;
     c = hciConnAclUp(!status, id, mac, BT_ADDR_TYPE_EDR, encrypted, false);
     pthread_mutex_unlock(&mConnsLock);
 
@@ -4988,8 +4990,8 @@ static bool hciHandleConnAclLeUp(uint8_t status, uint16_t id, bool isMaster, con
         c->le.timeout = timeout;
         c->le.mca = mca;
         /* XXX: TODO: once we start advertising random addresses, this will need to evolve */
-        memcpy(c->le.self.addr, mLocalAddr, sizeof(c->le.self.addr));
-        c->le.self.type = BT_ADDR_TYPE_LE_PUBLIC;
+        memcpy(c->selfAddr.addr, mLocalAddr, sizeof(c->selfAddr.addr));
+        c->selfAddr.type = BT_ADDR_TYPE_LE_PUBLIC;
     }
     pthread_mutex_unlock(&mConnsLock);
     return !!c;

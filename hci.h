@@ -178,7 +178,7 @@ bool hciUpdateLeParams(hci_conn_t aclConn, uint16_t minInt, uint16_t maxInt, uin
 /* request encryption */
 bool hciDemandEncr(hci_conn_t aclConn, bool demandMitmSafe);
 /* LE connection info */
-bool hciLeConnGetInfo(hci_conn_t aclConn, bool *masterP, uint64_t *peerFtrsP, uint16_t *intP, uint16_t *latP, uint16_t *toP, uint8_t *mcaP, struct bt_addr *selfAddrP);
+bool hciLeConnGetInfo(hci_conn_t aclConn, bool *masterP, uint64_t *peerFtrsP, uint16_t *intP, uint16_t *latP, uint16_t *toP, uint8_t *mcaP);
 
 /* connection request handling */
 bool hciConnRequestReplyYes(const struct bt_addr *addr, bool becomeMaster);

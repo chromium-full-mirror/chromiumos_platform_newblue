@@ -113,6 +113,9 @@ bool l2cApiUpdateConnectionParams(l2c_handle_t handle, uint16_t intMin, uint16_t
 /* external code can use this to get remote's bt addr */
 bool l2cApiGetBtAddr(l2c_handle_t handle, struct bt_addr *addrP);
 
+/* external code can use this to get own bt addr used to make the connection */
+bool l2cApiGetSelfBtAddr(l2c_handle_t handle, struct bt_addr *addrP);
+
 /* external code can use this to get L2CAP's ACL handle */
 acl_handle_t l2cApiGetAclHandle(l2c_handle_t handle);
 
@@ -148,7 +151,7 @@ uint8_t l2cApiConnectionlessDataTx(const struct bt_addr *addr, psm_t psm, sg dat
 /* LOWER LAYER INTERFACE API */
 
 /* lower layer calls this when new ACL link is up */
-void l2cAclLinkUp(hci_conn_t aclConn, const struct bt_addr *addr, bool isMaster, bool isEncrypted, bool isMitmSafe);
+void l2cAclLinkUp(hci_conn_t aclConn, const struct bt_addr *peerAddr, const struct bt_addr *selfAddr, bool isMaster, bool isEncrypted, bool isMitmSafe);
 /* lower layer calls this when an ACL link is down */
 void l2cAclLinkDown(hci_conn_t aclConn);
 /* lower layer calls this when new ACL data arrives */
