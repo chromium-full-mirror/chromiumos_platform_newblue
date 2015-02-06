@@ -675,10 +675,7 @@ static int aapiEnable(void)
         loge("HCI up failed\n");
         goto fail_hci;
     }
-    if (!hciGetLocalAddress(mLocalMac.address)) {
-        loge("Failed to get local address\n");
-        goto fail_addr;
-    }
+    hciGetLocalAddress(mLocalMac.address);
 
     if (hciInfoAclBufSizeEdr(NULL, NULL) &&  hciInfoAclBufSizeLe(NULL, NULL))
         mDevType = BT_DEVICE_DEVTYPE_DUAL;
@@ -733,9 +730,6 @@ fail_sdp:
     l2cDeinit();
 
 fail_l2c:
-    /* no cleanup step here */
-
-fail_addr:
     hciDown();
 
 fail_hci:

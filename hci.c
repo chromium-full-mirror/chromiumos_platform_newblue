@@ -3367,15 +3367,16 @@ static bool hciSetManyEventPersistentHandlers(const uint8_t *evtTypes, const uin
     return true;
 }
 
-bool hciGetLocalAddress(uint8_t *addr)
+/*
+ * FUNCTION: hciGetLocalAddress
+ * USE:      Get the local static BT addr
+ * PARAMS:   addr - the buffer to stash address in. not a bt_addr struct since type is not determinable
+ * RETURN:   NONE
+ * NOTES:
+ */
+void hciGetLocalAddress(uint8_t *addr)
 {
-    struct hciCmplReadBdAddr evt;
-
-    if (hciReadBdAddrSync(&evt))
-        return false;
-
-    memcpy(addr, evt.mac, BT_MAC_LEN);
-    return true;
+    memcpy(addr, mLocalAddr, sizeof(mLocalAddr));
 }
 
 /*

@@ -141,7 +141,7 @@ bool hciInfoSharedBuffers(void); //true if EDR & LE share buffers
 bool hciInfoScoBufSize(uint16_t *bufSz, uint16_t *bufNum); //false if no SCO support
 bool hciInfoAclBufSizeEdr(uint16_t *bufSz, uint16_t *bufNum); //false if no EDR support
 bool hciInfoAclBufSizeLe(uint16_t *bufSz, uint16_t *bufNum); //false if no LE support
-bool hciGetLocalAddress(uint8_t *addr);
+void hciGetLocalAddress(uint8_t *addr);
 
 /* misc api. False on error, true if expect callback */
 bool hciSetAdvertiseEnable(bool on, hciOpDoneCbk cbkDone, void *cbkData);
