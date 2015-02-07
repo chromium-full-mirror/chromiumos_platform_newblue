@@ -189,6 +189,8 @@
  */
 #define BT_COMMAND_TIMEOUT                 10
 
+/* Max number of packets for the Security Manager sendQueue */
+#define MAX_PACKETS_SM_SEND_QUEUE           8
 
 
 #endif

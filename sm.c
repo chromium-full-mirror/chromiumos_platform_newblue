@@ -5,6 +5,8 @@
 #include "sm.h"
 #include "sg.h"
 #include "bt.h"
+#include "sendQ.h"
+#include "config.h"
 
 #include <stdlib.h>
 
@@ -125,6 +127,8 @@ static uint8_t mIoCap;
 /* fwd decls */
 static void smEncrypt(uint8_t* dst, const uint8_t *src, const uint8_t *key);
 
+/* sendQ for packet transmissions */
+static struct sendQ *mSmSendQ;
 
 
 
@@ -155,8 +159,33 @@ static void smEncrChanged(struct smInstance *inst)
  */
 static bool smTx(struct smInstance *inst, uint8_t pktTyp, const void *data, uint8_t len)
 {
-    //TODO
-    return false;
+    sg tmpData = NULL;
+    struct smHdr hdr;
+
+    utilSetLE8(&hdr.typ, pktTyp);
+
+    tmpData = sgNewWithCopyData(data, len);
+    if (!tmpData) {
+        logw("%s(): Failed to alloc SG packet\n", __func__);
+        return false;
+    }
+
+    if (!sgConcatFrontCopy(tmpData, &hdr, sizeof(hdr))) {
+        logw("%s(): Failed to copy SG header data\n", __func__);
+        goto tx_err;
+    }
+
+    if (!sendQueueTx(mSmSendQ, inst->conn, tmpData)) {
+        logw("%s(): Failed to SG packet to sendQueue\n", __func__);
+        goto tx_err;
+    }
+
+    logd("%s(): Packet successfully sent\n", __func__);
+    return true;
+
+tx_err:
+        sgFree(tmpData);
+        return false;
 }
 
 /*
@@ -189,7 +218,8 @@ static bool smParsePairReqRest(struct smInstance *inst, const struct smPairReqRe
     uint8_t tmp, initKeyDistr, rspKeyDistr;
 
     tmp = utilGetLE8(&pairReqResp->ioCap);
-    if (tmp != HCI_DISP_CAP_DISP_ONLY && tmp != HCI_DISP_CAP_DISP_YES_NO && tmp != HCI_DISP_CAP_KBD_ONLY && tmp != HCI_DISP_CAP_NONE) {
+    if (tmp != HCI_DISP_CAP_DISP_ONLY && tmp != HCI_DISP_CAP_DISP_YES_NO && tmp != HCI_DISP_CAP_KBD_ONLY && tmp != HCI_DISP_CAP_NONE &&
+        tmp != HCI_DISP_CAP_KBD_DISP) {
         logd("Invalid io caps RXed 0x%02X\n", tmp);
         return false;
     }
@@ -427,8 +457,18 @@ bool smInit(uint8_t ioCapability)
     };
 
     mIoCap = ioCapability;
+    if (!(mSmSendQ = sendQueueAlloc(MAX_PACKETS_SM_SEND_QUEUE))) {
+        logw("%s(): Error allocating SM sendQ.\n", __func__);
+        return false;
+    }
 
-    return l2cApiServiceFixedChRegister(L2C_FIXED_CH_NUM_SM, &descr);
+    if(!l2cApiServiceFixedChRegister(L2C_FIXED_CH_NUM_SM, &descr)) {
+        logw("%s(): Error registering L2CAP service.\n", __func__);
+        sendQueueFree(mSmSendQ);
+        return false;
+    }
+
+    return true;
 }
 
 /*
@@ -440,6 +480,7 @@ bool smInit(uint8_t ioCapability)
  */
 void smDeinit(void)
 {
+    sendQueueFree(mSmSendQ);
     l2cApiServiceFixedChUnregister(L2C_FIXED_CH_NUM_SM, NULL, NULL);
 }
 
