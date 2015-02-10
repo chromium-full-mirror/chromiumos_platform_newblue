@@ -17,6 +17,8 @@
 #include "sm.h"
 
 
+//TODO: proper error when reading chars that need encr!
+
 /* ERRORS */
 #define ATT_OPCODE_ERROR                 0x01 /* struct attPduError */
 
@@ -1778,21 +1780,25 @@ bool attReadUuid(struct uuid *dst, sg s)
  * PARAMS:   range -the value's range
  *           val - the value
  *           conn - per-connection state for this connection
- * RETURN:   true if allowed to read, false else
+ * RETURN:   ATT_ERROR_*
  * NOTES:    call with mAttLock held
  */
-static bool attSrvIsValReadableBy(struct attSrvRange *range, struct attSrvVal *val, struct attConn *conn)
+static uint8_t attSrvIsValReadableBy(struct attSrvRange *range, struct attSrvVal *val, struct attConn *conn)
 {
-    if (conn->isEncr && conn->isMitmProtected && (val->perms & ATT_PERM_READ_ENCR_MITM))
-        return true;
+    if (val->perms & ATT_PERM_READ)
+        return ATT_ERROR_NONE;
+    if (val->perms & ATT_PERM_READ_ENCR)
+        return conn->isEncr ? ATT_ERROR_NONE : ATT_ERROR_INSUFFICIENT_ENCR;
+    if (val->perms & ATT_PERM_READ_ENCR_MITM) {
+        if (!conn->isEncr)
+            return ATT_ERROR_INSUFFICIENT_ENCR;
+        else if (!conn->isMitmProtected)
+            return ATT_ERROR_INSUFFICIENT_AUTH;
+        else
+            return ATT_ERROR_NONE;
+    }
 
-    if (conn->isEncr && !conn->isMitmProtected && (val->perms & ATT_PERM_READ_ENCR))
-        return true;
-
-    if (!conn->isEncr && (val->perms & ATT_PERM_READ))
-        return true;
-
-    return false;
+    return ATT_ERROR_UNLIKELY_ERROR; /* ?? */
 }
 
 /*
@@ -1802,24 +1808,27 @@ static bool attSrvIsValReadableBy(struct attSrvRange *range, struct attSrvVal *v
  *           val - the value
  *           conn - per-connection state for this connection
  *           isSigned - is this a signed write?
- * RETURN:   true if allowed to write, false else
+ * RETURN:   ATT_ERROR_*
  * NOTES:    call with mAttLock held
  */
 static bool attSrvIsValWriteableBy(struct attSrvRange *range, struct attSrvVal *val, struct attConn *conn, bool isSigned)
 {
-    if (!conn->isEncr && isSigned && (val->perms & ATT_PERM_WRITE_SIGNED))
-        return true;
+    if (val->perms & ATT_PERM_WRITE)
+        return ATT_ERROR_NONE;
+    if (isSigned)
+        return ((val->perms & ATT_PERM_WRITE_SIGNED) && !conn->isEncr) ? ATT_ERROR_NONE : ATT_ERROR_WRITE_NOT_ALLOWED;
+    if (val->perms & ATT_PERM_WRITE_ENCR)
+        return conn->isEncr ? ATT_ERROR_NONE  : ATT_ERROR_INSUFFICIENT_ENCR;
+    if (val->perms & ATT_PERM_WRITE_ENCR_MITM) {
+        if (!conn->isEncr)
+            return ATT_ERROR_INSUFFICIENT_ENCR;
+        else if (!conn->isMitmProtected)
+            return ATT_ERROR_INSUFFICIENT_AUTH;
+        else
+            return ATT_ERROR_NONE;
+    }
 
-    if (!isSigned && conn->isEncr && conn->isMitmProtected && (val->perms & ATT_PERM_WRITE_ENCR_MITM))
-        return true;
-
-    if (!isSigned && conn->isEncr && !conn->isMitmProtected && (val->perms & ATT_PERM_WRITE_ENCR))
-        return true;
-
-    if (!isSigned && !conn->isEncr && (val->perms & ATT_PERM_WRITE))
-        return true;
-
-    return false;
+    return ATT_ERROR_WRITE_NOT_ALLOWED;
 }
 
 /*
@@ -2019,7 +2028,7 @@ static bool attSrvOpFindByTypeValContinue(struct attConn *conn, const void *last
                 goto done;
 
             /* must be readable */
-            if (!attSrvIsValReadableBy(range, val, conn))
+            if (ATT_ERROR_NONE != attSrvIsValReadableBy(range, val, conn))
                 continue;
 
             /* must be of a given type */
@@ -2243,8 +2252,11 @@ static bool attSrvOpReadByTypeContinue(struct attConn *conn, const void *lastRea
                 goto done;
 
             /* must be readable */
-            if (!attSrvIsValReadableBy(range, val, conn))
-                continue;
+            err = attSrvIsValReadableBy(range, val, conn);
+            if (err != ATT_ERROR_NONE) {
+                startHandle = handle;
+                goto done;
+            }
 
             /* must be of a given type */
             if (!uuidCmp(&val->type, &conn->srv.penOp.readByType.uuid))
@@ -2269,8 +2281,10 @@ done:
         startHandle = conn->srv.penOp.origStartHandle;
      } else if (!sgLength(results)) {
         /* a lack of results is reported thusly */
-        err = ATT_ERROR_ATTRIBUTE_NOT_FOUND;
-        startHandle = conn->srv.penOp.origStartHandle;
+        if (err == ATT_ERROR_NONE) {
+            err = ATT_ERROR_ATTRIBUTE_NOT_FOUND;
+            startHandle = conn->srv.penOp.origStartHandle;
+        }
     } else {
         struct attPduReadByTypeRsp rbt;
         struct attPduReadByGrpTypeRsp gtr;
@@ -2286,6 +2300,7 @@ done:
 
         if (attSendPacket(conn->conn, rspOpcode, hdr, packetHdrSz, results))
             return true;
+        err = ATT_ERROR_UNLIKELY_ERROR;
     }
 
     /* if we fall though to here, try to send an error (even if it is unlikely to work) */
@@ -2436,10 +2451,9 @@ static bool attSrvOpReadStart(l2c_handle_t to, uint32_t mtu, uint16_t wantedHand
                 }
 
                 /* must be readable */
-                if (!attSrvIsValReadableBy(range, val, conn)) {
-                    err = ATT_ERROR_READ_NOT_ALLOWED;
+                err = attSrvIsValReadableBy(range, val, conn);
+                if (err != ATT_ERROR_NONE)
                     goto done;
-                }
 
                 /* do a read */
                 conn->srv.penOp.origOpcode = opcode;
@@ -2473,7 +2487,7 @@ done:
  */
 static bool attSrvOpReadMultContinue(struct attConn *conn, const void *lastReadData, uint16_t leastReadLen, uint8_t lastReadRet)
 {
-    uint8_t err = ATT_ERROR_UNLIKELY_ERROR;
+    uint8_t err = ATT_ERROR_NONE;
     struct attSrvRange *range;
     struct attSrvVal *val;
     uint16_t wantedHandle = 0;
@@ -2494,7 +2508,7 @@ static bool attSrvOpReadMultContinue(struct attConn *conn, const void *lastReadD
 
         if (!sgConcatBackCopy(results, lastReadData, leastReadLen)) {
             err = ATT_ERROR_INSUFFICIENT_RSRCS;
-            goto done;
+            goto error;
         }
 
         /* if no more handles to read, stop */
@@ -2505,6 +2519,8 @@ static bool attSrvOpReadMultContinue(struct attConn *conn, const void *lastReadD
 
     } else if (lastReadRet != ATT_FIRST_CONTINUE_CALL) {
         /* if the last read failed - stop searching */
+        err = lastReadRet;
+        wantedHandle = conn->srv.penOp.readMult.lastReadHandle;
         goto error;
     }
 
@@ -2521,45 +2537,51 @@ static bool attSrvOpReadMultContinue(struct attConn *conn, const void *lastReadD
             /* range check */
             if (handle < wantedHandle)
                 continue;
-            if (handle > wantedHandle)
-                goto done;
+            if (handle > wantedHandle) {
+                err = ATT_ERROR_INVALID_HANDLE;
+                goto error;
+            }
 
             conn->srv.penOp.readMult.lastReadHandle = wantedHandle;
 
             /* must be readable */
-            if (!attSrvIsValReadableBy(range, val, conn)) {
-                err = ATT_ERROR_READ_NOT_ALLOWED;
+            err = attSrvIsValReadableBy(range, val, conn);
+            if (err != ATT_ERROR_NONE) {
+                wantedHandle = handle;
                 goto error;
             }
 
-            /* we found the falue to read - schedule it */
+            /* we found the value to read - schedule it */
             conn->srv.penOp.startHandle = handle;
             if (attSrvSchedReadCbk(range, val, conn, ATT_READ_FOR_READ_MULT, 0, mtu))
                 return true;
 
+            err = ATT_ERROR_UNLIKELY_ERROR;
             goto error;
         }
     }
-
-error:
-    sgTruncFront(results, sgLength(results));
+    /* if we get here, we did not find the value */
+    err = ATT_ERROR_INVALID_HANDLE;
+    goto error;
 
 done:
-    conn->srv.penOp.origOpcode = 0;
-
+    sgFree(handles);
+    handles = NULL;
     /* mind the length */
     if (sgLength(results) > mtu)
         sgTruncBack(results, sgLength(results) - mtu);
 
-    if (!sgLength(results)) {
-        /* a lack of results is reported as an error */
-        wantedHandle = conn->srv.penOp.readMult.lastReadHandle;
-    } else if (attSendPacket(conn->conn, ATT_OPCODE_READ_MULT_RSP, NULL, 0, results))
+    if (attSendPacket(conn->conn, ATT_OPCODE_READ_MULT_RSP, NULL, 0, results))
         return true;
 
-    /* if we fall though to here, try to send an error (even if it is unlikely to work) */
+    /* uh oh */
+    err = ATT_ERROR_UNLIKELY_ERROR;
+    
+error:
+    conn->srv.penOp.origOpcode = 0;
     sgFree(results);
-    sgFree(handles);
+    if (handles)
+        sgFree(handles);
     return attSrvSendPacketErrorReply(conn->conn, err, ATT_OPCODE_READ_MULT_REQ, wantedHandle);
 }
 
@@ -2673,9 +2695,9 @@ static bool attSrvWriteStart(l2c_handle_t to, uint32_t mtu, uint16_t wantedHandl
 out:
         if (!val)
             err = ATT_ERROR_INVALID_HANDLE;
-        else if (!attSrvIsValWriteableBy(range, val, conn, writeReason == ATT_WRITE_FOR_SIGNED_WRITE_CMD))
-            err = ATT_ERROR_WRITE_NOT_ALLOWED;
-        else {
+        else if ((err = attSrvIsValWriteableBy(range, val, conn, writeReason == ATT_WRITE_FOR_SIGNED_WRITE_CMD)) != ATT_ERROR_NONE) {
+            /* actully all is done in the if clause */
+        } else {
             conn->srv.penOp.origOpcode = opcode;
             conn->srv.penOp.mtu = mtu;
             conn->srv.penOp.startHandle = wantedHandle;
