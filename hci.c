@@ -4955,9 +4955,11 @@ static bool hciHandleConnAclEdrUp(uint8_t status, uint16_t id, const uint8_t *ma
     struct hciAclConn *c;
 
     pthread_mutex_lock(&mConnsLock);
-    memcpy(c->selfAddr.addr, mLocalAddr, sizeof(c->selfAddr.addr));
-    c->selfAddr.type = BT_ADDR_TYPE_EDR;
     c = hciConnAclUp(!status, id, mac, BT_ADDR_TYPE_EDR, encrypted, false);
+    if (c) {
+        memcpy(c->selfAddr.addr, mLocalAddr, sizeof(c->selfAddr.addr));
+        c->selfAddr.type = BT_ADDR_TYPE_EDR;
+    }
     pthread_mutex_unlock(&mConnsLock);
 
     return !!c;
