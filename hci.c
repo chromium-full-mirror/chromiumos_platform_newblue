@@ -4935,7 +4935,6 @@ static struct hciAclConn* hciConnAclUp(bool established, uint16_t id, const uint
         loge("Connection in state %d at up time\n", c->state);
     }
     c->encrypted = encrypted;
-    hciConnCfg(c, isLE ? CONN_CFG_STEP_LE : CONN_CFG_STEP_EDR, 0);
 
     return c;
 }
@@ -4959,6 +4958,8 @@ static bool hciHandleConnAclEdrUp(uint8_t status, uint16_t id, const uint8_t *ma
     if (c) {
         memcpy(c->selfAddr.addr, mLocalAddr, sizeof(c->selfAddr.addr));
         c->selfAddr.type = BT_ADDR_TYPE_EDR;
+
+        hciConnCfg(c, CONN_CFG_STEP_EDR, 0);
     }
     pthread_mutex_unlock(&mConnsLock);
 
@@ -4994,6 +4995,8 @@ static bool hciHandleConnAclLeUp(uint8_t status, uint16_t id, bool isMaster, con
         /* XXX: TODO: once we start advertising random addresses, this will need to evolve */
         memcpy(c->selfAddr.addr, mLocalAddr, sizeof(c->selfAddr.addr));
         c->selfAddr.type = BT_ADDR_TYPE_LE_PUBLIC;
+
+        hciConnCfg(c, CONN_CFG_STEP_LE, 0);
     }
     pthread_mutex_unlock(&mConnsLock);
     return !!c;
