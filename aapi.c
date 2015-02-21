@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <string.h>
 #include "aapiSocket.h"
 #include "aapiGatt.h"
 #include "workQueue.h"

@@ -1,3 +1,4 @@
+#include <stdlib.h>
 #include <string.h>
 #include "aapiGattServer.h"
 #include "gatt-builtin.h"

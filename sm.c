@@ -9,6 +9,7 @@
 #include "config.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 /* packet types */
 #define SM_PAIRING_REQ                  0x01 /* struct smPairReqResp */

@@ -6,6 +6,8 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <poll.h>
+#include <stdlib.h>
+#include <string.h>
 #include "aapiSocket.h"
 #include "rfcomm.h"
 #include "config.h"
