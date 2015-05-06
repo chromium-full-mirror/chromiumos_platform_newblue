@@ -36,7 +36,7 @@ LOCAL_SHARED_LIBRARIES := libdl liblog
 
 LOCAL_MODULE := bluetooth.NewBlue
 LOCAL_SRC_FILES += aapi.c aapiSocket.c aapiGatt.c aapiGattClient.c aapiGattServer.c
-LOCAL_MODULE_PATH := $(TARGET_OUT_SHARED_LIBRARIES)/hw
+LOCAL_MODULE_RELATIVE_PATH := hw
 include $(BUILD_SHARED_LIBRARY)
 
 
