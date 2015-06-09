@@ -847,7 +847,7 @@ static void* btWorker(void *callbacks)
             cbks->discovery_state_changed_cb(wi->state.on ? BT_DISCOVERY_STARTED : BT_DISCOVERY_STOPPED);
             break;
         case WT_PIN_REQ:
-            cbks->pin_request_cb(&wi->pinReq.remote_bd_addr, &wi->pinReq.bd_name, wi->pinReq.cod);
+            cbks->pin_request_cb(&wi->pinReq.remote_bd_addr, &wi->pinReq.bd_name, wi->pinReq.cod, false);
             break;
         case WT_SSP_REQ:
             cbks->ssp_request_cb(&wi->sspReq.remote_bd_addr,&wi->sspReq.bd_name, wi->sspReq.cod, wi->sspReq.pairing_variant, wi->sspReq.pass_key);
