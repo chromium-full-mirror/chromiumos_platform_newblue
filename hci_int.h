@@ -2416,7 +2416,7 @@ struct hciCmplLeRemoteConnParamRequestReply {
     uint16_t conn;
 } __packed;
 
-#define HCI_CMD_LE_Remote_Conn_Param_Request_Negative_Reply      0x0020 /* complete */
+#define HCI_CMD_LE_Remote_Conn_Param_Request_Negative_Reply      0x0021 /* complete */
 struct hciRemoteConnParamRequestNegativeReply {
     uint16_t conn;
     uint8_t reason;

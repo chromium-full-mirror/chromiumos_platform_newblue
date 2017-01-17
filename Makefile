@@ -22,6 +22,8 @@ OBJ =                       \
     timer.o                 \
     uniq.o                  \
     vendorLib.o             \
+    uuid.o                  \
+    gatt-builtin.o          \
     workQueue.o
 
 OBJ +=                      \

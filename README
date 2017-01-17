@@ -1,0 +1,17 @@
+Architecture:
+
+Mostly see BT Core spec and this presentation: https://docs.google.com/presentation/d/16ItWGEZnAHpuGMPhUtLRrohxa0LlKd3GC1TUDBfHXak/edit#slide=id.p
+
+Abbreviation: (more will be added as questions arise)
+SM - Security Manager
+SG - a type of buffer (see presentation)
+MT - MultiThreading helpers
+
+
+Tests: TBD
+
+Coding style:
+Linux kernel
+
+Format of commit message:
+Linux kernel

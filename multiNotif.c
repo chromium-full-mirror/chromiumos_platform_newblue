@@ -41,7 +41,7 @@ struct multiNotifList *multiNotifCreate(void)
         goto out_mutex_1;
     }
 
-    if (pthread_mutex_init(&nl->structLock, NULL)) {
+    if (pthread_mutex_init(&nl->bcastLock, NULL)) {
         loge("failed to init notif list bcast mutex\n");
         goto out_mutex_2;
     }
@@ -112,10 +112,10 @@ void multiNotifNotify(struct multiNotifList *nl, const void *notifData)
 {
     struct multiNotifItem *notifTodo, *notifDone = NULL, *t, *iter;
 
-    pthread_mutex_lock(&nl->structLock);
-
     /* assure only one broadcast at a time */
     pthread_mutex_lock(&nl->bcastLock);
+
+    pthread_mutex_lock(&nl->structLock);
 
     /* grab all items */
     notifTodo = nl->items;
