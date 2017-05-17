@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+
 #include "gatt-builtin.h"
 #include "vendorLib.h"
 #include "persist.h"
@@ -57,7 +58,7 @@ static void testHciScoRxCbk(hci_conn_t aclConn, const void *data, uint8_t len, u
 
 static void opDoneCbk(void *cbkData, uint8_t status)
 {
-    sem_t *sem = (sem_t*)cbkData;
+    sem_t *sem = (sem_t *)cbkData;
 
     gStatus = status;
     logi("status=%d\n", status);
@@ -236,27 +237,177 @@ static void testRfcEvtF(void *userData, void *instance, uint8_t evt, sg data)
     }
 }
 
+
+static int mSvcTime = 0;
+static int mConnTime = 0;
+static bool stopTimeService = false;
+
 uint16_t mGattHandleCurTime = 0;
 uint16_t mGattHandleCurTimeCfg = 0;
 uint16_t mGattHandleLocalTimeInfo = 0;
 uint16_t mGattHandleReferenceTimeInfo = 0;
 
-static bool testGattSrvValueReadCbk(int svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len)
+struct dateTime {
+    uint16_t year;    // used in LE service with little endian.
+    uint8_t month;
+    uint8_t day;
+    uint8_t hours;
+    uint8_t minutes;
+    uint8_t seconds;
+} __packed;
+
+struct dayOfWeek {
+    uint8_t dayOfWeek;
+} __packed;
+
+struct dayDateTime {
+    struct dateTime dateTime;
+    struct dayOfWeek dayOfWeek;
+} __packed;
+
+struct exactTime256 {
+    struct dayDateTime dayDateTime;
+    uint8_t fractions256;
+} __packed;
+
+struct {
+    struct exactTime256 exactTime256;
+    uint8_t adjustReason;
+}__packed mGattCurTime;
+
+struct {
+    uint16_t cCC; // Client Characteristic Configuration descriptor
+}__packed mGattCurTimeCfg;
+
+struct {
+    int8_t timeZone;    // offset from UTC in 15-min increments
+    uint8_t dstOffset;  // daylight saving time offset to add
+}__packed mGattLocalTimeInfo;
+
+static bool testGattSrvValueReadCbk(int svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t wantedLen)
 {
-    return false;
+    uint8_t err = ATT_ERROR_NONE;
+    const uint8_t *ptr = NULL;
+    uint16_t len = 0;
+
+    if (svc != mSvcTime) {
+        logw("Unexpected read in Current Time service\n");
+        return false;
+    }
+
+    if (handle == mGattHandleCurTime) {
+        ptr = (const uint8_t *)&mGattCurTime;
+        len = sizeof(mGattCurTime);
+    } else if (handle == mGattHandleCurTimeCfg) {
+        ptr = (const uint8_t *)&mGattCurTimeCfg;
+        len = sizeof(mGattCurTimeCfg);
+    } else if (handle == mGattHandleLocalTimeInfo) {
+        ptr = (const uint8_t *)&mGattLocalTimeInfo;
+        len = sizeof(mGattLocalTimeInfo);
+    } else if (handle == mGattHandleReferenceTimeInfo) {
+        ptr = (const uint8_t *)&mGattHandleReferenceTimeInfo;
+        len = sizeof(mGattHandleReferenceTimeInfo);
+    } else {
+        logw("Unexpected read from handle %u of svc %u from conn "HANDLEFMT"\n", handle, svc, HANDLECNV(who));
+        return false;
+    }
+
+    if (byteOfst > len) {
+        err = ATT_ERROR_INVALID_OFFSET;
+    } else {
+        ptr += byteOfst;
+        len -= byteOfst;
+    }
+    if (len > wantedLen)
+        len = wantedLen;
+
+    logi("testGattSrvValueReadCbk: cid: %d, transId: %d, handle: handle: %d\n", cid, transId, handle);
+
+    gattSrvCbkReply(cid, transId, handle, err, ptr, len);
+    return true;
 }
 
 static bool testGattSrvValueWriteCbk(int svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
 {
-    return false;
+    uint8_t err = ATT_ERROR_NONE;
+
+    logi("testGattSrvValueWriteCbk: cid: %d, transId: %d, handle: handle: %d\n", cid, transId, handle);
+
+    if (handle == mGattHandleCurTimeCfg) {
+        mGattCurTimeCfg.cCC = *(const uint8_t *)data;
+        mConnTime = cid;
+        logi("data: %x, len: %d\n", mGattCurTimeCfg.cCC, len);
+        gattSrvCbkReply(cid, transId, handle, err, NULL, 0);
+    } else if (handle == mGattHandleLocalTimeInfo) {
+        memcpy(&mGattLocalTimeInfo, data, len);
+        gattSrvCbkReply(cid, transId, handle, err, NULL, 0);
+    } else {
+        loge("Unrecognized handle: %d\n", handle);
+        return false;
+    }
+
+    return true;
 }
 
 static void testGattSrvIndCbk(int svc, l2c_handle_t who, int cid, uint16_t handle, uint8_t evt, uint64_t ref)
 {
-    //todo
+    if (svc != mSvcTime) {
+        logw("Unexpected notification callback in Current Time service\n");
+        return;
+    }
+
+    logi("time notification sent: cid: %d, handle: handle: %d\n", cid, handle);
 }
 
-//sets up time service service as a sample
+static void testGattInitTime() {
+    mGattCurTime.exactTime256.dayDateTime.dateTime.year = 2017;
+    mGattCurTime.exactTime256.dayDateTime.dateTime.month = 5;
+    mGattCurTime.exactTime256.dayDateTime.dateTime.day = 1;
+    mGattCurTime.exactTime256.dayDateTime.dateTime.hours = 12;
+    mGattCurTime.exactTime256.dayDateTime.dateTime.minutes = 30;
+    mGattCurTime.exactTime256.dayDateTime.dateTime.seconds = 5;
+
+    mGattCurTime.adjustReason = 0;
+    mGattCurTime.exactTime256.fractions256 = 0;
+    mGattCurTime.exactTime256.dayDateTime.dayOfWeek.dayOfWeek = 3;
+
+    mGattCurTimeCfg.cCC = 0;
+
+    mGattLocalTimeInfo.timeZone = 32;   // UTC+8 hours
+    mGattLocalTimeInfo.dstOffset = 4;   // daylight time +1 hour
+}
+
+static void testIndCb() {
+    if (mGattCurTimeCfg.cCC == 0)
+        return;
+
+    const uint8_t *ptr = NULL;
+    uint16_t len = 0;
+
+    ptr = (const uint8_t *)&mGattCurTime;
+    len = sizeof(mGattCurTime);
+    gattServiceSendInd(mSvcTime, mConnTime, mGattHandleCurTime, ptr, len, false, 0);
+}
+
+static void *testGattSetTime(void *data) {
+    uint8_t seconds;
+    uint8_t TICK = 5;
+
+    while (!stopTimeService) {
+        sleep(TICK);
+        mGattCurTime.exactTime256.dayDateTime.dateTime.seconds += TICK;
+        if (mGattCurTime.exactTime256.dayDateTime.dateTime.seconds >= 60) {
+            mGattCurTime.exactTime256.dayDateTime.dateTime.seconds -= 60;
+            mGattCurTime.exactTime256.dayDateTime.dateTime.minutes += 1;
+        }
+        logi("time: %d\n", mGattCurTime.exactTime256.dayDateTime.dateTime.seconds);
+        testIndCb();
+    }
+
+    return NULL;
+}
+
+// Sets up current time service as a sample.
 static int gattSetup(void)
 {
     struct uuid uuid;
@@ -270,6 +421,8 @@ static int gattSetup(void)
     }
 
     uuidFromUuid16(&uuid, 0x2A2B); //"current time" characteristic
+    // GATT_PROP_READ and GATT_PROP_NOTIFY are mandatory.
+    // GATT_PROP_WRITE is optional.
     mGattHandleCurTime = gattServiceAddChar(svc, &uuid, GATT_PROP_READ | GATT_PROP_NOTIFY, GATT_PERM_ALL_READ);
     if (!mGattHandleCurTime) {
         loge("Failed to add cur time char\n");
@@ -284,7 +437,7 @@ static int gattSetup(void)
     }
 
     uuidFromUuid16(&uuid, 0x2A0F); //"local time info" characteristic
-    mGattHandleLocalTimeInfo = gattServiceAddChar(svc, &uuid, GATT_PROP_READ, GATT_PERM_ALL_READ);
+    mGattHandleLocalTimeInfo = gattServiceAddChar(svc, &uuid, GATT_PROP_READ | GATT_PROP_WRITE, GATT_PERM_ALL_READ | GATT_PERM_ALL_WRITE);
     if (!mGattHandleLocalTimeInfo) {
         loge("Failed to add local time info char\n");
         goto out;
@@ -464,14 +617,37 @@ int main(int argc, char** argv)
     if (!gattBuiltinInit())
         loge("Failed to init GATT services\n");
 
-    svc = gattSetup();
 
-    gattServiceStart(svc, true, false);
+    mSvcTime = gattSetup();
+    logi("gattSetup: svc=%d\n", mSvcTime);
+    if (!gattServiceStart(mSvcTime, true, true))
+        loge("Failed to start service: %d\n", mSvcTime);
+    logd("Current time service created as svc %u at handle 0x%04X\n", mSvcTime, gattServiceGetHandleBaseBySvc(mSvcTime));
+
+    testGattInitTime();
+
+    pthread_t setTimeThread;
+    if (pthread_create(&setTimeThread, NULL, testGattSetTime, NULL)) {
+        loge("Failed to create pthread for current time service.\n");
+        return -1;
+    }
+
 
     gattBuiltinSetDevName("SuperLongDeviceNameThatWillProbablyNotFitIntoASinglePacketEver");
     gattBuiltinSetPreferredConnParamsWhenSlave(20, 30, 40, 400);
     gattBuiltinSetAppearance(GAP_APPEAR_GENERIC_WATCH);
 
+    // Set advertising parameters.
+    uint8_t peerAddress[BT_MAC_LEN] = {0x00};
+    if (!hciLeSetAdvParams(0x00c8,  // uint16_t advIntervalMin;
+                           0x0190,  // uint16_t advIntervalMax;
+                           HCI_ADV_TYPE_ADV_IND,
+                           HCI_ADV_OWN_ADDR_TYPE_PUBLIC,
+                           HCI_ADV_OWN_ADDR_TYPE_PUBLIC,
+                           peerAddress,
+                           HCI_ADV_CHAN_MAP_USE_CHAN_37 | HCI_ADV_CHAN_MAP_USE_CHAN_38 | HCI_ADV_CHAN_MAP_USE_CHAN_39,
+                           HCI_ADV_FILTER_POL_SCAN_ALL_CONNECT_ALL))
+        loge("Failed to set LE advertising params\n");
 
     static const uint8_t data[] = {
 		2, HCI_EIR_TYPE_FLAGS, 2, /* flags - general discoverable */
@@ -496,12 +672,17 @@ int main(int argc, char** argv)
     logi("waiting...press a key\n");
     getchar();
 
+    stopTimeService = true;
+    if (pthread_join(setTimeThread, NULL))
+        loge("Failed to join the pthread of current time service.\n");
+    logi("The pthread of current time service was terminated.\n");
+
     sdpServiceDescriptorDel(sdpHandle);
     rfcStopListen(rfcChan);
 
-    if (svc) {
-        gattServiceStop(svc);
-        gattServiceDestroy(svc);
+    if (mSvcTime) {
+        gattServiceStop(mSvcTime);
+        gattServiceDestroy(mSvcTime);
     }
     logi("bringing down\n");
     gattBuiltinDeinit();
