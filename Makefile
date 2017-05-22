@@ -32,16 +32,22 @@ OBJ +=                      \
 %.o: %.c
 	gcc -o $@ $(CFLAGS) -c $<
 
-$(TEST): $(OBJ) usb_vendor_plugin
+$(TEST): $(OBJ) usb_vendor_plugin hci0_vendor_plugin
 	g++ -o $@ -g $(OBJ) -ldl -pthread -lrt
 
-clean: usb_vendor_plugin_clean
+clean: usb_vendor_plugin_clean hci0_vendor_plugin_clean
 	@rm -f *.o $(TEST)
 
-all: $(TEST) usb_vendor_plugin
+all: $(TEST) usb_vendor_plugin hci0_vendor_plugin
 
 usb_vendor_plugin:
 	$(MAKE) -C usb-hci
 
 usb_vendor_plugin_clean:
 	$(MAKE) -C usb-hci clean
+
+hci0_vendor_plugin:
+	$(MAKE) -C hci0-plugin
+
+hci0_vendor_plugin_clean:
+	$(MAKE) -C hci0-plugin clean

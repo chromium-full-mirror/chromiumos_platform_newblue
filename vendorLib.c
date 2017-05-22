@@ -22,7 +22,7 @@
 #ifdef ANDROID
 #define BT_VENDOR_LIB_NAME       "/vendor/lib/libbt-vendor.so"
 #else
-#define BT_VENDOR_LIB_NAME       "usb-hci/libbt-vendor.so"
+#define BT_VENDOR_LIB_NAME       "libbt-vendor.so"
 #endif
 #define BT_VENDOR_INFACE_STRUCT  "BLUETOOTH_VENDOR_LIB_INTERFACE"
 
