@@ -282,7 +282,7 @@ static void* vendorWorker(void *pipeFdP)
         }
 
         /* wait for action */
-        while(EINTR == (ret = poll(pollfds, numfds, -1)));
+        while((ret = poll(pollfds, numfds, -1)) < 0 && errno == EINTR);
         if (ret < 0) {
             loge("Unexpected poll error %d\n", ret);
             continue;
