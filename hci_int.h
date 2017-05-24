@@ -105,7 +105,6 @@
 #define HCI_SCO_LINK_TYPE_ESCO                                   0x02
 
 #define HCI_SCO_AIR_MODE_MULAW                                   0x00
-#define HCI_SCO_AIR_MODE_ALAW                                    0x01
 #define HCI_SCO_AIR_MODE_CVSD                                    0x02
 #define HCI_SCO_AIR_MODE_TRANSPARENT                             0x03
 
@@ -134,6 +133,9 @@
 #define HCI_VERSION_3_0                                           4 /* BT 3.0  */
 #define HCI_VERSION_4_0                                           6 /* BT 4.0  */
 #define HCI_VERSION_4_1                                           7 /* BT 4.1  */
+#define HCI_VERSION_4_2                                           8 /* BT 4.2  */
+#define HCI_VERSION_5_0                                           9 /* BT 5.0  */
+#define HCI_VER_MAX_SUPPORTED                                     HCI_VERSION_5_0
 
 #define HCI_LE_STATE_NONCON_ADV                                  0x0000000000000001ULL /* BT 4.0+ */
 #define HCI_LE_STATE_SCANNABLE_ADV                               0x0000000000000002ULL /* BT 4.0+ */
@@ -306,6 +308,8 @@
 #define HCI_EVENT_LE_META                                        0x2000000000000000ULL /* BT 4.0+ */
 #define HCI_EVENT_ALL_BT_4_0                                     0x3DBFFFFFFFFFFFFFULL
 #define HCI_EVENT_ALL_BT_4_1                                     0x3DBFFFFFFFFFFFFFULL
+#define HCI_EVENT_ALL_BT_4_2                                     0x3DBFFFFFFFFFFFFFULL
+#define HCI_EVENT_ALL_BT_5_0                                     0x3DBFFFFFFFFFFFFFULL
 
 #define HCI_EVENT_P2_PHYS_LINK_COMPLETE                          0x0000000000000001ULL /* BT 3.0+ */
 #define HCI_EVENT_P2_CHANNEL_SELECTED                            0x0000000000000002ULL /* BT 3.0+ */
@@ -334,6 +338,10 @@
 #define HCI_EVENT_P2_INQUIRY_RESPONSE_NOTIFICATION               0x0000000000400000ULL /* BT 4.1+ */
 #define HCI_EVENT_P2_AUTHENTICATED_PAYLOAD_TIMEOUT_EXPIRED       0x0000000000800000ULL /* BT 4.1+ */
 #define HCI_EVENT_P2_ALL_BT_4_1                                  0x0000000000FFFFFFULL
+#define HCI_EVENT_P2_ALL_BT_4_2                                  0x0000000000FFFFFFULL
+#define HCI_EVENT_P2_SAM_STATUS_CHANGE                           0x0000000001000000ULL /* BT 5.0+ */
+#define HCI_EVENT_P2_ALL_BT_5_0                                  0x0000000001FFFFFFULL
+
 
 #define HCI_LE_EVENT_CONN_COMPLETE                               0x0000000000000001ULL /* BT 4.0+ */
 #define HCI_LE_EVENT_ADV_REPORT                                  0x0000000000000002ULL /* BT 4.0+ */

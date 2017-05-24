@@ -277,7 +277,7 @@ struct hciDiscoverNameState {
 
 
 /* useful constants */
-static const char *mBtVers[] = {"1.0b", "1.1", "1.2", "2.0", "2.1", "3.0", "4.0", "4.1"};
+static const char *mBtVers[] = {"1.0b", "1.1", "1.2", "2.0", "2.1", "3.0", "4.0", "4.1", "4.2", "5.0"};
 
 /* our state */
 
@@ -2174,6 +2174,16 @@ HCI_SIMPLY_SYNC_WRITE(SetEventMask, (uint64_t mask), HCI_OGF_Controller_and_Base
 HCI_SIMPLY_SYNC_END
 
 /*
+ * FUNCTION: hciSetEventMaskPage2Sync
+ * USE:      Set event mask page 2
+ * PARAMS:   mask - the wanted mask
+ */
+HCI_SIMPLY_SYNC_WRITE(SetEventMaskPage2, (uint64_t mask), HCI_OGF_Controller_and_Baseband, HCI_CMD_Set_Event_Mask_Page_2)
+    REQUIRE_VERSION(HCI_VERSION_3_0)
+    HCI_COPY_IN_U64(mask)
+HCI_SIMPLY_SYNC_END
+
+/*
  * FUNCTION: hciWritePinTypeSync
  * USE:      Set whether we have a fixed or variable PIN
  * PARAMS:   isFixed - is the pin fixed?
@@ -3408,11 +3418,11 @@ static bool hciBtStackUp(void)
         lmpVersion = utilGetLE8(&evt.lmpVersion);
         logi("BT UP: bt versions reported: %u, %d\n", hciVersion, lmpVersion);
 
-        if (hciVersion > HCI_VERSION_4_1)
-            hciVersion = HCI_VERSION_4_1;
+        if (hciVersion > HCI_VER_MAX_SUPPORTED)
+            hciVersion = HCI_VER_MAX_SUPPORTED;
 
-        if (lmpVersion > HCI_VERSION_4_1)
-            lmpVersion = HCI_VERSION_4_1;
+        if (lmpVersion > HCI_VER_MAX_SUPPORTED)
+            lmpVersion = HCI_VER_MAX_SUPPORTED;
 
         mBtVer = hciVersion < lmpVersion ? hciVersion : lmpVersion;
 
@@ -3562,7 +3572,7 @@ static bool hciBtStackUp(void)
 
     /* set event mask */
     {
-        uint64_t evts = 0;
+        uint64_t evts = 0, evts2 = 0;
 
         switch (mBtVer) {
         case HCI_VERSION_1_1:
@@ -3576,12 +3586,23 @@ static bool hciBtStackUp(void)
             break;
         case HCI_VERSION_3_0:
             evts = HCI_EVENT_ALL_BT_3_0;
+            evts2 = HCI_EVENT_P2_ALL_BT_3_0;
             break;
         case HCI_VERSION_4_0:
             evts = HCI_EVENT_ALL_BT_4_0;
+            evts2 = HCI_EVENT_P2_ALL_BT_4_0;
             break;
         case HCI_VERSION_4_1:
             evts = HCI_EVENT_ALL_BT_4_1;
+            evts2 = HCI_EVENT_P2_ALL_BT_4_1;
+            break;
+        case HCI_VERSION_4_2:
+            evts = HCI_EVENT_ALL_BT_4_2;
+            evts2 = HCI_EVENT_P2_ALL_BT_4_2;
+            break;
+        case HCI_VERSION_5_0:
+            evts = HCI_EVENT_ALL_BT_5_0;
+            evts2 = HCI_EVENT_P2_ALL_BT_5_0;
             break;
         }
         evts &=~ HCI_EVENT_REMOTE_HOST_SUPPORTED_FEATURES; /* we do not want this one - it is spammy and useless for now */
@@ -3590,6 +3611,13 @@ static bool hciBtStackUp(void)
         ret = hciSetEventMaskSync(evts);
         if (ret)
             goto out;
+
+        if (mBtVer >= HCI_VERSION_3_0) {
+            logi("Setting event mask page 2 to 0x"FMT64"X\n", CNV64(evts2));
+            ret = hciSetEventMaskPage2Sync(evts2);
+            if (ret)
+                goto out;
+        }
     }
 
     /* set discoverability and connectivity scan settings */
@@ -4660,7 +4688,7 @@ static bool hciConnCfgCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evt
             break;
         step++;
         c->edr.btVer = utilGetLE8(&rrv->lmpVersion);
-        logd("Remote reports BT version %u (effective: %s)\n", c->edr.btVer, mBtVers[c->edr.btVer > HCI_VERSION_4_1 ? HCI_VERSION_4_1 : c->edr.btVer]);
+        logd("Remote reports BT version %u (effective: %s)\n", c->edr.btVer, mBtVers[c->edr.btVer > HCI_VER_MAX_SUPPORTED ? HCI_VER_MAX_SUPPORTED : c->edr.btVer]);
         break;
     case CONN_CFG_STEP_EDR + 3: /* fourth EDR step = read remote features/extended features */
         if (evtType == HCI_EVT_Command_Status) { /* we just started the request */
