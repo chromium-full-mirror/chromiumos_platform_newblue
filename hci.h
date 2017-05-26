@@ -148,7 +148,7 @@ typedef void (*hciOpDoneCbk)(void *cbkData, uint8_t status /* 0 = good */);
 #define SCO_LOSS_AMOUNT_ALL     3
 
 /* bring chip communications up or down */
-bool hciUp(const uint8_t *addr, uint8_t ioCapability);
+bool hciUp(const uint8_t *addr, uint8_t ioCapability, bool forceDisableLe, bool forceDisableEdr);
 void hciDown(void);
 
 /* info api */

@@ -327,14 +327,14 @@ static sem_t mAclPacketsEdr;
 static sem_t mAclPacketsLe;
 static sem_t mScoPackets;
 static bool mHaveLe = false;
-static bool mHaveEdr = true;
+static bool mHaveEdr = false;
 static bool mSimulLe = false;
 static uint8_t mInquiryState = 0;
 static uint8_t mLocalAddr[BT_MAC_LEN];
 
 
 /* fwd declarations */
-static bool hciBtStackUp(void);
+static bool hciBtStackUp(bool forceDisableLe, bool forceDisableEdr);
 static bool hciScheduleConnUpNotif(hci_conn_t conn, const struct bt_addr *peerAddr, const struct bt_addr *selfAddr, bool isMaster, bool isEncrypted, bool isMitmSafe);
 static bool hciScheduleConnDownNotif(hci_conn_t conn);
 static bool hciScheduleConnDataRx(hci_conn_t conn, sg packet, bool first);
@@ -1333,10 +1333,12 @@ success:
  * USE:      Bring up HCI (comms to bt chip)
  * PARAMS:   addr - the BT addr
  *           ioCapability - our user interaction capabilities (HCI_DISP_CAP_*)
+ *           forceDisableLe - set to disable LE even if capable
+ *           forceDisableEdr - set to disable EDR even if capable
  * RETURN:   true on success, false else
  * NOTES:    may take a while
  */
-bool hciUp(const uint8_t *addr, uint8_t ioCapability)
+bool hciUp(const uint8_t *addr, uint8_t ioCapability, bool forceDisableLe, bool forceDisableEdr)
 {
     int ret;
 
@@ -1385,7 +1387,7 @@ bool hciUp(const uint8_t *addr, uint8_t ioCapability)
     }
 
     logd("Stack up\n");
-    if (!hciBtStackUp()) {
+    if (!hciBtStackUp(forceDisableLe, forceDisableEdr)) {
         loge("Failed to bring up BT stack\n");
         goto out_stack_up;
     }
@@ -3438,15 +3440,18 @@ void hciGetLocalAddress(uint8_t *addr)
 
 /*
  * FUNCTION: hciBtStackUp
- * USE:      Brings up the chip in a sane configuration, reags versions, etc
- * PARAMS:   NONE
+ * USE:      Brings up the chip in a sane configuration, reads versions, etc
+ * PARAMS:   forceDisableLe - set to disable LE even if capable
+ *           forceDisableEdr - set to disable EDR even if capable
  * RETURN:   false on error
  * NOTES:
  */
-static bool hciBtStackUp(void)
+static bool hciBtStackUp(bool forceDisableLe, bool forceDisableEdr)
 {
     int ret = 0;
     uint8_t inqMode = HCI_INQ_MODE_STD;
+
+    mHaveEdr = !forceDisableEdr;
 
     /* read local BT version */
     {
@@ -3561,7 +3566,7 @@ static bool hciBtStackUp(void)
     }
 
     /* read LE buffer sizes & features, if LE exists */
-    if (mBtVer >= HCI_VERSION_4_0 && (mLocalFtrs[0] & HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER)) {
+    if (mBtVer >= HCI_VERSION_4_0 && (mLocalFtrs[0] & HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER) && !forceDisableLe) {
         struct hciCmplLeReadLocalSupportedFeatures evtFtrs;
         struct hciCmplLeReadBufferSize evt;
         uint16_t i;
@@ -3597,7 +3602,7 @@ static bool hciBtStackUp(void)
     }
 
     /* setup a few simple settings */
-    {
+    if (mHaveEdr) {
         logi("Setting PIN type to variable\n");
         ret = hciWritePinTypeSync(false);
         if (ret)
@@ -3665,7 +3670,7 @@ static bool hciBtStackUp(void)
     }
 
     /* set discoverability and connectivity scan settings */
-    {
+    if (mHaveEdr) {
         logi("Setting page scan timings\n");
         ret = hciWritePageScanActivitySync(0x100, 0x12);
         if (ret) {
@@ -3682,7 +3687,7 @@ static bool hciBtStackUp(void)
     }
 
     /* enable SSP, if possible */
-    if (mBtVer >= HCI_VERSION_2_1 && (mLocalFtrs[0] & HCI_LMP_FTR_SSP)) {
+    if (mBtVer >= HCI_VERSION_2_1 && (mLocalFtrs[0] & HCI_LMP_FTR_SSP) && mHaveEdr) {
         logi("Enabling SSP\n");
         ret = hciWriteSimplePairingModeSync(true);
         if (ret)
@@ -3701,7 +3706,7 @@ static bool hciBtStackUp(void)
     }
 
     /* set scan results to most informative format */
-    if (mBtVer >= HCI_VERSION_1_2) {
+    if (mBtVer >= HCI_VERSION_1_2 && mHaveEdr) {
 
         if (mLocalFtrs[0] & HCI_LMP_FTR_RSSI_WITH_INQUIRY_RESULTS)
             inqMode = HCI_INQ_MODE_RSSI;
