@@ -653,6 +653,7 @@ static bool gattEnqueueSrvIndCall(struct gattService *svc, l2c_handle_t who, int
         wi->srvIndCall.handle = handle;
         wi->srvIndCall.evt = evt;
         wi->srvIndCall.ref = ref;
+        wi->srvIndCall.indF = svc->indF;
 
         if (workQueuePut(mWorkQ, wi))
             return true;
