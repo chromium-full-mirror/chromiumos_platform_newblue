@@ -2640,17 +2640,18 @@ static bool attSrvWriteContinue(struct attConn *conn, const void *lastWriteData,
 {
     uint8_t err = ATT_ERROR_UNLIKELY_ERROR;
 
-
     if (conn->srv.penOp.origOpcode != ATT_OPCODE_WRITE_REQ && conn->srv.penOp.origOpcode != ATT_OPCODE_SIGNED_WRITE_CMD &&
          conn->srv.penOp.origOpcode != ATT_OPCODE_WRITE_REQ && conn->srv.penOp.origOpcode != ATT_OPCODE_PREPARE_WRITE_REQ)
         return false;
 
-    conn->srv.penOp.origOpcode = 0;
-
-    if (conn->srv.penOp.origOpcode == ATT_OPCODE_WRITE_REQ)
+    if (conn->srv.penOp.origOpcode == ATT_OPCODE_WRITE_REQ) {
+        conn->srv.penOp.origOpcode = 0;
         return attSendPacketEmptyPacket(conn->conn, ATT_OPCODE_WRITE_RSP);
-    if (conn->srv.penOp.origOpcode == ATT_OPCODE_PREPARE_WRITE_REQ)
+    }
+    if (conn->srv.penOp.origOpcode == ATT_OPCODE_PREPARE_WRITE_REQ) {
+        conn->srv.penOp.origOpcode = 0;
         return attSendPacket(conn->conn, ATT_OPCODE_PREPARE_WRITE_RSP, lastWriteData, leastWriteLen, NULL);
+    }
 
     return true;
 }
