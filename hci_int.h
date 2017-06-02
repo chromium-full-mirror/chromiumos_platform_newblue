@@ -2186,7 +2186,7 @@ struct hciLeSetAdvParams {
     uint16_t advIntervalMin;
     uint16_t advIntervalMax;
     uint8_t advType;
-    uint8_t useRandomAddress;
+    uint8_t ownAddressType;
     uint8_t directRandomAddress;
     uint8_t directAddr[6];
     uint8_t advChannelMap;

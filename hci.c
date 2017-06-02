@@ -2163,6 +2163,30 @@ bool hciSetRspData(const uint8_t *data, uint8_t dlen, hciOpDoneCbk cbkDone, void
                                                    return -1;                                                        \
                                                return (unsigned)utilGetLE8(&evt->status);                            \
                                            }
+/*
+ * FUNCTION: hciLeSetAdvParamsSync
+ * USE:      set adv params
+ * PARAMS:   advIntervalMin - minimum adv interval (in units of 0.625ms)
+ *           advIntervalMax - maximum adv interval (in units of 0.625ms)
+ *           advType - adv type: HCI_ADV_TYPE_ADV_*
+ *           ownAddressType - own addr type: HCI_ADV_OWN_ADDR_TYPE_*
+ *           directRandomAddress - set to 1 if direct adv to random addr, else ignored
+ *           directAddr - if direct adv, the mac address of target, else ignored
+ *           advChannelMap - channels to use: bitmask of HCI_ADV_CHAN_MAP_USE_*
+ *           advFilterPolicy - filter policy: HCI_ADV_FILTER_POL_*
+ */
+HCI_SIMPLY_SYNC_WRITE(LeSetAdvParams, (uint16_t advIntervalMin, uint16_t advIntervalMax, uint8_t advType, uint8_t ownAddressType, uint8_t directRandomAddress, const uint8_t *directAddr, uint8_t advChannelMap, uint8_t advFilterPolicy), HCI_OGF_LE, HCI_CMD_LE_Set_Adv_Params)
+    REQUIRE_VERSION(HCI_VERSION_4_0);
+    REQUIRE_FEATURE(0, HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER);
+    HCI_COPY_IN_U16(advIntervalMin);
+    HCI_COPY_IN_U16(advIntervalMin);
+    HCI_COPY_IN_U8(advType);
+    HCI_COPY_IN_U8(ownAddressType);
+    HCI_COPY_IN_U8(directRandomAddress);
+    HCI_COPY_IN_MAC(directAddr);
+    HCI_COPY_IN_U8(advChannelMap);
+    HCI_COPY_IN_U8(advFilterPolicy);
+HCI_SIMPLY_SYNC_END
 
 /*
  * FUNCTION: hciSetEventMaskSync
@@ -2373,7 +2397,7 @@ HCI_SIMPLY_SYNC_WRITE(LeSetScanParams, (uint8_t activeScan, uint16_t scanInterva
 HCI_SIMPLY_SYNC_END
 
 /*
- * FUNCTION: LeReadLocalSupportedFeatures
+ * FUNCTION: hciLeReadLocalSupportedFeatures
  * USE:      Set LE scan parameters
  * PARAMS:   scanOn - scan on/off
  *           filterDuplicates - this rarely works, do not use
@@ -2386,7 +2410,7 @@ HCI_SIMPLY_SYNC_END
 /*
  * FUNCTION: hciRemoteNameRequestCancelSync
  * USE:      Cancel a remote name request
- * PARAMS:   mac -the mac
+ * PARAMS:   mac - the mac
  */
 HCI_SIMPLY_SYNC_WRITE(RemoteNameRequestCancel, (const uint8_t *mac), HCI_OGF_Link_Control, HCI_CMD_Remote_Name_Request_Cancel)
     HCI_COPY_IN_MAC(mac);
@@ -2404,6 +2428,26 @@ HCI_SIMPLY_SYNC_CMD_W_STATUS(Inquiry, (uint32_t lap, uint8_t inqLen, uint8_t num
     HCI_COPY_IN_U8(inqLen)
     HCI_COPY_IN_U8(numResp)
 HCI_SIMPLY_SYNC_END
+
+
+/*
+ * FUNCTION: hciLeSetAdvParams
+ * USE:      set adv params
+ * PARAMS:   advIntervalMin - minimum adv interval (in units of 0.625ms)
+ *           advIntervalMax - maximum adv interval (in units of 0.625ms)
+ *           advType - adv type: HCI_ADV_TYPE_ADV_*
+ *           ownAddressType - own addr type: HCI_ADV_OWN_ADDR_TYPE_*
+ *           directRandomAddress - set to 1 if direct adv to random addr, else ignored
+ *           directAddr - if direct adv, the mac address of target, else ignored
+ *           advChannelMap - channels to use: bitmask of HCI_ADV_CHAN_MAP_USE_*
+ *           advFilterPolicy - filter policy: HCI_ADV_FILTER_POL_*
+ * RETURN:   success
+ * NOTES:    sync
+ */
+bool hciLeSetAdvParams(uint16_t advIntervalMin, uint16_t advIntervalMax, uint8_t advType, uint8_t ownAddressType, uint8_t directRandomAddress, const uint8_t *directAddr, uint8_t advChannelMap, uint8_t advFilterPolicy)
+{
+    return !hciLeSetAdvParamsSync(advIntervalMin, advIntervalMax, advType, ownAddressType, directRandomAddress, directAddr, advChannelMap, advFilterPolicy);
+}
 
 /*
  * FUNCTION: hciInquiryUpdatePersistDeviceDb

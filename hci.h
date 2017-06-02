@@ -93,7 +93,22 @@
 #define HCI_ADV_TYPE_ADV_DIRECT_IND                              0x01 /* connectable directed */
 #define HCI_ADV_TYPE_ADV_SCAN_IND                                0x02 /* scannable undirected */
 #define HCI_ADV_TYPE_ADV_NONCONN_IND                             0x03 /* non-connectable undirected */
+#define HCI_ADV_TYPE_ADV_DIRECT_IND_LOW_DUTY                     0x04 /* connectable directed, low duty cycle */
 #define HCI_ADV_TYPE_SCAN_RSP                                    0x04 /* scan response */
+
+#define HCI_ADV_OWN_ADDR_TYPE_PUBLIC                             0x00 /* public address */
+#define HCI_ADV_OWN_ADDR_TYPE_RANDOM                             0x01 /* random address */
+#define HCI_ADV_OWN_ADDR_TYPE_AUTO_RESOLV_ELSE_PUBLIC            0x02 /* generate resolvable from local IRK, if none, use public address */
+#define HCI_ADV_OWN_ADDR_TYPE_AUTO_RESOLV_ELSE_RANDOM            0x03 /* generate resolvable from local IRK, if none, use random address */
+
+#define HCI_ADV_CHAN_MAP_USE_CHAN_37                             0x01 /* use channel 37 */
+#define HCI_ADV_CHAN_MAP_USE_CHAN_38                             0x02 /* use channel 37 */
+#define HCI_ADV_CHAN_MAP_USE_CHAN_39                             0x04 /* use channel 37 */
+
+#define HCI_ADV_FILTER_POL_SCAN_ALL_CONNECT_ALL                  0x00 /* scan: from all, connect: from all */
+#define HCI_ADV_FILTER_POL_SCAN_LIST_CONNECT_ALL                 0x01 /* scan: from whitelisted, connect: from all */
+#define HCI_ADV_FILTER_POL_SCAN_ALL_CONNECT_LIST                 0x02 /* scan: from all, connect: from whitelisted */
+#define HCI_ADV_FILTER_POL_SCAN_LIST_CONNECT_LIST                0x03 /* scan: from whitelisted, connect: from whitelisted */
 
 
 /* for printing addrs and macs */
@@ -179,6 +194,9 @@ bool hciUpdateLeParams(hci_conn_t aclConn, uint16_t minInt, uint16_t maxInt, uin
 bool hciDemandEncr(hci_conn_t aclConn, bool demandMitmSafe);
 /* LE connection info */
 bool hciLeConnGetInfo(hci_conn_t aclConn, bool *masterP, uint64_t *peerFtrsP, uint16_t *intP, uint16_t *latP, uint16_t *toP, uint8_t *mcaP);
+/* LE adv */
+bool hciLeSetAdvParams(uint16_t advIntervalMin, uint16_t advIntervalMax, uint8_t advType, uint8_t ownAddressType, uint8_t directRandomAddress, const uint8_t *directAddr, uint8_t advChannelMap, uint8_t advFilterPolicy);
+
 
 /* connection request handling */
 bool hciConnRequestReplyYes(const struct bt_addr *addr, bool becomeMaster);
