@@ -2179,7 +2179,7 @@ HCI_SIMPLY_SYNC_WRITE(LeSetAdvParams, (uint16_t advIntervalMin, uint16_t advInte
     REQUIRE_VERSION(HCI_VERSION_4_0);
     REQUIRE_FEATURE(0, HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER);
     HCI_COPY_IN_U16(advIntervalMin);
-    HCI_COPY_IN_U16(advIntervalMin);
+    HCI_COPY_IN_U16(advIntervalMax);
     HCI_COPY_IN_U8(advType);
     HCI_COPY_IN_U8(ownAddressType);
     HCI_COPY_IN_U8(directRandomAddress);
