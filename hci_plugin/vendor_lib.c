@@ -30,7 +30,7 @@ static int op(bt_vendor_opcode_t opcode, void *param)
 
 		case BT_VND_OP_USERIAL_OPEN:
 			if (mFd < 0)
-				mFd = open("/dev/hci0", O_RDWR);
+				mFd = open(FILEPATH, O_RDWR);
 
 			if (mFd >= 0) {
 				fdsP[0][0] = mFd;
