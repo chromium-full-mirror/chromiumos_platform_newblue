@@ -5,7 +5,6 @@
 #include "uuid.h"
 #include "uniq.h"
 #include "att.h"
-#include "sdp.h"
 #include "sg.h"
 
 /* sadly android interface stop sus from using uniq_t for handles here */
@@ -15,8 +14,8 @@
 
 
 /* UUIDs & other GATT defines */
-#define GATT_UUID_SVC_GAP            SDP_SVC_CLASS_GAP
-#define GATT_UUID_SVC_GATT_SVR       SDP_SVC_CLASS_GATT
+#define GATT_UUID_SVC_GAP            0x1800
+#define GATT_UUID_SVC_GATT_SVR       0x1801
 #define GATT_UUID_SVC_PRIMARY        0x2800
 #define GATT_UUID_SVC_SECONDARY      0x2801
 #define GATT_UUID_INCLUDE            0x2802

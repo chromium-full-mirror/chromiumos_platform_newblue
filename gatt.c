@@ -8,7 +8,6 @@
 #include "util.h"
 #include "gatt.h"
 #include "att.h"
-#include "sdp.h"
 #include "log.h"
 #include "mt.h"
 #include "bt.h"
@@ -204,7 +203,6 @@ struct gattService {
     uint16_t             numItems;
     uint16_t             maxItems;
     int                  svcRef;
-    uint32_t             sdpHandle; /* zero if no current SDP record exists (not online) */
 
     gattSrvValueReadCbk  readF;
     gattSrvValueWriteCbk writeF;
@@ -1177,66 +1175,6 @@ static uint8_t gattFixedChSvcAlloc(void *userData, l2c_handle_t handle, void **i
         return SVC_ALLOC_FAIL_OTHER;
 
     return gattStateAlloc(handle, instanceP, &peer);
-}
-
-/*
- * FUNCTION: gattSdpInit
- * USE:      Called to add a GATT profile to SDP
- * PARAMS:   uuid - the uuid
- *           firstHandle - the first handle
- *           numHandles - how many handles the profile has
- * RETURN:   sdp handle or 0 on error
- * NOTES:
- */
-static uint32_t gattSdpAdd(struct uuid *uuid, uint16_t firstHandle, uint16_t numHandles)
-{
-    const uint16_t lastHandle = firstHandle + numHandles - 1;
-    static const uint8_t hdrUuid16[] = {
-        //service class ID list
-        SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(SDP_ATTR_SVC_CLS_ID_LIST),
-        SDP_ITEM_DESC(SDP_TYPE_ARRAY, SDP_SZ_u8), 3,
-            SDP_ITEM_DESC(SDP_TYPE_UUID, SDP_SZ_2)
-    };
-    static const uint8_t hdrUuid128[] = {
-        //service class ID list
-        SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(SDP_ATTR_SVC_CLS_ID_LIST),
-        SDP_ITEM_DESC(SDP_TYPE_ARRAY, SDP_SZ_u8), 17,
-            SDP_ITEM_DESC(SDP_TYPE_UUID, SDP_SZ_16)
-    };
-    uint8_t footer[] = {
-        //ProtocolDescriptorList
-        SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(SDP_ATTR_PROTOCOL_DESCR_LIST),
-        SDP_ITEM_DESC(SDP_TYPE_ARRAY, SDP_SZ_u8), 19,
-            SDP_ITEM_DESC(SDP_TYPE_ARRAY, SDP_SZ_u8), 6,
-                SDP_ITEM_DESC(SDP_TYPE_UUID, SDP_SZ_2), SDP_U16(SDP_PROTO_L2CAP),
-                SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(GATT_PSM),
-            SDP_ITEM_DESC(SDP_TYPE_ARRAY, SDP_SZ_u8), 9,
-                SDP_ITEM_DESC(SDP_TYPE_UUID, SDP_SZ_2), SDP_U16(SDP_PROTO_ATT),
-                SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(firstHandle),
-                SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(lastHandle),
-
-        //browse group list
-        SDP_ITEM_DESC(SDP_TYPE_UINT, SDP_SZ_2), SDP_U16(SDP_ATTR_BROWSE_GRP_LIST),
-        SDP_ITEM_DESC(SDP_TYPE_ARRAY, SDP_SZ_u8), 3,
-            SDP_ITEM_DESC(SDP_TYPE_UUID, SDP_SZ_2), SDP_U16(SDP_BROWSE_GROUP_ID_PUBLIC),
-    };
-    uint8_t descr[sizeof(hdrUuid16) + sizeof(hdrUuid128) + sizeof(footer)]; /* surely big enough */
-    uint16_t uuid16;
-    uint32_t len;
-
-    if (uuidToUuid16(&uuid16, uuid)) {
-        memcpy(descr, hdrUuid16, len = sizeof(hdrUuid16));
-        utilSetBE16(descr + len, uuid16);
-        len += sizeof(uuid16);
-    } else {
-        memcpy(descr, hdrUuid128, len = sizeof(hdrUuid128));
-        uuidWriteBE(descr + len, uuid);
-        len += sizeof(struct uuid);
-    }
-    memcpy(descr + len, footer, sizeof(footer));
-    len += sizeof(footer);
-
-    return sdpServiceDescriptorAdd(descr, len);
 }
 
 /*
@@ -2754,14 +2692,6 @@ static bool gattServiceOnline(struct gattService *svc, bool supportLE, bool supp
         goto out_dereg;
     }
 
-    if (svc->allowEDR) {
-        svc->sdpHandle = gattSdpAdd(&svc->uuid, attSrvHandleRangeGetBase(svc->attRange), ofst);
-        if (!svc->sdpHandle) {
-            loge("Failed to add EDR service to SDP\n");
-            goto out_dereg;
-        }
-    }
-
     svc->online = true;
     return true;
 
@@ -2788,9 +2718,6 @@ static void gattServiceOffline(struct gattService *svc)
         loge("Cannot offline an offlined service\n");
         return;
     }
-    if (svc->sdpHandle)
-        sdpServiceDescriptorDel(svc->sdpHandle);
-    svc->sdpHandle = 0;
     svc->online = false;
 
     for (i = 0; i < svc->numItems; i++)
@@ -3639,7 +3566,7 @@ bool gattClientInvalidateCache(const struct bt_addr *whomTo)
         ret = attClientInvalidateCache(conn->conn);
 
     pthread_mutex_unlock(&mGattLock);
-    return true;
+    return ret;
 }
 
 /*

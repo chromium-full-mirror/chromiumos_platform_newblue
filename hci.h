@@ -119,14 +119,6 @@
 #define CLSFMT                "0x%02X%02X%02X"
 #define CLSCONV(x)            (x)[2],(x)[1],(x)[0]
 
-
-struct hciNameGetInfo {
-    uint8_t  mac[6];
-    uint16_t clockOffset; /* if unknown, set all to zeroes except mac */
-    uint8_t  PSRM;
-    uint8_t  PSM; /* unused in BT 1.2+ */
-};
-
 typedef uniq_t hci_conn_t;
 #define HCI_CONN_FMT      UNIQ_FMT
 #define HCI_CONN_CONV(x)  UNIQ_CONV(x)
@@ -136,40 +128,24 @@ typedef uniq_t hci_conn_t;
 #define HCI_NAME_REQ_STATUS_COMPLETE     2
 
 /* various callbacks - it is universally a bad idea to call back into hci from these, except otherwise noted funcs */
-/* "devCls" is devic class, rssi = 127 -> no RSSI */
-typedef void (*hciDeviceDiscoveredEdrCbk)(void *cbkData, const struct bt_addr *addr, uint32_t devCls, const struct hciNameGetInfo *forNameGetting, int8_t rssi, const void *eir, uint8_t eirLen);
-typedef void (*hciDeviceDiscoveredEdrNameCbk)(void *cbkData, const struct bt_addr *addr, uint8_t nameReqStatus, const char *name);
+/* rssi = 127 -> no RSSI */
 typedef void (*hciDeviceDiscoveredLeCbk)(void *cbkData, const struct bt_addr *addr, int8_t rssi, uint8_t replyType, const void *eir, uint8_t eirLen);
 
 typedef void (*hciOpDoneCbk)(void *cbkData, uint8_t status /* 0 = good */);
-#define SCO_LOSS_AMOUNT_NONE    0
-#define SCO_LOSS_AMOUNT_SOME    1
-#define SCO_LOSS_AMOUNT_UNKNOWN 2
-#define SCO_LOSS_AMOUNT_ALL     3
 
 /* bring chip communications up or down */
-bool hciUp(const uint8_t *addr, uint8_t ioCapability, bool forceDisableLe, bool forceDisableEdr);
+bool hciUp(const uint8_t *addr);
 void hciDown(void);
 
 /* info api */
 bool hciInfoSharedBuffers(void); //true if EDR & LE share buffers
-bool hciInfoScoBufSize(uint16_t *bufSz, uint16_t *bufNum); //false if no SCO support
-bool hciInfoAclBufSizeEdr(uint16_t *bufSz, uint16_t *bufNum); //false if no EDR support
 bool hciInfoAclBufSizeLe(uint16_t *bufSz, uint16_t *bufNum); //false if no LE support
 void hciGetLocalAddress(uint8_t *addr);
 
 /* misc api. False on error, true if expect callback */
 bool hciSetAdvertiseEnable(bool on, hciOpDoneCbk cbkDone, void *cbkData);
-bool hciSetLocalName(const char *name, hciOpDoneCbk cbkDone, void *cbkData);
-bool hciSetDeviceClass(uint32_t cls, hciOpDoneCbk cbkDone, void *cbkData);
-bool hciSetEirData(const uint8_t *data, uint8_t dlen, bool fecRequired, hciOpDoneCbk cbkDone, void *cbkData); /* EIR for EDR */
 bool hciSetAdvData(const uint8_t *data, uint8_t dlen, hciOpDoneCbk cbkDone, void *cbkData); /* EIR for LE adv */
 bool hciSetRspData(const uint8_t *data, uint8_t dlen, hciOpDoneCbk cbkDone, void *cbkData); /* EIR for LE rsp */
-bool hciSetDiscoverableConnectable(const bool *discoverableStateP, const bool *connectableStateP, hciOpDoneCbk cbkDone, void *cbkData);/* pass null to keep as is */
-uniq_t hciDiscoverEdrStart(hciDeviceDiscoveredEdrCbk cbk, void *cbkData, uint32_t msec);
-bool hciDiscoverEdrStop(uniq_t handle);
-uniq_t hciDiscoverEdrGetName(hciDeviceDiscoveredEdrNameCbk cbk, void *cbkData, const struct hciNameGetInfo *forNameGetting); /* safe to call from hci callbacks */
-bool hciDiscoverEdrGetNameCancel(uniq_t handle);
 uniq_t hciDiscoverLeStart(hciDeviceDiscoveredLeCbk cbk, void *cbkData, bool active, bool useRandomAddr);
 bool hciDiscoverLeStop(uniq_t handle);
 
@@ -197,22 +173,7 @@ bool hciLeConnGetInfo(hci_conn_t aclConn, bool *masterP, uint64_t *peerFtrsP, ui
 /* LE adv */
 bool hciLeSetAdvParams(uint16_t advIntervalMin, uint16_t advIntervalMax, uint8_t advType, uint8_t ownAddressType, uint8_t directRandomAddress, const uint8_t *directAddr, uint8_t advChannelMap, uint8_t advFilterPolicy);
 
-
-/* connection request handling */
-bool hciConnRequestReplyYes(const struct bt_addr *addr, bool becomeMaster);
-bool hciConnRequestReplyNo(const struct bt_addr *addr);
-
-/* ssp & pin things */
-void hciSecUserCbkPinCodeReq(const struct bt_addr *addr, const uint8_t *pin, uint8_t len);
-void hciSecUserCbkSspUserPasskeyReq(const struct bt_addr *addr, uint32_t numeric);
-void hciSecUserCbkSspUserPasskeyReqProgress(const struct bt_addr *addr, uint8_t evt); //HCI_SSP_ENTRY_*
-void hciSecUserCbkSspUserOobReq(const struct bt_addr *addr, const uint8_t *C, const uint8_t *R); //for OOB pairing (unused for now)
-void hciSecUserCbkSspIoCapabilityReq(const struct bt_addr *addr, uint8_t cap, bool haveOobData, uint8_t authReq); // unused for now
-void hciSecUserCbkSspUserConfirmationReq(const struct bt_addr *addr, bool confirmed);
-
 /* misc */
-typedef void (*hciLeRandCbk)(void *cbkData, bool success, uint64_t rand);
-bool hciLeRand(hciLeRandCbk cbk, void *cbkData);
 void hciInquiryUpdatePersistDeviceDb(const struct bt_addr *addr, const uint32_t *devClsP, const void *eir, uint8_t eirLen);
 
 #endif

@@ -6,7 +6,6 @@
 #include "gatt-builtin.h"
 #include "vendorLib.h"
 #include "persist.h"
-#include "rfcomm.h"
 #include "timer.h"
 #include "l2cap.h"
 #include "aapi.h"
@@ -16,7 +15,6 @@
 #include "att.h"
 #include "hci.h"
 #include "log.h"
-#include "sdp.h"
 #include "bt.h"
 #include "mt.h"
 
@@ -102,59 +100,6 @@ static void leDiscoveryCbk(void *cbkData, const struct bt_addr *addr, int8_t rss
     }
 }
 
-static void edrDiscoveredNameCbk(void *cbkData, const struct bt_addr *addr, uint8_t nameReqStatus, const char *name)
-{
-    struct EdrDiscDev *t = (struct EdrDiscDev*)cbkData;
-
-    if (nameReqStatus == HCI_NAME_REQ_STATUS_COMPLETE) {
-        t->haveName = true;
-        strcpy(t->name, name);
-        fprintf(stderr, ",");
-    }
-    if (nameReqStatus == HCI_NAME_REQ_STATUS_ERROR)
-        fprintf(stderr, "!");
-    if (nameReqStatus == HCI_NAME_REQ_STATUS_IN_PROGRESS)
-        fprintf(stderr, "-");
-}
-
-static void edrDiscoveredCbk(void *cbkData, const struct bt_addr *addr, uint32_t devCls, const struct hciNameGetInfo *forNameGetting, int8_t rssi, const void *eir, uint8_t eirLen)
-{
-    struct EdrDiscDev **edrDevicesP = (struct EdrDiscDev**)cbkData, *t;
-    bool isNew = false;
-
-    /* see if this mac exists */
-    t = *edrDevicesP;
-    while (t && memcmp(t->mac, addr->addr, sizeof(t->mac)))
-        t = t->next;
-
-    if (!t) {
-        t = (struct EdrDiscDev*)calloc(1, sizeof(struct EdrDiscDev));
-        if (!t)
-            return;
-
-        t->next = *edrDevicesP;
-        *edrDevicesP = t;
-
-        isNew = true;
-        fprintf(stderr, ".");
-    }
-
-    t->rssi = rssi;
-    t->devCls = devCls;
-    memcpy(t->mac, addr->addr, sizeof(t->mac));
-
-    if (eirLen > 1)
-        t->haveEir = 1;
-    if (eirLen > sizeof(t->eir))
-        eirLen = sizeof(t->eir);
-    memcpy(t->eir, eir, eirLen);
-
-    /* doing this at this time lowers discovery efficiency, fyi */
-    if (isNew && !hciDiscoverEdrGetName(edrDiscoveredNameCbk, t, forNameGetting))
-        loge("failed to request name for %02X:%02X:%02X:%02X:%02X:%02X\n", t->mac[5], t->mac[4], t->mac[3], t->mac[2], t->mac[1], t->mac[0]);
-}
-
-
 #define DEVICE_CLASS_SERVICE_RENDERING		0x040000	//PRINTER, SPEAKER
 #define DEVICE_CLASS_SERVICE_AUDIO		0x200000	//SPEAKER, MIC, HEADSET
 #define DEVICE_CLASS_SERVICE_INFORMATION	0x800000	//WEB-server, WAP-server
@@ -175,68 +120,6 @@ void logData(char* dst, const void *buf, uint8_t len)
     for (i = 0; i < len; i++)
         sprintf(dst + strlen(dst), " %02X", data[i]);
 }
-
-
-struct TestRfcState {
-    rfc_conn_t conn;
-    struct bt_addr addr;
-    uint8_t dlci;
-};
-
-static void* testRfcAllocF(void *userData, const struct bt_addr *peerAddr, uint8_t dlci)
-{
-    struct TestRfcState *s;
-
-    logi("RFC in from "ADDRFMT" on dlci %u\n", ADDRCONV(*peerAddr), dlci);
-
-    s = calloc(1, sizeof(struct TestRfcState));
-    if (s) {
-        memcpy(&s->addr, peerAddr, sizeof(s->addr));
-        s->dlci = dlci;
-    }
-
-    return s;
-}
-
-static void testRfcEvtF(void *userData, void *instance, uint8_t evt, sg data)
-{
-    struct TestRfcState *s = (struct TestRfcState*)instance;
-    int32_t i;
-
-    switch (evt) {
-    case RFC_EVT_OPEN:
-        if (sgLength(data) != sizeof(rfc_conn_t))
-            loge("wrong data size to rf open event\n");
-        sgSerialize(data, 0, sizeof(s->conn), &s->conn);
-        sgFree(data);
-        logi("RFC@["ADDRFMT",%u] open: "RFCCONNFMT"\n", ADDRCONV(s->addr), s->dlci, RFCCONNCNV(s->conn));
-        break;
-    case RFC_EVT_RX:
-  //      logi("RFC@["ADDRFMT",%u] RX %ub\n", ADDRCONV(s->addr), s->dlci, sgLength(data));
-        i = rfcTx(s->conn, data);
-  //      logi("reply=%d\n", i);
-        if (i != RFC_TX_RET_ENTIRE_SENT) {
-            loge("TX failed - will not retry\n");
-            sgFree(data);
-        }
-        break;
-    case RFC_EVT_MAY_SEND:
-        if (data)
-            loge("unexpected data in may send event\n");
-        logi("RFC@["ADDRFMT",%u] may send\n", ADDRCONV(s->addr), s->dlci);
-        break;
-    case RFC_EVT_CLOSE:
-        if (data)
-            loge("unexpected data in close event\n");
-        logi("RFC@["ADDRFMT",%u] close\n", ADDRCONV(s->addr), s->dlci);
-        free(s);
-        break;
-    default:
-        loge("RFC@["ADDRFMT",%u] unknown event %u\n", ADDRCONV(s->addr), s->dlci, evt);
-        break;
-    }
-}
-
 
 static int mSvcTime = 0;
 static int mConnTime = 0;
@@ -464,8 +347,6 @@ int main(int argc, char** argv)
     int svc;
     sem_t sem;
     uniq_t h;
-    uint8_t rfcChan;
-    uint32_t sdpHandle;
     // "8ce255c0-200a-11e0-ac64-0800200c9a66", the UUID used by BluetoothChat sample program
     uint8_t uuid[] = { 0x8c, 0xe2, 0x55, 0xc0, 0x20, 0x0a, 0x11, 0xe0,
                        0xac, 0x64, 0x08, 0x00, 0x20, 0x0c, 0x9a, 0x66 };
@@ -484,35 +365,10 @@ int main(int argc, char** argv)
 
     persistLoad();
     timersInit();
-    if (!hciUp(mac, HCI_DISP_CAP_DISP_YES_NO, false, false)) {
+    if (!hciUp(mac)) {
         loge("HCI up fail\n");
         return -1;
     }
-
-    logi("setting name\n");
-    if (!hciSetLocalName("NewBlue test", opDoneCbk, &sem))
-        loge("Failed to try to set name\n");
-    r_sem_wait(&sem);
-    if(gStatus)
-        loge("Failed to set name. Sta = %d\n", gStatus);
-
-
-    logi("setting class\n");
-    if (!hciSetDeviceClass(DEVICE_CLASS_SERVICE_AUDIO | DEVICE_CLASS_SERVICE_RENDERING |
-		DEVICE_CLASS_SERVICE_INFORMATION | (DEVICE_CLASS_MAJOR_AV << DEVICE_CLASS_MAJOR_SHIFT) |
-		(DEVICE_CLASS_MINOR_AV_PORTBL_AUDIO << DEVICE_CLASS_MINOR_AV_SHIFT), opDoneCbk, &sem))
-        loge("Failed to try to set device class\n");
-    r_sem_wait(&sem);
-    if(gStatus)
-        loge("Failed to set device class. Sta = %d\n", gStatus);
-
-
-    logi("setting inquiry state\n");
-    if (!hciSetDiscoverableConnectable(&vTrue, &vTrue, opDoneCbk, &sem))
-        loge("Failed to try to set discoverable\n");
-    r_sem_wait(&sem);
-    if(gStatus)
-        loge("Failed to set discoverable. Sta = %d\n", gStatus);
 
     if (argc == 2 && !strcmp(argv[1], "scan")) {
 
@@ -552,63 +408,9 @@ int main(int argc, char** argv)
             } else
                 loge("Failed to do LE discovery\n");
         }
-
-        //try EDR discovery
-        {
-            struct EdrDiscDev *edrDevices = NULL, *t;
-
-            logi("Trying some EDR discovery...\n");
-            h = hciDiscoverEdrStart(edrDiscoveredCbk, &edrDevices, 20000);
-            if (h) {
-                bool stopret;
-                sleep(20);
-                fprintf(stderr, "|");
-                stopret = hciDiscoverEdrStop(h);
-                sleep(20);
-                fprintf(stderr, "\n");
-                logi("discovery stop = %s\n", stopret ? "OK" : "FAIL");
-
-                while (edrDevices) {
-                    char str[128];
-                    t = edrDevices;
-                    edrDevices = edrDevices->next;
-
-                    logi("Device %02X:%02X:%02X:%02X:%02X:%02X\n", t->mac[5], t->mac[4], t->mac[3], t->mac[2], t->mac[1], t->mac[0]);
-                    if (t->rssi != HCI_RSSI_UNKNOWN)
-                        logi("\tRSSI: %d dBm\n", t->rssi);
-                    else
-                        logi("\tRSSI unknown\n");
-                    logi("\tCLASS: 0x%06x\n", t->devCls);
-                    if (t->haveName)
-                        logi("\tNAME: '%s'\n", t->name);
-                    else
-                        logi("\tNAME unknown\n");
-
-                    logData(str, t->eir, 32);
-                    if (t->haveEir)
-                        logi("EIR: %s...\n", str);
-                    else
-                        logi("EIR not present\n");
-                    free(t);
-                }
-
-            } else
-                loge("Failed to do EDR discovery\n");
-        }
     }
 
     l2cInit();
-    sdpInit();
-    rfcInit();
-
-    rfcChan = rfcListen(RFC_CHNUM_REQ_ANY, testRfcAllocF, testRfcEvtF, NULL);
-    logi("RFC CHAN: %u\n", rfcChan);
-
-    // listen on UUID used by BluetoothChat sample program
-    sdpHandle = rfcAddSdpRecord(uuid, rfcChan, "BluetoothChatInsecure");
-
-  //  struct bt_addr addr = {{0xf3, 0xdb, 0x56, 0xf4, 0x2c, 0x40}, BT_ADDR_TYPE_EDR};
-  //  logi("conn=%d\n", rfcConnect(&addr, 1, testRfcEvtF, NULL, testRfcAllocF(NULL, &addr, 3))); /* true if you shoudl expect callback(s) */
 
     if (!attInit())
         loge("Failed to init ATT\n");
@@ -677,9 +479,6 @@ int main(int argc, char** argv)
         loge("Failed to join the pthread of current time service.\n");
     logi("The pthread of current time service was terminated.\n");
 
-    sdpServiceDescriptorDel(sdpHandle);
-    rfcStopListen(rfcChan);
-
     if (mSvcTime) {
         gattServiceStop(mSvcTime);
         gattServiceDestroy(mSvcTime);
@@ -688,8 +487,6 @@ int main(int argc, char** argv)
     gattBuiltinDeinit();
     gattProfileDeinit();
     attDeinit();
-    rfcDeinit();
-    sdpDeinit();
     l2cDeinit();
     hciDown();
     timersDeinit();
@@ -716,7 +513,6 @@ void aapiAdapterStateChanged(bool on)
     logd("aapiAdapterStateChanged(%d)\n", on);
 }
 
-
 void aapiAdapterProperties(bt_status_t status, int num_properties, const bt_property_t *properties)
 {
     logd("aapiAdapterProperties(...)\n");
@@ -735,29 +531,6 @@ void aapiDevDiscoveredCbk(int num_properties, const bt_property_t *properties)
 void aapiDiscoveryStateChanged(bool on)
 {
     logd("aapiDiscoveryStateChanged(%d)\n", on);
-}
-
-void aapiPinReqCbk(const struct bt_addr *peer)
-{
-    const uint8_t pin[4] = {'1','2','3','4'};
-
-    logd("aapiPinReqCbk(...)\n");
-    logd("pin is '1234'\n");
-    hciSecUserCbkPinCodeReq(peer, pin, sizeof(pin));
-}
-
-void aapiSspReqCbk(const struct bt_addr *peer, bt_ssp_variant_t pairing_variant, uint32_t pass_key)
-{
-    logd("aapiSspReqCbk(...)\n");
-    if (pairing_variant == BT_SSP_VARIANT_PASSKEY_ENTRY) {
-        logd("entering all zeroes since we do not support number entry for SSP\n");
-        hciSecUserCbkSspUserPasskeyReq(peer, 0);
-    } else if (pairing_variant == BT_SSP_VARIANT_PASSKEY_CONFIRMATION) {
-        logd("confirming display of '%06u'\n", pass_key);
-        hciSecUserCbkSspUserConfirmationReq(peer, true);
-    } else if (pairing_variant == BT_SSP_VARIANT_PASSKEY_NOTIFICATION) {
-        logd("Numeric: '%06u'\n", pass_key);
-    }
 }
 
 void aapiBondStateChangedCbk(const struct bt_addr *peer, uint8_t state)

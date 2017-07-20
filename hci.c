@@ -83,7 +83,7 @@ struct hciEvtWaitState {
     hciEvtCbk               cbk;
     void                   *cbkData;
 
-    uint16_t                extra; /* cmd for cmd complete/statue, subever for LE */
+    uint16_t                extra; /* cmd for cmd complete/statue, subevent for LE */
     uint8_t                 evtType;
 
     bool                    persistent; /* do not delete when it fires */
@@ -120,15 +120,13 @@ struct hciCmdSendWorkItem {
 
 #define CBK_WORK_ITEM_DONE_CBK      0
 #define CBK_WORK_ITEM_SIMPLE_CBK    1
-#define CBK_WORK_EDR_DISC_DEV       2
-#define CBK_WORK_EDR_DISC_NAME      3
-#define CBK_WORK_LE_DISC_DEV        4
-#define CBK_WORK_FLUSH              5
-#define CBK_WORK_CONN_UP            6
-#define CBK_WORK_CONN_DOWN          7
-#define CBK_WORK_PARAMS_CHANGE      8
-#define CBK_WORK_ENCR_CHANGE        9
-#define CBK_WORK_ACL_DATA           10
+#define CBK_WORK_LE_DISC_DEV        2
+#define CBK_WORK_FLUSH              3
+#define CBK_WORK_CONN_UP            4
+#define CBK_WORK_CONN_DOWN          5
+#define CBK_WORK_PARAMS_CHANGE      6
+#define CBK_WORK_ENCR_CHANGE        7
+#define CBK_WORK_ACL_DATA           8
 
 struct hciCbkWorkItem {
     uint8_t       cbkWorkItemType;
@@ -147,23 +145,6 @@ struct hciCbkWorkItem {
             bool                          stackGoingDown;
             bool                          haveEvt;
         } simple;
-
-        struct {
-            struct bt_addr                addr;
-            uint32_t                      devCls;
-            struct hciNameGetInfo         fng;
-            int8_t                        rssi;
-            uint8_t                       eirLen;
-            uint8_t                       eir[];
-        } edrDev;
-
-        struct {
-            struct bt_addr                addr;
-            hciDeviceDiscoveredEdrNameCbk cbk;
-            void                         *cbkData;
-            uint8_t                       nameReqState;
-            char                          name[];
-        } edrName;
 
         struct {
             struct bt_addr                addr;
@@ -239,8 +220,6 @@ struct hciAclConn {
     bool               encrypted;
     bool               mitmSafe;
     uint8_t            state; /* CONN_STATE_* */
-    bool               pinPending;
-    bool               sspPending;
     sg                 rxBacklog; /* data we RXed during configuration stage */
     uint32_t           outstandingPackets;
 
@@ -252,10 +231,7 @@ struct hciAclConn {
             uint16_t   timeout;
             uint8_t    mca;
         } le;
-        struct {
-            uint64_t   ftrs[MAX_FTR_PAGES];
-            uint8_t    btVer;
-        } edr;
+        //EDR struct here if needed
     };
 };
 
@@ -265,15 +241,6 @@ struct hciAclConn {
 #define CONN_STATE_DELETING        3
 
 #define CONN_CFG_STEP_LE           0x0000
-#define CONN_CFG_STEP_EDR          0x1000
-
-struct hciDiscoverNameState {
-    struct hciDiscoverNameState   *next;
-    hciDeviceDiscoveredEdrNameCbk  cbk;
-    void                          *cbkData;
-    struct bt_addr                 addr;
-    uniq_t                         handle;
-};
 
 
 /* useful constants */
@@ -298,17 +265,9 @@ static struct hciAclConn *mConns = NULL;
 
 static pthread_mutex_t mDiscoveryStateLock = PTHREAD_MUTEX_INITIALIZER;
 
-static hciDeviceDiscoveredEdrCbk mDiscoverEdrCbk;
-static void *mDiscoverEdrData;
-static uniq_t mDiscoverEdrHandle = 0;
-
 static hciDeviceDiscoveredLeCbk mDiscoverLeCbk;
 static void *mDiscoverLeData;
 static uniq_t mDiscoverLeHandle = 0;
-
-static struct hciDiscoverNameState *mDiscoverNames = NULL;
-
-static uint8_t mIoCapability = HCI_DISP_CAP_DISP_YES_NO;
 
 
 
@@ -323,28 +282,22 @@ static uint16_t mScoBufNum = 0;
 static uint16_t mAclBufNumEdr = 0;
 static uint16_t mAclBufNumLe = 0;
 static bool mBtJointBuffers = true; /* use EDR buffers for LE */
-static sem_t mAclPacketsEdr;
 static sem_t mAclPacketsLe;
-static sem_t mScoPackets;
-static bool mHaveLe = false;
-static bool mHaveEdr = false;
-static bool mSimulLe = false;
+static sem_t mAclPacketsEdr;
 static uint8_t mInquiryState = 0;
 static uint8_t mLocalAddr[BT_MAC_LEN];
 
 
 /* fwd declarations */
-static bool hciBtStackUp(bool forceDisableLe, bool forceDisableEdr);
+static bool hciBtStackUp(void);
 static bool hciScheduleConnUpNotif(hci_conn_t conn, const struct bt_addr *peerAddr, const struct bt_addr *selfAddr, bool isMaster, bool isEncrypted, bool isMitmSafe);
 static bool hciScheduleConnDownNotif(hci_conn_t conn);
 static bool hciScheduleConnDataRx(hci_conn_t conn, sg packet, bool first);
 static bool hciCmdSubmitSimpleWithStatusWithDoneCbk(uint8_t ogf, uint16_t ocf, const void* paramData, uint8_t paramLen, hciOpDoneCbk cbk, void *cbkData);
 static void hciHandleConnAclDown(uint16_t cid, uint8_t reason);
-static bool hciHandleConnAclEdrUp(uint8_t status, uint16_t id, const uint8_t *mac, bool encrypted);
 static bool hciHandleConnAclLeUp(uint8_t status, uint16_t id, bool isMaster, const uint8_t *mac, bool addrRandom, uint16_t interval, uint16_t latency, uint16_t timeout, uint8_t mca);
 static bool hciHandleConnAclEncr(uint16_t cid, bool encrOn);
 static bool hciHandleConnAclAuth(uint16_t cid, bool authOn);
-static bool hciHandleConnAclRoleChange(const uint8_t* mac, bool amSlave);
 static bool hciHandleConnAclLeUpdate(uint8_t status, uint16_t cid, uint16_t interval, uint16_t latency, uint16_t timeout);
 static bool hciConnUpdate(uint16_t cid, uint16_t minInt, uint16_t maxInt, uint16_t latency, uint16_t timeout);
 static void hciCmdStatusCbk(void *cbkData, uint8_t status);
@@ -545,40 +498,6 @@ static void hciCbkChipHwUp(void *cbkData, bool fw, bool up)
 }
 
 /*
- * FUNCTION: hciRxSco
- * USE:      Called with a valid SCO packet
- * PARAMS:   hdr - packet header
- *           packet - the packet we got
- * RETURN:   NONE
- * NOTES:
- */
-static void hciRxSco(uint16_t hdr, sg packet)
-{
-    uint16_t pb = hdr & ACL_HDR_MASK_PB;
-    uint16_t bc = hdr & ACL_HDR_MASK_BC;
-    uint16_t cid = hdr & ACL_HDR_MASK_CONN_ID;
-    uint8_t loss = 0;
-
-    switch (hdr & SCO_HDR_MASK_STATUS){
-    case SCO_STATUS_ALL_OK:
-        loss = SCO_LOSS_AMOUNT_NONE;
-        break;
-    case SCO_STATUS_UNKNOWN:
-        loss = SCO_LOSS_AMOUNT_UNKNOWN;
-        break;
-    case SCO_STATUS_NO_DATA:
-        loss = SCO_LOSS_AMOUNT_ALL;
-        break;
-    case SCO_STATUS_SOME_DATA:
-        loss = SCO_LOSS_AMOUNT_SOME;
-        break;
-    }
-
-    //TODO: do something with the sco data
-    sgFree(packet);
-}
-
-/*
  * FUNCTION: hciRxAclForRunningConn
  * USE:      Called with a valid ACL packet/fragment for a running connection
  * PARAMS:   conn - the connection this is for
@@ -741,10 +660,8 @@ static void hciRxEvt(sg packet)
             sem_post(&mAclPacketsLe);
         while (newCreditsEdr--)
             sem_post(&mAclPacketsEdr);
-        if (hadLeCreds)
+        if (hadLeCreds || (hadEdrCreds && mBtJointBuffers))
             l2cAclCreditAvail(true);
-        if (hadEdrCreds)
-            l2cAclCreditAvail(false);
         handled = true;
     }
 
@@ -858,21 +775,7 @@ static void hciRx(void *cbkData, uint8_t typ, sg packet)
         packet = NULL;
         break;
     case HCI_PKT_TYP_SCO:
-        if (datalen < sizeof(struct hciScoHdr)) {
-            loge("Got SCO packet of %ub\n", datalen);
-            break;
-        }
-        datalen -= sizeof(struct hciScoHdr);
-        sgSerialize(packet, 0, sizeof(struct hciScoHdr), &hdrSco);
-        hdr = utilGetLE16(&hdrSco.hdr);
-        len = utilGetLE8(&hdrSco.len);
-        if (len != datalen) {
-            loge("SCO packet claims %ub but had %ub\n", len, datalen);
-            break;
-        }
-        sgTruncFront(packet, sizeof(struct hciScoHdr));
-        hciRxSco(hdr, packet);
-        packet = NULL;
+        loge("Got SCO packet\n");
         break;
     case HCI_PKT_TYP_EVT:
         if (datalen < sizeof(struct hciEvtHdr)) {
@@ -957,12 +860,6 @@ static void* hciCbkWorker(void *unused)
             break;
         case CBK_WORK_ITEM_SIMPLE_CBK:
             w->simple.cbk(w->simple.cbkData1, w->simple.cbkData2, w->simple.stackGoingDown, w->simple.haveEvt ? (struct hciEvtHdr*)(w + 1) : NULL);
-            break;
-        case CBK_WORK_EDR_DISC_DEV:
-            mDiscoverEdrCbk(mDiscoverEdrData, &w->edrDev.addr, w->edrDev.devCls, &w->edrDev.fng, w->edrDev.rssi, w->edrDev.eir, w->edrDev.eirLen);
-            break;
-        case CBK_WORK_EDR_DISC_NAME:
-            w->edrName.cbk(w->edrName.cbkData, &w->edrName.addr, w->edrName.nameReqState, w->edrName.name);
             break;
         case CBK_WORK_LE_DISC_DEV:
             mDiscoverLeCbk(mDiscoverLeData, &w->leDev.addr, w->leDev.rssi, w->leDev.advType, w->leDev.adv, w->leDev.advLen);
@@ -1332,17 +1229,12 @@ success:
  * FUNCTION: hciUp
  * USE:      Bring up HCI (comms to bt chip)
  * PARAMS:   addr - the BT addr
- *           ioCapability - our user interaction capabilities (HCI_DISP_CAP_*)
- *           forceDisableLe - set to disable LE even if capable
- *           forceDisableEdr - set to disable EDR even if capable
  * RETURN:   true on success, false else
  * NOTES:    may take a while
  */
-bool hciUp(const uint8_t *addr, uint8_t ioCapability, bool forceDisableLe, bool forceDisableEdr)
+bool hciUp(const uint8_t *addr)
 {
     int ret;
-
-    mIoCapability = ioCapability;
 
     logd("Vendor open\n");
     if (!vendorOpen()) {
@@ -1387,7 +1279,7 @@ bool hciUp(const uint8_t *addr, uint8_t ioCapability, bool forceDisableLe, bool 
     }
 
     logd("Stack up\n");
-    if (!hciBtStackUp(forceDisableLe, forceDisableEdr)) {
+    if (!hciBtStackUp()) {
         loge("Failed to bring up BT stack\n");
         goto out_stack_up;
     }
@@ -1447,13 +1339,7 @@ void hciDown(void)
 
     //more deinit here
     pthread_mutex_lock(&mDiscoveryStateLock);
-    mDiscoverEdrHandle = 0;
     mDiscoverLeHandle = 0;
-    while (mDiscoverNames) {
-        struct hciDiscoverNameState *t = mDiscoverNames;
-        mDiscoverNames = mDiscoverNames->next;
-        free(t);
-    }
     pthread_mutex_unlock(&mDiscoveryStateLock);
 
     workQueueWakeAll(mCallbackWork, 1);
@@ -1558,7 +1444,6 @@ static bool hciCmdSubmitSimpleCbk(const struct hciEvtHdr *evt, void *cbkData, un
     struct hciEvtCmdComplete *cmpl = (struct hciEvtCmdComplete*)(evt + 1);
     struct hciEvtCmdStatus *stat = (struct hciEvtCmdStatus*)(evt + 1);
     const char* name = cbkd->complete ? "complete" : "status";
-    uint8_t evtType;
     uint8_t paramLen;
     uint8_t evtHdrLen;
     bool ret = false;
@@ -1566,7 +1451,6 @@ static bool hciCmdSubmitSimpleCbk(const struct hciEvtHdr *evt, void *cbkData, un
     if (!evt)
         return hciScheduleSimpleCbk(cbkd->cbk, cbkd->cbkData1, cbkd->cbkData2, true, NULL);
 
-    evtType = utilGetLE8(&evt->code);
     paramLen = utilGetLE8(&evt->len);
     evtHdrLen = cbkd->complete ? sizeof(struct hciEvtCmdComplete) : sizeof(struct hciEvtCmdStatus);
 
@@ -1848,145 +1732,9 @@ bool hciSetAdvertiseEnable(bool on, hciOpDoneCbk cbkDone, void *cbkData)
 {
     struct hciLeSetAdvEnable cmd = {0,};
 
-    if (!mHaveLe) {
-        loge("Refusing LE adv with no LE support\n");
-        return false;
-    }
-
     utilSetLE8(&cmd.advOn, on ? 1 : 0);
 
     return hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_LE, HCI_CMD_LE_Set_Advertise_Enable, &cmd, sizeof(cmd), cbkDone, cbkData);
-}
-
-/*
- * FUNCTION: hciSetLocalName
- * USE:      Set local device name
- * PARAMS:   name - the name (up to 248 non-NULL chars, NULL-terminated)
- *           cbkDone - callback to call when operation completes
- *           cbkData - data to pass to the callback
- * RETURN:   false on error, true if you should expect callback call
- * NOTES:
- */
-bool hciSetLocalName(const char *name, hciOpDoneCbk cbkDone, void *cbkData)
-{
-    struct hciWriteLocalName cmd = {{0,}, };
-    unsigned len = strlen(name);
-
-    if (!mHaveEdr) {
-        loge("Refusing name setting with no EDR support\n");
-        return false;
-    }
-
-    if (len >= sizeof(cmd.name)) {
-        memcpy(cmd.name, name, sizeof(cmd.name));
-        if (len > sizeof(cmd.name))
-            logw("Truncating BT name to %u chars\n", (int)sizeof(cmd.name));
-    } else
-        strcpy(cmd.name, name);
-
-    return hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Local_Name, &cmd, sizeof(cmd), cbkDone, cbkData);
-}
-
-/*
- * FUNCTION: hciSetDiscoverableConnectable
- * USE:      Set local discoverability/connectability
- * PARAMS:   discoverableState - NULL to leave as is, else pointer to wanted discoverability state
- *           connectableStateP - NULL to leave as is, else pointer to wanted connectablity state
- *           cbkDone - callback to call when operation completes
- *           cbkData - data to pass to the callback
- * RETURN:   false on error, true if you should expect callback call
- * NOTES:
- */
-bool hciSetDiscoverableConnectable(const bool *discoverableStateP, const bool *connectableStateP, hciOpDoneCbk cbkDone, void *cbkData)
-{
-    uint8_t newState = mInquiryState;
-
-    if (!mHaveEdr) {
-        loge("Refusing scan state setting with no EDR support\n");
-        return false;
-    }
-
-    if (discoverableStateP)
-        newState = (newState &~ HCI_SCAN_ENABLE_INQUIRY) | (*discoverableStateP ? HCI_SCAN_ENABLE_INQUIRY : 0);
-
-    if (connectableStateP)
-        newState = (newState &~ HCI_SCAN_ENABLE_PAGE) | (*connectableStateP ? HCI_SCAN_ENABLE_PAGE : 0);
-
-    if (newState == mInquiryState) { /* nothing to change - tell caller we're done */
-        if (!hciScheduleOpDoneCbk(cbkDone, cbkData, 0)) {
-            loge("Failed to shedule done callback\n");
-            return false;
-        }
-    } else { /* things to do - do them */
-        struct hciWriteScanEnable cmd;
-
-        utilSetLE8(&cmd.state, newState);
-        if (hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Scan_Enable, &cmd, sizeof(cmd), cbkDone, cbkData))
-            mInquiryState = newState;
-        else
-            return false;
-    }
-
-    return true;
-}
-
-/*
- * FUNCTION: hciSetDeviceClass
- * USE:      Set local device class
- * PARAMS:   class - the class value
- *           cbkDone - callback to call when operation completes
- *           cbkData - data to pass to the callback
- * RETURN:   false on error, true if you should expect callback call
- * NOTES:
- */
-bool hciSetDeviceClass(uint32_t cls, hciOpDoneCbk cbkDone, void *cbkData)
-{
-    struct hciWriteClassOfDevice cmd;
-
-    if (!mHaveEdr) {
-        loge("Refusing device class setting with no EDR support\n");
-        return false;
-    }
-
-    if (cls >> 24)
-        logw("Truncating device class to 24 bits\n");
-
-    utilSetLE24(&cmd.cls, cls);
-    return hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Class_Of_Device, &cmd, sizeof(cmd), cbkDone, cbkData);
-}
-
-/*
- * FUNCTION: hciSetEirData
- * USE:      Set EIR data for EDR
- * PARAMS:   data - the data
- *           dlen - length of said data
- *           cbkDone - callback to call when operation completes
- *           cbkData - data to pass to the callback
- * RETURN:   false on error, true if you should expect callback call
- * NOTES:    We always use FEC
- */
-bool hciSetEirData(const uint8_t *data, uint8_t dlen, bool fecRequired, hciOpDoneCbk cbkDone, void *cbkData)
-{
-    struct hciWriteEIR cmd = {0, };
-    if (!mHaveEdr) {
-        loge("Refusing EIR setting with no EDR support\n");
-        return false;
-    }
-
-    if (mBtVer <= HCI_VERSION_2_1 || !(mLocalFtrs[0] & HCI_LMP_FTR_EXTENDED_INQUIRY_RESPONSE)) {
-        loge("Refusing EIR setting with no EIR support\n");
-        return false;
-    }
-
-    if (dlen > sizeof(cmd.data)) {
-        loge("Refusing EIR setting that is too long\n");
-        return false;
-    }
-
-    utilSetLE8(&cmd.useFec, 1);
-    memcpy(cmd.data, data, dlen);
-
-    return hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Extended_Inquiry_Response, &cmd, sizeof(cmd), cbkDone, cbkData);
 }
 
 /*
@@ -2002,11 +1750,6 @@ bool hciSetEirData(const uint8_t *data, uint8_t dlen, bool fecRequired, hciOpDon
 bool hciSetAdvData(const uint8_t *data, uint8_t dlen, hciOpDoneCbk cbkDone, void *cbkData)
 {
     struct hciLeSetAdvData cmd = {0,};
-
-    if (!mHaveLe) {
-        loge("Refusing adv data setting with no EDR support\n");
-        return false;
-    }
 
     if (dlen > sizeof(cmd.advData)) {
         loge("Refusing LE adv setting that is too long\n");
@@ -2032,11 +1775,6 @@ bool hciSetAdvData(const uint8_t *data, uint8_t dlen, hciOpDoneCbk cbkDone, void
 bool hciSetRspData(const uint8_t *data, uint8_t dlen, hciOpDoneCbk cbkDone, void *cbkData)
 {
     struct hciSetScanResponseData cmd;
-
-    if (!mHaveLe) {
-        loge("Refusing rsp data setting with no EDR support\n");
-        return false;
-    }
 
     if (dlen > sizeof(cmd.scanRspData)) {
         loge("Refusing LE rsp setting that is too long\n");
@@ -2495,44 +2233,6 @@ void hciInquiryUpdatePersistDeviceDb(const struct bt_addr *addr, const uint32_t 
 }
 
 /*
- * FUNCTION: hciInquiryEvtEdrSingleItem
- * USE:      Enqueue a callback to discovery EDR cbk
- * PARAMS:   addr - the address of the remote device
- *           devCls - device class
- *           fng - opaque struct to allow a name request
- *           rssi - the RSSI
- *           eir - the provided EIR data (if any)
- *           eirLen - size of the above buffer
- * RETURN:   NONE
- * NOTES:    a copy of all params is made
- */
-static void hciInquiryEvtEdrSingleItem(const struct bt_addr *addr, uint32_t devCls, struct hciNameGetInfo* fng, int8_t rssi, const void *eir, uint8_t eirLen)
-{
-    struct hciCbkWorkItem *w;
-
-
-    w = (struct hciCbkWorkItem*)malloc(sizeof(struct hciCbkWorkItem) + eirLen);
-    if (!w) {
-        logw("Dropping EDR discovered item due to memory error\n");
-        return;
-    }
-    w->cbkWorkItemType = CBK_WORK_EDR_DISC_DEV;
-    memcpy(&w->edrDev.addr, addr, sizeof(w->edrDev.addr));
-    memcpy(&w->edrDev.fng, fng, sizeof(w->edrDev.fng));
-    memcpy(&w->edrDev.eir, eir, eirLen);
-    w->edrDev.devCls = devCls;
-    w->edrDev.rssi = rssi;
-    w->edrDev.eirLen = eirLen;
-
-    hciInquiryUpdatePersistDeviceDb(addr, &devCls, eir, eirLen);
-    if (workQueuePut(mCallbackWork, w))
-        return;
-
-    free(w);
-    logi("Dropping EDR discovered item dues to queue error\n");
-}
-
-/*
  * FUNCTION: hciInquiryEvtLeSingleItem
  * USE:      Enqueue a callback to discovery LE cbk
  * PARAMS:   addr - the address of the remote device
@@ -2567,587 +2267,6 @@ static void hciInquiryEvtLeSingleItem(const struct bt_addr *addr, uint8_t advTyp
 }
 
 /*
- * FUNCTION: hciInquiryEvtEdrName
- * USE:      Enqueue a callback to discovery EDR name cbk
- * PARAMS:   dns - the request state we care about
- *           prev - the previous request state in line
- *           nameReqState - HCI_NAME_REQ_STATUS_*
- *           lastCbk - if set, we'll free the hciDiscoverNameState struct
- *           name - name buffer pointer (may not be null-terminated)
- *           nameMaxLen - size of the above buffer
- * RETURN:   NONE
- * NOTES:    a copy of all params is made as needed. call with mDiscoveryStateLock held
- */
-static void hciInquiryEvtEdrName(struct hciDiscoverNameState *dns, struct hciDiscoverNameState *prev, uint8_t nameReqState, bool lastCbk, const char *name, uint8_t nameMaxLen)
-{
-    struct hciCbkWorkItem *w;
-    bool success = false;
-    uint8_t nameLen;
-
-    for (nameLen = 0; nameLen < nameMaxLen && name[nameLen]; nameLen++);
-
-    w = (struct hciCbkWorkItem*)malloc(sizeof(struct hciCbkWorkItem) + nameLen + 1);
-    if (!w) {
-        logw("Dropping EDR name discovered item due to memory error\n");
-        return;
-    }
-
-    w->cbkWorkItemType = CBK_WORK_EDR_DISC_NAME;
-    memcpy(&w->edrName.addr, &dns->addr, sizeof(w->edrName.addr));
-    memcpy(&w->edrName.name, name, nameLen);
-    w->edrName.name[nameLen] = 0;
-    w->edrName.nameReqState = nameReqState;
-
-    if (!dns)
-        logd("Got name reply with nobody waiting for it. Dropping\n");
-    else{
-        w->edrName.cbk = dns->cbk;
-        w->edrName.cbkData = dns->cbkData;
-        if (workQueuePut(mCallbackWork, w))
-            success = true;
-
-        /* remove the item if needed */
-        if (lastCbk) {
-            if (prev)
-                prev->next = dns->next;
-            else
-                mDiscoverNames = dns->next;
-
-            free(dns);
-        }
-    }
-
-    if (!success) {
-        free(w);
-        logi("Dropping EDR name discovered item due to queue or other error\n");
-    }
-}
-
-/*
- * FUNCTION: hciInquiryEvtEdrNameMac
- * USE:      Enqueue a callback to discovery EDR name cbk (find by MAC)
- * PARAMS:   mac - the raw mac address of the remote device
- *           nameReqState - HCI_NAME_REQ_STATUS_*
- *           lastCbk - if set, we'll free the hciDiscoverNameState struct
- *           name - name buffer pointer (may not be null-terminated)
- *           nameMaxLen - size of the above buffer
- * RETURN:   NONE
- * NOTES:    a copy of all params is made as needed
- */
-static void hciInquiryEvtEdrNameMac(const uint8_t *mac, uint8_t nameReqState, bool lastCbk, const char *name, uint32_t nameMaxLen)
-{
-    struct hciDiscoverNameState *dns, *prev = NULL;
-    struct bt_addr addr;
-
-    /* now find the callback & enqueue the work*/
-    pthread_mutex_lock(&mDiscoveryStateLock);
-    dns = mDiscoverNames;
-    while (dns && memcmp(&dns->addr.addr, mac, sizeof(dns->addr.addr))) {
-        prev = dns;
-        dns = dns->next;
-    }
-
-    if (!dns) {
-        logw("No record of this name inquiry found. Dropping\n");
-        return;
-    }
-
-    addr.type = BT_ADDR_TYPE_EDR;
-    memcpy(addr.addr, mac, sizeof(addr.addr));
-    persistAddKnownDev(&addr, name, &nameMaxLen, true, NULL);
-
-    hciInquiryEvtEdrName(dns, prev, nameReqState, lastCbk, name, nameMaxLen);
-    pthread_mutex_unlock(&mDiscoveryStateLock);
-}
-
-/*
- * FUNCTION: hciInquiryEvtEdrNameHandle
- * USE:      Enqueue a callback to discovery EDR name cbk (find by handle)
- * PARAMS:   handle - the handle fo the request
- *           nameReqState - HCI_NAME_REQ_STATUS_*
- *           lastCbk - if set, we'll free the hciDiscoverNameState struct
- *           name - name buffer pointer (may not be null-terminated)
- *           nameMaxLen - size of the above buffer
- * RETURN:   NONE
- * NOTES:    a copy of all params is made as needed
- */
-static void hciInquiryEvtEdrNameHandle(uniq_t handle, uint8_t nameReqState, bool lastCbk, const char *name, uint8_t nameMaxLen)
-{
-    struct hciDiscoverNameState *dns, *prev = NULL;
-
-    /* now find the callback & enqueue the work*/
-    pthread_mutex_lock(&mDiscoveryStateLock);
-    dns = mDiscoverNames;
-    while (dns && dns->handle != handle) {
-        prev = dns;
-        dns = dns->next;
-    }
-
-    if (!dns) {
-        logw("No record of this name inquiry found. Dropping\n");
-        return;
-    }
-
-    hciInquiryEvtEdrName(dns, prev, nameReqState, lastCbk, name, nameMaxLen);
-    pthread_mutex_unlock(&mDiscoveryStateLock);
-}
-
-/*
- * FUNCTION: hciConnRequestReplyYes
- * USE:      Called externally to accept a connection request
- * PARAMS:   addr - the address of requestor
- *           becomeMaster - try to become master?
- * RETURN:   false on error
- * NOTES:
- */
-bool hciConnRequestReplyYes(const struct bt_addr *addr, bool becomeMaster)
-{
-    struct hciAcceptConnection cmd;
-
-    if (!BT_ADDR_IS_EDR(*addr)) {
-        logw("Acoonot accept non-EDR connection\n");
-        return false;
-    }
-
-    memcpy(cmd.mac, addr->addr, sizeof(cmd.mac));
-    utilSetLE8(&cmd.remainSlave, becomeMaster ? 1 : 0);
-
-    return hciCmdSubmitSimpleWithStatusWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Accept_Connection_Request, &cmd, sizeof(cmd), hciCmdStatusCbk, NULL);
-}
-
-/*
- * FUNCTION: hciConnRequestReplyNo
- * USE:      Called externally to refuse a connection request
- * PARAMS:   addr - the address of requestor
- * RETURN:   false on error
- * NOTES:
- */
-bool hciConnRequestReplyNo(const struct bt_addr *addr)
-{
-    struct hciRejectConnection cmd;
-
-    if (!BT_ADDR_IS_EDR(*addr)) {
-        logw("Acoonot accept non-EDR connection\n");
-        return false;
-    }
-
-    memcpy(cmd.mac, addr->addr, sizeof(cmd.mac));
-    utilSetLE8(&cmd.reason, 0x13); //TODO: better dealings with this value...
-
-    return hciCmdSubmitSimpleWithStatusWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Reject_Connection_Request, &cmd, sizeof(cmd), hciCmdStatusCbk, NULL);
-}
-
-/*
- * FUNCTION: hciSecUserCbkPinCodeReq
- * USE:      Called externally to give us the PIN to use for a connection
- * PARAMS:   addr - the address of peer
- *           pin - the pin
- *           len - pin length 1..HCI_PIN_MAX_LEN or 0 for none
- * RETURN:   NONE
- * NOTES:
- */
-void hciSecUserCbkPinCodeReq(const struct bt_addr *addr, const uint8_t *pin, uint8_t len)
-{
-    struct hciPinCodeRequestNegativeReply cmdN;
-    struct hciPinCodeRequestReply cmdY;
-    bool ret;
-
-    if (!BT_ADDR_IS_EDR(*addr)) {
-        loge("cannot use LinkControl commands to reply to non-EDR security-related requests\n");
-        return;
-    }
-
-    if (len >= HCI_LINK_KEY_LEN)
-        len = HCI_LINK_KEY_LEN;
-
-    memcpy(cmdY.mac, addr->addr, sizeof(cmdY.mac));
-    memcpy(cmdN.mac, addr->addr, sizeof(cmdN.mac));
-    memcpy(cmdY.pinCode, pin, len);
-    utilSetLE8(&cmdY.pinCodeLen, len);
-
-    if (len)
-        ret = hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_PIN_Code_Request_Reply, &cmdY, sizeof(cmdY), hciCmdStatusCbk, NULL);
-    else
-        ret = hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_PIN_Code_Request_Negative_Reply, &cmdN, sizeof(cmdN), hciCmdStatusCbk, NULL);
-
-    if (!ret)
-        loge("Failed to reply to pin code request\n");
-}
-
-/*
- * FUNCTION: hciSecUserCbkLinkKeyReq
- * USE:      Called externally to give us the LinkKey to use for a connection
- * PARAMS:   addr - the address of peer
- *           cbkData - data we sent to external code
- *           key - the key (HCI_LINK_KEY_LE bytes) or NULL if none
- * RETURN:   NONE
- * NOTES:
- */
-static void hciSecUserCbkLinkKeyReq(const struct bt_addr *addr, const uint8_t *key)
-{
-    struct hciLinkKeyRequestNegativeReply cmdN;
-    struct hciLinkKeyRequestReply cmdY;
-    bool ret;
-
-    if (!BT_ADDR_IS_EDR(*addr)) {
-        loge("cannot use LinkControl commands to reply to non-EDR security-related requests\n");
-        return;
-    }
-
-    memcpy(cmdY.mac, addr->addr, sizeof(cmdY.mac));
-    memcpy(cmdN.mac, addr->addr, sizeof(cmdN.mac));
-
-    if (key){
-        memcpy(&cmdY.key, key, HCI_LINK_KEY_LEN);
-        ret = hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Link_Key_Request_Reply, &cmdY, sizeof(cmdY), hciCmdStatusCbk, NULL);
-    } else
-        ret = hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Link_Key_Request_Negative_Reply, &cmdN, sizeof(cmdN), hciCmdStatusCbk, NULL);
-
-    if (!ret)
-        loge("Failed to reply to link key request\n");
-}
-
-/*
- * FUNCTION: hciSecUserCbkSspIoCapabilityReq
- * USE:      Called externally to give us our IO capabilities
- * PARAMS:   addr - the address of peer
- *           cap - our capabilities (HCI_DISP_CAP_*)
- *           haveOobData - do we have OOB data
- *           authReq - what we want (HCI_AUTH_REQMENT_*) or HCI_AUTH_REQMENT_CANCEL_SSP
- * RETURN:   NONE
- * NOTES:
- */
-void hciSecUserCbkSspIoCapabilityReq(const struct bt_addr *addr, uint8_t cap, bool haveOobData, uint8_t authReq)
-{
-    struct hciIoCapabilityRequestNegativeReply cmdN;
-    struct hciIoCapabilityRequestReply cmdY;
-    bool ret;
-
-    if (!BT_ADDR_IS_EDR(*addr)) {
-        loge("cannot use LinkControl commands to reply to non-EDR security-related requests\n");
-        return;
-    }
-
-    memcpy(cmdY.mac, addr->addr, sizeof(cmdY.mac));
-    memcpy(cmdN.mac, addr->addr, sizeof(cmdN.mac));
-    utilSetLE8(&cmdN.reason, 0x13); //TODO: better handing of this value
-    utilSetLE8(&cmdY.cap, cap);
-    utilSetLE8(&cmdY.oobPresent, haveOobData);
-    utilSetLE8(&cmdY.authReqments, authReq);
-
-    if (authReq != HCI_AUTH_REQMENT_CANCEL_SSP)
-        ret = hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_IO_Capability_Request_Reply, &cmdY, sizeof(cmdY), hciCmdStatusCbk, NULL);
-    else
-        ret = hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_IO_Capability_Request_Negative_Reply, &cmdN, sizeof(cmdN), hciCmdStatusCbk, NULL);
-
-    if (!ret)
-        loge("Failed to reply to IO cap request\n");
-}
-
-/*
- * FUNCTION: hciSecUserCbkSspUserConfirmationReq
- * USE:      Called externally to give us confrimation (or not) of number displayed
- * PARAMS:   addr - the address of peer
- *           confirmed - confirmed?
- * RETURN:   NONE
- * NOTES:
- */
-void hciSecUserCbkSspUserConfirmationReq(const struct bt_addr *addr, bool confirmed)
-{
-    struct hciUserConfRequestNegativeReply cmdN;
-    struct hciUserConfRequestReply cmdY;
-    bool ret;
-
-    if (!BT_ADDR_IS_EDR(*addr)) {
-        loge("cannot use LinkControl commands to reply to non-EDR security-related requests\n");
-        return;
-    }
-
-    memcpy(cmdY.mac, addr->addr, sizeof(cmdY.mac));
-    memcpy(cmdN.mac, addr->addr, sizeof(cmdN.mac));
-
-    if (confirmed)
-        ret = hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_User_Confirmation_Request_Reply, &cmdY, sizeof(cmdY), hciCmdStatusCbk, NULL);
-    else
-        ret = hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_User_Confirmation_Request_Negative_Reply, &cmdN, sizeof(cmdN), hciCmdStatusCbk, NULL);
-
-    if (!ret)
-        loge("Failed to reply to user confirmation request\n");
-}
-
-/*
- * FUNCTION: hciSecUserCbkSspUserPasskeyReq
- * USE:      Called externally to give us the number user entered
- * PARAMS:   addr - the address of peer
- *           numeric - what user entered or HCI_SSP_NUMERIC_INVALID if user cancelled
- * RETURN:   NONE
- * NOTES:
- */
-void hciSecUserCbkSspUserPasskeyReq(const struct bt_addr *addr, uint32_t numeric)
-{
-    struct hciUserPasskeyRequestNegativeReply cmdN;
-    struct hciUserPasskeyRequestReply cmdY;
-    bool ret;
-
-    if (!BT_ADDR_IS_EDR(*addr)) {
-        loge("cannot use LinkControl commands to reply to non-EDR security-related requests\n");
-        return;
-    }
-
-    memcpy(cmdY.mac, addr->addr, sizeof(cmdY.mac));
-    memcpy(cmdN.mac, addr->addr, sizeof(cmdN.mac));
-
-    if (numeric != HCI_SSP_NUMERIC_INVALID) {
-        utilSetLE32(&cmdY.num, numeric);
-        ret = hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_User_Passkey_Request_Reply, &cmdY, sizeof(cmdY), hciCmdStatusCbk, NULL);
-    } else
-        ret = hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_User_Passkey_Request_Negative_Reply, &cmdN, sizeof(cmdN), hciCmdStatusCbk, NULL);
-
-    if (!ret)
-        loge("Failed to reply to user passkey request\n");
-}
-
-/*
- * FUNCTION: hciSecUserCbkSspUserPasskeyReqProgress
- * USE:      Called externally to give us the user's progress on number entry
- * PARAMS:   addr - the address of peer
- *           evt - the user event (HCI_SSP_ENTRY_*)
- * RETURN:   NONE
- * NOTES:
- */
-void hciSecUserCbkSspUserPasskeyReqProgress(const struct bt_addr *addr, uint8_t evt)
-{
-    struct hciSendKeypressNotification cmd;
-
-    if (!BT_ADDR_IS_EDR(*addr)) {
-        loge("cannot use LinkControl commands to reply to non-EDR security-related requests\n");
-        return;
-    }
-
-    memcpy(cmd.mac, addr->addr, sizeof(cmd.mac));
-    utilSetLE8(&cmd.notifType, evt);
-
-    if (!hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Send_Keypress_Notification, &cmd, sizeof(cmd), hciCmdStatusCbk, NULL))
-        loge("Failed to send user passkey progress event\n");
-}
-
-/*
- * FUNCTION: hciSecUserCbkSspUserOobReq
- * USE:      Called externally to give us the OOD data
- * PARAMS:   addr - the address of peer
- *           cbkData - data we sent to external code
- *           C - the C value (HCI_OOB_LEN bytes) or NULL if none
- *           R - the R value (HCI_OOB_LEN bytes) or NULL if none
- * RETURN:   NONE
- * NOTES:
- */
-void hciSecUserCbkSspUserOobReq(const struct bt_addr *addr, const uint8_t *C, const uint8_t *R)
-{
-    struct hciRemoteOobDataRequestNegativeReply cmdN;
-    struct hciRemoteOobDataRequestReply cmdY;
-    bool ret;
-
-    if (!BT_ADDR_IS_EDR(*addr)) {
-        loge("cannot use LinkControl commands to reply to non-EDR security-related requests\n");
-        return;
-    }
-
-    memcpy(cmdY.mac, addr->addr, sizeof(cmdY.mac));
-    memcpy(cmdN.mac, addr->addr, sizeof(cmdN.mac));
-
-    if (C && R) {
-        memcpy(cmdY.C, C, sizeof(cmdY.C));
-        memcpy(cmdY.R, R, sizeof(cmdY.R));
-        ret = hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Remote_OOB_Data_Request_Reply, &cmdY, sizeof(cmdY), hciCmdStatusCbk, NULL);
-    } else
-        ret = hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Remote_OOB_Data_Request_Negative_Reply, &cmdN, sizeof(cmdN), hciCmdStatusCbk, NULL);
-
-    if (!ret)
-        loge("Failed to reply to OOB data request\n");
-}
-
-/*
- * FUNCTION: hciSecHandleLinkKeyReq
- * USE:      Try to find the proper key for a given EDR connection
- * PARAMS:   addr - the peer address
- * RETURN:   NONE
- * NOTES:
- */
-static void hciSecHandleLinkKeyReq(const struct bt_addr *addr)
-{
-    uint8_t key[HCI_LINK_KEY_LEN];
-    bool mitmProt = true;
-
-    if (!persistGetDevKey(addr, KEY_TYPE_MITM_PROTECTED, key)) {
-        mitmProt = false;
-        if (!persistGetDevKey(addr, KEY_TYPE_MITM_UNPROTECTED, key)) {
-            logd("Link key request from "ADDRFMT" declined\n", ADDRCONV(*addr));
-            hciSecUserCbkLinkKeyReq(addr, NULL);
-            return;
-        }
-    }
-
-    logd("Found and provided link key for "ADDRFMT". Mitm protection: %s\n", ADDRCONV(*addr), mitmProt ? "YES" : "NO");
-    hciSecUserCbkLinkKeyReq(addr, key);
-}
-
-/*
- * FUNCTION: hciSecHandleNewLinkKey
- * USE:      Record a new link key for an EDR device
- * PARAMS:   addr - the peer address
- *           key - the key provided
- *           btKeyType - key type as per BT spec
- * RETURN:   NONE
- * NOTES:
- */
-static void hciSecHandleNewLinkKey(const struct bt_addr *addr, const uint8_t *key, uint8_t btKeyType)
-{
-    uint8_t persistKeyType;
-
-    switch (btKeyType) {
-    case HCI_EDR_LINK_KEY_COMBO:
-    case HCI_EDR_LINK_KEY_AUTH_COMBO:
-    case HCI_EDR_LINK_KEY_CHANGED:
-        persistKeyType = KEY_TYPE_MITM_PROTECTED;
-        break;
-    case HCI_EDR_LINK_KEY_LOCAL:
-    case HCI_EDR_LINK_KEY_REMOTE:
-    case HCI_EDR_LINK_KEY_UNAUTH_COMBO:
-        persistKeyType = KEY_TYPE_MITM_UNPROTECTED;
-        break;
-    case HCI_EDR_LINK_KEY_DEBUG:
-    default:
-        logd("Ignoring key type %u\n", btKeyType);
-        return;
-    }
-
-    if (!persistAddDevKey(addr, persistKeyType, key))
-        logw("Failed to stor elink key for "ADDRFMT".\n", ADDRCONV(*addr));
-}
-
-/*
- * FUNCTION: hciSecUserEvtCbk
- * USE:      Called with user-interaction-related security events
- * PARAMS:   evt - the event
- *           cbkData - callback data
- *           evtWaitStateID - event wait state ID (unused)
- *           forCmdID - event commadn ID (unused)
- * RETURN:   false on error
- * NOTES:
- */
-static bool hciSecUserEvtCbk(const struct hciEvtHdr *evtHdr, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
-{
-    struct bt_addr addr = {.type = BT_ADDR_TYPE_EDR};
-    struct hciAclConn* conn;
-    uint8_t evtType;
-
-    if (!evtHdr)
-        return false;
-
-    evtType = utilGetLE8(&evtHdr->code);
-    if (evtType == HCI_EVT_PIN_Code_Request) {
-        struct hciEvtPinCodeReq *evt = (struct hciEvtPinCodeReq*)(evtHdr + 1);
-
-        memcpy(addr.addr, evt->mac, sizeof(addr.addr));
-
-        pthread_mutex_lock(&mConnsLock);
-        conn = hciConnFindByAddr(&addr);
-        if (conn && conn->state == CONN_STATE_CFG) {
-            /*
-             * We do not call java to give congfig time to finish. See comment for SSP under HCI_EVT_IO_Capability_Request
-             */
-            conn->pinPending = true;
-        } else {
-            if (!conn)
-                logw("Connection not found for pending PIN req\n");
-            aapiBondStateChangedCbk(&addr, AAPI_BOND_STATE_INPROGRESS);
-            aapiPinReqCbk(&addr);
-        }
-        pthread_mutex_unlock(&mConnsLock);
-    } else if (evtType == HCI_EVT_Link_Key_Request) {
-        struct hciEvtPinCodeReq *evt = (struct hciEvtPinCodeReq*)(evtHdr + 1);
-
-        memcpy(addr.addr, evt->mac, sizeof(addr.addr));
-        hciSecHandleLinkKeyReq(&addr);
-
-    } else if (evtType == HCI_EVT_Link_Key_Notification) {
-        struct hciEvtLinkKeyNotif *evt = (struct hciEvtLinkKeyNotif*)(evtHdr + 1);
-
-        memcpy(addr.addr, evt->mac, sizeof(addr.addr));
-        hciSecHandleNewLinkKey(&addr, evt->key, utilGetLE8(&evt->keyType));
-
-    } else if (evtType == HCI_EVT_IO_Capability_Request) {
-        struct hciEvtIoCapRequest *evt = (struct hciEvtIoCapRequest*)(evtHdr + 1);
-
-        memcpy(addr.addr, evt->mac, sizeof(addr.addr));
-
-        pthread_mutex_lock(&mConnsLock);
-        conn = hciConnFindByAddr(&addr);
-        if (conn && conn->state == CONN_STATE_CFG) {
-            /*
-             * Not replying immediately here holds SSP up a bit, allowing connection configuration to complete. This
-             * means that we'll know the device name by the time we tell java about this SSP request. 
-             */
-            conn->sspPending = true;
-        } else {
-            if (!conn)
-                logw("Connection not found for pending SSP req\n");
-            hciSecUserCbkSspIoCapabilityReq(&addr, mIoCapability, false, HCI_AUTH_REQMENT_MITM_PROT_GENERAL_BOND);
-        }
-        pthread_mutex_unlock(&mConnsLock);
-
-    } else if (evtType == HCI_EVT_IO_Capability_Response) {
-        struct hciEvtIoCapResponse *evt = (struct hciEvtIoCapResponse*)(evtHdr + 1);
-
-        memcpy(addr.addr, evt->mac, sizeof(addr.addr));
-        logd("Remote dev capabilities: %u oob %u authReq %u\n", utilGetLE8(&evt->ioCapability), !!utilGetLE8(&evt->oobDataPresent), utilGetLE8(&evt->authReqments));
-
-    } else if (evtType == HCI_EVT_User_Confirmation_Request) {
-        struct hciEvtUserConfRequest *evt = (struct hciEvtUserConfRequest*)(evtHdr + 1);
-
-        memcpy(addr.addr, evt->mac, sizeof(addr.addr));
-        aapiBondStateChangedCbk(&addr, AAPI_BOND_STATE_INPROGRESS);
-        aapiSspReqCbk(&addr, BT_SSP_VARIANT_PASSKEY_CONFIRMATION, utilGetLE32(&evt->numericValue));
-
-    } else if (evtType == HCI_EVT_User_Passkey_Request) {
-        struct hciEvtUserPasskeyRequest *evt = (struct hciEvtUserPasskeyRequest*)(evtHdr + 1);
-
-        memcpy(addr.addr, evt->mac, sizeof(addr.addr));
-        aapiBondStateChangedCbk(&addr, AAPI_BOND_STATE_INPROGRESS);
-        aapiSspReqCbk(&addr, BT_SSP_VARIANT_PASSKEY_ENTRY, 0);
-    } else if (evtType == HCI_EVT_Remote_OOB_Data_Request) {
-        struct hciEvtRemoteOobRequest *evt = (struct hciEvtRemoteOobRequest*)(evtHdr + 1);
-
-        memcpy(addr.addr, evt->mac, sizeof(addr.addr));
-        logd("Denying OOB request for SSP\n");
-        hciSecUserCbkSspUserOobReq(&addr, NULL, NULL);
-
-    } else if (evtType == HCI_EVT_Simple_Pairing_Complete) {
-        struct hciEvtSimplePairingComplete *evt = (struct hciEvtSimplePairingComplete*)(evtHdr + 1);
-
-        memcpy(addr.addr, evt->mac, sizeof(addr.addr));
-        aapiBondStateChangedCbk(&addr, utilGetLE8(&evt->status) ? AAPI_BOND_STATE_FAILED : AAPI_BOND_STATE_SUCCESS);
-
-    } else if (evtType == HCI_EVT_User_Passkey_Notification) {
-        struct hciEvtUserPasskeyNotif *evt = (struct hciEvtUserPasskeyNotif*)(evtHdr + 1);
-
-        memcpy(addr.addr, evt->mac, sizeof(addr.addr));
-        aapiBondStateChangedCbk(&addr, AAPI_BOND_STATE_INPROGRESS);
-        aapiSspReqCbk(&addr, BT_SSP_VARIANT_PASSKEY_NOTIFICATION, utilGetLE32(&evt->passkey));
-
-    } else if (evtType == HCI_EVT_Keypress_Notification) {
-        struct hciEvtKeypressNotification *evt = (struct hciEvtKeypressNotification*)(evtHdr + 1);
-
-        memcpy(addr.addr, evt->mac, sizeof(addr.addr));
-        logi("Dropping remote SSP passkey key entry event %u\n", utilGetLE8(&evt->notifType));
-
-    } else
-        return false;
-
-    return true;
-}
-
-/*
  * FUNCTION: hciConnEvtCbk
  * USE:      Called with connection state events
  * PARAMS:   evt - the event
@@ -3164,43 +2283,7 @@ static bool hciConnEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evt
         return false;
 
     evtType = utilGetLE8(&evt->code);
-    if (evtType == HCI_EVT_Connection_Request) {
-        struct hciEvtConnRequest *req = (struct hciEvtConnRequest*)(evt + 1);
-        uint32_t devCls = utilGetLE24(req->deviceClass);
-        struct bt_addr addr;
-
-        memcpy(addr.addr, req->mac, sizeof(addr.addr));
-        addr.type = BT_ADDR_TYPE_EDR;
-
-        persistAddKnownDev(&addr, NULL, NULL, false, &devCls); /* record the device sighting */
-
-
-        //TODO: ask higher layer/user/whatever?
-        logd("ACL EDR conn request from "MACFMT" of class "CLSFMT" -> accepting\n", MACCONV(req->mac), CLSCONV(req->deviceClass));
-
-        if (!hciConnRequestReplyYes(&addr, true))
-            loge("Failed to accept this connection\n");
-
-    } else if (evtType == HCI_EVT_Connection_Complete) {
-        struct hciEvtConnComplete *conn = (struct hciEvtConnComplete*)(evt + 1);
-        uint16_t cid = utilGetLE16(&conn->conn);
-        bool isAcl = !!utilGetLE8(&conn->isAclLink);
-        bool encr = !!utilGetLE8(&conn->encrypted);
-        uint8_t status = utilGetLE8(&conn->status);
-
-        if (!isAcl) {
-            cid &= SCO_HDR_MASK_CONN_ID;
-
-            //TODO: SCO EDR conn
-        } else {
-            cid &= ACL_HDR_MASK_CONN_ID;
-
-            logd("ACL EDR conn status %d to "MACFMT" w/ handle %d encr %d\n", status, MACCONV(conn->mac), cid, encr);
-
-            if (!hciHandleConnAclEdrUp(status, cid, conn->mac, encr))
-                loge("Failed to handle EDR conn up\n");
-        }
-    } else if (evtType == HCI_EVT_Disconnection_Complete) {
+    if (evtType == HCI_EVT_Disconnection_Complete) {
         struct hciEvtDiscComplete *disc = (struct hciEvtDiscComplete*)(evt + 1);
         uint8_t status = utilGetLE8(&disc->status);
         uint16_t cid = utilGetLE16(&disc->conn);
@@ -3226,14 +2309,6 @@ static bool hciConnEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evt
         logd("ACL conn %d auth with status %d\n", cid, status);
         if (!hciHandleConnAclAuth(cid, !status))
             loge("Failed to handle conn auth\n");
-    } else if (evtType == HCI_EVT_Role_Change) {
-        struct hciEvtRoleChange *role = (struct hciEvtRoleChange*)(evt + 1);
-        uint8_t status = utilGetLE8(&role->status);
-        bool amSlave = !!utilGetLE8(&role->amSlave);
-
-        logd("ACL EDR conn to "MACFMT" changed role to %c with status %d\n", MACCONV(role->mac), amSlave ? 'S' : 'M', status);
-        if (!hciHandleConnAclRoleChange(role->mac, amSlave))
-            loge("Failed to handle EDR conn role change\n");
     } else if (evtType == HCI_EVT_LE_Meta) {
         struct hciEvtLeMeta *meta = (struct hciEvtLeMeta*)(evt + 1);
         evtType = utilGetLE8(&meta->subevent);
@@ -3285,7 +2360,6 @@ static bool hciInquiryEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t 
 {
     uint8_t evtType;
     struct bt_addr addr;
-    struct hciNameGetInfo fng;
     uint8_t i, num;
 
     if (!evt)
@@ -3293,55 +2367,7 @@ static bool hciInquiryEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t 
 
     evtType = utilGetLE8(&evt->code);
 
-    if(evtType == HCI_EVT_Inquiry_Result) {
-        struct hciEvtInquiryResult *res = (struct hciEvtInquiryResult*)(evt + 1);
-        struct hciEvtInquiryResultItem *item = res->items;
-
-        addr.type = BT_ADDR_TYPE_EDR;
-        num = utilGetLE8(&res->numResponses);
-
-        for (i = 0; i < num; i++, item++) {
-
-            memcpy(addr.addr, item->mac, sizeof(addr.addr));
-            fng.PSRM = utilGetLE8(&item->PSRM);
-            fng.PSM = mBtVer >= HCI_VERSION_1_2 ? 0 : utilGetLE8(&item->PSM);
-            fng.clockOffset = utilGetLE16(&item->clockOffset) | HCI_CLOCK_OFST_VALID;
-            memcpy(fng.mac, item->mac, sizeof(fng.mac));
-            hciInquiryEvtEdrSingleItem(&addr, utilGetLE24(&item->deviceClass), &fng, HCI_RSSI_UNKNOWN, NULL, 0);
-        }
-    } else if(evtType == HCI_EVT_Inquiry_Result_With_RSSI) {
-        struct hciEvtInquiryResultWithRssi *res = (struct hciEvtInquiryResultWithRssi*)(evt + 1);
-        struct hciEvtInquiryResultWithRssiItem *item = res->items;
-
-        addr.type = BT_ADDR_TYPE_EDR;
-        num = utilGetLE8(&res->numResponses);
-
-        for (i = 0; i < num; i++, item++) {
-
-            memcpy(addr.addr, item->mac, sizeof(addr.addr));
-            fng.PSRM = utilGetLE8(&item->PSRM);
-            fng.PSM = 0;
-            fng.clockOffset = utilGetLE16(&item->clockOffset) | HCI_CLOCK_OFST_VALID;
-            memcpy(fng.mac, item->mac, sizeof(fng.mac));
-            hciInquiryEvtEdrSingleItem(&addr, utilGetLE24(&item->deviceClass), &fng, utilGetLE8(&item->RSSI), NULL, 0);
-        }
-    } else if(evtType == HCI_EVT_Extended_Inquiry_Result) {
-        struct hciEvtExtendedInquiryResult *res = (struct hciEvtExtendedInquiryResult*)(evt + 1);
-
-        addr.type = BT_ADDR_TYPE_EDR;
-        num = utilGetLE8(&res->numResponses);
-
-        if (num != 1)
-            logw("eir reply with num = %d dropped\n", num);
-        else {
-            memcpy(addr.addr, res->mac, sizeof(addr.addr));
-            fng.PSRM = utilGetLE8(&res->PSRM);
-            fng.PSM = 0;
-            fng.clockOffset = utilGetLE16(&res->clockOffset) | HCI_CLOCK_OFST_VALID;
-            memcpy(fng.mac, res->mac, sizeof(fng.mac));
-            hciInquiryEvtEdrSingleItem(&addr, utilGetLE24(&res->deviceClass), &fng, utilGetLE8(&res->RSSI), res->EIR, sizeof(res->EIR));
-        }
-    } else if(evtType == HCI_EVT_LE_Meta) {
+    if(evtType == HCI_EVT_LE_Meta) {
         struct hciEvtLeMeta *meta = (struct hciEvtLeMeta*)(evt + 1);
         struct hciEvtLeAdvReport *adv = (struct hciEvtLeAdvReport*)(meta + 1);
         struct hciEvtLeAdvReportItem *item = (struct hciEvtLeAdvReportItem*)(adv + 1);
@@ -3364,29 +2390,8 @@ static bool hciInquiryEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t 
             hciInquiryEvtLeSingleItem(&addr, utilGetLE8(&item->advType), utilGetLE8(rssiP), item->data, dataLen);
             item = (struct hciEvtLeAdvReportItem*)(rssiP + 1);
         }
-    } else if (evtType == HCI_EVT_Command_Status) {
-        struct hciEvtCmdStatus *staEvt = (struct hciEvtCmdStatus*)(evt + 1);
-        uint8_t status = utilGetLE8(&staEvt->status);
-        uniq_t handle = *(uniq_t*)cbkData;
-
-        if (utilGetLE16(&staEvt->opcode) != CMD_MAKE_OPCODE(HCI_OGF_Link_Control, HCI_CMD_Remote_Name_Request)) {
-            loge("Unexpected status subevent 0x%04X in discovery event handler\n", utilGetLE16(&staEvt->opcode));
-            return false;
-        }
-
-        free(cbkData);
-        hciInquiryEvtEdrNameHandle(handle, status ? HCI_NAME_REQ_STATUS_ERROR : HCI_NAME_REQ_STATUS_IN_PROGRESS, !!status, NULL, 0);
-
-    } else if (evtType == HCI_EVT_Remote_Name_Request_Complete) {
-        struct hciEvtRemoteNameReqComplete *cmpl = (struct hciEvtRemoteNameReqComplete*)(evt + 1);
-        uint8_t status = utilGetLE8(&cmpl->status);
-
-        hciInquiryEvtEdrNameMac(cmpl->mac, status ? HCI_NAME_REQ_STATUS_ERROR : HCI_NAME_REQ_STATUS_COMPLETE, true, cmpl->name, sizeof(cmpl->name));
-
-    } else if (evtType == HCI_EVT_Inquiry_Complete) {
-        logd("inquiry ended uncancelled\n");
     } else {
-        loge("Unexopected event 0x%02X in discovery event handler\n", evtType);
+        loge("Unexpected event 0x%02X in discovery event handler\n", evtType);
         return false;
     }
 
@@ -3441,17 +2446,20 @@ void hciGetLocalAddress(uint8_t *addr)
 /*
  * FUNCTION: hciBtStackUp
  * USE:      Brings up the chip in a sane configuration, reads versions, etc
- * PARAMS:   forceDisableLe - set to disable LE even if capable
- *           forceDisableEdr - set to disable EDR even if capable
+ * PARAMS:   NONE
  * RETURN:   false on error
  * NOTES:
  */
-static bool hciBtStackUp(bool forceDisableLe, bool forceDisableEdr)
+static bool hciBtStackUp(void)
 {
     int ret = 0;
     uint8_t inqMode = HCI_INQ_MODE_STD;
 
-    mHaveEdr = !forceDisableEdr;
+    /* init things */
+    {
+        sem_init(&mAclPacketsLe, 0, 0);
+        sem_init(&mAclPacketsEdr, 0, 0);
+    }
 
     /* read local BT version */
     {
@@ -3482,14 +2490,15 @@ static bool hciBtStackUp(bool forceDisableLe, bool forceDisableEdr)
 
         logi("BT UP: effective BT version: %u (BT spec %s)\n", mBtVer, mBtVers[mBtVer]);
 
-        if (mBtVer < HCI_VERSION_1_1) {
-            loge("BT 1.1 minimum!\n");
+        if (mBtVer < HCI_VERSION_4_0) {
+            loge("BT 4.0 minimum!\n");
             ret = -3;
             goto out;
         }
+        /* past this point, we can assume BT 4.0+ */
     }
 
-    /* read supported features */
+    /* read supported features ad make sure LE is in there*/
     {
         struct hciCmplReadLocalSupportedFeatures evt;
 
@@ -3500,10 +2509,16 @@ static bool hciBtStackUp(bool forceDisableLe, bool forceDisableEdr)
 
         mLocalFtrs[0] = utilGetLE64(&evt.features);
         logi("BT UP: bt features reported: "FMT64"X\n", CNV64(mLocalFtrs[0]));
+
+        if (!(mLocalFtrs[0] & HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER)) {
+            loge("BT LE required!\n");
+            ret = -3;
+            goto out;
+        }
     }
 
     /* read extended features if possible */
-    if (mBtVer >= HCI_VERSION_2_1 && (mLocalFtrs[0] & HCI_LMP_FTR_EXTENDED_FEATURES)) {
+    if (mLocalFtrs[0] & HCI_LMP_FTR_EXTENDED_FEATURES) {
         uint8_t page, numPages = 1;
 
         for (page = 0; page < numPages && page < MAX_FTR_PAGES; page++) {
@@ -3557,16 +2572,12 @@ static bool hciBtStackUp(bool forceDisableLe, bool forceDisableEdr)
 
         logi("BT UP: EDR buffers: %ux%ub ACL + %ux%ub SCO\n", mAclBufNumEdr, mAclBufSzEdr, mScoBufNum, mScoBufSz);
 
-
         for (i = 0; i < mAclBufNumEdr; i++)
             sem_post(&mAclPacketsEdr);
-
-        for (i = 0; i < mScoBufNum; i++)
-            sem_post(&mScoPackets);
     }
 
     /* read LE buffer sizes & features, if LE exists */
-    if (mBtVer >= HCI_VERSION_4_0 && (mLocalFtrs[0] & HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER) && !forceDisableLe) {
+    {
         struct hciCmplLeReadLocalSupportedFeatures evtFtrs;
         struct hciCmplLeReadBufferSize evt;
         uint16_t i;
@@ -3578,9 +2589,6 @@ static bool hciBtStackUp(bool forceDisableLe, bool forceDisableEdr)
 
         mAclBufSzLe = utilGetLE16(&evt.leBufferSize);
         mAclBufNumLe = utilGetLE8(&evt.leNumBuffers);
-        mHaveLe = true;
-        if (mLocalFtrs[0] & HCI_LMP_FTR_BR_EDR_NOT_SUPPORTED)
-            mHaveEdr = false;
 
         logi("BT UP: LE buffers: %ux%ub\n", mAclBufNumLe, mAclBufSzLe);
 
@@ -3601,42 +2609,11 @@ static bool hciBtStackUp(bool forceDisableLe, bool forceDisableEdr)
         logi("BT UP: le features reported: "FMT64"X\n", CNV64(mLocalLeFtrs));
     }
 
-    /* setup a few simple settings */
-    if (mHaveEdr) {
-        logi("Setting PIN type to variable\n");
-        ret = hciWritePinTypeSync(false);
-        if (ret)
-            goto out;
-
-        logi("Setting auto-accept timeout\n");
-        ret = hciWriteConnAcceptTimeoutSync(HCI_CONN_RX_TIMEOUT);
-        if (ret)
-            goto out;
-
-        logi("Setting connection timeout\n");
-        ret = hciWritePageTimeoutSync(HCI_CONN_TX_TIMEOUT);
-        if (ret)
-            goto out;
-    }
-
     /* set event mask */
     {
         uint64_t evts = 0, evts2 = 0;
 
         switch (mBtVer) {
-        case HCI_VERSION_1_1:
-            evts = HCI_EVENT_ALL_BT_1_1;
-            break;
-        case HCI_VERSION_1_2:
-            evts = HCI_EVENT_ALL_BT_1_2;
-            break;
-        case HCI_VERSION_2_1:
-            evts = HCI_EVENT_ALL_BT_2_1;
-            break;
-        case HCI_VERSION_3_0:
-            evts = HCI_EVENT_ALL_BT_3_0;
-            evts2 = HCI_EVENT_P2_ALL_BT_3_0;
-            break;
         case HCI_VERSION_4_0:
             evts = HCI_EVENT_ALL_BT_4_0;
             evts2 = HCI_EVENT_P2_ALL_BT_4_0;
@@ -3655,107 +2632,50 @@ static bool hciBtStackUp(bool forceDisableLe, bool forceDisableEdr)
             break;
         }
         evts &=~ HCI_EVENT_REMOTE_HOST_SUPPORTED_FEATURES; /* we do not want this one - it is spammy and useless for now */
-        evts &=~ HCI_EVENT_MAX_SLOTS_CHANGE; /* same here really */
+        evts &=~ HCI_EVENT_MAX_SLOTS_CHANGE; /* same here, really */
         logi("Setting event mask to 0x"FMT64"X\n", CNV64(evts));
         ret = hciSetEventMaskSync(evts);
         if (ret)
             goto out;
 
-        if (mBtVer >= HCI_VERSION_3_0) {
-            logi("Setting event mask page 2 to 0x"FMT64"X\n", CNV64(evts2));
-            ret = hciSetEventMaskPage2Sync(evts2);
-            if (ret)
-                goto out;
-        }
-    }
-
-    /* set discoverability and connectivity scan settings */
-    if (mHaveEdr) {
-        logi("Setting page scan timings\n");
-        ret = hciWritePageScanActivitySync(0x100, 0x12);
-        if (ret) {
-            logw("Failed to set page scan settings\n");
-            /* if we actually goto out here, QC chips fail */
-        }
-
-        logi("Setting inquiry scan timings\n");
-        ret = hciWriteInquiryScanActivitySync(0x80, 0x12);
-        if (ret) {
-            logw("Failed to set inquiry scan settings\n");
-            /* if we actually goto out here, QC chips fail */
-        }
-    }
-
-    /* enable SSP, if possible */
-    if (mBtVer >= HCI_VERSION_2_1 && (mLocalFtrs[0] & HCI_LMP_FTR_SSP) && mHaveEdr) {
-        logi("Enabling SSP\n");
-        ret = hciWriteSimplePairingModeSync(true);
-        if (ret)
-            goto out;
-        logi("SSP should be on\n");
-    }
-
-    /* enable LE, if possible */
-    if (mHaveLe) {
-        mSimulLe = (mLocalFtrs[0] & HCI_LMP_FTR_SIMUL_LE_EDR_CAPABLE_CONTROLLER) != 0;
-        logi("Enabling LE. Simul=%s\n", mSimulLe ? "YES" : "NO");
-        ret = hciWriteLeHostSupportedSync(true, mSimulLe);
-        if (ret)
-            goto out;
-        logi("LE should be on\n");
-    }
-
-    /* set scan results to most informative format */
-    if (mBtVer >= HCI_VERSION_1_2 && mHaveEdr) {
-
-        if (mLocalFtrs[0] & HCI_LMP_FTR_RSSI_WITH_INQUIRY_RESULTS)
-            inqMode = HCI_INQ_MODE_RSSI;
-
-        if (mBtVer >= HCI_VERSION_2_1 && (mLocalFtrs[0] & HCI_LMP_FTR_EXTENDED_INQUIRY_RESPONSE))
-            inqMode = HCI_INQ_MODE_EIR;
-
-        logi("Setting inquiry mode to %d\n", inqMode);
-        ret = hciWriteInquiryModeSync(inqMode);
+        logi("Setting event mask page 2 to 0x"FMT64"X\n", CNV64(evts2));
+        ret = hciSetEventMaskPage2Sync(evts2);
         if (ret)
             goto out;
     }
+
+    /* enable LE */
+    logi("Enabling LE\n");
+    ret = hciWriteLeHostSupportedSync(true, false);
+    if (ret)
+        goto out;
+    logi("LE should be on\n");
 
     /* set up event handler(s) for discovery results */
     {
-        static const uint8_t discEvtTypes[] = {HCI_EVT_Inquiry_Complete, HCI_EVT_Inquiry_Result, HCI_EVT_Inquiry_Result_With_RSSI,
-                                               HCI_EVT_Extended_Inquiry_Result, HCI_EVT_Remote_Name_Request_Complete, HCI_EVT_LE_Meta, 0};
-        static const uint16_t discEvtExtras[] = {0, 0, 0, 0, 0, HCI_EVTLE_Advertising_Report};
+        struct hciEvtWaitDescr ewd = {
+            .cbk = hciInquiryEvtCbk,
+            .evtType = HCI_EVT_LE_Meta,
+            .extra = HCI_EVTLE_Advertising_Report,
+            .persistent = true,
+        };
 
-        if (!hciSetManyEventPersistentHandlers(discEvtTypes, discEvtExtras, hciInquiryEvtCbk, NULL)) {
+        if (!hciEvtWaitEnqueue(&ewd, 0)) {
             ret = -2;
-            loge("Failed to enqueue inquiry handlers\n");
+            loge("Failed to enqueue scan handler\n");
             goto out;
         }
     }
 
     /* set event handlers for connection states */
     {
-        static const uint8_t connEvtTypes[] = {HCI_EVT_Connection_Request, HCI_EVT_Connection_Complete, HCI_EVT_Disconnection_Complete, HCI_EVT_Encryption_Change,
-                                               HCI_EVT_Authentication_Complete, HCI_EVT_Role_Change, HCI_EVT_LE_Meta, HCI_EVT_LE_Meta, 0};
-        static const uint16_t connEvtExtras[] = {0, 0, 0, 0, 0, 0, HCI_EVTLE_Connection_Complete, HCI_EVTLE_Connection_Update_Complete};
+        static const uint8_t connEvtTypes[] = {HCI_EVT_Disconnection_Complete, HCI_EVT_Encryption_Change,
+                                               HCI_EVT_Authentication_Complete, HCI_EVT_LE_Meta, HCI_EVT_LE_Meta, 0};
+        static const uint16_t connEvtExtras[] = {0, 0, 0, HCI_EVTLE_Connection_Complete, HCI_EVTLE_Connection_Update_Complete};
 
         if (!hciSetManyEventPersistentHandlers(connEvtTypes, connEvtExtras, hciConnEvtCbk, NULL)) {
             ret = -2;
             loge("Failed to enqueue connection state handlers\n");
-            goto out;
-        }
-    }
-
-    /* set event handlers for security events with user interaction */
-    {
-        static const uint8_t connEvtTypes[] = {HCI_EVT_PIN_Code_Request, HCI_EVT_Link_Key_Request, HCI_EVT_Link_Key_Notification, HCI_EVT_IO_Capability_Request,
-                                               HCI_EVT_IO_Capability_Response, HCI_EVT_User_Confirmation_Request, HCI_EVT_User_Passkey_Request,
-                                               HCI_EVT_Remote_OOB_Data_Request, HCI_EVT_Simple_Pairing_Complete, HCI_EVT_User_Passkey_Notification,
-                                               HCI_EVT_Keypress_Notification, 0};
-
-        if (!hciSetManyEventPersistentHandlers(connEvtTypes, NULL, hciSecUserEvtCbk, NULL)) {
-            ret = -2;
-            loge("Failed to enqueue user-interacting-security-related event handlers\n");
             goto out;
         }
     }
@@ -3766,202 +2686,6 @@ out:
         return false;
     }
     return true;
-}
-
-/*
- * FUNCTION: hciDiscoverStopAndFreeNameReq
- * USE:      Stops EDR name request if possible and frees the struct
- * PARAMS:   toFree - the name discovery struct
- * RETURN:   NONE
- * NOTES:
- */
-static void hciDiscoverStopAndFreeNameReq(struct hciDiscoverNameState *toFree)
-{
-    if (mBtVer >= HCI_VERSION_1_2)
-        hciRemoteNameRequestCancelSync(toFree->addr.addr); /* error ignored on purpose */
-    free(toFree);
-}
-
-/*
- * FUNCTION: hciDiscoverEdrStart
- * USE:      Starts EDR discovery
- * PARAMS:   cbk - device discovered callback
- *           cbkData - data for said callback
- *           msec - how long to run for
- * RETURN:   discovery handle or 0 for error
- * NOTES:    Callbacks might be called even if func returns false, but
- *           will stop once said return value is actually returned.
- *           61440 msec maximum.
- */
-uniq_t hciDiscoverEdrStart(hciDeviceDiscoveredEdrCbk cbk, void *cbkData, uint32_t msec)
-{
-    uniq_t ret = 0;
-    uint32_t len;
-    int sta;
-
-    if (!mHaveEdr) {
-        loge("Refusing EDR discovery with no EDR support\n");
-        return 0;
-    }
-
-    if (!cbk) {
-        loge("Refusing discovery with no callback\n");
-        return 0;
-    }
-
-    pthread_mutex_lock(&mDiscoveryStateLock);
-    if (mDiscoverEdrHandle)
-        logw("Refusing to do EDR discovery while another in progress\n");
-    else {
-        ret = mDiscoverEdrHandle = uniqGetNext();
-
-        mDiscoverEdrCbk = cbk;
-        mDiscoverEdrData = cbkData;
-    }
-    pthread_mutex_unlock(&mDiscoveryStateLock);
-
-    if (!ret)
-        return 0;
-
-    /* round length to units - err on doing it longer */
-    len = (msec + HCI_INQUIRY_LENGTH_UNIT - 1) / HCI_INQUIRY_LENGTH_UNIT;
-    if (len > HCI_INQUIRY_LENGTH_MAX)
-        len = HCI_INQUIRY_LENGTH_MAX;
-
-    logd("Discovery request for %u msec will run for %u units\n", msec, len);
-
-    sta = hciInquirySync(HCI_LAP_Unlimited_Inquiry, len, 0x00);
-    if (!sta)
-        return ret;
-
-    pthread_mutex_lock(&mDiscoveryStateLock);
-    mDiscoverEdrHandle = 0;
-    pthread_mutex_unlock(&mDiscoveryStateLock);
-    loge("Failed to start inquiry: %d\n", sta);
-
-    return 0;
-}
-
-/*
- * FUNCTION: hciDiscoverEdrStop
- * USE:      Stops EDR discovery and any extant name-getting callbacks for it
- * PARAMS:   handle - the handle from hciDiscoverEdrStart()
- * RETURN:   false on error
- * NOTES:    Callbacks will stop once this returns
- */
-bool hciDiscoverEdrStop(uniq_t handle)
-{
-    if (!handle) {
-        loge("Cannot pass NULL handle here\n");
-        return false;
-    }
-
-    pthread_mutex_lock(&mDiscoveryStateLock);
-    if (mDiscoverEdrHandle != handle)
-        handle = 0;
-    else
-        mDiscoverEdrHandle = uniqGetNext(); /* not us so nobdy can re-cancel. not zero so nobody can start another scan */
-
-    pthread_mutex_unlock(&mDiscoveryStateLock);
-
-    hciInquiryCancelSync();
-    hciWorkFlush();
-
-    return !!handle;
-}
-
-/*
- * FUNCTION: hciDiscoverEdrGetName
- * USE:      Get a device name during EDR discovery
- * PARAMS:   cbk - name callback
- *           cbkData - data for said callback
- *           forNameGetting - data passed to edr discovery callback
- * RETURN:   name-getting operation handle or 0 on error
- * NOTES:
- */
-uniq_t hciDiscoverEdrGetName(hciDeviceDiscoveredEdrNameCbk cbk, void *cbkData, const struct hciNameGetInfo *forNameGetting)
-{
-    struct hciDiscoverNameState *dns = (struct hciDiscoverNameState*)malloc(sizeof(struct hciDiscoverNameState));
-    struct hciRemoteNameRequest cmd;
-    struct hciEvtWaitDescr ewd;
-    uniq_t *handleCopy, ret;
-
-    if (!mHaveEdr) {
-        loge("Refusing EDR name discovery with no EDR support\n");
-        return 0;
-    }
-
-    if (!dns)
-        return 0;
-
-    handleCopy = malloc(sizeof(uniq_t));
-    if (!handleCopy) {
-        free(dns);
-        return 0;
-    }
-
-    dns->cbk = cbk;
-    dns->cbkData = cbkData;
-    dns->handle = *handleCopy = ret = uniqGetNext();
-    memcpy(dns->addr.addr, forNameGetting->mac, sizeof(dns->addr.addr));
-    dns->addr.type = BT_ADDR_TYPE_EDR;
-
-    ewd.extra = CMD_MAKE_OPCODE(HCI_OGF_Link_Control, HCI_CMD_Remote_Name_Request);
-    ewd.evtType = HCI_EVT_Command_Status;
-    ewd.cbk = hciInquiryEvtCbk;
-    ewd.cbkData = handleCopy;
-    ewd.persistent = false;
-
-    memcpy(cmd.mac, forNameGetting->mac, sizeof(cmd.mac));
-    utilSetLE8(&cmd.PSRM, forNameGetting->PSRM);
-    utilSetLE8(&cmd.PSM, forNameGetting->PSM);
-    utilSetLE16(&cmd.clockOffset, forNameGetting->clockOffset);
-
-    pthread_mutex_lock(&mDiscoveryStateLock);
-    if (hciCmdSubmit(HCI_OGF_Link_Control, HCI_CMD_Remote_Name_Request, &cmd, sizeof(cmd), &ewd, NULL)) {
-
-        dns->next = mDiscoverNames;
-        mDiscoverNames = dns;
-    } else {
-        free(handleCopy);
-        free(dns);
-        ret = 0;
-    }
-
-    pthread_mutex_unlock(&mDiscoveryStateLock);
-
-    return ret;
-}
-
-/*
- * FUNCTION: hciDiscoverEdrGetNameCancel
- * USE:      Cancel a device name discovery during EDR discovery
- * PARAMS:   handle - the handle from hciDiscoverEdrGetName()
- * RETURN:   false on error
- * NOTES:    cCallback will certainly not fire once this returns
- */
-bool hciDiscoverEdrGetNameCancel(uniq_t handle)
-{
-    struct hciDiscoverNameState *c = NULL, *p;
-
-    pthread_mutex_lock(&mDiscoveryStateLock);
-    c = mDiscoverNames;
-    p = NULL;
-    while (c && c->handle != handle) {
-        p = c;
-        c = c->next;
-    }
-    if (c) {
-        if (p)
-            p->next = c->next;
-        else
-            mDiscoverNames = c->next;
-    }
-    pthread_mutex_unlock(&mDiscoveryStateLock);
-    if (c)
-        hciDiscoverStopAndFreeNameReq(c);
-
-    return !!c;
 }
 
 /*
@@ -3982,11 +2706,6 @@ uniq_t hciDiscoverLeStart(hciDeviceDiscoveredLeCbk cbk, void *cbkData, bool acti
 
     if (!cbk) {
         loge("Refusing discovery with no callback\n");
-        return 0;
-    }
-
-    if (!mHaveLe) {
-        loge("Failing request to LE discovery due to lack of LE\n");
         return 0;
     }
 
@@ -4074,45 +2793,16 @@ bool hciInfoSharedBuffers(void)
 }
 
 /*
- * FUNCTION: hciInfoSharedBuffers
+ * FUNCTION: hciInfoScoBufSize
  * USE:      Provide info on SCO buffer size in our controller and SCO support
  * PARAMS:   bufSz - where to store buffer sizes (or NULL if uninterested)
  *           bufNum - where to store number of buffers (or NULL if uninterested)
  * RETURN:   true if SCO supported
  * NOTES:
  */
-bool hciInfoScoBufSize(uint16_t *bufSz, uint16_t *bufNum) //false if no EDR support
+bool hciInfoScoBufSize(uint16_t *bufSz, uint16_t *bufNum)
 {
-    if (!(mLocalFtrs[0] & HCI_LMP_FTR_SCO_LINKS))
-        return false;
-
-    if (bufSz)
-        *bufSz = mScoBufSz;
-    if (bufNum)
-        *bufNum = mScoBufNum;
-
-    return true;
-}
-
-/*
- * FUNCTION: hciInfoSharedBuffers
- * USE:      Provide info on EDR ACL buffer size in our controller and EDR support
- * PARAMS:   bufSz - where to store buffer sizes (or NULL if uninterested)
- *           bufNum - where to store number of buffers (or NULL if uninterested)
- * RETURN:   true if EDR supported
- * NOTES:
- */
-bool hciInfoAclBufSizeEdr(uint16_t *bufSz, uint16_t *bufNum)
-{
-    if (!mHaveEdr)
-        return false;
-
-    if (bufSz)
-        *bufSz = mAclBufSzEdr;
-    if (bufNum)
-        *bufNum = mAclBufNumEdr;
-
-    return true;
+    return false;
 }
 
 /*
@@ -4125,9 +2815,6 @@ bool hciInfoAclBufSizeEdr(uint16_t *bufSz, uint16_t *bufNum)
  */
 bool hciInfoAclBufSizeLe(uint16_t *bufSz, uint16_t *bufNum)
 {
-    if (!mHaveLe)
-        return false;
-
     if (bufSz)
         *bufSz = mAclBufSzLe;
     if (bufNum)
@@ -4147,35 +2834,6 @@ bool hciInfoAclBufSizeLe(uint16_t *bufSz, uint16_t *bufNum)
 static void hciCmdStatusCbk(void *cbkData, uint8_t status)
 {
     logd("status: %d\n", status);
-}
-
-/*
- * FUNCTION: hciConnectEdr
- * USE:      Start an EDR connection to a given address
- * PARAMS:   mac - the mac
- * RETURN:   true if attempt will be made
- * NOTES:    call with mConnsLock held
- */
-static bool hciConnectEdr(const uint8_t *mac)
-{
-    struct hciCreateConnection cmd;
-
-    if (!mHaveEdr) {
-        logw("Refusing attempt to create EDR connection with no EDR support\n");
-        return false;
-    }
-
-    memcpy(cmd.mac, mac, sizeof(cmd.mac));
-    utilSetLE16(&cmd.allowedPackets, HCI_PKT_TYP_DEFAULT);
-    utilSetLE8(&cmd.PSRM, 0);
-    utilSetLE16(&cmd.clockOffset, 0);
-    utilSetLE8(&cmd.allowRoleSwitch, 0);
-
-    if (!hciCmdSubmitSimpleWithStatusWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Create_Connection, &cmd, sizeof(cmd), hciCmdStatusCbk, NULL)) {
-        logi("Failed to request connect to "MACFMT"\n", MACCONV(mac));
-        return false;
-    }
-    return true;
 }
 
 /*
@@ -4204,46 +2862,6 @@ static bool hciConnEncryptLe(struct hciAclConn *conn, bool demandMitmSafe)
 }
 
 /*
- * FUNCTION: hciConnEncryptEdr
- * USE:      Start an encryption attempt for an EDR connection
- * PARAMS:   conn - the connection
- *           demandMitmSafe - do we want mitm-safety?
- * RETURN:   true if attempt will be made
- * NOTES:    call with mConnsLock held
- */
-static bool hciConnEncryptEdr(struct hciAclConn *conn, bool demandMitmSafe)
-{
-    struct hciSetConnectionEncryption cmdEncr;
-    struct hciAuthRequested cmdAuth;
-
-    if (!(mLocalFtrs[0] & HCI_LMP_FTR_ENCRYPTION)) {
-        loge("Encryption not supported locally\n");
-        return false;
-    }
-
-    if (!(conn->edr.ftrs[0] & HCI_LMP_FTR_ENCRYPTION)) {
-        loge("Encryption not supported remotely\n");
-        return false;
-    }
-    
-    utilSetLE16(&cmdEncr.conn, conn->id);
-    utilSetLE8(&cmdEncr.encrOn, 1);
-    utilSetLE16(&cmdAuth.conn, conn->id);
-    if (demandMitmSafe) {
-        if (!hciCmdSubmitSimpleWithStatusWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Authentication_Requested, &cmdAuth, sizeof(cmdAuth), hciCmdStatusCbk, NULL)) {
-            logi("Failed to request encr to cid %d\n", conn->id);
-            return false;
-        }
-    } else {
-        if (!hciCmdSubmitSimpleWithStatusWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Set_Connection_Encryption, &cmdEncr, sizeof(cmdEncr), hciCmdStatusCbk, NULL)) {
-            logi("Failed to request encr to cid %d\n", conn->id);
-            return false;
-        }
-    }
-    return true;
-}
-
-/*
  * FUNCTION: hciConnectLe
  * USE:      Start an LE connection to a given address
  * PARAMS:   mac - the mac
@@ -4261,11 +2879,6 @@ static bool hciConnEncryptEdr(struct hciAclConn *conn, bool demandMitmSafe)
 static bool hciConnectLe(const uint8_t *mac, bool randomAddr, uint16_t scanInt, uint16_t scanWindow, uint16_t intMin, uint16_t intMax, uint16_t latency, uint16_t timeout, bool useOwnRandomAddr)
 {
     struct hciLeCreateConnection cmd;
-
-    if (!mHaveLe) {
-        logw("Refusing attempt to create LE connection with no LE support\n");
-        return false;
-    }
 
     utilSetLE16(&cmd.scanInterval, scanInt);
     utilSetLE16(&cmd.scanWindow, scanWindow);
@@ -4372,9 +2985,7 @@ bool hciConnect(const struct bt_addr* addr)
         if (!conn)
             loge("Failed to allocate conn struct\n");
         else {
-            if (BT_ADDR_IS_EDR(*addr))
-                ret = hciConnectEdr(addr->addr);
-            else
+            if (!BT_ADDR_IS_EDR(*addr))
                 ret = hciConnectLe(addr->addr, addr->type == BT_ADDR_TYPE_LE_RANDOM, HCI_LE_CONN_SCAN_INTERVAL,
                                    HCI_LE_CONN_SCAN_WINDOW, HCI_LE_CONN_INT_MIN, HCI_LE_CONN_INT_MAX,
                                    HCI_LE_CONN_LATENCY, HCI_LE_CONN_TIMEOUT, HCI_LE_CONN_USE_RAND_ADDR);
@@ -4484,11 +3095,9 @@ bool hciDemandEncr(hci_conn_t aclConn, bool demandMitmSafe)
         logw("Connection already encrypted up to requested level\n");
     else if (BT_ADDR_IS_LE(conn->peerAddr))
         ret = hciConnEncryptLe(conn, demandMitmSafe);
-    else
-        ret = hciConnEncryptEdr(conn, demandMitmSafe);
     pthread_mutex_unlock(&mConnsLock);
 
-    return !!conn;
+    return conn && ret;
 }
 
 /*
@@ -4639,38 +3248,6 @@ static void hciHandleConnAclDown(uint16_t cid, uint8_t reason)
 }
 
 /*
- * FUNCTION: hciConnCfgEdrNameCbk
- * USE:      Name callback for an EDR connection's configuration stage
- * PARAMS:   cbkData - the data from hciConnCfg (step and aux encoded into a pointer)
- *           addr - peer's address
- *           nameReqStatus - status of the request
- *           name - the name (if status is success). null terminated
- * RETURN:   NONE
- * NOTES:
- */
-static void hciConnCfgEdrNameCbk(void *cbkData, const struct bt_addr *addr, uint8_t nameReqStatus, const char *name)
-{
-    uint16_t step = ((uint32_t)(uintptr_t)cbkData) >> 16;
-    uint16_t aux = (uint16_t)(uintptr_t)cbkData;
-    struct hciAclConn *c = NULL;
-
-    if (nameReqStatus == HCI_NAME_REQ_STATUS_IN_PROGRESS)
-        return;
-
-    pthread_mutex_lock(&mConnsLock);
-    c = hciConnFindByAddr(addr);
-    if (!c)
-        loge("Unable to find conection for name request to "ADDRFMT"\n", ADDRCONV(*addr));
-    else if (nameReqStatus == HCI_NAME_REQ_STATUS_COMPLETE)
-        hciConnCfg(c, step + 1, aux);
-    else {
-        loge("Error getting name from "ADDRFMT"\n", ADDRCONV(*addr));
-        hciConnDisconnect(c->id);
-    }
-    pthread_mutex_unlock(&mConnsLock);
-}
-
-/*
  * FUNCTION: hciConnCfgCbk
  * USE:      event handler for hciConnCfg()
  * PARAMS:   evt - the resuting event
@@ -4711,77 +3288,6 @@ static bool hciConnCfgCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evt
         c->le.ftrs = utilGetLE64(&rrf->leFeatures);
         step++;
         break;
-    case CONN_CFG_STEP_EDR + 1: /* second EDR step = set flush timeout */
-        cid = utilGetLE16(&waft->conn);
-        sta = utilGetLE8(&waft->status);
-        c = hciConnFindById(cid);
-        if (!c)
-            break;
-        if (sta)
-            break;
-        step++;
-        break;
-    case CONN_CFG_STEP_EDR + 2: /* third EDR step = read remote version */
-        if (evtType == HCI_EVT_Command_Status) { /* we just started the request */
-            sta = utilGetLE8(&stat->status);
-            if (!sta) /* if no error we do nothing - let the request go on */
-                goto out;
-            break; /* on error, report it and kill conn */
-        }
-        cid = utilGetLE16(&rrv->conn);
-        sta = utilGetLE8(&rrv->status);
-        c = hciConnFindById(cid);
-        if (!c)
-            break;
-        if (sta)
-            break;
-        step++;
-        c->edr.btVer = utilGetLE8(&rrv->lmpVersion);
-        logd("Remote reports BT version %u (effective: %s)\n", c->edr.btVer, mBtVers[c->edr.btVer > HCI_VER_MAX_SUPPORTED ? HCI_VER_MAX_SUPPORTED : c->edr.btVer]);
-        break;
-    case CONN_CFG_STEP_EDR + 3: /* fourth EDR step = read remote features/extended features */
-        if (evtType == HCI_EVT_Command_Status) { /* we just started the request */
-            sta = utilGetLE8(&stat->status);
-            if (!sta) /* if no error we do nothing - let the request go on */
-                goto out;
-            break; /* on error, report it and kill conn */
-        }
-        if (evtType == HCI_EVT_Read_Remote_Supported_Features_Complete) {
-            cid = utilGetLE16(&rrsf->conn);
-            sta = utilGetLE8(&rrsf->status);
-            c = hciConnFindById(cid);
-            if (!c)
-                break;
-            if (sta)
-                break;
-            step++;
-            c->edr.ftrs[0] = utilGetLE64(&rrsf->lmpFeatures);
-        } else {
-            uint8_t pgIdx, pgMax;
-            cid = utilGetLE16(&rref->conn);
-            sta = utilGetLE8(&rref->status);
-            c = hciConnFindById(cid);
-            if (!c)
-                break;
-            if (sta)
-                break;
-            pgIdx = utilGetLE8(&rref->pageNum);
-            pgMax = utilGetLE8(&rref->maxPageNum);
-
-            if (pgIdx >= MAX_FTR_PAGES) {
-                logd("Got remote features for page %u, which we do not support. Moving on.\n", pgIdx);
-                step++;
-                aux = 0;
-            } else {
-                c->edr.ftrs[pgIdx] = utilGetLE64(&rref->extLmpFeatures);
-                if (pgIdx == pgMax) {
-                    aux = 0;
-                    step++;
-                } else
-                    aux++;
-            }
-        }
-        break;
     default:
         loge("unknown connection config step step 0x%04X.05%04X\n", step, aux);
         break;
@@ -4795,7 +3301,7 @@ static bool hciConnCfgCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evt
         loge("connection config failed: sta 0x%02X. Closing.\n", sta);
         hciConnDisconnect(c->id);
     }
-out:
+
     pthread_mutex_unlock(&mConnsLock);
 
     return true;
@@ -4813,7 +3319,6 @@ out:
 static void hciConnCfg(struct hciAclConn *c, uint32_t step, uint32_t aux)
 {
     struct hciEvtWaitDescr ewd[2] = {{.cbk = hciConnCfgCbk, .persistent = false}, {.cbk = hciConnCfgCbk, .persistent = false}};
-    struct hciNameGetInfo fng = {.clockOffset = 0, .PSRM = 0, .PSM = 0};
     void *userData = (void*)(uintptr_t)((step << 16) | aux);
     struct hciReadRemoteSupportedFeatures rrsf;
     struct hciReadRemoteExtendedFeatures rref;
@@ -4843,67 +3348,6 @@ static void hciConnCfg(struct hciAclConn *c, uint32_t step, uint32_t aux)
         return;
 
     case CONN_CFG_STEP_LE + 1: /* second LE config step = done! */
-        break;
-
-    case CONN_CFG_STEP_EDR + 0: /* first EDR step = get name */
-        memcpy(&fng.mac, c->peerAddr.addr, sizeof(fng.mac));
-        hciDiscoverEdrGetName(hciConnCfgEdrNameCbk, userData, &fng);
-        return;
-
-    case CONN_CFG_STEP_EDR + 1: /* second EDR step = set flush timeout */
-        utilSetLE16(&waft.conn, c->id);
-        utilSetLE16(&waft.timeout, 0); /* infinite timeout */
-        ewd[0].evtType = HCI_EVT_Command_Complete;
-        ewd[0].extra = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Automatic_Flush_Timeout);
-        ewd[0].cbkData = userData;
-        if (!hciCmdSubmit(HCI_OGF_Controller_and_Baseband, HCI_CMD_Write_Automatic_Flush_Timeout, &waft, sizeof(waft), ewd + 0, NULL)) {
-            success = false;
-            loge("Failed to send set flush timeout command\n");
-            break;
-        }
-        return;
-
-    case CONN_CFG_STEP_EDR + 2: /* third EDR step = read remote version */
-        utilSetLE16(&rrv.conn, c->id);
-        ewd[0].evtType = HCI_EVT_Command_Status;
-        ewd[0].extra = CMD_MAKE_OPCODE(HCI_OGF_Link_Control, HCI_CMD_Read_Remote_Version_Information);
-        ewd[0].cbkData = userData;
-        ewd[1].evtType = HCI_EVT_Read_Remote_Version_Complete;
-        ewd[1].cbkData = userData;
-        if (!hciCmdSubmit(HCI_OGF_Link_Control, HCI_CMD_Read_Remote_Version_Information , &rrv, sizeof(rrv), ewd + 0, ewd + 1, NULL)) {
-            success = false;
-            loge("Failed to send get remote version command\n");
-            break;
-        }
-        return;
-
-    case CONN_CFG_STEP_EDR + 3: /* fourth EDR step = read remote features/extended features */
-        ewd[0].evtType = HCI_EVT_Command_Status;
-        ewd[0].cbkData = userData;
-        ewd[1].cbkData = userData;
-        if (c->edr.btVer >= HCI_VERSION_1_2 && mBtVer >= HCI_VERSION_1_2) { /* can use read extended features */
-            ewd[0].extra = CMD_MAKE_OPCODE(HCI_OGF_Link_Control, HCI_CMD_Read_Remote_Extended_Features);
-            ewd[1].evtType = HCI_EVT_Read_Remote_Extended_Features_Complete;
-            utilSetLE16(&rref.conn, c->id);
-            utilSetLE8(&rref.page, aux);
-            if (!hciCmdSubmit(HCI_OGF_Link_Control, HCI_CMD_Read_Remote_Extended_Features, &rref, sizeof(rref), ewd + 0, ewd + 1, NULL)) {
-                success = false;
-                loge("Failed to send read remote extended features command\n");
-                break;
-            }
-        } else { //must use read features
-            ewd[0].extra = CMD_MAKE_OPCODE(HCI_OGF_Link_Control, HCI_CMD_Read_Remote_Supported_Features);
-            ewd[1].evtType = HCI_EVT_Read_Remote_Supported_Features_Complete;
-            utilSetLE16(&rrsf.conn, c->id);
-            if (!hciCmdSubmit(HCI_OGF_Controller_and_Baseband, HCI_CMD_Read_Remote_Supported_Features, &waft, sizeof(waft), ewd + 0, NULL)) {
-                success = false;
-                loge("Failed to send read remote supported features command\n");
-                break;
-            }
-        }
-        return;
-
-    case CONN_CFG_STEP_EDR + 4: /* fifth EDR step = done! */
         break;
     }
 
@@ -4937,19 +3381,6 @@ static void hciConnCfg(struct hciAclConn *c, uint32_t step, uint32_t aux)
                     goto fail;
                 }
             }
-
-            /* if there is a backlogged PIN or SSP request, fulfill them */
-            if (c->pinPending) {
-                logd("Fulfilling pending PIN request\n");
-                aapiBondStateChangedCbk(&c->peerAddr, AAPI_BOND_STATE_INPROGRESS);
-                aapiPinReqCbk(&c->peerAddr);
-                c->pinPending = false;
-            }
-            if (c->sspPending) {
-                logd("Fulfilling pending SSP request\n");
-                hciSecUserCbkSspIoCapabilityReq(&c->peerAddr, mIoCapability, false, HCI_AUTH_REQMENT_MITM_PROT_GENERAL_BOND);
-                c->sspPending = false;
-            }
             return;
 
         } else
@@ -4968,7 +3399,7 @@ fail:
  *           mac - the mac
  *           addrType - the address type for bt_addr struct
  *           encrypted - true if encrypted
- *           isMaster - am i master? (not authoritative in EDR cases)
+ *           isMaster - am i master?
  * RETURN:   connection struct or NULL if error
  * NOTES:    call with mConnsLock held
  */
@@ -5014,33 +3445,6 @@ static struct hciAclConn* hciConnAclUp(bool established, uint16_t id, const uint
     c->encrypted = encrypted;
 
     return c;
-}
-
-/*
- * FUNCTION: hciHandleConnAclEdrUp
- * USE:      Finish setup of a local ACL.EDR conn struct for this conn if success
- * PARAMS:   status - the connection status
- *           id - the id
- *           mac - the mac
- *           encrypted - true if encrypted
- * RETURN:   true on success
- * NOTES:
- */
-static bool hciHandleConnAclEdrUp(uint8_t status, uint16_t id, const uint8_t *mac, bool encrypted)
-{
-    struct hciAclConn *c;
-
-    pthread_mutex_lock(&mConnsLock);
-    c = hciConnAclUp(!status, id, mac, BT_ADDR_TYPE_EDR, encrypted, false);
-    if (c) {
-        memcpy(c->selfAddr.addr, mLocalAddr, sizeof(c->selfAddr.addr));
-        c->selfAddr.type = BT_ADDR_TYPE_EDR;
-
-        hciConnCfg(c, CONN_CFG_STEP_EDR, 0);
-    }
-    pthread_mutex_unlock(&mConnsLock);
-
-    return !!c;
 }
 
 /*
@@ -5133,36 +3537,6 @@ static bool hciHandleConnAclAuth(uint16_t cid, bool authOn)
 }
 
 /*
- * FUNCTION: hciHandleConnAclRoleChange
- * USE:      Notify all interested in role change
- * PARAMS:   mac - the peer address
- *           amSlave - am i now slave?
- * RETURN:   true on success
- * NOTES:
- */
-static bool hciHandleConnAclRoleChange(const uint8_t* mac, bool amSlave)
-{
-    struct hciAclConn *c;
-    struct bt_addr addr;
-    bool ret = false;
-
-    memcpy(addr.addr, mac, sizeof(addr.addr));
-    addr.type = BT_ADDR_TYPE_EDR;
-
-    logd("conn to "MACFMT" now %s\n", MACCONV(mac), amSlave? "slave" : "master");
-
-    pthread_mutex_lock(&mConnsLock);
-    c = hciConnFindByAddr(&addr);
-    if (c) {
-        logd("conn to "MACFMT" was %s\n", MACCONV(mac), c->isMaster? "master" : "slave");
-        c->isMaster = !amSlave;
-        ret = true;
-    }
-    pthread_mutex_unlock(&mConnsLock);
-    return ret;
-}
-
-/*
  * FUNCTION: hciHandleConnAclLeUpdate
  * USE:      Notify all interested in conn param update
  * PARAMS:   status - did update succeed?
@@ -5207,7 +3581,6 @@ static bool hciConnLeCancel(void)
     return hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_LE, HCI_CMD_LE_Create_Connection_Cancel, NULL, 0, hciCmdStatusCbk, NULL);
 }
 
-
 /*
  * FUNCTION: hciConnUpdate
  * USE:      Start a connection update for an LE connection
@@ -5249,40 +3622,5 @@ static bool hciConnDisconnect(uint16_t cid)
     utilSetLE16(&cmd.reason, 0x13); //TODO: better dealings with this value...
 
     return hciCmdSubmitSimpleWithStatusWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Disconnect, &cmd, sizeof(cmd), hciCmdStatusCbk, NULL);
-}
-
-/*
- * FUNCTION: hciLeRandSimpleCbk
- * USE:      Called back when chip replies to our request for random numbers
- * PARAMS:   cbkData1 - the callback
- *           cbkData2 - callback data
- *           stackGoingDown - set if we're going down
- *           evt - the RXed event
- * RETURN:   NONE
- * NOTES:
- */
-static void hciLeRandSimpleCbk(void* cbkData1, void* cbkData2, bool stackGoingDown, struct hciEvtHdr *evt)
-{
-    struct hciEvtCmdComplete *cmpl = (struct hciEvtCmdComplete*)(evt + 1);
-    struct hciCmplLeRand *rand = (struct hciCmplLeRand*)(cmpl + 1);
-    hciLeRandCbk cbk = (hciLeRandCbk)cbkData1;
-
-    cbk(cbkData2, !stackGoingDown && !utilGetLE8(&rand->status), utilGetLE64(&rand->rand));
-}
-
-/*
- * FUNCTION: hciLeRand
- * USE:      Generate a random 64-bit number using LE radio's Rand()
- * PARAMS:   cbk - what to call when done
- *           cbkData -data to pass to said cbk
- * RETURN:   false on failure. else wait.
- * NOTES:
- */
-bool hciLeRand(hciLeRandCbk cbk, void *cbkData)
-{
-    if (!mHaveLe)
-        return false;
-
-    return hciCmdSubmitSimple(HCI_OGF_LE, HCI_CMD_LE_Rand, NULL, 0, hciLeRandSimpleCbk, cbk, cbkData, sizeof(struct hciCmplLeRand), sizeof(struct hciCmplLeRand), true, true);
 }
 

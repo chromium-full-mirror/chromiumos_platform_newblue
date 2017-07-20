@@ -3757,8 +3757,6 @@ int l2cInit(void)
     mChipJointBuffers = hciInfoSharedBuffers();
     if (!hciInfoAclBufSizeLe(&mChipBufLenLe, &mChipBufNumLe))
         logi("No LE support found\n");
-    if (!hciInfoAclBufSizeEdr(&mChipBufLenEdr, &mChipBufNumEdr))
-        logi("No EDR support found\n");
 
     return 0;
 
