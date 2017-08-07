@@ -153,7 +153,7 @@ uint8_t l2cApiConnectionlessDataTx(const struct bt_addr *addr, psm_t psm, sg dat
 /* lower layer calls this when new ACL link is up */
 void l2cAclLinkUp(hci_conn_t aclConn, const struct bt_addr *peerAddr, const struct bt_addr *selfAddr, bool isMaster, bool isEncrypted, bool isMitmSafe);
 /* lower layer calls this when an ACL link is down */
-void l2cAclLinkDown(hci_conn_t aclConn);
+void l2cAclLinkDown(hci_conn_t aclConn, uint8_t reason);
 /* lower layer calls this when new ACL data arrives */
 void l2cAclDataRx(hci_conn_t aclConn, sg packet, bool first);
 /* lower layer calls this to tell us that a data credit just became available. called directly. DO NOT BLOCK! */

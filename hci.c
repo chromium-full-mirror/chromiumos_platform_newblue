@@ -169,6 +169,7 @@ struct hciCbkWorkItem {
 
         struct {
             hci_conn_t                    conn;
+            uint8_t                       reason;
         } connDown;
 
         struct {
@@ -292,7 +293,7 @@ static uint8_t mLocalAddr[BT_MAC_LEN];
 /* fwd declarations */
 static bool hciBtStackUp(void);
 static bool hciScheduleConnUpNotif(hci_conn_t conn, const struct bt_addr *peerAddr, const struct bt_addr *selfAddr, bool isMaster, bool isEncrypted, bool isMitmSafe);
-static bool hciScheduleConnDownNotif(hci_conn_t conn);
+static bool hciScheduleConnDownNotif(hci_conn_t conn, uint8_t reason);
 static bool hciScheduleConnDataRx(hci_conn_t conn, sg packet, bool first);
 static bool hciCmdSubmitSimpleWithStatusWithDoneCbk(uint8_t ogf, uint16_t ocf, const void* paramData, uint8_t paramLen, hciOpDoneCbk cbk, void *cbkData);
 static void hciHandleConnAclDown(uint16_t cid, uint8_t reason);
@@ -884,7 +885,7 @@ static void* hciCbkWorker(void *unused)
             l2cAclLinkUp(w->connUp.conn, &w->connUp.peerAddr, &w->connUp.selfAddr, w->connUp.isMaster, w->connUp.isEncrypted, w->connUp.isMitmSafe);
             break;
         case CBK_WORK_CONN_DOWN:
-            l2cAclLinkDown(w->connDown.conn);
+            l2cAclLinkDown(w->connDown.conn, w->connDown.reason);
             break;
         case CBK_WORK_PARAMS_CHANGE:
             l2cAclLinkParamsChange(w->leParamChange.conn, w->leParamChange.success, w->leParamChange.interval, w->leParamChange.latency, w->leParamChange.timeout);
@@ -1059,11 +1060,12 @@ static bool hciScheduleConnUpNotif(hci_conn_t conn, const struct bt_addr *peerAd
 /*
  * FUNCTION: hciScheduleConnDownNotif
  * USE:      Enqueue a call to the ACL link down notif
- * PARAMS:   conn - the connection
+ * PARAMS:   conn - the connection handle
+ *           reason - the reason to pass to upper layers
  * RETURN:   true if enqueued, false else
  * NOTES:
  */
-static bool hciScheduleConnDownNotif(hci_conn_t conn)
+static bool hciScheduleConnDownNotif(hci_conn_t conn, uint8_t reason)
 {
     struct hciCbkWorkItem *w;
 
@@ -1073,6 +1075,7 @@ static bool hciScheduleConnDownNotif(hci_conn_t conn)
 
     w->cbkWorkItemType = CBK_WORK_CONN_DOWN;
     w->connDown.conn = conn;
+    w->connDown.reason = reason;
 
     if (workQueuePut(mCallbackWork, w))
         return true;
@@ -2431,7 +2434,7 @@ static bool hciResetEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t ev
     while (mConns) {
         //for all connections upper layers know of, tell them they are no more
         if (mConns->state == CONN_STATE_CFG || mConns->state == CONN_STATE_RUNNING)
-            if (!hciScheduleConnDownNotif(mConns->handle))
+            if (!hciScheduleConnDownNotif(mConns->handle, HCI_ERR_Connection_Terminated_By_Local_Host))
                 loge("Failed to schedule conn down notif\n");
         hciConnAclStructDel(mConns);
     }
@@ -3304,7 +3307,7 @@ static void hciHandleConnAclDown(uint16_t cid, uint8_t reason)
             /* fallthrough */
         case CONN_STATE_CFG:
         case CONN_STATE_RUNNING:
-            if (!hciScheduleConnDownNotif(conn->handle))
+            if (!hciScheduleConnDownNotif(conn->handle, reason))
                 loge("Failed to schedule conn down notif\n");
             break;
         case CONN_STATE_DELETING:

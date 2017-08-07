@@ -5666,10 +5666,11 @@ static void l2cAclLinkDownInt(struct l2cAclConn *aclConn, bool tellOtherSide)
  * FUNCTION: l2cAclLinkDown
  * USE:      Called when a new ACL link goes down
  * PARAMS:   aclConn - the conection ID
+ *           reason - the hci reason code
  * RETURN:   NONEI
  * NOTES:
  */
-void l2cAclLinkDown(hci_conn_t aclConnID)
+void l2cAclLinkDown(hci_conn_t aclConnID, uint8_t reason)
 {
     struct l2cAclConn *aclConn;
 
