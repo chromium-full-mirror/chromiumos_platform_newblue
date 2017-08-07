@@ -256,6 +256,7 @@ static pthread_mutex_t mCmdLock = PTHREAD_MUTEX_INITIALIZER;
 static sem_t mCmdSendSem;
 static struct workQueue* mCmdsSendWork;
 static pthread_t mCmdsSendThread;
+static bool mInReset = true;
 
 static struct workQueue* mCallbackWork;
 static pthread_t mCallbackThread;
@@ -723,11 +724,23 @@ static void hciRxEvt(sg packet)
         if (handled && cur && !cur->persistent)
             hciEvtWaitDequeueInt(cur);
 
+        if (mInReset) {
+            //if we are now in reset, delete all waiters. reset handler code cannot do it as we still hold the lock
+            while (mEvtWaitHead)
+                 hciEvtWaitDequeueInt(mEvtWaitHead);
+        }
+
         pthread_mutex_unlock(&mCmdWaitLock);
     }
 
-    if (addCredit)
-        sem_post(&mCmdSendSem);
+    if (addCredit) {
+        if (!mInReset)
+            sem_post(&mCmdSendSem);
+        else {
+            if (!hciBtStackUp())
+                loge("Failed to bring stack out of reset!\n");
+        }
+    }
 
     if (!handled)
         logw("Unhandled HCI event code 0x%02X with %ub of params\n", evtType, len);
@@ -1248,7 +1261,7 @@ bool hciUp(const uint8_t *addr)
         goto out_chip_up;
     }
 
-    ret = sem_init(&mCmdSendSem, 0, 1);
+    ret = sem_init(&mCmdSendSem, 0, 0);
     if (ret) {
         loge("Sem init failure\n");
         goto out_sem;
@@ -1277,6 +1290,9 @@ bool hciUp(const uint8_t *addr)
         loge("Failed(%d) to create hci cmd send worker\n", ret);
         goto out_cmd_worker;
     }
+
+    sem_init(&mAclPacketsLe, 0, 0);
+    sem_init(&mAclPacketsEdr, 0, 0);
 
     logd("Stack up\n");
     if (!hciBtStackUp()) {
@@ -2399,6 +2415,38 @@ static bool hciInquiryEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t 
 }
 
 /*
+ * FUNCTION: hciResetEvtCbk
+ * USE:      Called when a reset complete event arrives. Tears down any existing state and sets the in-reset state.
+ * PARAMS:   evt - the event (unused)
+ *           cbkData - callback data (unused)
+ *           evtWaitStateID - event wait state ID (unused)
+ *           forCmdID - event command ID (unused)
+ * RETURN:   false on error
+ * NOTES:
+ */
+static bool hciResetEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
+{
+    //notify everyone that all connections are down
+    pthread_mutex_lock(&mConnsLock);
+    while (mConns) {
+        //for all connections upper layers know of, tell them they are no more
+        if (mConns->state == CONN_STATE_CFG || mConns->state == CONN_STATE_RUNNING)
+            if (!hciScheduleConnDownNotif(mConns->handle))
+                loge("Failed to schedule conn down notif\n");
+        hciConnAclStructDel(mConns);
+    }
+    pthread_mutex_lock(&mConnsLock);
+
+    //remove command send authority if it exists (this event may give us a credit or not, that will be handled later)
+    while(!sem_trywait(&mCmdSendSem));
+
+    //remember that we're in reset
+    mInReset = true;
+
+    return true;
+}
+
+/*
  * FUNCTION: hciSetManyEventPersistentHandlers
  * USE:      Set a few identical event handlers for variosu events
  * PARAMS:   evtTypes - event types list (ended with a 0)
@@ -2455,10 +2503,13 @@ static bool hciBtStackUp(void)
     int ret = 0;
     uint8_t inqMode = HCI_INQ_MODE_STD;
 
-    /* init things */
+    /* sanity and start */
     {
-        sem_init(&mAclPacketsLe, 0, 0);
-        sem_init(&mAclPacketsEdr, 0, 0);
+        if (!mInReset) {
+            loge("Stack cannot be brought up if not in reset\n");
+            return false;
+        }
+        sem_post(&mCmdSendSem);
     }
 
     /* read local BT version */
@@ -2651,6 +2702,22 @@ static bool hciBtStackUp(void)
         goto out;
     logi("LE should be on\n");
 
+    /* set up event handler(s) for reset */
+    {
+        struct hciEvtWaitDescr ewd = {
+            .cbk = hciResetEvtCbk,
+            .evtType = HCI_EVT_Command_Complete,
+            .extra = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Reset),
+            .persistent = true,
+        };
+
+        if (!hciEvtWaitEnqueue(&ewd, 0)) {
+            ret = -2;
+            loge("Failed to enqueue reset handler\n");
+            goto out;
+        }
+    }
+
     /* set up event handler(s) for discovery results */
     {
         struct hciEvtWaitDescr ewd = {
@@ -2679,6 +2746,8 @@ static bool hciBtStackUp(void)
             goto out;
         }
     }
+
+    mInReset = false;
 
 out:
     if (ret) {
