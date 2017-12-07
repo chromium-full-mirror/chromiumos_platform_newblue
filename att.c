@@ -2140,14 +2140,14 @@ out:
  * USE:      Continue a read by type / read by group type request
  * PARAMS:   conn - the per-connection structure
  *           lastReadData - return from the READ call
- *           leastReadLen - length last read result produced
+ *           lastReadLen - length last read result produced
  *           lastReadRet - last read's result
  * RETURN:   false to fail immediately, true if more work will be done
  * NOTES:    call with mAttLock held
  */
-static bool attSrvOpReadByTypeContinue(struct attConn *conn, const void *lastReadData, uint16_t leastReadLen, uint8_t lastReadRet)
+static bool attSrvOpReadByTypeContinue(struct attConn *conn, const void *lastReadData, uint16_t lastReadLen, uint8_t lastReadRet)
 {
-    uint8_t err = ATT_ERROR_UNLIKELY_ERROR;
+    uint8_t err = ATT_ERROR_NONE;
     struct attSrvRange *range;
     struct attSrvVal *val;
     uint16_t packetHdrSz;
@@ -2188,9 +2188,9 @@ static bool attSrvOpReadByTypeContinue(struct attConn *conn, const void *lastRea
         uint16_t perResultSize;
 
         /* only items of the same size shall be provided, so the first result sets the size */
-        if (sgLength(results) && leastReadLen != conn->srv.penOp.readByType.itemLen)
+        if (sgLength(results) && lastReadLen != conn->srv.penOp.readByType.itemLen)
             goto done;
-        conn->srv.penOp.readByType.itemLen = leastReadLen;
+        conn->srv.penOp.readByType.itemLen = lastReadLen;
 
         /* prepare the per-item header */
         if (grpType) {
@@ -2211,7 +2211,7 @@ static bool attSrvOpReadByTypeContinue(struct attConn *conn, const void *lastRea
             goto done;
         }
 
-        if (!sgConcatBackCopy(thisResult, lastReadData, leastReadLen)) {
+        if (!sgConcatBackCopy(thisResult, lastReadData, lastReadLen)) {
             sgFree(thisResult);
             err = ATT_ERROR_INSUFFICIENT_RSRCS;
             goto done;
@@ -2231,6 +2231,7 @@ static bool attSrvOpReadByTypeContinue(struct attConn *conn, const void *lastRea
 
     } else if (lastReadRet != ATT_FIRST_CONTINUE_CALL) {
         /* if the last read failed - stop searching */
+        err = lastReadRet;
         goto done;
     }
 
@@ -2268,6 +2269,7 @@ static bool attSrvOpReadByTypeContinue(struct attConn *conn, const void *lastRea
             if (attSrvSchedReadCbk(range, val, conn, readReason, 0, itemMaxLen))
                 return true;
 
+            err = ATT_ERROR_UNLIKELY_ERROR;
             goto done;
         }
     }
@@ -2280,6 +2282,7 @@ done:
         logw("Impossible result length %u over mtu %u in read by [grp] type\n", sgLength(results), mtu);
         startHandle = conn->srv.penOp.origStartHandle;
      } else if (!sgLength(results)) {
+
         /* a lack of results is reported thusly */
         if (err == ATT_ERROR_NONE) {
             err = ATT_ERROR_ATTRIBUTE_NOT_FOUND;
