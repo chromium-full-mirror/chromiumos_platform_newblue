@@ -346,9 +346,24 @@
 #define HCI_LE_EVENT_CONN_COMPLETE                               0x0000000000000001ULL /* BT 4.0+ */
 #define HCI_LE_EVENT_ADV_REPORT                                  0x0000000000000002ULL /* BT 4.0+ */
 #define HCI_LE_EVENT_CONN_UPDATE_COMPLETE                        0x0000000000000004ULL /* BT 4.0+ */
-#define HCI_LE_EVENT_READ_REMOTE_USED_FEATURES_CMPLETE           0x0000000000000008ULL /* BT 4.0+ */
+#define HCI_LE_EVENT_READ_REMOTE_USED_FEATURES_COMPLETE          0x0000000000000008ULL /* BT 4.0+ */
 #define HCI_LE_EVENT_LTK_REQUEST                                 0x0000000000000010ULL /* BT 4.0+ */
 #define HCI_LE_EVENT_REMOTE_CONNECTION_PARAMETER_REQUEST         0x0000000000000020ULL /* BT 4.1+ */
+#define HCI_LE_EVENT_DATA_LENGTH_CHANGE                          0x0000000000000040ULL /* BT 4.2+ */
+#define HCI_LE_EVENT_READ_LOCAL_P256_PUB_KEY_COMPLETE            0x0000000000000080ULL /* BT 4.2+ */
+#define HCI_LE_EVENT_GENERATE_DHKEY_COMPLETE                     0x0000000000000100ULL /* BT 4.2+ */
+#define HCI_LE_EVENT_ENHANCED_CONN_COMPLETE                      0x0000000000000200ULL /* BT 4.2+ */
+#define HCI_LE_EVENT_DIRECT_ADV_REPORT                           0x0000000000000400ULL /* BT 4.2+ */
+
+#define HCI_LE_EVENT_PHY_UPDATE_COMPLETE                         0x0000000000000800ULL /* BT 5.0+ */
+#define HCI_LE_EVENT_EXTD_ADV_REPORT                             0x0000000000001000ULL /* BT 5.0+ */
+#define HCI_LE_EVENT_PERIODIC_ADV_SYNC_ESTABLISHED               0x0000000000002000ULL /* BT 5.0+ */
+#define HCI_LE_EVENT_PERIODIC_ADV_REPORT                         0x0000000000004000ULL /* BT 5.0+ */
+#define HCI_LE_EVENT_PERIODIC_ADV_SYNC_LOST                      0x0000000000008000ULL /* BT 5.0+ */
+#define HCI_LE_EVENT_EXTD_SCAN_TIMEOUT                           0x0000000000010000ULL /* BT 5.0+ */
+#define HCI_LE_EVENT_EXT_ADV_SET_TERMINATED                      0x0000000000020000ULL /* BT 5.0+ */
+#define HCI_LE_EVENT_SCAN_REQUEST_RECVD                          0x0000000000040000ULL /* BT 5.0+ */
+#define HCI_LE_EVENT_CHAN_SEL_ALGO_EVT                           0x0000000000080000ULL /* BT 5.0+ */
 
 #define HCI_LE_FTR_ENCRYPTION                                    0x0000000000000001ULL /* BT 4.0+ */
 #define HCI_LE_FTR_CONNECTION_PARAMETERS_REQUEST                 0x0000000000000002ULL /* BT 4.1+ */
@@ -356,6 +371,10 @@
 #define HCI_LE_FTR_SLAVE_INITIATED_FEATURES_EXCHANGE             0x0000000000000008ULL /* BT 4.1+ */
 #define HCI_LE_FTR_LE_PING                                       0x0000000000000010ULL /* BT 4.1+ */
 
+#define HCI_LE_EVENT_ALL_BT_4_0                                  0x000000000000001FULL
+#define HCI_LE_EVENT_ALL_BT_4_1                                  0x000000000000003FULL
+#define HCI_LE_EVENT_ALL_BT_4_2                                  0x00000000000007FFULL
+#define HCI_LE_EVENT_ALL_BT_5_0                                  0x00000000000FFFFFULL
 
 
 
