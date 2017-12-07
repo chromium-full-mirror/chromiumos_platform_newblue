@@ -370,6 +370,11 @@ int main(int argc, char** argv)
         return -1;
     }
 
+    logi("waiting for stack up\n");
+    while(!hciIsUp())
+        sleep(1);
+    logi("stack is up\n");
+
     if (argc == 2 && !strcmp(argv[1], "scan")) {
 
         //try LE discovery
@@ -441,8 +446,8 @@ int main(int argc, char** argv)
 
     // Set advertising parameters.
     uint8_t peerAddress[BT_MAC_LEN] = {0x00};
-    if (!hciLeSetAdvParams(0x00c8,  // uint16_t advIntervalMin;
-                           0x0190,  // uint16_t advIntervalMax;
+    if (!hciLeSetAdvParams(0x0020,
+                           0x0100,
                            HCI_ADV_TYPE_ADV_IND,
                            HCI_ADV_OWN_ADDR_TYPE_PUBLIC,
                            HCI_ADV_OWN_ADDR_TYPE_PUBLIC,
@@ -453,9 +458,9 @@ int main(int argc, char** argv)
 
     static const uint8_t data[] = {
 		2, HCI_EIR_TYPE_FLAGS, 2, /* flags - general discoverable */
-		5, HCI_EIR_TYPE_FULL_NAME, 'N', 'B', '.', 't', /* name - "NB.t" */
+		5, HCI_EIR_TYPE_FULL_NAME, 'N', 'B', 't', '2', /* name - "NBt2" */
                 3, HCI_EIR_TYPE_INCOMPL_LIST_UUID16, 0x05, 0x18, /* incomplete uuid list - {time service} */
-                5, HCI_EIR_FLAVE_CONN_INTS, 0x80, 0x00, 0xff, 0x00, /* relatively large range of relatively large connection intervals accepted */
+                5, HCI_EIR_FLAVE_CONN_INTS, 0x10, 0x00, 0xff, 0x00, /* relatively large range of relatively large connection intervals accepted */
     };
     if (!hciSetAdvData(data, sizeof(data), opDoneCbk, &sem))
         loge("Failed to set LE adv data\n");
