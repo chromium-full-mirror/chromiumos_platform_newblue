@@ -1,4 +1,5 @@
 #undef MT_DEBUG
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -300,7 +301,7 @@ static struct mtObject* mt_evt_thread_seen(const char *file, int line, const cha
 static int mt_pthread_mutex_lock_int(const char *file, int line, const char *name, pthread_mutex_t *m, bool forCond, bool justTry)
 {
     struct mtID id = {0,};
-    unsigned tid = gettid();
+    unsigned tid = syscall(SYS_gettid);
     struct mtObject *mm;
     uint64_t tm;
     int ret;
@@ -352,7 +353,7 @@ int mt_pthread_mutex_trylock(const char *file, int line, const char *name, pthre
 
 static int mt_pthread_mutex_unlock_int(const char *file, int line, const char *name, pthread_mutex_t *m, bool forCond)
 {
-    unsigned tid = gettid();
+    unsigned tid = syscall(SYS_gettid);
     struct mtID id = {0,};
     struct mtObject *mm;
     uint64_t tm;
@@ -419,7 +420,7 @@ int mt_pthread_cond_timeout_np(const char* file, int line, const char* name, pth
 
 int mt_pthread_mutex_init(const char *file, int line, const char *name, pthread_mutex_t *m, const pthread_mutexattr_t *a)
 {
-    unsigned tid = gettid();
+    unsigned tid = syscall(SYS_gettid);
     struct mtID id = {0,};
     struct mtObject *mm;
     uint64_t tm;
@@ -438,7 +439,7 @@ int mt_pthread_mutex_init(const char *file, int line, const char *name, pthread_
 
 int mt_pthread_mutex_destroy(const char *file, int line, const char *name, pthread_mutex_t *m)
 {
-    unsigned tid = gettid();
+    unsigned tid = syscall(SYS_gettid);
     struct mtID id = {0,};
     struct mtObject *mm;
     uint64_t tm;
@@ -524,7 +525,7 @@ struct mtThreadData {
 static void *mt_thread_stub(void *param)
 {
     struct mtThreadData *td = (struct mtThreadData*)param;
-    unsigned tid = gettid();
+    unsigned tid = syscall(SYS_gettid);
     struct mtID id = {0,};
     struct mtObject *mm;
     void *ret;
@@ -556,7 +557,7 @@ static void *mt_thread_stub(void *param)
 int mt_pthread_create(const char *file, int line, const char *name, pthread_t *th, const pthread_attr_t *attr, void *(*proc)(void *), void *param)
 {
     struct mtThreadData *td;
-    unsigned tid = gettid();
+    unsigned tid = syscall(SYS_gettid);
     struct mtID id = {0,};
     struct mtObject *mm;
     int ret;
@@ -581,7 +582,7 @@ int mt_pthread_create(const char *file, int line, const char *name, pthread_t *t
 int mt_pthread_setname_np(const char *file, int line, const char *name, pthread_t thread, const char *threadName)
 {
     struct mtThreadData *td;
-    unsigned tid = gettid();
+    unsigned tid = syscall(SYS_gettid);
     struct mtID id = {0,};
     struct mtObject *mm;
     int ret;
