@@ -27,7 +27,7 @@
 #define BT_VENDOR_INFACE_STRUCT  "BLUETOOTH_VENDOR_LIB_INTERFACE"
 
 
-static bool mLog = false;
+static bool mLog = true;
 
 
 /* our state w.r.t. vendor lib */
@@ -41,8 +41,9 @@ static int mFdAclIn;
 static int mFdAclOut;
 static int mFdScoIn;
 static int mFdScoOut;
-static bool mCbkResult;
 static sem_t mInitSem;
+static bool mCbkResult;
+static sem_t mRxStartSem;
 static pthread_t mWorkerThread;
 static int mWorkerClosePipe;
 
@@ -129,7 +130,6 @@ static void vendorChipWake(bool keepAwake)
         mKeepAwake = true;
     }
 
-out:
     pthread_mutex_unlock(&mStateLock);
 }
 
@@ -239,6 +239,20 @@ static uint8_t vcbkXmit(uint16_t opcode, void *p_buf, tINT_CMD_CBACK p_cback)
     return 0;
 }
 
+/*we are ready to RX*/
+/*
+ * FUNCTION: vendorStartRx
+ * USE:      Start vendor lib listening to the chip. No RX events will be delivered
+ *           before this is called
+ * PARAMS:   none
+ * RETURN:   none
+ * NOTES:
+ */
+void vendorStartRx(void)
+{
+    sem_post(&mRxStartSem);
+}
+
 /*
  * FUNCTION: vendorWorker
  * USE:      Vendor lib worker thread
@@ -252,6 +266,8 @@ static void* vendorWorker(void *pipeFdP)
     int i, ret;
 
     pthread_setname_np(pthread_self(), "bt_vendor_worker");
+
+    r_sem_wait(&mRxStartSem);
 
     while (1) {
         struct pollfd pollfds[CH_MAX + 1] = {{0,},};
@@ -386,10 +402,8 @@ static void* vendorWorker(void *pipeFdP)
                     continue;
                 }
 
-                if (!mNeedTypeBytes) {
-                    mNeedTypeBytes++;
+                if (!mNeedTypeBytes)
                     packet[0] = buf[0];
-                }
 
                 switch (packet[0]) {
                 case HCI_PKT_TYP_ACL:
@@ -410,7 +424,7 @@ static void* vendorWorker(void *pipeFdP)
                     continue;
                 }
                 sz += hdrSz;
-                packetOffset++;
+                packetOffset = 1;
                 if ((unsigned)bytesAvail != sz + packetOffset) {
                     loge("%u (incl %u) + %u != %u\n", sz, hdrSz, packetOffset, bytesAvail);
                     free(packet);
@@ -425,8 +439,11 @@ static void* vendorWorker(void *pipeFdP)
 
             mKnowAboutCompleWrites = true;
             if (mLog) {
-                char line[128] = "vRX <ZLP>";
+                char line[128];
                 uint32_t i;
+
+		if (!sz)
+			sprintf(line, "vRX (%u) <ZLP>", buf[0]);
 
                 for(i = 0; i < sz; i++) {
                     if (i & 15)
@@ -444,7 +461,6 @@ static void* vendorWorker(void *pipeFdP)
             if (mCmdCompleteWaiting && buf[0] == HCI_PKT_TYP_EVT && packet[0 + packetOffset] == 0x0E && sz >= 5) {
 
                 uint16_t code = (((uint16_t)packet[4 + packetOffset]) << 8) | packet[3 + packetOffset];
-
                 /* but it only needs them of a certain type - so we filter here */
                 if (code == mCmdCompleteWaiting) {
                     mCmdCompleteWaiting = 0;
@@ -573,7 +589,7 @@ out:
 bool vendorUp(const uint8_t *addr, vendorCbkChipUp chipUpCbk, vendorCbkRx dataRxCbk, void *chipCbkData)
 {
     uint8_t tv8;
-    int ret, tmp, fds[CH_MAX], pipeFds[2], freeFds[CH_MAX], nfds;
+    int ret, tmp, fds[CH_MAX], pipeFds[2], freeFds[CH_MAX], nfds, *fdsP = fds;
     static unsigned char local_addr[BT_MAC_LEN];
     static const bt_vendor_callbacks_t vendorCbks = {
         .size      = sizeof(bt_vendor_callbacks_t),
@@ -639,7 +655,7 @@ bool vendorUp(const uint8_t *addr, vendorCbkChipUp chipUpCbk, vendorCbkRx dataRx
     chipUpCbk(chipCbkData, false, true);
 
     logd("vendor->op(BT_VND_OP_USERIAL_OPEN)\n");
-    nfds = mVendorIface->op(BT_VND_OP_USERIAL_OPEN, &fds);
+    nfds = mVendorIface->op(BT_VND_OP_USERIAL_OPEN, &fdsP);
     logd("nfds %d\n", nfds);
     mNeedTypeBytes = false;
     if (nfds == 1) {
@@ -683,10 +699,14 @@ bool vendorUp(const uint8_t *addr, vendorCbkChipUp chipUpCbk, vendorCbkRx dataRx
     }
     mWorkerClosePipe = pipeFds[1];
 
+    if (sem_init(&mRxStartSem, 0, 0)) {
+        loge("sem_init failed\n");
+        goto out_need_pipe_close;
+    }
     ret = pthread_create(&mWorkerThread, NULL, vendorWorker, (void*)(uintptr_t)(pipeFds[0]));
     if (ret) {
         loge("Failed to create vendor worker thread\n");
-        goto out_need_pipe_close;
+        goto out_need_sem_deinit;
     }
 
     logd("Starting FW init\n");
@@ -731,6 +751,9 @@ out_need_thread_shutdown:
     if (ret != 1)
         logw("Write to close vendor worker thread returned %d\n", ret);
     pthread_join(mWorkerThread, NULL);
+
+out_need_sem_deinit:
+    sem_destroy(&mRxStartSem);
 
 out_need_pipe_close:
     close(pipeFds[0]);
@@ -887,7 +910,9 @@ void vendorDown(void)
     if (ret != 1)
         logw("Write to close vendor worker thread returned %d\n", ret);
     logd("Waiting for vendor worker to finish\n");
+    sem_post(&mRxStartSem);
     pthread_join(mWorkerThread, NULL);
+    sem_destroy(&mRxStartSem);
     logd("Vendor worker done\n");
     close(mWorkerClosePipe);
 

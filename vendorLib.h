@@ -20,6 +20,9 @@ void vendorLogEnable(bool on);
 /* bring up the chip*/
 bool vendorUp(const uint8_t *addr, vendorCbkChipUp chipUpCbk, vendorCbkRx dataRxCbk, void *chipCbkData);
 
+/*we are ready to RX*/
+void vendorStartRx(void);
+
 /* send - may block */
 bool vendorTx(uint8_t typ, sg data, bool expectReply);
 
