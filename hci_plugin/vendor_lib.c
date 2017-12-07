@@ -33,7 +33,7 @@ static int op(bt_vendor_opcode_t opcode, void *param)
 				mFd = open(FILEPATH, O_RDWR);
 
 			if (mFd >= 0) {
-				fdsP[0][0] = mFd;
+				fdsP[0][CH_CMD] = mFd;
 				return 1;	//number of fds retruned
 			}
 
@@ -52,7 +52,7 @@ static int op(bt_vendor_opcode_t opcode, void *param)
 		case BT_VND_OP_LPM_SET_MODE:
 			//we never fail!
 			mCbks->lpm_cb(BT_VND_OP_RESULT_SUCCESS);
-			return 0;
+			return 1;
 
 		case BT_VND_OP_LPM_WAKE_SET_STATE:
 			//we have no states
