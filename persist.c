@@ -179,11 +179,11 @@ static void persistPropDelete(struct persistProp **headP, struct persistProp **t
 static void persistFree(void)
 {
     while (mPropsHead) {
-        mPropsTail = mPropsTail;
+        mPropsTail = mPropsHead;
         mPropsHead = mPropsHead->next;
         persistPropFree(mPropsTail);
     }
-    mPropsTail = NULL;
+    mPropsTail = mPropsHead = NULL;
 }
 
 /*
