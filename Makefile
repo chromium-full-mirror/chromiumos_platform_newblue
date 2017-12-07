@@ -26,11 +26,13 @@ OBJ =                       \
 OBJ +=                      \
     test.o
 
+.PHONY: install clean
+
 %.o: %.c
-	gcc -o $@ $(CFLAGS) -c $<
+	$(CC) -o $@ $(CFLAGS) -c $<
 
 $(TEST): $(OBJ) usb_vendor_plugin hci_vendor_plugin
-	g++ -o $@ -g $(OBJ) -ldl -pthread -lrt
+	$(CC) -o $@ -g $(OBJ) -ldl -lpthread -lrt
 
 clean: usb_vendor_plugin_clean hci_vendor_plugin_clean
 	@rm -f *.o $(TEST)
@@ -44,7 +46,10 @@ usb_vendor_plugin_clean:
 	$(MAKE) -C usb-hci clean
 
 hci_vendor_plugin:
-	$(MAKE) -C hci_plugin
+	$(MAKE) -C hci_plugin CC=$(CC)
 
 hci0_vendor_plugin_clean:
 	$(MAKE) -C hci_plugin clean
+
+install: $(TEST)
+	$(INSTALL) -t /usr/bin -m644 $^
