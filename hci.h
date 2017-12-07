@@ -133,9 +133,12 @@ typedef void (*hciDeviceDiscoveredLeCbk)(void *cbkData, const struct bt_addr *ad
 
 typedef void (*hciOpDoneCbk)(void *cbkData, uint8_t status /* 0 = good */);
 
-/* bring chip communications up or down */
+/* bring chip communications up or down (also query)*/
 bool hciUp(const uint8_t *addr);
 void hciDown(void);
+
+/* test if stack is up or needs bringup */
+bool hciIsUp(void);
 
 /* info api */
 bool hciInfoSharedBuffers(void); //true if EDR & LE share buffers

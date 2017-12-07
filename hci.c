@@ -243,6 +243,12 @@ struct hciAclConn {
 
 #define CONN_CFG_STEP_LE           0x0000
 
+#define STACK_STATE_DOWN           0 //down and not ready for up
+#define STACK_STATE_READY_FOR_UP   1 //ready to be brought up
+#define STACK_STATE_COMING_UP      2 //on the way up
+#define STACK_STATE_UP             3 //working
+#define STACK_STATE_GOING_DOWN     4 //on the way down
+
 
 /* useful constants */
 static const char *mBtVers[] = {"1.0b", "1.1", "1.2", "2.0", "2.1", "3.0", "4.0", "4.1", "4.2", "5.0"};
@@ -257,7 +263,7 @@ static pthread_mutex_t mCmdLock = PTHREAD_MUTEX_INITIALIZER;
 static sem_t mCmdSendSem;
 static struct workQueue* mCmdsSendWork;
 static pthread_t mCmdsSendThread;
-static bool mInReset = true;
+static uint8_t mStackState = STACK_STATE_DOWN;
 
 static struct workQueue* mCallbackWork;
 static pthread_t mCallbackThread;
@@ -308,6 +314,7 @@ static bool hciConnLeCancel(void);
 static void hciConnCfg(struct hciAclConn *c, uint32_t step, uint32_t aux);
 static bool hciRxAclForRunningConn(struct hciAclConn* conn, uint16_t hdr, sg packet);
 static void hciConnAclStructDel(struct hciAclConn* conn);
+static bool hciSetupResetEventHandler(bool cmdWaitLockHeld);
 
 
 
@@ -442,17 +449,14 @@ static uint8_t hciEvtWaitDequeueAllForCmd(uniq_t forCmdID)
 }
 
 /*
- * FUNCTION: hciEvtWaitEnqueue
+ * FUNCTION: hciEvtWaitEnqueueUnlocked
  * USE:      Enqueue a handler for an event we expect
  * PARAMS:   ewd - the event wait descriptor
- *           persistent - if set, handler will not be removed
- *                        when it fires and must be removed manually
- *           eventWaitID - the eventWaitID for this waiter. If 0, one will be allocated
  *           forCmdID - the commandID this is for
  * RETURN:   uniq_t identifying this event wait object or 0 on failure
- * NOTES:
+ * NOTES:    must be called with mCmdWaitLock held
  */
-static uniq_t hciEvtWaitEnqueue(const struct hciEvtWaitDescr *ewd, uniq_t forCmdID)
+static uniq_t hciEvtWaitEnqueueUnlocked(const struct hciEvtWaitDescr *ewd, uniq_t forCmdID)
 {
     struct hciEvtWaitState *ws = (struct hciEvtWaitState*)malloc(sizeof(struct hciEvtWaitState));
     uniq_t ret;
@@ -473,13 +477,30 @@ static uniq_t hciEvtWaitEnqueue(const struct hciEvtWaitDescr *ewd, uniq_t forCmd
     ws->evtWaitStateID = ret;
     ws->forCmdID = forCmdID;
 
-    pthread_mutex_lock(&mCmdWaitLock);
     ws->prev = mEvtWaitTail;
     mEvtWaitTail = ws;
     if (ws->prev)
         ws->prev->next = ws;
     else
         mEvtWaitHead = ws;
+
+    return ret;
+}
+
+/*
+ * FUNCTION: hciEvtWaitEnqueue
+ * USE:      Enqueue a handler for an event we expect
+ * PARAMS:   ewd - the event wait descriptor
+ *           forCmdID - the commandID this is for
+ * RETURN:   uniq_t identifying this event wait object or 0 on failure
+ * NOTES:
+ */
+static uniq_t hciEvtWaitEnqueue(const struct hciEvtWaitDescr *ewd, uniq_t forCmdID)
+{
+    uniq_t ret;
+
+    pthread_mutex_lock(&mCmdWaitLock);
+    ret = hciEvtWaitEnqueueUnlocked(ewd, forCmdID);
     pthread_mutex_unlock(&mCmdWaitLock);
 
     return ret;
@@ -679,6 +700,7 @@ static void hciRxEvt(sg packet)
     }
 
     if (!handled) {
+
         pthread_mutex_lock(&mCmdWaitLock);
         ws = mEvtWaitHead;
         while (ws && !handled) {
@@ -722,25 +744,23 @@ static void hciRxEvt(sg packet)
             /* if we're here, this handler matches - let's see what it says */
             handled = cur->cbk(evt, cur->cbkData, cur->evtWaitStateID, cur->forCmdID);
         }
+
         if (handled && cur && !cur->persistent)
             hciEvtWaitDequeueInt(cur);
-
-        if (mInReset) {
+        if (mStackState == STACK_STATE_GOING_DOWN) {
             //if we are now in reset, delete all waiters. reset handler code cannot do it as we still hold the lock
             while (mEvtWaitHead)
                  hciEvtWaitDequeueInt(mEvtWaitHead);
+            hciSetupResetEventHandler(true);
+            mStackState = STACK_STATE_DOWN;
         }
-
         pthread_mutex_unlock(&mCmdWaitLock);
     }
 
     if (addCredit) {
-        if (!mInReset)
-            sem_post(&mCmdSendSem);
-        else {
-            if (!hciBtStackUp())
-                loge("Failed to bring stack out of reset!\n");
-        }
+        sem_post(&mCmdSendSem);
+        if (mStackState == STACK_STATE_DOWN)
+            mStackState = STACK_STATE_READY_FOR_UP;
     }
 
     if (!handled)
@@ -1297,18 +1317,13 @@ bool hciUp(const uint8_t *addr)
     sem_init(&mAclPacketsLe, 0, 0);
     sem_init(&mAclPacketsEdr, 0, 0);
 
-    logd("Stack up\n");
-    if (!hciBtStackUp()) {
-        loge("Failed to bring up BT stack\n");
-        goto out_stack_up;
-    }
+    hciSetupResetEventHandler(false);
+    vendorStartRx();
 
+    logd("Stack ready for up...awaiting reset event\n");
+    //in a real stack we'd call hciBtStackUp() here. but with splitter, we just wait...
     return true;
 
-out_stack_up:
-    workQueueWakeAll(mCmdsSendWork, 1);
-    sem_post(&mCmdSendSem); /* wakes up cmdSend worker if it is waiting on a cmd credit */
-    pthread_join(mCmdsSendThread, NULL);
 
 out_cmd_worker:
     workQueueWakeAll(mCallbackWork, 1);
@@ -1385,7 +1400,7 @@ void hciDown(void)
  * RETURN:   success
  * NOTES:    SHALL FINISH QUICKLY AND NOT BLOCK. WILL NOT DEADLOCK YOU! ALWAYS SAFE TO CALL!
  */
-static bool hciCmdSubmit(uint8_t ogf, uint16_t ocf, const void* paramData, uint8_t paramLen, ...)
+static bool hciCmdSubmit(uint8_t ogf, uint16_t ocf, const void* paramData, uint32_t paramLen, ...)
 {
     const struct hciEvtWaitDescr *ewd;
     struct hciCmdSendWorkItem *w;
@@ -2127,6 +2142,17 @@ HCI_SIMPLY_SYNC_WRITE_NOCMDPARAMS(InquiryCancel, HCI_OGF_Link_Control, HCI_CMD_I
 HCI_SIMPLY_SYNC_END
 
 /*
+ * FUNCTION: hciLeSetEventMaskSync
+ * USE:      Set LE event mask
+ * PARAMS:   events - the wanted event mask
+ */
+HCI_SIMPLY_SYNC_WRITE(LeSetEventMask, (uint64_t events), HCI_OGF_LE, HCI_CMD_LE_Set_Event_Mask)
+    REQUIRE_VERSION(HCI_VERSION_4_0)
+    REQUIRE_FEATURE(0, HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER);
+    HCI_COPY_IN_U64(events)
+HCI_SIMPLY_SYNC_END
+
+/*
  * FUNCTION: hciLeSetScanEnableSync
  * USE:      Enable/disable LE scan
  * PARAMS:   scanOn - scan on/off
@@ -2187,7 +2213,6 @@ HCI_SIMPLY_SYNC_CMD_W_STATUS(Inquiry, (uint32_t lap, uint8_t inqLen, uint8_t num
     HCI_COPY_IN_U8(inqLen)
     HCI_COPY_IN_U8(numResp)
 HCI_SIMPLY_SYNC_END
-
 
 /*
  * FUNCTION: hciLeSetAdvParams
@@ -2430,6 +2455,8 @@ static bool hciInquiryEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t 
 static bool hciResetEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
 {
     //notify everyone that all connections are down
+
+
     pthread_mutex_lock(&mConnsLock);
     while (mConns) {
         //for all connections upper layers know of, tell them they are no more
@@ -2438,15 +2465,57 @@ static bool hciResetEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t ev
                 loge("Failed to schedule conn down notif\n");
         hciConnAclStructDel(mConns);
     }
-    pthread_mutex_lock(&mConnsLock);
+    pthread_mutex_unlock(&mConnsLock);
 
     //remove command send authority if it exists (this event may give us a credit or not, that will be handled later)
     while(!sem_trywait(&mCmdSendSem));
 
     //remember that we're in reset
-    mInReset = true;
+    mStackState = STACK_STATE_GOING_DOWN;
 
     return true;
+}
+
+/*
+ * FUNCTION: hciSetupResetEventHandler
+ * USE:      Set up the handler for the "reset" event
+ * PARAMS:   cmdWaitLockHeld - set if caller has mCmdWaitLock
+ * RETURN:   false on error
+ * NOTES:    may be called with mCmdWaitLock held (see params)
+ */
+static bool hciSetupResetEventHandler(bool cmdWaitLockHeld)
+{
+    bool ret;
+    struct hciEvtWaitDescr ewd = {
+        .cbk = hciResetEvtCbk,
+        .evtType = HCI_EVT_Command_Complete,
+        .extra = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Reset),
+        .persistent = true,
+    };
+
+    if (cmdWaitLockHeld)
+         ret = hciEvtWaitEnqueueUnlocked(&ewd, 0);
+    else
+         ret = hciEvtWaitEnqueue(&ewd, 0);
+
+    return ret;
+}
+
+/*
+ * FUNCTION: hciIsUp
+ * USE:      Ask if chip is ready to be used
+ * PARAMS:   none
+ * RETURN:   the answer
+ * NOTES:
+ */
+bool hciIsUp(void)
+{
+    loge(" *X* state = %d\n", mStackState);
+
+    if (mStackState == STACK_STATE_READY_FOR_UP)
+        return hciBtStackUp();
+
+    return mStackState == STACK_STATE_UP;
 }
 
 /*
@@ -2508,11 +2577,11 @@ static bool hciBtStackUp(void)
 
     /* sanity and start */
     {
-        if (!mInReset) {
-            loge("Stack cannot be brought up if not in reset\n");
+        if (mStackState != STACK_STATE_READY_FOR_UP) {
+            loge("Stack cannot be brought up if not ready for bringup\n");
             return false;
         }
-        sem_post(&mCmdSendSem);
+        mStackState = STACK_STATE_COMING_UP;
     }
 
     /* read local BT version */
@@ -2663,30 +2732,42 @@ static bool hciBtStackUp(void)
         logi("BT UP: le features reported: "FMT64"X\n", CNV64(mLocalLeFtrs));
     }
 
-    /* set event mask */
+    /* enable LE */
+    logi("Enabling LE\n");
+    ret = hciWriteLeHostSupportedSync(true, false);
+    if (ret)
+        goto out;
+    logi("LE should be on\n");
+
+    /* set event masks */
     {
-        uint64_t evts = 0, evts2 = 0;
+        uint64_t evts = 0, evts2 = 0, evtsLe = 0;
 
         switch (mBtVer) {
         case HCI_VERSION_4_0:
             evts = HCI_EVENT_ALL_BT_4_0;
             evts2 = HCI_EVENT_P2_ALL_BT_4_0;
+            evtsLe = HCI_LE_EVENT_ALL_BT_4_0;
             break;
         case HCI_VERSION_4_1:
             evts = HCI_EVENT_ALL_BT_4_1;
             evts2 = HCI_EVENT_P2_ALL_BT_4_1;
+            evtsLe = HCI_LE_EVENT_ALL_BT_4_1;
             break;
         case HCI_VERSION_4_2:
             evts = HCI_EVENT_ALL_BT_4_2;
             evts2 = HCI_EVENT_P2_ALL_BT_4_2;
+            evtsLe = HCI_LE_EVENT_ALL_BT_4_2;
             break;
         case HCI_VERSION_5_0:
             evts = HCI_EVENT_ALL_BT_5_0;
             evts2 = HCI_EVENT_P2_ALL_BT_5_0;
+            evtsLe = HCI_LE_EVENT_ALL_BT_5_0;
             break;
         }
         evts &=~ HCI_EVENT_REMOTE_HOST_SUPPORTED_FEATURES; /* we do not want this one - it is spammy and useless for now */
         evts &=~ HCI_EVENT_MAX_SLOTS_CHANGE; /* same here, really */
+        evtsLe &=~ HCI_LE_EVENT_SCAN_REQUEST_RECVD; /* same here */
         logi("Setting event mask to 0x"FMT64"X\n", CNV64(evts));
         ret = hciSetEventMaskSync(evts);
         if (ret)
@@ -2696,30 +2777,15 @@ static bool hciBtStackUp(void)
         ret = hciSetEventMaskPage2Sync(evts2);
         if (ret)
             goto out;
-    }
 
-    /* enable LE */
-    logi("Enabling LE\n");
-    ret = hciWriteLeHostSupportedSync(true, false);
-    if (ret)
-        goto out;
-    logi("LE should be on\n");
+        logi("Setting LE event mask to 0x"FMT64"X\n", CNV64(evtsLe));
+        ret = hciLeSetEventMaskSync(evtsLe);
+        if (ret)
+            goto out;
+    }
 
     /* set up event handler(s) for reset */
-    {
-        struct hciEvtWaitDescr ewd = {
-            .cbk = hciResetEvtCbk,
-            .evtType = HCI_EVT_Command_Complete,
-            .extra = CMD_MAKE_OPCODE(HCI_OGF_Controller_and_Baseband, HCI_CMD_Reset),
-            .persistent = true,
-        };
-
-        if (!hciEvtWaitEnqueue(&ewd, 0)) {
-            ret = -2;
-            loge("Failed to enqueue reset handler\n");
-            goto out;
-        }
-    }
+    hciSetupResetEventHandler(false);
 
     /* set up event handler(s) for discovery results */
     {
@@ -2750,13 +2816,14 @@ static bool hciBtStackUp(void)
         }
     }
 
-    mInReset = false;
 
 out:
     if (ret) {
         loge("Status was 0x%02X\n", ret);
+        mStackState = STACK_STATE_DOWN;
         return false;
     }
+    mStackState = STACK_STATE_UP;
     return true;
 }
 
