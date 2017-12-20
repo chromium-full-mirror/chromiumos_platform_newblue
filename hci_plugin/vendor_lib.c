@@ -63,7 +63,7 @@ static int op(bt_vendor_opcode_t opcode, void *param)
 			return 0;
 
 		case BT_VND_OP_EPILOG:
-			//we're always ready to shut down
+			mCbks->epilog_cb(BT_VND_OP_RESULT_SUCCESS);
 			return 0;
 	}
 
