@@ -2444,7 +2444,7 @@ struct hciCmplLeRemoteConnParamRequestReply {
 } __packed;
 
 #define HCI_CMD_LE_Remote_Conn_Param_Request_Negative_Reply      0x0021 /* complete */
-struct hciRemoteConnParamRequestNegativeReply {
+struct hciLeRemoteConnParamRequestNegativeReply {
     uint16_t conn;
     uint8_t reason;
 } __packed;
@@ -2452,6 +2452,454 @@ struct hciCmplLeRemoteConnParamRequestNegativeReply {
     uint8_t status;
     uint16_t conn;
 } __packed;
+
+/* ==== BT 4.2 ==== */
+
+#define HCI_CMD_LE_Set_Data_Length                               0x22 /* complete */
+struct hciLeSetDataLength {
+    uint16_t conn;
+    uint16_t txOctets;
+    uint16_t txTime;
+} __packed;
+struct hciCmplLeSetDataLength {
+    uint8_t status;
+    uint16_t conn;
+} __packed;
+
+#define HCI_CMD_LE_Read_Suggested_Default_Data_Length            0x23 /* complete */
+struct hciLeCmplReadSuggestedDefaultDataLength {
+    uint8_t status;
+    uint16_t suggestedMaxTxOctets;
+    uint16_t suggestedMaxTxTime;
+} __packed;
+
+#define HCI_CMD_LE_Write_Suggested_Default_Data_Length           0x24 /* complete */
+struct hciLeWriteSuggestedDefaultDataLength {
+    uint16_t suggestedMaxTxOctets;
+    uint16_t suggestedMaxTxTime;
+} __packed;
+struct hciCmplLeWriteSuggestedDefaultDataLength {
+    uint8_t status;
+} __packed;
+
+#define HCI_CMD_LE_Read_Local_P256_Public_Key                    0x25 /* status */
+
+#define HCI_CMD_LE_Generate_DHKey                                0x26 /* status */
+struct hciLeGenerateDHKey {
+    uint8_t remotePubKey[64];
+} __packed;
+
+#define HCI_CMD_LE_Add_Device_To_Resolving_List                  0x27 /* complete */
+struct hciLeAddDeviceToResolvingList {
+    uint8_t peerAddrType;
+    uint8_t peerMac[6]; /* public or static random */
+    uint8_t peerIrk[16];
+    uint8_t localIrk[16];
+} __packed;
+struct hciCmplLeAddDeviceToResolvingList {
+    uint8_t status;
+} __packed;
+
+#define HCI_CMD_LE_Remove_Device_From_Resolving_List             0x28 /* complete */
+struct hciLeRemoveDeviceFromResolvingList {
+    uint8_t peerAddrType;
+    uint8_t peerMac[6]; /* public or static random */
+} __packed;
+struct hciCmplLeRemoveDeviceFromResolvingList {
+    uint8_t status;
+} __packed;
+
+#define HCI_CMD_LE_Clear_Resolving_List                          0x29 /* complete */
+struct hciCmplLeClearResolvingList {
+    uint8_t status;
+} __packed;
+
+#define HCI_CMD_LE_Read_Resolving_List_Size                      0x2A /* complete */
+struct hciCmplLeReadResolvingListSize {
+    uint8_t status;
+    uint8_t maxListEntries;
+} __packed;
+
+#define HCI_CMD_LE_Read_Peer_Resolvable_Addr                     0x2B /* complete */
+struct hciLeReadPeerResolvableAddr {
+    uint8_t peerAddrType;
+    uint8_t peerMac[6]; /* public or static random */
+} __packed;
+struct hciCmplLeReadPeerResolvableAddr {
+    uint8_t status;
+    uint8_t peerResolvableMac[6];
+} __packed;
+
+#define HCI_CMD_LE_Read_Local_Resolvable_Addr                    0x2C /* complete */
+struct hciLeReadLocalResolvableAddr {
+    uint8_t peerAddrType;
+    uint8_t peerMac[6]; /* public or static random */
+} __packed;
+struct hciCmplLeReadLocalResolvableAddr {
+    uint8_t status;
+    uint8_t localResolvableMac[6];
+} __packed;
+
+#define HCI_CMD_LE_Set_Addr_Resolution_Enable                    0x2D /* complete */
+struct hciLeSetAddrResolutionEnable {
+    uint8_t enable;
+} __packed;
+struct hciCmplLeSetAddrResolutionEnable {
+    uint8_t status;
+} __packed;
+
+#define HCI_CMD_LE_Set_Resolvable_Private_Addr_Timeout           0x2E /* complete */
+struct hciLeSetResolvablePrivaeAddrTimeout {
+    uint16_t seconds;
+} __packed;
+struct hciCmplLeSetResolvablePrivaeAddrTimeout {
+    uint8_t status;
+} __packed;
+
+#define HCI_CMD_LE_Read_Maximum_Data_Length                      0x2F /* complete */
+struct hciCmplLeReadMaximumDataLength {
+    uint8_t status;
+    uint16_t supportedMaxTxOctets;
+    uint16_t supportedMaxTxTime;
+    uint16_t supportedMaxRxOctets;
+    uint16_t supportedMaxRxTime;
+} __packed;
+
+/* ==== BT 5.0 ==== */
+
+#define HCI_CMD_LE_Read_PHY                                      0x30 /* complete */
+struct hciLeReadPhy {
+    uint16_t conn;
+} __packed;
+struct hciCmplLeReadPhy {
+    uint8_t status;
+    uint16_t conn;
+    uint8_t txPhy;
+    uint8_t rxPhy;
+} __packed;
+
+#define HCI_CMD_LE_Set_Default_PHY                               0x31 /* complete */
+struct hciLeSetDefaultPhy {
+    uint8_t allPhys;
+    uint8_t txPhys;
+    uint8_t rxPhys;
+} __packed;
+struct hciCmplLeSetDefaultPhy {
+    uint8_t status;
+} __packed;
+
+#define HCI_CMD_LE_Set_PHY                                       0x32 /* status */
+struct hciLeSetPhy {
+    uint16_t conn;
+    uint8_t allPhys;
+    uint8_t txPhys;
+    uint8_t rxPhys;
+    uint16_t phyOptions;
+} __packed;
+
+#define HCI_CMD_LE_Enhanced_Receiver_Test                        0x33 /* complete */
+struct hciLeEnhancedReceiverTest {
+    uint8_t rxChannel;
+    uint8_t phy;
+    uint8_t modulationIndex;
+} __packed;
+struct hciCmplLeEnhancedReceiverTest {
+    uint8_t status;
+} __packed;
+
+#define HCI_CMD_LE_Enhanced_Transmitter_Test                     0x34 /* complete */
+struct hciLeEnhancedTransmitterTest {
+    uint8_t txChannel;
+    uint8_t lengthOfTestData;
+    uint8_t payloadType;
+    uint8_t phy;
+} __packed;
+struct hciCmplLeEnhancedTransmitterTest {
+    uint8_t status;
+} __packed;
+
+#define HCI_CMD_LE_Set_Adv_Set_Random_Addr                       0x35 /* complete */
+struct hciLeSetAdvSetRandomAddr {
+    uint8_t advSetHandle;
+    uint8_t mac[6];
+} __packed;
+struct hciCmplLeSetAdvSetRandomAddr {
+    uint8_t status;
+} __packed;
+
+#define HCI_CMD_LE_Set_Extended_Adv_Params                       0x36 /* complete */
+struct hciLeSetExtendedAdvParams {
+    uint8_t advSetHandle;
+    uint16_t advSetProperties;
+    uint8_t primaryAdvIntervalMin[3];	/* uint24_t */
+    uint8_t primaryAdvIntervalMax[3];	/* uint24_t */
+    uint8_t primaryAdvChannelMap;
+    uint8_t ownAddrType;
+    uint8_t peerAddrType;
+    uint8_t peerMac[6];
+    uint8_t filterPolicy;
+    uint8_t txPower; /* actually a int8_t */
+    uint8_t primaryAdvPhy;
+    uint8_t secondaryAdvMaxSkip;
+    uint8_t secondaryAdvPhy;
+    uint8_t advSid;
+    uint8_t enableScanRequestNotif;
+} __packed;
+struct hciCmplLeSetExtendedAdvParams {
+    uint8_t status;
+    uint8_t txPowerChosen; /* actually a int8_t */
+} __packed;
+
+#define HCI_CMD_LE_Set_Extended_Adv_Data                         0x37 /* complete, VARIABLE LENGTH */
+struct hciLeSetExtendedAdvData {
+    uint8_t advSetHandle;
+    uint8_t operation;
+    uint8_t fragmentPreference;
+    uint8_t advDataLen; /* 0..251 */
+    uint8_t advData[];
+} __packed;
+struct hciCmplLeSetExtendedAdvData {
+    uint8_t status;
+} __packed;
+
+#define HCI_CMD_LE_Set_Extended_Scan_Rsp_Data                    0x38 /* complete, VARIABLE LENGTH */
+struct hciLeSetExtendedScanRspData {
+    uint8_t advSetHandle;
+    uint8_t operation;
+    uint8_t fragmentPreference;
+    uint8_t scanRspDataLen; /* 0..251 */
+    uint8_t scanRspData[];
+} __packed;
+struct hciCmplLeSetExtendedScanRspData {
+    uint8_t status;
+} __packed;
+
+#define HCI_CMD_LE_Set_Extended_Adv_Enable                       0x39 /* complete, VARIABLE LENGTH */
+struct hciLeSetExtendedAdvEnableItem {
+    uint8_t advSetHandle;
+    uint16_t duration;
+    uint8_t maxExtdAdvEvts;
+} __packed;
+struct hciLeSetExtendedAdvEnable {
+    uint8_t enable;
+    uint8_t numSets;
+    struct hciLeSetExtendedAdvEnableItem sets[];
+} __packed;
+struct hciCmplLeSetExtendedAdvEnable {
+    uint8_t status;
+} __packed;
+
+#define HCI_CMD_LE_Read_Max_Adv_Data_Len                         0x3A /* complete */
+struct hciCmplLeReadMaxAdvDataLen {
+    uint8_t status;
+    uint16_t maxLen;
+} __packed;
+
+#define HCI_CMD_LE_Read_Num_Supported_Adv_Sets                   0x3B /* complete */ //not a final limit - sets a cap on "advSetHandle" everywhere, but other caps may exist
+struct hciCmplLeReadNumSupportedAdvSets {
+    uint8_t status;
+    uint8_t maxAdvsets;
+} __packed;
+
+#define HCI_CMD_LE_Remove_Adv_Set                                0x3C /* complete */
+struct hciLeRemoveAdvSet {
+    uint8_t advSetHandle;
+} __packed;
+struct hciCmplLeRemoveAdvSet {
+    uint8_t status;
+} __packed;
+
+#define HCI_CMD_LE_Clear_Adv_Sets                                0x3D /* complete */
+struct hciCmplLeClearAdvSets {
+    uint8_t status;
+} __packed;
+
+#define HCI_CMD_LE_Set_Periodic_Adv_Params                       0x3E
+/* we'll define if needed */
+
+#define HCI_CMD_LE_Set_Periodic_Adv_Data                         0x3F
+/* we'll define if needed */
+
+#define HCI_CMD_LE_Set_Periodic_Adv_Enable                       0x40
+/* we'll define if needed */
+
+#define HCI_CMD_LE_Set_Extended_Scan_Params                      0x41 /* complete, VARIABLE LENGTH */
+struct hciLeSetExtendedScanParamsItem {
+    uint8_t scanType;
+    uint16_t scanInterval;
+    uint16_t scanWindow;
+} __packed;
+struct hciLeSetExtendedScanParams {
+    uint8_t ownAddrType;
+    uint8_t filterPolicy;
+    uint8_t phys; //number of items that follow
+    struct hciLeSetExtendedScanParamsItem perPhy[];
+} __packed;
+struct hciCmplLeSetExtendedScanParams {
+    uint8_t status;
+} __packed;
+
+#define HCI_CMD_LE_Set_Extended_Scan_Enable                      0x42 /* complete */
+struct hciLeSetExtendedScanEnable {
+    uint8_t enable;
+    uint8_t filterDupes;
+    uint16_t duration;
+    uint16_t period;
+} __packed;
+struct hciCmplLeSetExtendedScanEnable {
+    uint8_t status;
+} __packed;
+
+#define HCI_CMD_LE_Extended_Create_Connection                    0x43 /* status, VARIABLE LENGTH */
+struct hciLeExtendedCreateConnectionItem {
+    uint16_t scanInterval;
+    uint16_t scanWindow;
+    uint16_t connIntervalMin;
+    uint16_t connIntervalMax;
+    uint16_t connLatency;
+    uint16_t supervisiontimeout;
+    uint16_t connCeLengthMin;
+    uint16_t connCeLengthMax;
+} __packed;
+struct hciLeExtendedCreateConnection {
+    uint8_t initiatorFilterPolicy;
+    uint8_t ownAddrType;
+    uint8_t peerAddrType;
+    uint8_t peerAddr[6];
+    uint8_t phys;  //number of items that follow
+    struct hciLeExtendedCreateConnectionItem perPhy[];
+} __packed;
+
+#define HCI_CMD_LE_Periodic_Adv_Create_Sync                      0x44
+/* we'll define if needed */
+
+#define HCI_CMD_LE_Periodic_Adv_Create_Sync_Calcel               0x45
+/* we'll define if needed */
+
+#define HCI_CMD_LE_Periodic_Terminate_Sync                       0x46
+/* we'll define if needed */
+
+#define HCI_CMD_LE_Add_Dev_To_Periodic_Adv_List                  0x47
+/* we'll define if needed */
+
+#define HCI_CMD_LE_Remove_Dev_From_Periodic_Adv_List             0x48
+/* we'll define if needed */
+
+#define HCI_CMD_LE_Clear_Periodic_Adv_List                       0x49
+/* we'll define if needed */
+
+#define HCI_CMD_LE_Read_Periodic_Adv_List_Size                   0x4A
+/* we'll define if needed */
+
+#define HCI_CMD_LE_Read_Transmit_Power                           0x4B /* complete */
+struct hciCmplLeReadTransmitPower {
+    uint8_t status;
+    uint8_t minTxPower; /* actually a int8_t */
+    uint8_t maxTxPower; /* actually a int8_t */
+} __packed;
+
+#define HCI_CMD_LE_Read_RF_Path_Compensation                     0x4C
+/* we'll define if needed */
+
+#define HCI_CMD_LE_Write_RF_Path_Compensation                    0x4D
+/* we'll define if needed */
+
+#define HCI_CMD_LE_Set_Privacy_Mode                              0x4E /* complete */
+struct hciLeSetPrivacyMode {
+    uint8_t peerIdentAddrType;
+    uint8_t peerMac[6]; /* public or static random */
+    uint8_t privacyMode;
+} __packed;
+struct hciCmplLeSetPrivacyMode {
+    uint8_t status;
+} __packed;
+
+
+
+#define HCI_OGF_Vendor                                           0x3F
+
+#define HCI_CMD_Vendor_LE_Get_Vendor_Capabilities                0x153 /* complete, android-extension */
+struct hciCmplVendorLeGetVendorCapabilities {
+    uint8_t status;
+    uint8_t maxAdvtInstances;
+    uint8_t isRpaCapable;
+    uint16_t scanResultStorageBytes;
+    uint8_t irkListSz;
+    uint8_t isFilteringSupported;
+    uint8_t maxNumFilters;
+    uint8_t isEnergyMeteringSupported;
+} __packed;
+
+#define HCI_CMD_Vendor_LE_Multi_Adv_Set_Adv_Param                0x154 /* complete, note: duplicate OCF, sub-OCF exists */
+#define HCI_CMD_Vendor_LE_Multi_Adv_Set_Adv_Param_sub_ocf        0x01
+struct hciVendorLeMultiAdvSetAdvParam {
+    uint8_t subOcf;
+    uint16_t advIntervalMin;
+    uint16_t advIntervalMax;
+    uint8_t advType;
+    uint8_t ownAddressType;
+    uint8_t directRandomAddress;
+    uint8_t directAddr[6];
+    uint8_t advChannelMap;
+    uint8_t advFilterPolicy;
+    uint8_t advInstanceIdx;
+    uint8_t txPower; /* actually a int8_t */
+} __packed;
+struct hciCmplVendorLeMultiAdvSetAdvParam {
+    uint8_t status;
+    uint8_t subOcf;
+} __packed;
+
+#define HCI_CMD_Vendor_LE_Multi_Adv_Set_Adv_Data                 0x154 /* complete, note: duplicate OCF, sub-OCF exists */
+#define HCI_CMD_Vendor_LE_Multi_Adv_Set_Adv_Data_sub_ocf         0x02
+struct hciVendorLeMultiAdvSetAdvData {
+    uint8_t subOcf;
+    uint8_t advDataLen;
+    uint8_t advData[31];
+    uint8_t advInstanceIdx;
+} __packed;
+struct hciCmplVendorLeMultiAdvSetAdvData {
+    uint8_t status;
+    uint8_t subOcf;
+} __packed;
+
+#define HCI_CMD_Vendor_LE_Multi_Adv_Set_Scan_Rsp_Data            0x154 /* complete, note: duplicate OCF, sub-OCF exists */
+#define HCI_CMD_Vendor_LE_Multi_Adv_Set_Scan_Rsp_Data_sub_ocf    0x03
+struct hciVendorLeMultiAdvSetScanRspData {
+    uint8_t subOcf;
+    uint8_t scanRspDataLen;
+    uint8_t scanRspData[31];
+    uint8_t advInstanceIdx;
+} __packed;
+struct hciCmplVendorLeMultiAdvSetScanRspData {
+    uint8_t status;
+    uint8_t subOcf;
+} __packed;
+
+#define HCI_CMD_Vendor_LE_Multi_Adv_Set_Random_Addr              0x154 /* complete, note: duplicate OCF, sub-OCF exists */
+#define HCI_CMD_Vendor_LE_Multi_Adv_Set_Random_Addr_sub_ocf      0x04
+struct hciVendorLeMultiAdvSetRandomAddr {
+    uint8_t subOcf;
+    uint8_t mac[6];
+    uint8_t advInstanceIdx;
+} __packed;
+struct hciCmplVendorLeMultiAdvSetRandomAddr {
+    uint8_t status;
+    uint8_t subOcf;
+} __packed;
+
+#define HCI_CMD_Vendor_LE_Multi_Adv_Set_Adv_Enable               0x154 /* complete, note: duplicate OCF, sub-OCF exists */
+#define HCI_CMD_Vendor_LE_Multi_Adv_Set_Adv_Enable_sub_ocf       0x05
+struct hciVendorLeMultiAdvSetAdvEnable {
+    uint8_t subOcf;
+    uint8_t enabled;
+    uint8_t advInstanceIdx;
+} __packed;
+struct hciCmplVendorLeMultiAdvSetAdvEnable {
+    uint8_t status;
+    uint8_t subOcf;
+} __packed;
+
 
 
 
@@ -3074,6 +3522,134 @@ struct hciEvtInquiryResponseNotif {
 #define HCI_EVT_Authenticated_Payload_Timeout_Expired            0x57
 struct hciEvtAuthedPayloadTimeoutExpired {
     uint16_t conn;
+} __packed;
+
+
+/* ==== BT 4.2 ==== */
+
+#define HCI_EVTLE_Data_Length_Change                             0x07
+struct hciEvtLeDataLengthChange {
+    uint16_t conn;
+    uint16_t maxTxOctets;
+    uint16_t maxTxTime;
+    uint16_t maxRxOctets;
+    uint16_t maxRxTime;
+} __packed;
+
+#define HCI_EVTLE_Read_Local_P256_Public_Key_Complete            0x08
+struct hciEvtLeReadLocalP256PublicKeyComplete {
+    uint8_t status;
+    uint8_t pubKey[64];
+} __packed;
+
+#define HCI_EVTLE_Generate_DHKey_Complete                        0x09
+struct hciEvtLeGenerateDHKeyComplete {
+    uint8_t status;
+    uint8_t dhkey[32];
+} __packed;
+
+#define HCI_EVTLE_Enhanced_Connection_Complete                   0x0A
+struct hciEvtLeEnhancedConnectionComplete {
+    uint8_t status;
+    uint16_t conn;
+    uint8_t role;
+    uint8_t peerAddrType;
+    uint8_t peerAddr[6];
+    uint8_t localResolvablePrivateAddr[6];
+    uint8_t peerResolvablePrivateAddr[6];
+    uint16_t connInterval;
+    uint16_t connLatency;
+    uint16_t supervisionTimeout;
+    uint8_t MCA;
+} __packed;
+
+#define HCI_EVTLE_Direct_Advertising_Report                      0x0B
+struct hciEvtLeDirectAdvReportItem {
+    uint8_t reportType; /* aka event type */
+    uint8_t directAddrType;
+    uint8_t directAddr[6];
+    uint8_t addrType;
+    uint8_t addr[6];
+    uint8_t RSSI;  /* actually an int8_t */
+} __packed;
+struct hciEvtLeDirectAdvReport {
+    uint8_t numReports;
+    struct hciEvtLeDirectAdvReportItem reports[];
+} __packed;
+
+/* ==== BT 5.0 ==== */
+
+#define HCI_EVT_SAM_Status_Change                                0x58
+struct hciEvtSamStatusChange {
+    uint16_t conn;
+    uint8_t localSamIndex;
+    uint8_t localSamTxAvailability;
+    uint8_t localSamRxAvailability;
+    uint8_t remoteSamIndex;
+    uint8_t remoteSamTxAvailability;
+    uint8_t remoteSamRxAvailability;
+} __packed;
+
+
+#define HCI_EVTLE_PHY_Update_Complete                            0x0C
+struct hciEvtLePhyUpdateComplete {
+    uint8_t status;
+    uint16_t conn;
+    uint8_t txPhy;
+    uint8_t rxPhy;
+} __packed;
+
+#define HCI_EVTLE_Extended_Advertising_Report                    0x0D
+struct hciEvtLeExtendedAdvReportItem {
+    uint8_t eventType;
+    uint8_t addrType;
+    uint8_t addr[6];
+    uint8_t primaryPhy;
+    uint8_t secondaryPhy;
+    uint8_t advertisingSid;
+    uint8_t txPower;
+    uint8_t RSSI;  /* actually an int8_t */
+    uint16_t periodicAdvInterval;
+    uint8_t directAddrType;
+    uint8_t directAddr[6];
+    uint8_t dataLen;
+    uint8_t data[];
+} __packed;
+struct hciEvtLeExtendedAdvReport {
+    uint8_t numReports;
+    /* struct hciEvtLeExtendedAdvReportItem items[]; <- this cannot be here since data length is variable */
+} __packed;
+
+#define HCI_EVTLE_Periodic_Adv_Sync_Established                  0x0E
+/* we'll define if needed */
+
+#define HCI_EVTLE_Periodic_Adv_Report                            0x0F
+/* we'll define if needed */
+
+#define HCI_EVTLE_Periodic_Adv_Sync_Lost                         0x10
+/* we'll define if needed */
+
+#define HCI_EVTLE_Scan_Timeout                                   0x11
+
+#define HCI_EVTLE_Adv_Set_Terminated                             0x12
+struct hciEvtLeAdvSetTerminated {
+    uint8_t status;
+    uint8_t advSetHandle;
+    uint16_t conn;
+    uint8_t numComplExtendedAdvEvts;
+} __packed;
+
+#define HCI_EVTLE_Scan_Request_Received                          0x13
+struct hciEvtLeScanRequestReceived {
+    uint8_t advSetHandle;
+    uint8_t scannerAddrType;
+    uint8_t scannerAddr[6];
+} __packed;
+
+#define HCI_EVTLE_Channel_Selection_Algorithm                    0x14
+struct hciEvtLeChannelSelectionAlgorithm {
+    uint16_t conn;
+    uint8_t algorithm;
 } __packed;
 
 
