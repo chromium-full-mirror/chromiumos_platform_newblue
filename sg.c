@@ -139,7 +139,7 @@ static uint8_t* sgitemGetDataPtr(struct sgitem* item)
  */
 sg sgNew(void)
 {
-    return calloc(1, sizeof(struct sgitem));
+    return calloc(1, sizeof(struct sg));
 }
 
 /*
