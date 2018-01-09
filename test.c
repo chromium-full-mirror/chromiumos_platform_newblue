@@ -550,6 +550,7 @@ int main(int argc, char** argv)
         gattServiceDestroy(mSvcTime);
     }
     logi("bringing down\n");
+    smDeinit();
     gattBuiltinDeinit();
     gattProfileDeinit();
     attDeinit();

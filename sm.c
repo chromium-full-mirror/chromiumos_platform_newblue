@@ -11,9 +11,12 @@
 #include "config.h"
 #include "l2cap.h"
 #include "log.h"
+#include "mt.h"
 #include "persist.h"
 #include "sendQ.h"
 #include "sg.h"
+#include "timer.h"
+#include "types.h"
 #include "util.h"
 
 #include "sm.h"
@@ -120,13 +123,23 @@ struct smAuthReq {
 #define SM_PHASE_RAND_SENT              5 /* we sent Mrand. wainting for Srand. */
 #define SM_PHASE_RAND_RESP              6 /* other peer has sent us Mrand, we replied with Srand. OR we sent Mrand and got Srand.*/
 
+#define SM_WAIT_INTVL_FACTOR            2     /* the wait interval grows exponentially with base 2 */
+#define SM_DEF_WAIT_INTVL               0     /* 0 sec in msec - default wait interval */
+#define SM_MIN_WAIT_INTVL               4000  /* 4 sec in msec - minimum wait interval */
+#define SM_MAX_WAIT_INTVL               64000 /* 64 sec in msec - maximum wait interval */
+#define SM_STALL_INTVL                  30000 /* 30 sec in msec - timeout of a pairing process */
+
 struct smInstance {
+    struct smInstance*    prev;
+    struct smInstance*    next;
+
     struct bt_addr        peerAddr;
     struct bt_addr        myAddr;
     l2c_handle_t          conn;
     bool                  isInitiator; /* whether we are the initiator */
 
     uint8_t               phase;
+    uniq_t                stallTimer;  /* the timer tracking whether a pairing session is stalled */
 
     struct smKey          tk;
     struct smKey          stk;
@@ -146,9 +159,25 @@ struct smInstance {
     struct smPairConf     myConfVal;
 };
 
-/* local settings */
+struct smDevNode {
+    struct smDevNode      *prev;
+    struct smDevNode      *next;
+    struct bt_addr        addr;       /* the address of the banned device */
+    uniq_t                devId;      /* an unique ID associated with the device */
+
+    uint64_t              waitInvl;   /* the wait interval of initiating/responding the pairing */
+    uniq_t                waitTimer;  /* the timer tracking the wait interval of a banned device */
+};
+
+/* local settings and state */
 static uint8_t mIoCap;
-static bool mHasOob; /* whether we support OOB data */
+static bool mHasOob;                                          /* whether we support OOB data */
+
+static pthread_mutex_t mInstLock = PTHREAD_MUTEX_INITIALIZER; /* lock for the active instance list */
+static struct smInstance *mActInstList = NULL;                /* the active instances */
+
+static pthread_mutex_t mDevLock = PTHREAD_MUTEX_INITIALIZER;  /* lock for the banned device list */
+static struct smDevNode *mBannedDevList = NULL;               /* the device banned on pairing */
 
 /* fwd decls */
 static bool smGenSTK(struct smInstance *inst);
@@ -176,6 +205,250 @@ static const uint8_t mPairAlgs[5][5] = {
 };
 
 /*
+ * FUNCTION: smSameAddr
+ * USE:      Given two struct bt_addr, tell whether they are the same
+ * PARAMS:   a - a device address
+ *           b - the other device address
+ * RETURN:   true if they are the same; false otherwise
+ * NOTES:
+ */
+static bool smSameAddr(const struct bt_addr *a, const struct bt_addr *b)
+{
+    return !memcmp(a, b, sizeof(struct bt_addr));
+}
+
+/*
+ * FUNCTION: smBannedDevFree
+ * USE:      Free the given device node
+ * PARAMS:   dev - the to-be-freed device node
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void smBannedDevFree(struct smDevNode *dev)
+{
+    if (!dev)
+        return;
+
+    if (dev->waitTimer)
+        timerCancel(dev->waitTimer);
+
+    free(dev);
+}
+
+/*
+ * FUNCTION: smBannedDevFindByAddr
+ * USE:      Find a device node by the address of the device on the banned device list
+ * PARAMS:   addr - the device address
+ * RETURN:   the pointer to the device node if matched; NULL otherwise
+ * NOTES:    call with mDevLock held
+ */
+static struct smDevNode* smBannedDevFindByAddr(const struct bt_addr *addr)
+{
+    struct smDevNode *n = mBannedDevList;
+
+    if (!addr)
+        return NULL;
+
+    while (n) {
+        if (smSameAddr(addr, &n->addr))
+            return n;
+        n = n->next;
+    }
+    return NULL;
+}
+
+/*
+ * FUNCTION: smBannedDevFindById
+ * USE:      Find a device node by the device ID on the banned device list
+ * PARAMS:   id - the device ID
+ * RETURN:   the pointer to the device node if matched; NULL otherwise
+ * NOTES:    call with mDevLock held
+ */
+static struct smDevNode* smBannedDevFindById(uniq_t id)
+{
+    struct smDevNode *n = mBannedDevList;
+
+    if (!id)
+        return NULL;
+
+    while (n) {
+        if (n->devId == id)
+            return n;
+        n = n->next;
+    }
+    return NULL;
+}
+
+/*
+ * FUNCTION: smBannedDevDel
+ * USE:      Find device node by Device ID and delete it from the banned device list if matched
+ * PARAMS:   id - the device ID
+ * RETURN:   NONE
+ * NOTES:    call with mDevLock held
+ */
+static void smBannedDevDel(uniq_t id)
+{
+    struct smDevNode *n;
+
+    if (!id)
+        return;
+
+    n = smBannedDevFindById(id);
+    if (!n)
+        return;
+
+    logd("%s(): Remove device "MACFMT" from the banned list\n", __func__, MACCONV(n->addr.addr));
+    if (n->next)
+        n->next->prev = n->prev;
+    if (n->prev)
+        n->prev->next = n->next;
+    else
+        mBannedDevList = n->next;
+
+    smBannedDevFree(n);
+}
+
+/*
+ * FUNCTION: smWaitTimerCb
+ * USE:      Called when the timer with wait interval expires to allow sending a Pairing request, a
+ *           Security request or a Pairing response for a banned device
+ * PARAMS:   timerId - an unique ID of a timer
+ *           devId - a device ID
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void smWaitTimerCb(uniq_t timerId,  uint64_t devId)
+{
+    pthread_mutex_lock(&mDevLock);
+    smBannedDevDel(devId);
+    pthread_mutex_unlock(&mDevLock);
+}
+
+/*
+ * FUNCTION: smBannedDevAdd
+ * USE:      Add a device to the banned device list
+ * PARAMS:   addr - the device address
+ * RETURN:   the pointer to the device node; NULL otherwise
+ * NOTES:    call with mDevLock held
+ */
+static struct smDevNode* smBannedDevAdd(const struct bt_addr *addr)
+{
+    struct smDevNode *n = NULL;
+
+    if (!addr)
+        return NULL;
+
+    n = (struct smDevNode*)calloc(1, sizeof(struct smDevNode));
+    if (!n)
+        return NULL;
+
+    n->addr = *addr;
+    n->devId = uniqGetNext();
+    n->waitInvl = SM_MIN_WAIT_INTVL;
+    n->waitTimer = timerSet(n->waitInvl, smWaitTimerCb, n->devId);
+    if (!n->waitTimer)
+        goto fail;
+
+    if (mBannedDevList) {
+        n->next = mBannedDevList;
+        mBannedDevList->prev = n;
+    }
+    mBannedDevList = n;
+    logd("%s(): Add device "MACFMT" to the banned list\n", __func__, MACCONV(addr->addr));
+    return n;
+
+fail:
+    logw("%s(): Failed to add device "MACFMT" to the banned list\n", __func__, MACCONV(addr->addr));
+    smBannedDevFree(n);
+    return NULL;
+}
+
+/*
+ * FUNCTION: smBannedDevFreeAll
+ * USE:      Free all nodes of the banned device list
+ * PARAMS:   NONE
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void smBannedDevFreeAll(void)
+{
+    struct smDevNode *n;
+
+    pthread_mutex_lock(&mDevLock);
+    while(mBannedDevList) {
+        n = mBannedDevList->next;
+        smBannedDevFree(mBannedDevList);
+        mBannedDevList = n;
+    }
+    pthread_mutex_unlock(&mDevLock);
+}
+
+/*
+ * FUNCTION: smBanDeviceForTime
+ * USE:      Start or update the wait interval timer to prevent from sending a Pairing request, a
+ *           Security request or a Pairing response before the wait interval expires
+ * PARAMS:   addr - the address of the device
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void smBanDeviceForTime(const struct bt_addr *addr)
+{
+    struct smDevNode *n;
+
+    if (!addr)
+        return;
+
+    pthread_mutex_lock(&mDevLock);
+
+    /* add the newly failed device in the banned device list */
+    if (!(n = smBannedDevFindByAddr(addr))) {
+        n = smBannedDevAdd(addr);
+        logd("%s(): Add device "MACFMT" to banned list and start wait timer with "FMT64"u secs\n",
+             __func__, MACCONV(n->addr.addr), CNV64(n->waitInvl / 1000));
+    } else {
+        /* if the failed device was previously added to the banned device list, increase the wait
+         * interval and update timers
+         */
+        if (n->waitTimer)
+            timerCancel(n->waitTimer);
+
+        if (n->waitInvl == SM_DEF_WAIT_INTVL)
+            n->waitInvl = SM_MIN_WAIT_INTVL;
+        else
+            n->waitInvl = n->waitInvl * SM_WAIT_INTVL_FACTOR > SM_MAX_WAIT_INTVL ?
+                SM_MAX_WAIT_INTVL : n->waitInvl * SM_WAIT_INTVL_FACTOR;
+
+        n->waitTimer = timerSet(n->waitInvl, smWaitTimerCb, n->devId);
+        logd("%s(): Update device "MACFMT" and start wait timer with "FMT64"u secs\n", __func__,
+             MACCONV(n->addr.addr), CNV64(n->waitInvl / 1000));
+    }
+
+    pthread_mutex_unlock(&mDevLock);
+}
+
+/*
+ * FUNCTION: smIsDevBanned
+ * USE:      Start or update the wait interval timer to prevent from sending a Pairing request, a
+ *           Security request or a Pairing response before the wait interval expires
+ * PARAMS:   addr - the address of the device
+ * RETURN:   is banned or not
+ * NOTES:
+ */
+static bool smIsDevBanned(const struct bt_addr *addr)
+{
+    struct smDevNode *n;
+
+    pthread_mutex_lock(&mDevLock);
+    n = smBannedDevFindByAddr(addr);
+    if (n)
+        logd("%s(): Device "MACFMT" is banned currently for "FMT64"u secs\n", __func__,
+             MACCONV(addr->addr), CNV64(n->waitInvl / 1000));
+    pthread_mutex_unlock(&mDevLock);
+
+    return n;
+}
+
+/*
  * FUNCTION: smSelPairAlg
  * USE:      Select the pairing algorithm base on IO capability, OOB data and
  *           Authentication request
@@ -183,7 +456,7 @@ static const uint8_t mPairAlgs[5][5] = {
  * RETURN:   pairing algorithm used
  * NOTES:
  */
-static uint8_t smSelPairAlg(struct smInstance *inst)
+static uint8_t smSelPairAlg(const struct smInstance *inst)
 {
     if (!inst)
         return SM_ALG_UNKNOWN;
@@ -205,7 +478,6 @@ static uint8_t smSelPairAlg(struct smInstance *inst)
     if (!(inst->peerAuthReq & SM_AUTH_REQ_MITM_FLAG))
         return SM_ALG_JUST_WORK;
 
-    if (inst->peerIoCap)
     /* check IO capability*/
     return inst->isInitiator ? mPairAlgs[inst->peerIoCap][mIoCap] :
                                mPairAlgs[mIoCap][inst->peerIoCap];
@@ -467,10 +739,11 @@ static bool smSendPairRand(const struct smInstance *inst)
  * RETURN:   success
  * NOTES:
  */
-static bool smSendPairFail(struct smInstance *inst, uint8_t reason)
+static bool smSendPairFail(const struct smInstance *inst, uint8_t reason)
 {
     struct smPairFailed fail;
 
+    smBanDeviceForTime(&inst->peerAddr);
     utilSetLE8(&fail.reason, reason);
 
     return smTx(inst, SM_PAIRING_FAIL, &fail, sizeof(fail));
@@ -655,7 +928,6 @@ static void smRx(struct smInstance *inst, sg packet)
             smSendPairFail(inst, SM_ERR_CONF_VAL_FAILED);
             break;
         }
-
         if (!inst->isInitiator && !smSendPairRand(inst))
             break;
         smTransitPhase(inst, SM_PHASE_RAND_RESP);
@@ -679,8 +951,8 @@ static void smRx(struct smInstance *inst, sg packet)
         }
 
         smTransitPhase(inst, SM_PHASE_START);
+        smBanDeviceForTime(&inst->peerAddr);
 
-        /* TODO(mcchou): increase the waiting interval before the next pairing attempt */
         goto done;
 
     case SM_ENCR_INFO:
@@ -703,6 +975,59 @@ done:
 }
 
 /*
+ * FUNCTION: smInstFindByConn
+ * USE:      Find the instance node by the connection ID
+ * PARAMS:   conn - the connection ID
+ * RETURN:   the instance if matched; NULL otherwise
+ * NOTES:    call with mInstLock held
+ */
+static struct smInstance* smInstFindByConn(l2c_handle_t conn)
+{
+    struct smInstance *inst = mActInstList;
+
+    if (!conn)
+        return NULL;
+
+    while(inst) {
+        if (inst->conn == conn)
+            return inst;
+        inst = inst->next;
+    }
+    return NULL;
+}
+
+/*
+ * FUNCTION: smStallTimerCb
+ * USE:      Called when the stallTimer of an instance is fired to terminate a stall pairing session
+ * PARAMS:   timerId - an unique ID of a timer
+ *           conn - a connection handle
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void smStallTimerCb(uniq_t timerId, uint64_t conn)
+{
+    struct smInstance *inst;
+
+    pthread_mutex_lock(&mInstLock);
+
+    inst = smInstFindByConn(conn);
+    if (!inst) {
+        pthread_mutex_unlock(&mInstLock);
+        return;
+    }
+
+    inst->stallTimer = 0;
+    logd("%s(): Pairing with device "MACFMT" is stalled\n", __func__,
+         MACCONV(inst->peerAddr.addr));
+
+    smBanDeviceForTime(&inst->peerAddr);
+
+    pthread_mutex_unlock(&mInstLock);
+
+    l2cApiDisconnect(conn);
+}
+
+/*
  * FUNCTION: smInstFree
  * USE:      Free a per-connection instance struct
  * PARAMS:   inst - the instance
@@ -711,7 +1036,57 @@ done:
  */
 static void smInstFree(struct smInstance *inst)
 {
+    if (inst->stallTimer)
+        timerCancel(inst->stallTimer);
     free(inst);
+}
+
+/*
+ * FUNCTION: smInstDeinit
+ * USE:      Delete an instance from the active instance list and free it
+ * PARAMS:   inst - the instance
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void smInstDeinit(struct smInstance* inst)
+{
+    pthread_mutex_lock(&mInstLock);
+    if (!inst)
+        return;
+
+    if (inst->next)
+        inst->next->prev = inst->prev;
+    if (inst->prev)
+        inst->prev->next = inst->next;
+    else
+        mActInstList = inst->next;
+
+    smInstFree(inst);
+    pthread_mutex_unlock(&mInstLock);
+}
+
+/*
+ * FUNCTION: smInstInit
+ * USE:      Set some default values for pairing phase and repeated attempt field of an instance
+ * PARAMS:   inst - the instance
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void smInstInit(struct smInstance *inst)
+{
+    pthread_mutex_lock(&mInstLock);
+
+    inst->prev = NULL;
+    inst->next = mActInstList;
+    if (mActInstList)
+        mActInstList->prev = inst;
+    mActInstList = inst;
+
+    inst->phase = SM_PHASE_START;
+    /* TODO(mcchou): the stall timer needs to be canceled when the pairing finishes correctly */
+    inst->stallTimer = timerSet(SM_STALL_INTVL, smStallTimerCb, inst->conn);
+
+    pthread_mutex_unlock(&mInstLock);
 }
 
 /*
@@ -742,6 +1117,9 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
         /* when we support outbound connections, this code will need to evolve */
         if (inst->conn != conn)
             loge("Handle change!!!\n");
+
+        smInstInit(inst);
+
         break;
 
     case L2C_STATE_ENCR:
@@ -762,7 +1140,7 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
         break;
 
     case L2C_STATE_CLOSED:
-        smInstFree(inst);
+        smInstDeinit(inst);
         break;
     default:
         logd("unknown L2C event %u\n", evt);
@@ -801,10 +1179,14 @@ static uint8_t smFixedChAlloc(void *userData, l2c_handle_t conn, void **instance
         return SVC_ALLOC_FAIL_OTHER;
     }
 
+    if (smIsDevBanned(&peerAddr)) {
+        smBanDeviceForTime(&peerAddr);
+        return SVC_ALLOC_FAIL_OTHER;
+    }
+
     inst = (struct smInstance*)calloc(1, sizeof(struct smInstance));
     if (!inst)
         return SVC_ALLOC_FAIL_OTHER;
-
 
     memcpy(&inst->peerAddr, &peerAddr, sizeof(struct bt_addr));
     memcpy(&inst->myAddr, &myAddr, sizeof(struct bt_addr));
@@ -816,6 +1198,8 @@ static uint8_t smFixedChAlloc(void *userData, l2c_handle_t conn, void **instance
 
     inst->conn = conn;
     *instanceP = inst;
+
+    logd("%s() sm channel assigned\n", __func__);
 
     return SVC_ALLOC_SUCCESS;
 }
@@ -854,6 +1238,8 @@ bool smInit(uint8_t ioCapability)
         return false;
     }
 
+    logd("%s() smInit finished correctly\n", __func__);
+
     return true;
 }
 
@@ -866,6 +1252,7 @@ bool smInit(uint8_t ioCapability)
  */
 void smDeinit(void)
 {
+    smBannedDevFreeAll();
     sendQueueFree(mSmSendQ);
     l2cApiServiceFixedChUnregister(L2C_FIXED_CH_NUM_SM, NULL, NULL);
 }
