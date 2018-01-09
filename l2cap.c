@@ -1,3 +1,8 @@
+/*
+ * Copyright 2017 The Chromium OS Authors. All rights reserved.
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file.
+ */
 //todo: check all lengths followed, all log levels correct
 //todo: hci QoS is same as L2CAP QoS, so we can probably support L2CAP QoS via HCI QoS easily
 
@@ -10,7 +15,6 @@
 #include "config.h"
 #include "l2cap.h"
 #include "timer.h"
-#include "aapi.h"
 #include "util.h"
 #include "uniq.h"
 #include "log.h"
@@ -1761,7 +1765,7 @@ static void l2cHandleConnUpdtReq(struct l2cAclConn *conn, uint8_t ident, uint16_
         loge("Failed to schedule connection update work call\n");
     else
         return;
-    
+
 
 error:
     logw("Unable to request connection update to {[%d, %d], %d, %d}, inflight=%d master=%d\n",
@@ -3973,7 +3977,7 @@ static uint8_t l2cSigSend(struct l2cAclConn *aclConn, uint8_t ident, uint8_t cod
 
     utilSetLE8(&sig.code, code);
     utilSetLE16(&sig.len, sigFrmLen + extraLen);
-    
+
     if (newIdent)
         ident = l2cAclSigNextIdent(aclConn, false);
     utilSetLE8(&sig.ident, ident);
@@ -4014,7 +4018,7 @@ static uint8_t l2cSigSendConnectionReq(struct l2cAclConn *aclConn, psm_t psm, ui
     struct l2cSigConnReq req;
 
     utilSetLE16(&req.psm, psm);
-    utilSetLE16(&req.scid, localCh); 
+    utilSetLE16(&req.scid, localCh);
 
     return l2cSigSend(aclConn, 0, L2C_SIG_CONN_REQ, &req, sizeof(req), NULL, 0);
 }
@@ -4910,7 +4914,7 @@ void l2cAclCreditAvail(bool le)
  * FUNCTION: l2cDataSendOnAclLink
  * USE:      Request a send on an ACL link of data with a header
  * PARAMS:   aclConn - the link
- *           hdr - header to prepend IFF accepted for TX (can be NULL if hdrLen is 0) 
+ *           hdr - header to prepend IFF accepted for TX (can be NULL if hdrLen is 0)
  *           hdrLen - size fo said header
  *           data - the data to send (can be null if hdrLen is nonzero)
  * RETURN:   L2C_TX_*
@@ -5418,7 +5422,7 @@ static void l2cAclConnTeardownTimerCbk(uniq_t which, uint64_t cbkData)
  */
 static void l2cAclDownTimerStart(struct l2cAclConn *aclConn)
 {
-    if (aclConn->teardownTimer) 
+    if (aclConn->teardownTimer)
         timerCancel(aclConn->teardownTimer);
 
     aclConn->teardownTimer = timerSet(L2C_ACL_LINK_TIMOUT, l2cAclConnTeardownTimerCbk, aclConn->handle);
@@ -5436,7 +5440,7 @@ static void l2cAclDownTimerStart(struct l2cAclConn *aclConn)
  */
 static void l2cAclDownTimerStop(struct l2cAclConn *aclConn)
 {
-    if (aclConn->teardownTimer) 
+    if (aclConn->teardownTimer)
         timerCancel(aclConn->teardownTimer);
     aclConn->teardownTimer = 0;
 }
@@ -5464,7 +5468,11 @@ void l2cAclLinkUp(hci_conn_t aclConnID, const struct bt_addr *peerAddr, const st
     if (l2cAclConnFindById(aclConnID))
         loge("Duplicate ID up (acl "HCI_CONN_FMT"x)\n", HCI_CONN_CONV(aclConnID));
     else {
-        aapiAclStateChanged(0, peerAddr, true);
+        /* TODO(mcchou): if including "hardware/bluetooth.h", complilatino fails with error
+         * aapiGatt.h:4:32: fatal error: hardware/bluetooth.h: No such file or directory
+         * As an workaround, we marked out the following function call to the userspace for now.
+         * aapiAclStateChanged(0, peerAddr, true);
+         */
         aclConn = l2cAclConnFindByAddr(peerAddr);
         if (aclConn) {
             if (aclConn->state == L2C_ACL_STATE_PENDING) {
@@ -5677,7 +5685,11 @@ void l2cAclLinkDown(hci_conn_t aclConnID, uint8_t reason)
     pthread_mutex_lock(&mConnsLock);
     aclConn = l2cAclConnFindById(aclConnID);
     if (aclConn) {
-        aapiAclStateChanged(0, &aclConn->peerAddr, false);
+        /* TODO(mcchou): if including "hardware/bluetooth.h", complilatino fails with error
+         * aapiGatt.h:4:32: fatal error: hardware/bluetooth.h: No such file or directory
+         * As an workaround, we marked out the following function call to the userspace for now.
+         * aapiAclStateChanged(0, &aclConn->peerAddr, false);
+         */
         logd("Link acl "HCI_CONN_FMT"x actually down. Handling\n", HCI_CONN_CONV(aclConn->conn));
         l2cAclLinkDownInt(aclConn, false);
     } else
