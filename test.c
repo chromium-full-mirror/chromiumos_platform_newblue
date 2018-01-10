@@ -1,3 +1,8 @@
+/*
+ * Copyright 2017 The Chromium OS Authors. All rights reserved.
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file.
+ */
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -206,7 +211,10 @@ static bool testGattSrvValueReadCbk(int svc, l2c_handle_t who, int cid, int tran
 
     logi("testGattSrvValueReadCbk: cid: %d, transId: %d, handle: handle: %d\n", cid, transId, handle);
 
-    gattSrvCbkReply(cid, transId, handle, err, ptr, len);
+    /* In order to verify the pairing process, ATT_ERROR_INSUFFICIENT_AUTH is
+     * returned intentionally so that the remote GATT client will initiate
+     * pairing. */
+    gattSrvCbkReply(cid, transId, handle, ATT_ERROR_INSUFFICIENT_AUTH, ptr, len);
     return true;
 }
 
@@ -424,6 +432,8 @@ int main(int argc, char** argv)
     if (!gattBuiltinInit())
         loge("Failed to init GATT services\n");
 
+    if (!smInit(HCI_DISP_CAP_NONE))
+        loge("Failed to init SM");
 
     mSvcTime = gattSetup();
     logi("gattSetup: svc=%d\n", mSvcTime);

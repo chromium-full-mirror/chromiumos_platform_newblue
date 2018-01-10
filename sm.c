@@ -1,16 +1,30 @@
-#include "persist.h"
-#include "l2cap.h"
-#include "util.h"
-#include "log.h"
-#include "sm.h"
-#include "sg.h"
-#include "bt.h"
-#include "sendQ.h"
-#include "config.h"
-
+/*
+ * Copyright 2017 The Chromium OS Authors. All rights reserved.
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file.
+ */
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
+#include "bt.h"
+#include "config.h"
+#include "l2cap.h"
+#include "log.h"
+#include "persist.h"
+#include "sendQ.h"
+#include "sg.h"
+#include "util.h"
+
+#include "sm.h"
+
+#ifdef _UNITTEST_
+#define static_or_test
+#else
+#define static_or_test static
+#endif
+
+/* definition of structs and macros based on Bluetooth spec v4.0 */
 /* packet types */
 #define SM_PAIRING_REQ                  0x01 /* struct smPairReqResp */
 #define SM_PAIRING_RSP                  0x02 /* struct smPairReqResp */
@@ -38,11 +52,11 @@ struct smPairReqResp {
 } __packed;
 
 struct smPairConf {
-    uint8_t confirmVal[16];
+    uint8_t confirmVal[16]; /* [0]->[15] : MSO->LSO */
 } __packed;
 
 struct smPairRand {
-    uint8_t rand[16];
+    uint8_t rand[16]; /* [0]->[15] : MSO->LSO */
 } __packed;
 
 struct smPairFailed {
@@ -50,7 +64,7 @@ struct smPairFailed {
 } __packed;
 
 struct smKey {
-    uint16_t key[16];
+    uint8_t key[16]; /* [0]->[15] : MSO->LSO */
 } __packed;
 
 struct smMasterInfo {
@@ -67,16 +81,15 @@ struct smAuthReq {
     uint8_t authReq; /* SM_AUTH_REQ_* */
 } __packed;
 
-
 /* fail codes */
-#define SM_ERR_PASSKEY_ENTRY_FAILED     0x01 /* user cancelled or faile dto input key */
+#define SM_ERR_PASSKEY_ENTRY_FAILED     0x01 /* user cancelled or failed to input key */
 #define SM_ERR_OOB_NOT_AVAIL            0x02 /* no OOB data */
-#define SM_ERR_AUTH_REQMENTS            0x03 /* auth req'ments cannot be met due to IO caps */
+#define SM_ERR_AUTH_REQMENTS            0x03 /* auth requirements cannot be met due to IO caps */
 #define SM_ERR_CONF_VAL_FAILED          0x04 /* confirm value does not match calculated value */
 #define SM_ERR_PAIRING_NOT_SUPPORTED    0x05 /* pairing not supported by this device */
 #define SM_ERR_ENCR_KEY_SZ              0x06 /* resulting key size is not long enough */
 #define SM_ERR_CMD_NOT_SUPP             0x07 /* received command not supported by this device */
-#define SM_ERR_UNSPECCED_REASON         0x08 /* pairing faield due to an unspecified reason */
+#define SM_ERR_UNSPECCED_REASON         0x08 /* pairing failed due to an unspecified reason */
 #define SM_ERR_REPEATED_ATTEMPTS        0x09 /* too rapid an attempt to pair after a failure */
 #define SM_ERR_INVALID_PARAMS           0x0A /* unparseable command or invalid params in command */
 
@@ -85,6 +98,8 @@ struct smAuthReq {
 #define SM_AUTH_REQ_BOND_NO             0x00
 #define SM_AUTH_REQ_BOND_BOND           0x01
 #define SM_AUTH_REQ_MITM_FLAG           0x04
+#define SM_AUTH_REQ_SC_FLAG             0x08
+#define SM_AUTH_REQ_KEYPRESS_FLAG       0x10
 
 /* things for key distr fields */
 #define SM_KEY_DISTR_LTK                0x01
@@ -96,45 +111,105 @@ struct smAuthReq {
 #define SM_MAX_KEY_LEN                  16
 
 
-
-/* our structs/defines */
-
-#define SM_PHASE_START                  0 /* nothing happened yet */
-#define SM_PHASE_REQ_SENT               1 /* we sent pair req, waiting for pair resp */
-#define SM_PHASE_REQ_RESP               2 /* other side has sent us a pair request, we replied, or we sent req and got reply */
+/* definition of structs and macros based on our implementation */
+#define SM_PHASE_START                  0 /* nothing happened yet. */
+#define SM_PHASE_REQ_SENT               1 /* we sent pair req. waiting for pair resp. */
+#define SM_PHASE_REQ_RESP               2 /* the peer has sent us a pair request, we replied. waiting for Mconfim. OR we sent req and got resp */
+#define SM_PHASE_CONF_SENT              3 /* we sent Mconfirm. waiting for Sconfirm. */
+#define SM_PHASE_CONF_RESP              4 /* the peer has sent us Mconfirm, we replied with Sconfirm. waiting for Mrand. OR we sent Mconfirm and got Sconfim. */
+#define SM_PHASE_RAND_SENT              5 /* we sent Mrand. wainting for Srand. */
+#define SM_PHASE_RAND_RESP              6 /* other peer has sent us Mrand, we replied with Srand. OR we sent Mrand and got Srand.*/
 
 struct smInstance {
-    struct bt_addr        peer;
+    struct bt_addr        peerAddr;
+    struct bt_addr        myAddr;
     l2c_handle_t          conn;
-    bool                  isInitiator;
+    bool                  isInitiator; /* whether we are the initiator */
 
     uint8_t               phase;
 
-    uint8_t               peerIoCaps;
+    struct smKey          tk;
+    struct smKey          stk;
+
+    uint8_t               peerIoCap;
     bool                  peerHasOob;
     uint8_t               peerAuthReq;
     uint8_t               peerMaxKeySz;
     uint8_t               peerKeyDistr;
+    struct smPairRand     peerRandNum;
+    struct smPairConf     peerConfVal;
+
+    uint8_t               myAuthReq;
+    uint8_t               myMaxKeySz;
     uint8_t               myKeyDistr;
+    struct smPairRand     myRandNum;
+    struct smPairConf     myConfVal;
 };
 
-
-
-
-/* state */
+/* local settings */
 static uint8_t mIoCap;
-
+static bool mHasOob; /* whether we support OOB data */
 
 /* fwd decls */
-static void smEncrypt(uint8_t* dst, const uint8_t *src, const uint8_t *key);
+static bool smGenSTK(struct smInstance *inst);
+static bool smGenTK(struct smInstance *inst);
+static bool smGenConfVal(struct smPairConf *conf, const struct smInstance *inst, bool check);
+static bool smGenRandNum(struct smInstance *inst);
+static_or_test void smEncrypt(uint8_t* dst, const uint8_t *src, const uint8_t *key);
 
 /* sendQ for packet transmissions */
 static struct sendQ *mSmSendQ;
 
+/* pairing algorithms */
+#define SM_ALG_JUST_WORK                0x00
+#define SM_ALG_PASS_KEY                 0x01
+#define SM_ALG_OOB                      0x02
+#define SM_ALG_UNKNOWN                  0xFF
 
+/* table of pairing algorithms -mPairAlgs[responder][initiator] */
+static const uint8_t mPairAlgs[5][5] = {
+    {SM_ALG_JUST_WORK, SM_ALG_JUST_WORK, SM_ALG_PASS_KEY,  SM_ALG_JUST_WORK, SM_ALG_PASS_KEY },
+    {SM_ALG_JUST_WORK, SM_ALG_JUST_WORK, SM_ALG_PASS_KEY,  SM_ALG_JUST_WORK, SM_ALG_PASS_KEY },
+    {SM_ALG_PASS_KEY,  SM_ALG_PASS_KEY,  SM_ALG_PASS_KEY,  SM_ALG_JUST_WORK, SM_ALG_PASS_KEY },
+    {SM_ALG_JUST_WORK, SM_ALG_JUST_WORK, SM_ALG_JUST_WORK, SM_ALG_JUST_WORK, SM_ALG_JUST_WORK},
+    {SM_ALG_PASS_KEY,  SM_ALG_PASS_KEY,  SM_ALG_PASS_KEY,  SM_ALG_JUST_WORK, SM_ALG_PASS_KEY },
+};
 
+/*
+ * FUNCTION: smSelPairAlg
+ * USE:      Select the pairing algorithm base on IO capability, OOB data and
+ *           Authentication request
+ * PARAMS:   inst - the instance
+ * RETURN:   pairing algorithm used
+ * NOTES:
+ */
+static uint8_t smSelPairAlg(struct smInstance *inst)
+{
+    if (!inst)
+        return SM_ALG_UNKNOWN;
 
+    if ((mIoCap != HCI_DISP_CAP_DISP_ONLY && mIoCap != HCI_DISP_CAP_DISP_YES_NO &&
+         mIoCap != HCI_DISP_CAP_KBD_ONLY && mIoCap != HCI_DISP_CAP_NONE &&
+         mIoCap != HCI_DISP_CAP_KBD_DISP)||
+        (inst->peerIoCap != HCI_DISP_CAP_DISP_ONLY && inst->peerIoCap != HCI_DISP_CAP_DISP_YES_NO &&
+         inst->peerIoCap != HCI_DISP_CAP_KBD_ONLY && inst->peerIoCap != HCI_DISP_CAP_NONE &&
+         inst->peerIoCap != HCI_DISP_CAP_KBD_DISP))
+        return SM_ALG_UNKNOWN;
 
+    /* check OOB support */
+    if (inst->peerHasOob && mHasOob)
+        return SM_ALG_OOB;
+
+    /* check MITM flag */
+    /* TODO(mcchou): we use what ever requested by the peer device */
+    if (!(inst->peerAuthReq & SM_AUTH_REQ_MITM_FLAG))
+        return SM_ALG_JUST_WORK;
+
+    if (inst->peerIoCap)
+    /* check IO capability*/
+    return inst->isInitiator ? mPairAlgs[inst->peerIoCap][mIoCap] :
+                               mPairAlgs[mIoCap][inst->peerIoCap];
+}
 
 /*
  * FUNCTION: smEncrChanged
@@ -145,7 +220,7 @@ static struct sendQ *mSmSendQ;
  */
 static void smEncrChanged(struct smInstance *inst)
 {
-    //TODO
+    /* TODO(mcchou) */
 }
 
 /*
@@ -158,7 +233,7 @@ static void smEncrChanged(struct smInstance *inst)
  * RETURN:   success
  * NOTES:
  */
-static bool smTx(struct smInstance *inst, uint8_t pktTyp, const void *data, uint8_t len)
+static bool smTx(const struct smInstance *inst, uint8_t pktTyp, const void *data, uint8_t len)
 {
     sg tmpData = NULL;
     struct smHdr hdr;
@@ -190,41 +265,24 @@ tx_err:
 }
 
 /*
- * FUNCTION: smTxErr
- * USE:      Send an error to the peer
- * PARAMS:   inst - the instance
- *           reason - the error reason
- * RETURN:   success
- * NOTES:
- */
-static bool smTxErr(struct smInstance *inst, uint8_t reason)
-{
-    struct smPairFailed fail;
-
-    utilSetLE8(&fail.reason, reason);
-
-    return smTx(inst, SM_PAIRING_FAIL, &fail, sizeof(fail));
-}
-
-/*
- * FUNCTION: smParsePairReqRest
+ * FUNCTION: smParsePairReqResp
  * USE:      Parse a struct smPairReqResp into relevant instance variables
  * PARAMS:   inst - the instance
  *           pairReqResp - the struct
  * RETURN:   true if all values were read & found valid
  * NOTES:
  */
-static bool smParsePairReqRest(struct smInstance *inst, const struct smPairReqResp *pairReqResp)
+static bool smParsePairReqResp(struct smInstance *inst, const struct smPairReqResp *pairReqResp)
 {
     uint8_t tmp, initKeyDistr, rspKeyDistr;
-
     tmp = utilGetLE8(&pairReqResp->ioCap);
-    if (tmp != HCI_DISP_CAP_DISP_ONLY && tmp != HCI_DISP_CAP_DISP_YES_NO && tmp != HCI_DISP_CAP_KBD_ONLY && tmp != HCI_DISP_CAP_NONE &&
+    if (tmp != HCI_DISP_CAP_DISP_ONLY && tmp != HCI_DISP_CAP_DISP_YES_NO &&
+        tmp != HCI_DISP_CAP_KBD_ONLY && tmp != HCI_DISP_CAP_NONE &&
         tmp != HCI_DISP_CAP_KBD_DISP) {
         logd("Invalid io caps RXed 0x%02X\n", tmp);
         return false;
     }
-    inst->peerIoCaps = tmp;
+    inst->peerIoCap = tmp;
 
     tmp = utilGetLE8(&pairReqResp->oobDataFlag);
     if (tmp != 0 && tmp != 1) {
@@ -234,7 +292,8 @@ static bool smParsePairReqRest(struct smInstance *inst, const struct smPairReqRe
     inst->peerHasOob = !!tmp;
 
     tmp = utilGetLE8(&pairReqResp->authReq);
-    if ((tmp & ~(SM_AUTH_REQ_BOND_MASK | SM_AUTH_REQ_MITM_FLAG)) || ((tmp & SM_AUTH_REQ_BOND_MASK) != SM_AUTH_REQ_BOND_NO && (tmp & SM_AUTH_REQ_BOND_MASK) != SM_AUTH_REQ_BOND_BOND)) {
+    if ((tmp & SM_AUTH_REQ_BOND_MASK) != SM_AUTH_REQ_BOND_NO &&
+         (tmp & SM_AUTH_REQ_BOND_MASK) != SM_AUTH_REQ_BOND_BOND) {
         logd("Invalid authReq RXed 0x%02X\n", tmp);
         return false;
     }
@@ -261,15 +320,185 @@ static bool smParsePairReqRest(struct smInstance *inst, const struct smPairReqRe
     }
     rspKeyDistr = tmp;
 
-    if (inst->isInitiator) { /* must be a response. do not send any keys we did not already commit to send. accept as many as given */
-        inst->myKeyDistr &= initKeyDistr;
+    if (inst->isInitiator) { /* must be a response. accept as many as given */
+        /* TODO(mcchou): do not send any keys we did not already commit to send inst->myKeyDistr &= initKeyDistr; */
+        inst->myKeyDistr = initKeyDistr;
         inst->peerKeyDistr = rspKeyDistr;
-    } else { /* must be a request - agree to send all keys they want, aceept whatever was given */
+    } else { /* must be a request - agree to send all keys they want, accept whatever was given */
         inst->myKeyDistr = rspKeyDistr;
         inst->peerKeyDistr = initKeyDistr;
     }
 
     return true;
+}
+
+/*
+ * FUNCTION: smReverseBytes
+ * USE:      Reverse the byte stream field of a pairing struct and store bytes
+ *           in MSB first order
+ * PARAMS:   out - the output byte array
+ *           outLen - the length of out
+ *           in - the input byte array
+ *           InLen - the length of in
+ * RETURN:   success
+ * NOTES:    Used for Pairing Confirm CMD, Pairing Random CMD
+ */
+static bool smReverseBytes(uint8_t *out, int outLen, const uint8_t *in, int inLen)
+{
+    int i;
+
+    if (outLen <= 0 || inLen <= 0 || outLen != inLen)
+        return false;
+
+    for (i = 0; i < inLen; ++i)
+        out[i] = utilGetLE8(&in[inLen - i - 1]);
+    return true;
+}
+
+/*
+ * FUNCTION: smSendPairReq
+ * USE:      Send pairing request
+ * PARAMS:   inst - the instance of the initiator
+ * RETURN:   success
+ * NOTES:
+ */
+static bool smSendPairReq(struct smInstance *inst)
+{
+    struct smPairReqResp req;
+
+    inst->isInitiator = true;
+
+    utilSetLE8(&req.ioCap, mIoCap);
+    /* TODO(mcchou): this needs to be changed accordingly for OOB support */
+    utilSetLE8(&req.oobDataFlag, mHasOob);
+    utilSetLE8(&req.authReq, inst->myAuthReq);
+    utilSetLE8(&req.maxKeySz, inst->myMaxKeySz);
+    utilSetLE8(&req.initiatorKeyDistr, inst->myKeyDistr);
+    /* TODO(mcchou): this needs to be changed */
+    utilSetLE8(&req.responderKeyDistr, inst->myKeyDistr);
+
+    if (!smTx(inst, SM_PAIRING_REQ, &req, sizeof(req))) {
+        logw("%s(): Failed to send pairing request command\n", __func__);
+        return false;
+    }
+    return true;
+}
+
+/*
+ * FUNCTION: smSendPairResp
+ * USE:      Send pairing response
+ * PARAMS:   inst - the instance of the initiator
+ * RETURN:   success
+ * NOTES:
+ */
+static bool smSendPairResp(const struct smInstance *inst)
+{
+    struct smPairReqResp resp;
+
+    if (inst->isInitiator) {
+        logw("%s(): Unexpected to send pairing response\n", __func__);
+        return false;
+    }
+
+    utilSetLE8(&resp.ioCap, mIoCap);
+    /* TODO(mcchou): this needs to be changed accordingly for OOB support */
+    utilSetLE8(&resp.oobDataFlag, mHasOob);
+    utilSetLE8(&resp.authReq, inst->myAuthReq);
+    utilSetLE8(&resp.maxKeySz, inst->myMaxKeySz);
+    utilSetLE8(&resp.initiatorKeyDistr, inst->peerKeyDistr); /* accept whatever they promised us */
+    utilSetLE8(&resp.responderKeyDistr, inst->myKeyDistr); /* give up whatever they asked for */
+
+    if (!smTx(inst, SM_PAIRING_RSP, &resp, sizeof(resp))) {
+        logw("%s(): Failed to send pairing response command\n", __func__);
+        return false;
+    }
+    return true;
+}
+
+/*
+ * FUNCTION: smSendPairConf
+ * USE:      Send pairing confirm value
+ * PARAMS:   inst - the instance of the initiator
+ * RETURN:   success
+ * NOTES:
+ */
+static bool smSendPairConf(const struct smInstance *inst)
+{
+    uint16_t i, confSz;
+    struct smPairConf conf;
+
+    for (i = 0, confSz = sizeof(inst->myConfVal.confirmVal); i < confSz ; ++i)
+        utilSetLE8(&conf.confirmVal[i], inst->myConfVal.confirmVal[confSz - i - 1]);
+
+    if (!smTx(inst, SM_PAIRING_CONF, &conf, sizeof(conf))) {
+        logw("%s(): Failed to send pairing confirm command\n", __func__);
+        return false;
+    }
+    return true;
+}
+
+/*
+ * FUNCTION: smSendPairRand
+ * USE:      Send pairing Random number
+ * PARAMS:   inst - the instance of the initiator
+ * RETURN:   success
+ * NOTES:
+ */
+static bool smSendPairRand(const struct smInstance *inst)
+{
+    uint16_t i, randSz;
+    struct smPairRand rand;
+
+    for (i = 0, randSz = sizeof(inst->myRandNum.rand); i < randSz ; ++i)
+        utilSetLE8(&rand.rand[i], inst->myRandNum.rand[randSz - i - 1]);
+
+    if (!smTx(inst, SM_PAIRING_RAND, &rand, sizeof(rand))) {
+        logw("%s(): Failed to send pairing random command\n", __func__);
+        return false;
+    }
+    return true;
+}
+
+/*
+ * FUNCTION: smSendPairFail
+ * USE:      Send a pairing error to the peer
+ * PARAMS:   inst - the instance
+ *           reason - the error reason
+ * RETURN:   success
+ * NOTES:
+ */
+static bool smSendPairFail(struct smInstance *inst, uint8_t reason)
+{
+    struct smPairFailed fail;
+
+    utilSetLE8(&fail.reason, reason);
+
+    return smTx(inst, SM_PAIRING_FAIL, &fail, sizeof(fail));
+}
+
+/*
+ * FUNCTION: smTransitPhase
+ * USE:      Log and transit the phase of pairing process
+ * PARAMS:   inst - the instance
+ *           phase - the phase to transit to
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void smTransitPhase(struct smInstance *inst, uint8_t phase) {
+    if (phase != SM_PHASE_START && phase != SM_PHASE_REQ_SENT &&
+                                 phase != SM_PHASE_REQ_RESP && phase != SM_PHASE_CONF_SENT &&
+                                 phase != SM_PHASE_CONF_RESP && phase != SM_PHASE_RAND_SENT &&
+                                 phase != SM_PHASE_RAND_RESP) {
+        logd("Invalid phase to transit, phase 0x%02X\n", phase);
+        return;
+    }
+    if (inst->phase == phase) {
+        logd("Phase transition skipped, phase 0x%02X\n", phase);
+        return;
+    }
+
+    logd("Transit from 0x%02X to 0x%02X\n", inst->phase, phase);
+    inst->phase = phase;
 }
 
 /*
@@ -282,8 +511,11 @@ static bool smParsePairReqRest(struct smInstance *inst, const struct smPairReqRe
  */
 static void smRx(struct smInstance *inst, sg packet)
 {
-    struct smPairReqResp pairReqResp;
     struct smHdr hdr;
+    struct smPairReqResp pairReqResp;
+    struct smPairConf pairConf;
+    struct smPairRand pairRand;
+    struct smPairFailed pairFailed;
     uint8_t typ, tmp;
 
     if (!sgSerializeCutFront(packet, &hdr, sizeof(hdr))) {
@@ -300,46 +532,174 @@ static void smRx(struct smInstance *inst, sg packet)
             break;
         }
         if (sgLength(packet)) {
-            logw("Residual data in packet: %ub\n", sgLength(packet));
-            smTxErr(inst, SM_ERR_INVALID_PARAMS);
+            logw("Residual data in packet: %u\n", sgLength(packet));
+            smSendPairFail(inst, SM_ERR_INVALID_PARAMS);
             break;
         }
         if (inst->phase != SM_PHASE_START) {
             logd("Got pairing req in phase %u\n", inst->phase);
             break;
         }
-        if (!smParsePairReqRest(inst, &pairReqResp)) {
-            smTxErr(inst, SM_ERR_INVALID_PARAMS);
+
+        inst->isInitiator = false;
+        if (!smParsePairReqResp(inst, &pairReqResp)) {
+            smSendPairFail(inst, SM_ERR_INVALID_PARAMS);
             break;
         }
-        utilSetLE8(&pairReqResp.ioCap, mIoCap);
-        utilSetLE8(&pairReqResp.oobDataFlag, 0) ; /* XXX: if and when we support OOB, this will need to change */
-        utilSetLE8(&pairReqResp.authReq, SM_AUTH_REQ_BOND_BOND | SM_AUTH_REQ_MITM_FLAG); /* TODO: we'll need a way to set this externally! */
-        utilSetLE8(&pairReqResp.maxKeySz, SM_MAX_KEY_LEN);
-        utilSetLE8(&pairReqResp.initiatorKeyDistr, inst->peerKeyDistr); /* accept whatever they promised us */
-        utilSetLE8(&pairReqResp.responderKeyDistr, inst->myKeyDistr); /* give up ahwtever they asked for */
-        if (smTx(inst, SM_PAIRING_RSP, &pairReqResp, sizeof(pairReqResp)))
-            inst->phase = SM_PHASE_REQ_RESP;
-        else
-            inst->phase = SM_PHASE_START;
-        break;
- 
+
+        if (!smGenRandNum(inst))
+            break;
+        if (!smGenTK(inst))
+            break;
+        if (!smGenConfVal(&inst->myConfVal, inst, false))
+            break;
+
+        if (!smSendPairResp(inst))
+            break;
+        smTransitPhase(inst, SM_PHASE_REQ_RESP);
+
+        goto done;
+
     case SM_PAIRING_RSP:
+        if (!sgSerializeCutFront(packet, &pairReqResp, sizeof(pairReqResp))) {
+            logw("Incoming SM packet data extraction failed\n");
+            break;
+        }
+        if (sgLength(packet)) {
+            logw("Residual data in packet: %u\n", sgLength(packet));
+            smSendPairFail(inst, SM_ERR_INVALID_PARAMS);
+            break;
+        }
+        if (inst->phase != SM_PHASE_REQ_SENT|| !inst->isInitiator) {
+            logd("Got pairing resp in phase %u when we %s the initiator\n", inst->phase,
+                 inst->isInitiator ? "are" : "are not");
+            break;
+        }
+
+        if (!smParsePairReqResp(inst, &pairReqResp)) {
+            smSendPairFail(inst, SM_ERR_INVALID_PARAMS);
+            break;
+        }
+
+        if (!smGenRandNum(inst))
+            break;
+        if (!smGenTK(inst))
+            break;
+        if (!smGenConfVal(&inst->myConfVal, inst, false))
+            break;
+
+        if (!smSendPairConf(inst))
+            break;
+        smTransitPhase(inst, SM_PHASE_CONF_SENT);
+
+        goto done;
+
     case SM_PAIRING_CONF:
+        if (!sgSerializeCutFront(packet, &pairConf, sizeof(pairConf))) {
+            logw("Incoming SM packet data extraction failed\n");
+            break;
+        }
+        if (sgLength(packet)) {
+            logw("Residual data in packet: %u\n", sgLength(packet));
+            smSendPairFail(inst, SM_ERR_INVALID_PARAMS);
+            break;
+        }
+        if ((inst->isInitiator && inst->phase != SM_PHASE_CONF_SENT) ||
+            (!inst->isInitiator && inst->phase != SM_PHASE_REQ_RESP)) {
+            logd("Got pairing conf in phase %u when we %s the initiator \n", inst->phase,
+                 inst->isInitiator ? "are" : "are not");
+            break;
+        }
+
+        if (!smReverseBytes(inst->peerConfVal.confirmVal, sizeof(inst->peerConfVal.confirmVal),
+                            pairConf.confirmVal, sizeof(pairConf.confirmVal)))
+            break;
+
+        if (inst->isInitiator) {
+            if (!smSendPairRand(inst))
+                break;
+            smTransitPhase(inst, SM_PHASE_RAND_SENT);
+        } else {
+            if (!smSendPairConf(inst))
+                break;
+            smTransitPhase(inst, SM_PHASE_CONF_RESP);
+        }
+
+        goto done;
+
     case SM_PAIRING_RAND:
+        if (!sgSerializeCutFront(packet, &pairRand, sizeof(pairRand))) {
+            logw("Incoming SM packet data extraction failed\n");
+            break;
+        }
+        if (sgLength(packet)) {
+            logw("Residual data in packet: %u\n", sgLength(packet));
+            smSendPairFail(inst, SM_ERR_INVALID_PARAMS);
+            break;
+        }
+        if ((inst->isInitiator && inst->phase != SM_PHASE_RAND_SENT) ||
+            (!inst->isInitiator && inst->phase != SM_PHASE_CONF_RESP)) {
+            logd("Got pairing rand in phase %u when we %s the initiator \n", inst->phase,
+                 inst->isInitiator ? "are" : "are not");
+            break;
+        }
+
+        if (!smReverseBytes(inst->peerRandNum.rand, sizeof(inst->peerRandNum.rand),
+                            pairRand.rand, sizeof(pairRand.rand)))
+            break;
+
+        /* check if the peer confirm value generated from the random value matches */
+        smGenConfVal(&pairConf, inst, true);
+        if (memcmp(pairConf.confirmVal, inst->peerConfVal.confirmVal,
+                   sizeof(pairConf.confirmVal)) != 0) {
+            smSendPairFail(inst, SM_ERR_CONF_VAL_FAILED);
+            break;
+        }
+
+        if (!inst->isInitiator && !smSendPairRand(inst))
+            break;
+        smTransitPhase(inst, SM_PHASE_RAND_RESP);
+
+        if (!smGenSTK(inst))
+            break;
+
+        /* TODO(mcchou): if we are the initiator, encrypt the link using the STK */
+
+        goto done;
+
     case SM_PAIRING_FAIL:
+        if (!sgSerializeCutFront(packet, &pairFailed, sizeof(pairFailed))) {
+            logw("Incoming SM packet data extraction failed\n");
+            break;
+        }
+        if (sgLength(packet)) {
+            logw("Residual data in packet: %u\n", sgLength(packet));
+            smSendPairFail(inst, SM_ERR_INVALID_PARAMS);
+            break;
+        }
+
+        smTransitPhase(inst, SM_PHASE_START);
+
+        /* TODO(mcchou): increase the waiting interval before the next pairing attempt */
+        goto done;
+
     case SM_ENCR_INFO:
     case SM_MASTER_INFO:
     case SM_IDENTITY_INFO:
     case SM_IDENTITY_ADDR_INFO:
     case SM_SIGNING_INFO:
     case SM_SECURITY_REQUEST:
+        logw("Unhandled packet type 0x%02X in SM. Dropping\n", typ);
+        goto done;
     default:
         logw("Unxpected packet type 0x%02X in SM. Dropping\n", typ);
         break;
     }
 
+    smTransitPhase(inst, SM_PHASE_START);
+done:
     sgFree(packet);
+    return;
 }
 
 /*
@@ -358,14 +718,15 @@ static void smInstFree(struct smInstance *inst)
  * FUNCTION: smFixedChState
  * USE:      Connection event happened
  * PARAMS:   userData - unused
- *           instance - per-connection insdtance allocated by smFixedChAlloc()
+ *           instance - per-connection instance allocated by smFixedChAlloc()
  *           evt - what happened
  *           data - the pertinent data
  *           len - length of said data
  * RETURN:   SVC_ALLOC_*
  * NOTES:
  */
-static void smFixedChState(void *userData, void *instance, uint8_t evt, const void *data, uint32_t len)
+static void smFixedChState(void *userData, void *instance, uint8_t evt, const void *data,
+                           uint32_t len)
 {
     struct smInstance *inst = (struct smInstance*)instance;
     l2c_handle_t conn;
@@ -378,7 +739,8 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
             break;
         }
         conn = *(l2c_handle_t*)data;
-        if (inst->conn != conn) /* when we support outbound connections, this code will need to evolve */
+        /* when we support outbound connections, this code will need to evolve */
+        if (inst->conn != conn)
             loge("Handle change!!!\n");
         break;
 
@@ -410,7 +772,8 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
 
 /*
  * FUNCTION: smFixedChAlloc
- * USE:      Connection request: if accepted, alloc a per-conection instance of the SM connection structure
+ * USE:      Connection request: if accepted, alloc a per-connection instance of the SM connection
+ *           structure
  * PARAMS:   userData - unused
  *           conn - l2c conn handle
  *           instanceP - we store instance here if we allocate one
@@ -420,14 +783,20 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
 static uint8_t smFixedChAlloc(void *userData, l2c_handle_t conn, void **instanceP)
 {
     struct smInstance *inst;
-    struct bt_addr peer;
+    struct bt_addr peerAddr;
+    struct bt_addr myAddr;
 
-    if (!l2cApiGetBtAddr(conn, &peer)) {
+    if (!l2cApiGetBtAddr(conn, &peerAddr)) {
         loge("Failed to get peer address\n");
         return SVC_ALLOC_FAIL_OTHER;
     }
 
-    if (!BT_ADDR_IS_LE(peer)) {
+    if(!l2cApiGetSelfBtAddr(conn, &myAddr)) {
+        logd("Failed to get local address\n");
+        return SVC_ALLOC_FAIL_OTHER;
+    }
+
+    if (!BT_ADDR_IS_LE(peerAddr)) {
         logd("Refusing SM connection for EDR\n");
         return SVC_ALLOC_FAIL_OTHER;
     }
@@ -436,7 +805,15 @@ static uint8_t smFixedChAlloc(void *userData, l2c_handle_t conn, void **instance
     if (!inst)
         return SVC_ALLOC_FAIL_OTHER;
 
-    memcpy(&inst->peer, &peer, sizeof(struct bt_addr));
+
+    memcpy(&inst->peerAddr, &peerAddr, sizeof(struct bt_addr));
+    memcpy(&inst->myAddr, &myAddr, sizeof(struct bt_addr));
+
+    /* TODO(mcchou): default settings. we need to provide ATT a way to set authentication requirement for a certain instance */
+    inst->myAuthReq = SM_AUTH_REQ_BOND_BOND | SM_AUTH_REQ_MITM_FLAG;
+    inst->myMaxKeySz = SM_MAX_KEY_LEN;
+    inst->myKeyDistr = SM_KEY_DISTR_LTK | SM_KEY_DISTR_IRK | SM_KEY_DISTR_CSRK;
+
     inst->conn = conn;
     *instanceP = inst;
 
@@ -457,7 +834,15 @@ bool smInit(uint8_t ioCapability)
         .serviceFixedChStateCbk = smFixedChState,
     };
 
+    if (ioCapability != HCI_DISP_CAP_DISP_ONLY && ioCapability != HCI_DISP_CAP_DISP_YES_NO &&
+        ioCapability != HCI_DISP_CAP_KBD_ONLY && ioCapability != HCI_DISP_CAP_NONE &&
+        ioCapability != HCI_DISP_CAP_KBD_DISP) {
+        return false;
+    }
     mIoCap = ioCapability;
+
+    /* TODO(mcchou): this needs to be changed accordingly for the OOB support */
+    mHasOob = false;
     if (!(mSmSendQ = sendQueueAlloc(MAX_PACKETS_SM_SEND_QUEUE))) {
         logw("%s(): Error allocating SM sendQ.\n", __func__);
         return false;
@@ -497,7 +882,8 @@ void smDeinit(void)
  * RETURN:   NONE
  * NOTES:
  */
-static void smCmacDo(uint8_t *dst, uint8_t macLen, sg m, const uint8_t *k, const uint8_t *k1, const uint8_t *k2)
+static void smCmacDo(uint8_t *dst, uint8_t macLen, sg m, const uint8_t *k, const uint8_t *k1,
+                     const uint8_t *k2)
 {
     uint32_t len = sgLength(m), pos = 0;
     uint32_t i, nblocks = len ? (len + SM_BLOCK_LEN - 1) / SM_BLOCK_LEN : 1;
@@ -584,7 +970,7 @@ void smSignatureCalc(sg m, const uint8_t *key, uint8_t *sig)
  * RETURN:   NONE
  * NOTES:    The SM docs call this the s1() function
  */
-static void smCalcKey(uint8_t *out, const uint8_t *k, const uint8_t *r1, const uint8_t *r2)
+static_or_test void smCalcKey(uint8_t *out, const uint8_t *k, const uint8_t *r1, const uint8_t *r2)
 {
     uint8_t t[SM_BLOCK_LEN];
     uint8_t i;
@@ -611,7 +997,8 @@ static void smCalcKey(uint8_t *out, const uint8_t *k, const uint8_t *r1, const u
  * RETURN:   NONE
  * NOTES:    The SM docs call this the c1() function
  */
-static void smCalcConfVal(uint8_t* out, const uint8_t *k, const uint8_t *r, uint64_t pres, uint64_t preq, bool iat, uint64_t ia, bool rat, uint64_t ra)
+static_or_test void smCalcConfVal(uint8_t* out, const uint8_t *k, const uint8_t *r, uint64_t pres,
+                                  uint64_t preq, bool iat, uint64_t ia, bool rat, uint64_t ra)
 {
     uint8_t p1[SM_BLOCK_LEN];
     uint8_t p2[SM_BLOCK_LEN] = {0,};
@@ -651,6 +1038,219 @@ static void smCalcConfVal(uint8_t* out, const uint8_t *k, const uint8_t *r, uint
 }
 
 /*
+ * FUNCTION: smPrepPreqPrsp
+ * USE:      Prepare the pairing request command or the pairing response
+ *           command by reconstructing fields into a uint64_t value
+ * PARAS:    cmd - output
+ *           reqRsp - command type
+ *           ioCap - IO capability
+ *           hasOob - OOB data flag
+ *           authReq - security properties
+ *           maxKeySz - maximum key size
+ *           initKeyDistr - initiator key distribution
+ *           rspKeyDistr - responder key distribution
+ * RETURN:   success
+ * NOTES:
+ */
+static bool smPrepPreqPrsp(
+    uint64_t *cmd, uint8_t reqRsp, uint8_t ioCap, bool hasOob, uint8_t authReq, uint8_t maxKeySz,
+    uint8_t initKeyDistr, uint8_t rspKeyDistr)
+{
+    uint8_t oob = hasOob;
+
+    if (!cmd)
+        return false;
+
+    if (reqRsp != SM_PAIRING_REQ && reqRsp != SM_PAIRING_RSP)
+        return false;
+
+    *cmd = utilGetBE8(&rspKeyDistr);
+    *cmd = *cmd << 8 | utilGetBE8(&initKeyDistr);
+    *cmd = *cmd << 8 | utilGetBE8(&maxKeySz);
+    *cmd = *cmd << 8 | utilGetBE8(&authReq);
+    *cmd = *cmd << 8 | utilGetBE8(&oob);
+    *cmd = *cmd << 8 | utilGetBE8(&ioCap);
+    *cmd = *cmd << 8 | reqRsp;
+
+    return true;
+}
+
+/*
+ * FUNCTION: smPrepInitRspAddr
+ * USE:      Prepare the initiator device address or the responding device
+ *           address by reconstructing a struct bt_addr into an uint64_t value
+ * PARAS:    a - output uint64_t
+ *           at - output address types (public or random)
+ *           addr - address
+ * RETURN:   success
+ * NOTES:
+ */
+static bool smPrepInitRspAddr(uint64_t *a, bool *at, const struct bt_addr *addr)
+{
+    int i;
+    uint8_t type;
+
+    if (!addr)
+        return false;
+
+    *at = addr->type != BT_ADDR_TYPE_EDR && addr->type != BT_ADDR_TYPE_LE_PUBLIC;
+    for (i = sizeof(addr->addr) - 1, *a = 0; i >= 0; --i)
+        *a = (*a << 8) | addr->addr[i]; /* addr is stored in [0]->[5] : LSO -> MSO */
+
+    return true;
+}
+
+/*
+ * FUNCTION: smGenSTK
+ * USE:      Generate a 128-bit Short Term Key, mask it with the negotiated key size and store it
+ *           in the given instance
+ * PARAS:    inst - instance
+ * RETURN:   success
+ * NOTES:
+ */
+static bool smGenSTK(struct smInstance *inst)
+{
+    uint8_t i, maskLen;
+
+    if (!inst) {
+        logw("%s(): Invalid instance\n", __func__);
+        return false;
+    }
+
+    smCalcKey((uint8_t *)inst->stk.key, (uint8_t *)inst->tk.key,
+              inst->isInitiator ? inst->peerRandNum.rand : inst->myRandNum.rand,
+              inst->isInitiator ? inst->myRandNum.rand : inst->peerRandNum.rand);
+
+    maskLen = SM_MAX_KEY_LEN -
+        (inst->myMaxKeySz > inst->peerMaxKeySz ? inst->peerMaxKeySz : inst->myMaxKeySz);
+    for (i = 0; i < maskLen; ++i)
+        inst->stk.key[i] = 0x00;
+
+    return true;
+}
+
+/*
+ * FUNCTION: smGenTK
+ * USE:      Generate a 128-bit Temporary Key and store it in the given instance
+ * PARAS:    inst - instance
+ * RETURN:   success
+ * NOTES:
+ */
+static bool smGenTK(struct smInstance *inst)
+{
+    uint8_t pairAlg;
+
+    if ((pairAlg = smSelPairAlg(inst)) == SM_ALG_UNKNOWN)
+        return false;
+
+    logd("Pairing method chosen: 0x%02X\n", pairAlg);
+
+    /* generate TK */
+    switch(pairAlg) {
+    case SM_ALG_JUST_WORK:
+        memset(inst->tk.key, 0, sizeof(inst->tk.key));
+        break;
+    case SM_ALG_PASS_KEY: /* TODO(mcchou): retrieve passkey from user */
+    case SM_ALG_OOB:      /* TODO(mcchou): retrieve OOB data from OOB source */
+        logw("%s(): Not implemented\n", __func__);
+        return false;
+    default:
+        logw("%s(): Unknown pairing algorithm %d", __func__, pairAlg);
+        return false;
+    }
+    return true;
+}
+
+/*
+ * FUNCTION: smGenConfVal
+ * USE:      Generate a 128-bit random number and store it in the given instance. This should be
+ *           called after calling smGenTK.
+ * PARAS:    rand - the output random number
+ *           inst - instance
+ *           check - indicate whether this is confirm value check or not, if true, peer random
+ *                   value will be used as the input of confirm value calculation; otherwise the
+ *                   local random value will be used.
+ * RETURN:   success
+ * NOTES:
+ */
+static bool smGenConfVal(struct smPairConf *conf, const struct smInstance *inst, bool check)
+{
+    uint64_t pReqCmd = 0, pRspCmd = 0, ia = 0, ra = 0;
+    bool iat = false, rat = false;
+    int i;
+
+    if (!inst) {
+        logw("%s(): Invalid instance\n", __func__);
+        return false;
+    }
+
+    /* prepare params for calculation of confirm value */
+    if (inst->isInitiator) {
+        if (!smPrepPreqPrsp(&pReqCmd, SM_PAIRING_REQ, mIoCap, mHasOob, inst->myAuthReq,
+                            inst->myMaxKeySz, inst->peerKeyDistr, inst->myKeyDistr) ||
+            !smPrepPreqPrsp(&pRspCmd, SM_PAIRING_RSP, inst->peerIoCap, inst->peerHasOob,
+                            inst->peerAuthReq, inst->peerMaxKeySz, inst->peerKeyDistr,
+                            inst->myKeyDistr) ||
+            !smPrepInitRspAddr(&ia, &iat, &inst->myAddr) ||
+            !smPrepInitRspAddr(&ra, &rat, &inst->peerAddr))
+            goto fail;
+    } else {
+        if (!smPrepPreqPrsp(&pReqCmd, SM_PAIRING_REQ, inst->peerIoCap, inst->peerHasOob,
+                            inst->peerAuthReq, inst->peerMaxKeySz, inst->myKeyDistr,
+                            inst->peerKeyDistr) ||
+            !smPrepPreqPrsp(&pRspCmd, SM_PAIRING_RSP, mIoCap, mHasOob, inst->myAuthReq,
+                            inst->myMaxKeySz, inst->myKeyDistr, inst->peerKeyDistr) ||
+            !smPrepInitRspAddr(&ia, &iat, &inst->peerAddr) ||
+            !smPrepInitRspAddr(&ra, &rat, &inst->myAddr))
+            goto fail;
+    }
+
+    smCalcConfVal(conf->confirmVal, (uint8_t *)inst->tk.key,
+                  check ? inst->peerRandNum.rand : inst->myRandNum.rand,
+                  pRspCmd, pReqCmd, iat, ia, rat, ra);
+
+    return true;
+
+fail:
+    logw("%s(): Preparation error\n", __func__);
+    return false;
+}
+
+/*
+ * FUNCTION: smGenRandNum
+ * USE:      Generate a 128-bit random number and store it in the given instance
+ * PARAS:    inst - instance
+ * RETURN:   success
+ * NOTES:
+ */
+static bool smGenRandNum(struct smInstance *inst)
+{
+    int r = 0;
+    uint16_t i, rSz, cp, rem;
+    struct timespec ts;
+
+    if (!inst) {
+        logw("%s(): Invalid instance\n", __func__);
+        return false;
+    }
+
+    if (!timespec_get(&ts, TIME_UTC)) {
+        logd("%s(): Filed to retrieve time\n", __func__);
+        return false;
+    }
+
+    srandom(ts.tv_nsec ^ ts.tv_sec);
+
+    for (i = 0, rSz = sizeof(r), rem = sizeof(inst->myRandNum); rem > 0; i += cp, rem -= cp) {
+        r = random();
+        cp = rem > rSz ? rSz : rem;
+        memcpy(&inst->myRandNum.rand[i], &r, cp);
+    }
+
+    return true;
+}
+
+/*
  * FUNCTION: smAddressHash
  * USE:      Perform 24bit->24bit hash for address resolution
  * PARAMS:   r - the 24 bits to hash
@@ -667,7 +1267,7 @@ static uint32_t smAddressHash(uint32_t r, const uint8_t *key)
     return utilGetBE24(out + 13);
 }
 
-/* a simple AES-128 implementation - we use it rarely enough that even an unoptimal version will do */
+/* a simple AES-128 implementation - we use it rarely enough that even a nonoptimal version will do */
 
 static void smEncryptSubBytes(uint8_t *bytes, uint8_t num)
 {
@@ -757,7 +1357,8 @@ static void smEncryptAddRoundKey(uint8_t *state, const uint8_t *keyPos)
 
 static void smEncryptExpandKey(uint8_t *expanded, const uint8_t *key)
 {
-    static const uint8_t rcon[] = {1,0,0,0, 2,0,0,0, 4,0,0,0, 8,0,0,0, 16,0,0,0, 32,0,0,0, 64,0,0,0, 128,0,0,0, 27,0,0,0, 54,0,0,0};
+    static const uint8_t rcon[] = {1,0,0,0, 2,0,0,0, 4,0,0,0, 8,0,0,0, 16,0,0,0, 32,0,0,0, 64,0,0,0,
+                                   128,0,0,0, 27,0,0,0, 54,0,0,0};
     uint8_t i, j, temp[4];
 
     for(i = 0; i < 4; i++)
@@ -787,13 +1388,13 @@ static void smEncryptExpandKey(uint8_t *expanded, const uint8_t *key)
 /*
  * FUNCTION: smEncrypt
  * USE:      Perform an AES-128 encryption
- * PARAMS:   dst - palce to store result (SM_ENCRYPT_DATA_LEN bytes)
- *           src - the plaintext (SM_ENCRYPT_DATA_LEN bytes)
+ * PARAMS:   dst - place to store result (SM_ENCRYPT_DATA_LEN bytes)
+ *           src - the plain text (SM_ENCRYPT_DATA_LEN bytes)
  *           key - the key (SM_ENCRYPT_DATA_LEN bytes)
  * RETURN:   NONE
  * NOTES:
  */
-static void smEncrypt(uint8_t* dst, const uint8_t *src, const uint8_t *key)
+static_or_test void smEncrypt(uint8_t* dst, const uint8_t *src, const uint8_t *key)
 {
     uint8_t expandedKey[176];
     uint8_t state[SM_BLOCK_LEN];
