@@ -236,6 +236,32 @@ struct hciAclConn {
     };
 };
 
+struct hciAdvSet {
+    /* bookkeeping */
+    struct hciAdvSet  *next;
+    struct hciAdvSet  *prev;
+    hci_adv_set_t      handle;
+
+    /* hw state */
+    uint16_t           hwSetNum;
+    bool               hwEnabled;
+    int8_t             hwPowerLevel; /* if hw supports power setting, must be populated when enabled */
+
+    /* user data */
+    uint32_t           advDataLen;
+    uint32_t           scanRspDataLen;
+    uint8_t            advData[HCI_ADV_DATA_MAX_LEN];
+    uint8_t            scanRspData[HCI_SCAN_RSP_DATA_MAX_LEN];
+    uint16_t           intervalMin;
+    uint16_t           intervalMax;
+    uint8_t            advType;
+    uint8_t            ownAddressType;
+    struct bt_addr     directAddr;
+    uint8_t            channelMap;
+    uint8_t            filterPolicy;
+    int8_t             powerLevel;
+};
+
 #define CONN_STATE_WAIT            0
 #define CONN_STATE_CFG             1
 #define CONN_STATE_RUNNING         2
@@ -271,6 +297,9 @@ static pthread_t mCallbackThread;
 static pthread_mutex_t mConnsLock = PTHREAD_MUTEX_INITIALIZER;
 static struct hciAclConn *mConns = NULL;
 
+static pthread_mutex_t mAdvSetsLock = PTHREAD_MUTEX_INITIALIZER;
+static struct hciAdvSet *mAdvSets = NULL;
+
 static pthread_mutex_t mDiscoveryStateLock = PTHREAD_MUTEX_INITIALIZER;
 
 static hciDeviceDiscoveredLeCbk mDiscoverLeCbk;
@@ -295,6 +324,7 @@ static sem_t mAclPacketsEdr;
 static uint8_t mInquiryState = 0;
 static uint8_t mLocalAddr[BT_MAC_LEN];
 static uint16_t mMaxAdvSets;
+static bool mCanSetAdvTxPower;
 
 
 /* fwd declarations */
@@ -318,6 +348,10 @@ static void hciConnCfg(struct hciAclConn *c, uint32_t step, uint32_t aux);
 static bool hciRxAclForRunningConn(struct hciAclConn* conn, uint16_t hdr, sg packet);
 static void hciConnAclStructDel(struct hciAclConn* conn);
 static bool hciSetupResetEventHandler(bool cmdWaitLockHeld);
+
+/* adv indirection function pointers. Called with mAdvSetsLock held*/
+static bool (*mHciAdvSetEnable)(struct hciAdvSet *set);
+static bool (*mHciAdvSetDisable)(struct hciAdvSet *set);
 
 
 /* templated commands - they need the above vars hence include here */
@@ -1360,7 +1394,8 @@ out_lib_open:
  * PARAMS:   NONE
  * RETURN:   NONE
  * NOTES:    may take a while, some shutdown actions may go
- *           on after this (in higher layers)
+ *           on after this (in higher layers). does not cleanup
+ *           chip state - assumes chip will be reset.
  */
 void hciDown(void)
 {
@@ -1373,6 +1408,11 @@ void hciDown(void)
     while (mConns) {
         struct hciAclConn *t = mConns;
         mConns = mConns->next;
+        free(t);
+    }
+    while (mAdvSets) {
+        struct hciAdvSet *t = mAdvSets;
+        mAdvSets = mAdvSets->next;
         free(t);
     }
     pthread_mutex_unlock(&mCmdWaitLock);
@@ -2436,11 +2476,13 @@ static bool hciBtStackUp(void)
         logi("Will use BT5 multi-adv support\n");
         ret = hciLeReadNumberOfSupportedAdvertisingSetsSync(&evt);
         if (ret) {
-            logw(" Read number supported adv sets command errored out (0x%02x) - will use normal advertising\n", ret);
             mMaxAdvSets = 1;
+            mCanSetAdvTxPower = false;
+            logw(" Read number supported adv sets command errored out (0x%02x) - will use normal advertising\n", ret);
         }
         else {
             mMaxAdvSets = evt.maxAdvsets;
+            mCanSetAdvTxPower = true;
             logi(" Controller supports up to %u adv sets\n", mMaxAdvSets);
         }
     }
@@ -2452,20 +2494,24 @@ static bool hciBtStackUp(void)
         ret = hciVendorLeGetVendorCapabilitiesSync(&evt);
         if (!ret) {
             mMaxAdvSets = evt.maxAdvtInstances;
+            mCanSetAdvTxPower = true;
             logi(" Controller supports up to %u adv sets\n", mMaxAdvSets);
         }
         else if (ret == HCI_ERR_Unknown_HCI_Command) {
             mMaxAdvSets = 1;
+            mCanSetAdvTxPower = false;
             logi(" android-vendor extensions not found - will use normal advertising\n");
         }
         else {
             mMaxAdvSets = 1;
+            mCanSetAdvTxPower = false;
             logw(" Vendor test command errored out (0x%02x) - will use normal advertising\n", ret);
         }
     }
     else {
-        logi("BT4.0 required for advetising. Advertising will not be supported\n");
         mMaxAdvSets = 0;
+        mCanSetAdvTxPower = false;
+        logi("BT4.0 required for advetising. Advertising will not be supported\n");
     }
 
 out:
@@ -2476,6 +2522,329 @@ out:
     }
     mStackState = STACK_STATE_UP;
     return true;
+}
+
+/*
+ * FUNCTION: hciAdvSetFindByHandle
+ * USE:      Find an adv set by handle
+ * PARAMS:   handle - the handle
+ * RETURN:   the set structure or NULL
+ * NOTES:    call with mAdvSetsLock held
+ */
+static struct hciAdvSet* hciAdvSetFindByHandle(hci_adv_set_t handle)
+{
+    struct hciAdvSet* t;
+
+    for (t = mAdvSets; t; t = t->next) {
+        if (t->handle == handle)
+            return t;
+    }
+
+    return NULL;
+}
+
+/*
+ * FUNCTION: hciAdvIsPowerLevelSettingSupported
+ * USE:      Can adv tx power be set with our chip?
+ * PARAMS:   none
+ * RETURN:   the answer
+ * NOTES:
+ */
+bool hciAdvIsPowerLevelSettingSupported(void)
+{
+    return mCanSetAdvTxPower;
+}
+
+/*
+ * FUNCTION: hciAdvGetMaxAdvSetsSupported
+ * USE:      How many adv sets can we support (max) on hardware
+ * PARAMS:   none
+ * RETURN:   the answer
+ * NOTES:
+ */
+uint32_t hciAdvGetMaxAdvSetsSupported(void)
+{
+    return mMaxAdvSets;
+}
+
+/*
+ * FUNCTION: hciAdvSetAllocate
+ * USE:      Allocate an advertising set structure
+ * PARAMS:   none
+ * RETURN:   the handle to this set
+ * NOTES:    this does not in any way touch hardware
+ */
+hci_adv_set_t hciAdvSetAllocate(void)
+{
+    struct hciAdvSet *set = (struct hciAdvSet*)calloc(1, sizeof(struct hciAdvSet));
+    hci_adv_set_t handle;
+
+    if (!set)
+        return 0;
+
+    set->handle = handle = uniqGetNext();
+    set->directAddr.type = BT_ADDR_TYPE_EDR; //definitely not valid for adv
+    pthread_mutex_lock(&mAdvSetsLock);
+    set->next = mAdvSets;
+    if (mAdvSets)
+        mAdvSets->prev = set;
+    mAdvSets = set;
+    pthread_mutex_unlock(&mAdvSetsLock);
+
+    return handle;
+}
+
+/*
+ * FUNCTION: hciAdvSetFree
+ * USE:      Free an advertising set structure. Set must not be enabled!
+ * PARAMS:   handle - the handle to this set
+ * RETURN:   success
+ * NOTES:    this does not in any way touch hardware
+ */
+bool hciAdvSetFree(hci_adv_set_t handle)
+{
+    struct hciAdvSet *set;
+    bool ret = false;
+
+    pthread_mutex_lock(&mAdvSetsLock);
+    set = hciAdvSetFindByHandle(handle);
+    if (!set)
+        logw("Set handle 0x"HCI_ADV_SET_FMT"x not found\n", HCI_ADV_SET_CONV(handle));
+    else if (set->hwEnabled)
+        logw("Set 0x"HCI_ADV_SET_FMT"x is enabled - cannot delete it\n", HCI_ADV_SET_CONV(handle));
+    else {
+        if (set->next)
+            set->next->prev = set->prev;
+        if (set->prev)
+            set->prev->next = set->next;
+        else
+            mAdvSets = set->next;
+        free(set);
+        ret = true;
+    }
+    pthread_mutex_unlock(&mAdvSetsLock);
+
+    return ret;
+}
+
+/*
+ * FUNCTION: hciAdvSetConfigureData
+ * USE:      Configure an advertising set's data. Set must not be enabled!
+ * PARAMS:   handle - the handle to this set
+ *           scanRsp - which data to config? SCAN_RSP or ADV
+ *           data - the data to use
+ *           len - length of said data
+ * RETURN:   success
+ * NOTES:    this does not in any way touch hardware
+ */
+bool hciAdvSetConfigureData(hci_adv_set_t handle, bool scanRsp, const uint8_t *data, uint32_t len)
+{
+    struct hciAdvSet *set;
+    bool ret = false;
+
+    pthread_mutex_lock(&mAdvSetsLock);
+    set = hciAdvSetFindByHandle(handle);
+    if (!set)
+        logw("Set handle 0x"HCI_ADV_SET_FMT"x not found\n", HCI_ADV_SET_CONV(handle));
+    else if (set->hwEnabled)
+        logw("Set 0x"HCI_ADV_SET_FMT"x is enabled - cannot edit it\n", HCI_ADV_SET_CONV(handle));
+    else {
+
+        uint32_t *lenP;
+        uint8_t *dataP;
+        uint32_t lenLimit;
+
+        if (scanRsp) {
+            lenP = &set->scanRspDataLen;
+            dataP = set->scanRspData;
+            lenLimit = HCI_SCAN_RSP_DATA_MAX_LEN;
+        }
+        else {
+            lenP = &set->advDataLen;
+            dataP = set->advData;
+            lenLimit = HCI_ADV_DATA_MAX_LEN;
+        }
+
+        if (len > lenLimit)
+            logw("%s data is too long (%u > %u)\n", scanRsp ? "SCAN_RSP" : "ADV", len, lenLimit);
+        else {
+
+            memcpy(dataP, data, len);
+            *lenP = len;
+            ret = true;
+        }
+    }
+    pthread_mutex_unlock(&mAdvSetsLock);
+
+    return ret;
+}
+
+/*
+ * FUNCTION: hciAdvSetSetAdvParams
+ * USE:      Configure an advertising set's parameters. Set must not be enabled!
+ * PARAMS:   handle - the handle to this set
+ *           advIntervalMin - minimum adv interval (in units of 0.625ms)
+ *           advIntervalMax - maximum adv interval (in units of 0.625ms)
+ *           advType - adv type: HCI_ADV_TYPE_ADV_*
+ *           ownAddressType - own addr type: HCI_ADV_OWN_ADDR_TYPE_*
+ *           directAddr - if direct adv, the address of target, else ignored
+ *           advChannelMap - channels to use: bitmask of HCI_ADV_CHAN_MAP_USE_*
+ *           advFilterPolicy - filter policy: HCI_ADV_FILTER_POL_*
+ *           advPower - TX power in dBm, ignored if not suported, see hciAdvIsPowerLevelSettingSupported()
+ * RETURN:   success
+ * NOTES:    this does not in any way touch hardware
+ */
+bool hciAdvSetSetAdvParams(hci_adv_set_t handle, uint16_t advIntervalMin, uint16_t advIntervalMax, uint8_t advType, uint8_t ownAddressType, struct bt_addr *directAddr, uint8_t advChannelMap, uint8_t advFilterPolicy, int8_t advPower)
+{
+    struct hciAdvSet *set;
+    bool ret = false;
+
+    pthread_mutex_lock(&mAdvSetsLock);
+    set = hciAdvSetFindByHandle(handle);
+    if (!set)
+        logw("Set handle 0x"HCI_ADV_SET_FMT"x not found\n", HCI_ADV_SET_CONV(handle));
+    else if (set->hwEnabled)
+        logw("Set 0x"HCI_ADV_SET_FMT"x is enabled - cannot edit it\n", HCI_ADV_SET_CONV(handle));
+    else {
+
+        set->intervalMin = advIntervalMin;
+        set->intervalMax = advIntervalMax;
+        set->advType = advType;
+        set->ownAddressType = ownAddressType;
+        if (directAddr)
+            set->directAddr = *directAddr;
+        else
+            set->directAddr.type = BT_ADDR_TYPE_EDR; //definitely not valid for adv
+        set->channelMap = advChannelMap;
+        set->filterPolicy = advFilterPolicy;
+        set->powerLevel = advPower;
+
+        ret = true;
+    }
+    pthread_mutex_unlock(&mAdvSetsLock);
+
+    return ret;
+}
+
+/*
+ * FUNCTION: hciAdvSetGetCurTxPowerLevel
+ * USE:      Get the current tx power level of an adv set. Set must be enabled!
+ * PARAMS:   handle - the handle to this set
+ *           advTxPowerLevelP - where to store the result
+ * RETURN:   success
+ * NOTES:    this does not in any way touch hardware
+ */
+bool hciAdvSetGetCurTxPowerLevel(hci_adv_set_t handle, int8_t *advTxPowerLevelP)
+{
+    struct hciAdvSet *set;
+    bool ret = false;
+
+    pthread_mutex_lock(&mAdvSetsLock);
+    set = hciAdvSetFindByHandle(handle);
+    if (!set)
+        logw("Set handle 0x"HCI_ADV_SET_FMT"x not found\n", HCI_ADV_SET_CONV(handle));
+    else if (!set->hwEnabled)
+        logw("Set 0x"HCI_ADV_SET_FMT"x is not enabled - cannot get its power\n", HCI_ADV_SET_CONV(handle));
+    else {
+
+        if (advTxPowerLevelP)
+            *advTxPowerLevelP = set->hwPowerLevel;
+
+        ret = true;
+    }
+    pthread_mutex_unlock(&mAdvSetsLock);
+
+    return ret;
+}
+
+/*
+ * FUNCTION: hciAdvSetEnable
+ * USE:      Try to enable a given adv set
+ * PARAMS:   handle - the handle to this set
+ * RETURN:   success
+ * NOTES:    this may fail sometimes and succeed other times based on hw state
+ */
+bool hciAdvSetEnable(hci_adv_set_t handle)
+{
+    struct hciAdvSet *set;
+    bool ret = false;
+
+    pthread_mutex_lock(&mAdvSetsLock);
+    set = hciAdvSetFindByHandle(handle);
+    if (!set)
+        logw("Set handle 0x"HCI_ADV_SET_FMT"x not found\n", HCI_ADV_SET_CONV(handle));
+    else if (set->hwEnabled)
+        logw("Set 0x"HCI_ADV_SET_FMT"x is enabled - cannot enable it again\n", HCI_ADV_SET_CONV(handle));
+    else if (!mHciAdvSetEnable || !mHciAdvSetDisable)
+        logw("No methods for enable/disable defined for this chip - cannot enable adv set\n");
+    else {
+
+        ret = true;
+
+        /* Sanity checks. All constantrs are from spec */
+        if (!set->advDataLen) {
+            logw("Cannot enable adv set 0x"HCI_ADV_SET_FMT"x since it has no adv data.\n", HCI_ADV_SET_CONV(handle));
+            ret = false;
+        }
+        if (set->advType != HCI_ADV_TYPE_ADV_DIRECT_IND && (set->intervalMin > set->intervalMax || set->intervalMin < 0x20 || set->intervalMax > 0x4000)) {
+            logw("Cannot enable adv set 0x"HCI_ADV_SET_FMT"x since it has invalid interval params.\n", HCI_ADV_SET_CONV(handle));
+            ret = false;
+        }
+        if (set->advType != HCI_ADV_TYPE_ADV_IND && set->advType != HCI_ADV_TYPE_ADV_DIRECT_IND && set->advType != HCI_ADV_TYPE_ADV_SCAN_IND && set->advType != HCI_ADV_TYPE_ADV_NONCONN_IND && set->advType != HCI_ADV_TYPE_ADV_DIRECT_IND_LOW_DUTY) {
+            logw("Cannot enable adv set 0x"HCI_ADV_SET_FMT"x since it has invalid adv type.\n", HCI_ADV_SET_CONV(handle));
+            ret = false;
+        }
+        if (set->ownAddressType != HCI_ADV_OWN_ADDR_TYPE_PUBLIC && set->ownAddressType != HCI_ADV_OWN_ADDR_TYPE_RANDOM && set->ownAddressType != HCI_ADV_OWN_ADDR_TYPE_AUTO_RESOLV_ELSE_PUBLIC && set->ownAddressType != HCI_ADV_OWN_ADDR_TYPE_AUTO_RESOLV_ELSE_RANDOM) {
+            logw("Cannot enable adv set 0x"HCI_ADV_SET_FMT"x since it has invalid own addr type.\n", HCI_ADV_SET_CONV(handle));
+            ret = false;
+        }
+        if ((set->advType == HCI_ADV_TYPE_ADV_DIRECT_IND || set->advType == HCI_ADV_TYPE_ADV_DIRECT_IND_LOW_DUTY) && set->directAddr.type != BT_ADDR_TYPE_LE_PUBLIC && set->directAddr.type != BT_ADDR_TYPE_LE_RANDOM) {
+            logw("Cannot enable adv set 0x"HCI_ADV_SET_FMT"x since it has invalid peer addr type.\n", HCI_ADV_SET_CONV(handle));
+            ret = false;
+        }
+        if (!(set->channelMap & 7)) {
+            logw("Cannot enable adv set 0x"HCI_ADV_SET_FMT"x since it has invalid channel map.\n", HCI_ADV_SET_CONV(handle));
+            ret = false;
+        }
+        if (set->filterPolicy != HCI_ADV_FILTER_POL_SCAN_ALL_CONNECT_ALL && set->filterPolicy != HCI_ADV_FILTER_POL_SCAN_LIST_CONNECT_ALL && set->filterPolicy != HCI_ADV_FILTER_POL_SCAN_ALL_CONNECT_LIST && set->filterPolicy != HCI_ADV_FILTER_POL_SCAN_LIST_CONNECT_LIST) {
+            logw("Cannot enable adv set 0x"HCI_ADV_SET_FMT"x since it has invalid filter policy.\n", HCI_ADV_SET_CONV(handle));
+            ret = false;
+        }
+
+        //if all check poass - do the actual ON procedure
+        ret = ret && mHciAdvSetEnable(set);
+    }
+    pthread_mutex_unlock(&mAdvSetsLock);
+
+    return ret;
+}
+
+/*
+ * FUNCTION: hciAdvSetDisable
+ * USE:      Try to disable a given adv set
+ * PARAMS:   handle - the handle to this set
+ * RETURN:   success
+ * NOTES:
+ */
+bool hciAdvSetDisable(hci_adv_set_t handle)
+{
+    struct hciAdvSet *set;
+    bool ret = false;
+
+    pthread_mutex_lock(&mAdvSetsLock);
+    set = hciAdvSetFindByHandle(handle);
+    if (!set)
+        logw("Set handle 0x"HCI_ADV_SET_FMT"x not found\n", HCI_ADV_SET_CONV(handle));
+    else if (!set->hwEnabled)
+        logw("Set 0x"HCI_ADV_SET_FMT"x is disabled - cannot disable it again\n", HCI_ADV_SET_CONV(handle));
+    else if (!mHciAdvSetEnable || !mHciAdvSetDisable)
+        logw("No methods for enable/disable defined for this chip - cannot enable adv set\n");
+    else
+        ret = mHciAdvSetDisable(set);
+
+    pthread_mutex_unlock(&mAdvSetsLock);
+
+    return ret;
 }
 
 /*

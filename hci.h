@@ -123,6 +123,13 @@ typedef uniq_t hci_conn_t;
 #define HCI_CONN_FMT      UNIQ_FMT
 #define HCI_CONN_CONV(x)  UNIQ_CONV(x)
 
+typedef uniq_t hci_adv_set_t;
+#define HCI_ADV_SET_FMT      UNIQ_FMT
+#define HCI_ADV_SET_CONV(x)  UNIQ_CONV(x)
+
+#define HCI_ADV_DATA_MAX_LEN             31
+#define HCI_SCAN_RSP_DATA_MAX_LEN        31
+
 #define HCI_NAME_REQ_STATUS_IN_PROGRESS  0
 #define HCI_NAME_REQ_STATUS_ERROR        1
 #define HCI_NAME_REQ_STATUS_COMPLETE     2
@@ -178,6 +185,19 @@ bool hciLeSetAdvParams(uint16_t advIntervalMin, uint16_t advIntervalMax, uint8_t
 
 /* misc */
 void hciInquiryUpdatePersistDeviceDb(const struct bt_addr *addr, const uint32_t *devClsP, const void *eir, uint8_t eirLen);
+
+/* advertising As many sets as you can can be created. Only a certain number may be on at once (hw dependent) */
+bool hciAdvIsPowerLevelSettingSupported(void);
+uint32_t hciAdvGetMaxAdvSetsSupported(void);
+hci_adv_set_t hciAdvSetAllocate(void);
+bool hciAdvSetFree(hci_adv_set_t set);
+/* local copies are made for data */
+bool hciAdvSetConfigureData(hci_adv_set_t set, bool scanRsp, const uint8_t *data, uint32_t len);
+bool hciAdvSetSetAdvParams(hci_adv_set_t set, uint16_t advIntervalMin, uint16_t advIntervalMax, uint8_t advType, uint8_t ownAddressType, struct bt_addr *directAddr, uint8_t advChannelMap, uint8_t advFilterPolicy, int8_t advDesiredTxPowerLevel);
+bool hciAdvSetEnable(hci_adv_set_t set);
+bool hciAdvSetDisable(hci_adv_set_t set);
+bool hciAdvSetGetCurTxPowerLevel(hci_adv_set_t set, int8_t *advTxPowerLevelP);
+
 
 #endif
 
