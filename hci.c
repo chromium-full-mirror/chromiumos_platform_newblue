@@ -2470,16 +2470,15 @@ static bool hciBtStackUp(void)
     }
 
     /* figure out the multi-adv situation */
+    mMaxAdvSets = 1;
+    mCanSetAdvTxPower = false;
     if (mBtVer >= HCI_VERSION_5_0) {
         struct hciCmplLeReadNumSupportedAdvSets evt;
 
         logi("Will use BT5 multi-adv support\n");
         ret = hciLeReadNumberOfSupportedAdvertisingSetsSync(&evt);
-        if (ret) {
-            mMaxAdvSets = 1;
-            mCanSetAdvTxPower = false;
+        if (ret)
             logw(" Read number supported adv sets command errored out (0x%02x) - will use normal advertising\n", ret);
-        }
         else {
             mMaxAdvSets = evt.maxAdvsets;
             mCanSetAdvTxPower = true;
@@ -2497,16 +2496,10 @@ static bool hciBtStackUp(void)
             mCanSetAdvTxPower = true;
             logi(" Controller supports up to %u adv sets\n", mMaxAdvSets);
         }
-        else if (ret == HCI_ERR_Unknown_HCI_Command) {
-            mMaxAdvSets = 1;
-            mCanSetAdvTxPower = false;
+        else if (ret == HCI_ERR_Unknown_HCI_Command)
             logi(" android-vendor extensions not found - will use normal advertising\n");
-        }
-        else {
-            mMaxAdvSets = 1;
-            mCanSetAdvTxPower = false;
+        else
             logw(" Vendor test command errored out (0x%02x) - will use normal advertising\n", ret);
-        }
     }
     else {
         mMaxAdvSets = 0;
