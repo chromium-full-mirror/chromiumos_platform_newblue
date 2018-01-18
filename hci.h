@@ -153,9 +153,6 @@ bool hciInfoAclBufSizeLe(uint16_t *bufSz, uint16_t *bufNum); //false if no LE su
 void hciGetLocalAddress(uint8_t *addr);
 
 /* misc api. False on error, true if expect callback */
-bool hciSetAdvertiseEnable(bool on, hciOpDoneCbk cbkDone, void *cbkData);
-bool hciSetAdvData(const uint8_t *data, uint8_t dlen, hciOpDoneCbk cbkDone, void *cbkData); /* EIR for LE adv */
-bool hciSetRspData(const uint8_t *data, uint8_t dlen, hciOpDoneCbk cbkDone, void *cbkData); /* EIR for LE rsp */
 uniq_t hciDiscoverLeStart(hciDeviceDiscoveredLeCbk cbk, void *cbkData, bool active, bool useRandomAddr);
 bool hciDiscoverLeStop(uniq_t handle);
 
@@ -180,8 +177,6 @@ bool hciUpdateLeParams(hci_conn_t aclConn, uint16_t minInt, uint16_t maxInt, uin
 bool hciDemandEncr(hci_conn_t aclConn, bool demandMitmSafe);
 /* LE connection info */
 bool hciLeConnGetInfo(hci_conn_t aclConn, bool *masterP, uint64_t *peerFtrsP, uint16_t *intP, uint16_t *latP, uint16_t *toP, uint8_t *mcaP);
-/* LE adv */
-bool hciLeSetAdvParams(uint16_t advIntervalMin, uint16_t advIntervalMax, uint8_t advType, uint8_t ownAddressType, uint8_t directRandomAddress, const uint8_t *directAddr, uint8_t advChannelMap, uint8_t advFilterPolicy);
 
 /* misc */
 void hciInquiryUpdatePersistDeviceDb(const struct bt_addr *addr, const uint32_t *devClsP, const void *eir, uint8_t eirLen);

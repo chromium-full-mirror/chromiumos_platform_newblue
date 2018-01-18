@@ -59,15 +59,6 @@ static void testHciScoRxCbk(hci_conn_t aclConn, const void *data, uint8_t len, u
    logi("TEST SCO RX %ub, loss: %s\n", len, lossAmtStr[lossAmount]);
 }
 
-static void opDoneCbk(void *cbkData, uint8_t status)
-{
-    sem_t *sem = (sem_t *)cbkData;
-
-    gStatus = status;
-    logi("status=%d\n", status);
-    sem_post(sem);
-}
-
 static void leDiscoveryCbk(void *cbkData, const struct bt_addr *addr, int8_t rssi, uint8_t replyType, const void *eir, uint8_t eirLen)
 {
     struct LeDiscDev **leDevicesP = (struct LeDiscDev**)cbkData, *t;
@@ -351,6 +342,7 @@ int main(int argc, char** argv)
     static const uint8_t mac[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
     const bool vTrue = true;
     const bool vFalse = false;
+    hci_adv_set_t advSet;
     unsigned i;
     int svc;
     sem_t sem;
@@ -454,17 +446,21 @@ int main(int argc, char** argv)
     gattBuiltinSetPreferredConnParamsWhenSlave(20, 30, 40, 400);
     gattBuiltinSetAppearance(GAP_APPEAR_GENERIC_WATCH);
 
-    // Set advertising parameters.
-    uint8_t peerAddress[BT_MAC_LEN] = {0x00};
-    if (!hciLeSetAdvParams(0x0020,
-                           0x0100,
-                           HCI_ADV_TYPE_ADV_IND,
-                           HCI_ADV_OWN_ADDR_TYPE_PUBLIC,
-                           HCI_ADV_OWN_ADDR_TYPE_PUBLIC,
-                           peerAddress,
-                           HCI_ADV_CHAN_MAP_USE_CHAN_37 | HCI_ADV_CHAN_MAP_USE_CHAN_38 | HCI_ADV_CHAN_MAP_USE_CHAN_39,
-                           HCI_ADV_FILTER_POL_SCAN_ALL_CONNECT_ALL))
-        loge("Failed to set LE advertising params\n");
+    // advertise
+    advSet = hciAdvSetAllocate();
+    if (!advSet)
+        loge("Failed to allocate an adv set\n");
+
+    if (!hciAdvSetSetAdvParams(advSet,
+				0x0020,
+				0x0100,
+				HCI_ADV_TYPE_ADV_IND,
+				HCI_ADV_OWN_ADDR_TYPE_PUBLIC,
+				NULL,
+				HCI_ADV_CHAN_MAP_USE_CHAN_37 | HCI_ADV_CHAN_MAP_USE_CHAN_38 | HCI_ADV_CHAN_MAP_USE_CHAN_39,
+				HCI_ADV_FILTER_POL_SCAN_ALL_CONNECT_ALL,
+				127 /* max power ever! */))
+        loge("Failed to set LE adv set params\n");
 
     static const uint8_t data[] = {
 		2, HCI_EIR_TYPE_FLAGS, 2, /* flags - general discoverable */
@@ -472,19 +468,13 @@ int main(int argc, char** argv)
                 3, HCI_EIR_TYPE_INCOMPL_LIST_UUID16, 0x05, 0x18, /* incomplete uuid list - {time service} */
                 5, HCI_EIR_FLAVE_CONN_INTS, 0x10, 0x00, 0xff, 0x00, /* relatively large range of relatively large connection intervals accepted */
     };
-    if (!hciSetAdvData(data, sizeof(data), opDoneCbk, &sem))
+    if (!hciAdvSetConfigureData(advSet, false, data, sizeof(data)))
         loge("Failed to set LE adv data\n");
-    r_sem_wait(&sem);
-    if(gStatus)
-        loge("Failed to set adv data. Sta = %d\n", gStatus);
 
-
-    logi("enabling LE adv\n");
-    if (!hciSetAdvertiseEnable(true, opDoneCbk, &sem))
+    logi("Enabling LE adv now\n");
+    if (!hciAdvSetEnable(advSet))
         loge("Failed to try to enable advertising\n");
-    r_sem_wait(&sem);
-    if(gStatus)
-        loge("Failed to enable advertising. Sta = %d\n", gStatus);
+
 
     logi("waiting...press a key\n");
     getchar();
