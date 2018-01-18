@@ -189,6 +189,7 @@ bool hciAdvSetFree(hci_adv_set_t set);
 /* local copies are made for data */
 bool hciAdvSetConfigureData(hci_adv_set_t set, bool scanRsp, const uint8_t *data, uint32_t len);
 bool hciAdvSetSetAdvParams(hci_adv_set_t set, uint16_t advIntervalMin, uint16_t advIntervalMax, uint8_t advType, uint8_t ownAddressType, struct bt_addr *directAddr, uint8_t advChannelMap, uint8_t advFilterPolicy, int8_t advDesiredTxPowerLevel);
+bool hciAdvSetOwnRandomAddr(hci_adv_set_t set, struct bt_addr *ownRandomAddr);
 bool hciAdvSetEnable(hci_adv_set_t set);
 bool hciAdvSetDisable(hci_adv_set_t set);
 bool hciAdvSetGetCurTxPowerLevel(hci_adv_set_t set, int8_t *advTxPowerLevelP);

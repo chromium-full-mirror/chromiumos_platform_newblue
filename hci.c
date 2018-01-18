@@ -256,6 +256,7 @@ struct hciAdvSet {
     uint16_t           intervalMax;
     uint8_t            advType;
     uint8_t            ownAddressType;
+    struct bt_addr     ownRandomAddr; //only used if random addr selected
     struct bt_addr     directAddr;
     uint8_t            channelMap;
     uint8_t            filterPolicy;
@@ -2177,6 +2178,13 @@ static bool hciAdvSetEnableDisableMethodBT4(struct hciAdvSet *set, bool enable)
         logw("Cannot enable adv 0x"HCI_ADV_SET_FMT"x because SetAdvParams command failed: %02X\n", HCI_ADV_SET_CONV(set->handle), ret);
         return false;
     }
+    if (set->ownAddressType == HCI_ADV_OWN_ADDR_TYPE_RANDOM || set->ownAddressType == HCI_ADV_OWN_ADDR_TYPE_AUTO_RESOLV_ELSE_RANDOM) {
+        ret = hciLeSetRandomAddressSync(set->ownRandomAddr.addr);
+        if (ret) {
+            logw("Cannot enable adv 0x"HCI_ADV_SET_FMT"x because SetRandomAddr command failed: %02X\n", HCI_ADV_SET_CONV(set->handle), ret);
+            return false;
+        }
+    }
     ret = hciLeSetAdvEnableSync(true);
     if (ret) {
         logw("Cannot enable adv 0x"HCI_ADV_SET_FMT"x because SetAdvEnable command failed: %02X\n", HCI_ADV_SET_CONV(set->handle), ret);
@@ -2548,7 +2556,8 @@ hci_adv_set_t hciAdvSetAllocate(void)
         return 0;
 
     set->handle = handle = uniqGetNext();
-    set->directAddr.type = BT_ADDR_TYPE_EDR; //definitely not valid for adv
+    set->ownRandomAddr.type = BT_ADDR_TYPE_EDR; //definitely not valid for adv
+    set->directAddr.type = BT_ADDR_TYPE_EDR;    //definitely not valid for adv
     pthread_mutex_lock(&mAdvSetsLock);
     set->next = mAdvSets;
     if (mAdvSets)
@@ -2638,6 +2647,37 @@ bool hciAdvSetConfigureData(hci_adv_set_t handle, bool scanRsp, const uint8_t *d
             *lenP = len;
             ret = true;
         }
+    }
+    pthread_mutex_unlock(&mAdvSetsLock);
+
+    return ret;
+}
+
+/*
+ * FUNCTION: hciAdvSetOwnRandomAddr
+ * USE:      Configure an advertising set's random adress. Set must not be enabled!
+ * PARAMS:   handle - the handle to this set
+ *           ownRandomAddr - the random address to use when random address requested for advertising
+ * RETURN:   success
+ * NOTES:    this does not in any way touch hardware
+ */
+bool hciAdvSetOwnRandomAddr(hci_adv_set_t handle, struct bt_addr *ownRandomAddr)
+{
+    struct hciAdvSet *set;
+    bool ret = false;
+
+    pthread_mutex_lock(&mAdvSetsLock);
+    set = hciAdvSetFindByHandle(handle);
+    if (!set)
+        logw("Set handle 0x"HCI_ADV_SET_FMT"x not found\n", HCI_ADV_SET_CONV(handle));
+    else if (set->hwEnabled)
+        logw("Set 0x"HCI_ADV_SET_FMT"x is enabled - cannot edit it\n", HCI_ADV_SET_CONV(handle));
+    else if (ownRandomAddr->type != BT_ADDR_TYPE_LE_RANDOM)
+        logw("Set 0x"HCI_ADV_SET_FMT"x random address cannot be set - provided addr is nto random\n", HCI_ADV_SET_CONV(handle));
+    else {
+
+        set->ownRandomAddr = *ownRandomAddr;
+        ret = true;
     }
     pthread_mutex_unlock(&mAdvSetsLock);
 
@@ -2773,6 +2813,10 @@ bool hciAdvSetEnable(hci_adv_set_t handle)
         }
         if (set->filterPolicy != HCI_ADV_FILTER_POL_SCAN_ALL_CONNECT_ALL && set->filterPolicy != HCI_ADV_FILTER_POL_SCAN_LIST_CONNECT_ALL && set->filterPolicy != HCI_ADV_FILTER_POL_SCAN_ALL_CONNECT_LIST && set->filterPolicy != HCI_ADV_FILTER_POL_SCAN_LIST_CONNECT_LIST) {
             logw("Cannot enable adv set 0x"HCI_ADV_SET_FMT"x since it has invalid filter policy.\n", HCI_ADV_SET_CONV(handle));
+            ret = false;
+        }
+        if ((set->ownAddressType == HCI_ADV_OWN_ADDR_TYPE_RANDOM || set->ownAddressType == HCI_ADV_OWN_ADDR_TYPE_AUTO_RESOLV_ELSE_RANDOM) && set->ownRandomAddr.type != BT_ADDR_TYPE_LE_RANDOM) {
+            logw("Cannot enable adv set 0x"HCI_ADV_SET_FMT"x since it has no valid random address and might need it.\n", HCI_ADV_SET_CONV(handle));
             ret = false;
         }
 

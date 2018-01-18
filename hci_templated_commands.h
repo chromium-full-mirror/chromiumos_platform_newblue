@@ -144,6 +144,17 @@ HCI_SIMPLY_SYNC_WRITE(LeSetAdvParams, (uint16_t advIntervalMin, uint16_t advInte
 HCI_SIMPLY_SYNC_END
 
 /*
+ * FUNCTION: hciLeSetRandomAddressSync
+ * USE:      set random address
+ * PARAMS:   mac - the address to use
+ */
+HCI_SIMPLY_SYNC_WRITE(LeSetRandomAddress, (uint8_t *mac), HCI_OGF_LE, HCI_CMD_LE_Set_Random_Address)
+    REQUIRE_VERSION(HCI_VERSION_4_0);
+    REQUIRE_FEATURE(0, HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER);
+    HCI_COPY_IN_MAC(mac);
+HCI_SIMPLY_SYNC_END
+
+/*
  * FUNCTION: hciSetEventMaskSync
  * USE:      Set event mask
  * PARAMS:   mask - the wanted mask
