@@ -2231,11 +2231,11 @@ struct hciCmplLeSetAdvData {
 } __packed;
 
 #define HCI_CMD_LE_Set_Scan_Response_Data                        0x0009 /* complete */
-struct hciSetScanResponseData {
+struct hciLeSetScanResponseData {
     uint8_t scanRspDataLen;
     uint8_t scanRspData[31];
 } __packed;
-struct hciCmplSetScanResponseData {
+struct hciCmplLeSetScanResponseData {
     uint8_t status;
 } __packed;
 

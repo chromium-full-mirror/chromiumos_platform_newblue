@@ -396,6 +396,43 @@ HCI_SIMPLY_SYNC_READ_NOCMDPARAMS(LeReadLocalSupportedFeatures, (struct hciCmplLe
 HCI_SIMPLY_SYNC_END
 
 /*
+ * FUNCTION: hciLeSetAdvEnableSync
+ * USE:      Enable or disable advertising
+ * PARAMS:   advOn - is advertising on?
+ */
+HCI_SIMPLY_SYNC_WRITE(LeSetAdvEnable, (bool advOn), HCI_OGF_LE, HCI_CMD_LE_Set_Advertise_Enable)
+    REQUIRE_VERSION(HCI_VERSION_4_0)
+    REQUIRE_FEATURE(0, HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER);
+    HCI_COPY_IN_BOOL(advOn);
+HCI_SIMPLY_SYNC_END
+
+/*
+ * FUNCTION: hciLeSetAdvDataSync
+ * USE:      Set advertising data
+ * PARAMS:   advDataLen - the length of the data
+ *           advData - the data itself
+ */
+HCI_SIMPLY_SYNC_WRITE(LeSetAdvData, (uint8_t advDataLen, const uint8_t *advData), HCI_OGF_LE, HCI_CMD_LE_Set_Advertising_Data)
+    REQUIRE_VERSION(HCI_VERSION_4_0)
+    REQUIRE_FEATURE(0, HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER);
+    HCI_COPY_IN_U8(advDataLen);
+    HCI_COPY_IN_DATA(advData, advDataLen);
+HCI_SIMPLY_SYNC_END
+
+/*
+ * FUNCTION: hciLeSetScanResponseDataSync
+ * USE:      Set scan response data
+ * PARAMS:   scanRspDataLen - the length of the data
+ *           scanRspData - the data itself
+ */
+HCI_SIMPLY_SYNC_WRITE(LeSetScanResponseData, (uint8_t scanRspDataLen, const uint8_t *scanRspData), HCI_OGF_LE, HCI_CMD_LE_Set_Scan_Response_Data)
+    REQUIRE_VERSION(HCI_VERSION_4_0)
+    REQUIRE_FEATURE(0, HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER);
+    HCI_COPY_IN_U8(scanRspDataLen);
+    HCI_COPY_IN_DATA(scanRspData, scanRspDataLen);
+HCI_SIMPLY_SYNC_END
+
+/*
  * FUNCTION: hciRemoteNameRequestCancelSync
  * USE:      Cancel a remote name request
  * PARAMS:   mac - the mac

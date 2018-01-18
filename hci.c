@@ -350,8 +350,7 @@ static void hciConnAclStructDel(struct hciAclConn* conn);
 static bool hciSetupResetEventHandler(bool cmdWaitLockHeld);
 
 /* adv indirection function pointers. Called with mAdvSetsLock held*/
-static bool (*mHciAdvSetEnable)(struct hciAdvSet *set);
-static bool (*mHciAdvSetDisable)(struct hciAdvSet *set);
+static bool (*mHciAdvSetEnable)(struct hciAdvSet *set, bool enable);
 
 
 /* templated commands - they need the above vars hence include here */
@@ -1854,7 +1853,7 @@ bool hciSetAdvData(const uint8_t *data, uint8_t dlen, hciOpDoneCbk cbkDone, void
  */
 bool hciSetRspData(const uint8_t *data, uint8_t dlen, hciOpDoneCbk cbkDone, void *cbkData)
 {
-    struct hciSetScanResponseData cmd;
+    struct hciLeSetScanResponseData cmd;
 
     if (dlen > sizeof(cmd.scanRspData)) {
         loge("Refusing LE rsp setting that is too long\n");
@@ -2217,6 +2216,65 @@ void hciGetLocalAddress(uint8_t *addr)
 }
 
 /*
+ * FUNCTION: hciAdvSetEnableDisableMethodBT4
+ * USE:      Enable or disable an adv set on normal BT4 devices
+ * PARAMS:   set - the set to operate on
+ *           enable - on or off?
+ * RETURN:   success
+ * NOTES:    called with mAdvSetsLock held
+ *           This is one of the few "adv set on/off handlers". This one is used
+ *           when neither the BT5.0 nor the android-vendor methods are available.
+ */
+static bool hciAdvSetEnableDisableMethodBT4(struct hciAdvSet *set, bool enable)
+{
+    struct hciAdvSet *t;
+    int ret;
+
+    if (!enable) { // we only have one set - simply disable it
+
+        if (hciLeSetAdvEnableSync(false)) {
+            logw("Failed to disable BT4 adv\n");
+            return false;
+        }
+        set->hwEnabled = false;
+        return true;
+    }
+
+    //we want to enable: first see if another set is already on
+    for (t = mAdvSets; t; t = t->next) {
+        if (t->hwEnabled) {
+            logw("Cannot enable adv 0x"HCI_ADV_SET_FMT"x because set 0x"HCI_ADV_SET_FMT"x is enabled.\n", HCI_ADV_SET_CONV(set->handle), HCI_ADV_SET_CONV(t->handle));
+            return false;
+        }
+    }
+
+    //we want to enable and no other set is enabled - simply configure the chip and go
+    ret = hciLeSetAdvDataSync(set->advDataLen, set->advData);
+    if (ret) {
+        logw("Cannot enable adv 0x"HCI_ADV_SET_FMT"x because SetAdvData command failed: %02X\n", HCI_ADV_SET_CONV(set->handle), ret);
+        return false;
+    }
+    ret = hciLeSetScanResponseDataSync(set->scanRspDataLen, set->scanRspData);
+    if (ret) {
+        logw("Cannot enable adv 0x"HCI_ADV_SET_FMT"x because SetScanRspData command failed: %02X\n", HCI_ADV_SET_CONV(set->handle), ret);
+        return false;
+    }
+    ret = hciLeSetAdvParamsSync(set->intervalMin, set->intervalMax, set->advType, set->ownAddressType, set->directAddr.type == BT_ADDR_TYPE_LE_RANDOM ? 1 : 0, set->directAddr.addr, set->channelMap, set->filterPolicy);
+    if (ret) {
+        logw("Cannot enable adv 0x"HCI_ADV_SET_FMT"x because SetAdvParams command failed: %02X\n", HCI_ADV_SET_CONV(set->handle), ret);
+        return false;
+    }
+    ret = hciLeSetAdvEnableSync(true);
+    if (ret) {
+        logw("Cannot enable adv 0x"HCI_ADV_SET_FMT"x because SetAdvEnable command failed: %02X\n", HCI_ADV_SET_CONV(set->handle), ret);
+        return false;
+    }
+
+    set->hwEnabled = true;
+    return true;
+}
+
+/*
  * FUNCTION: hciBtStackUp
  * USE:      Brings up the chip in a sane configuration, reads versions, etc
  * PARAMS:   NONE
@@ -2472,6 +2530,7 @@ static bool hciBtStackUp(void)
     /* figure out the multi-adv situation */
     mMaxAdvSets = 1;
     mCanSetAdvTxPower = false;
+    mHciAdvSetEnable = hciAdvSetEnableDisableMethodBT4;
     if (mBtVer >= HCI_VERSION_5_0) {
         struct hciCmplLeReadNumSupportedAdvSets evt;
 
@@ -2768,8 +2827,8 @@ bool hciAdvSetEnable(hci_adv_set_t handle)
         logw("Set handle 0x"HCI_ADV_SET_FMT"x not found\n", HCI_ADV_SET_CONV(handle));
     else if (set->hwEnabled)
         logw("Set 0x"HCI_ADV_SET_FMT"x is enabled - cannot enable it again\n", HCI_ADV_SET_CONV(handle));
-    else if (!mHciAdvSetEnable || !mHciAdvSetDisable)
-        logw("No methods for enable/disable defined for this chip - cannot enable adv set\n");
+    else if (!mHciAdvSetEnable)
+        logw("No method for enable/disable defined for this chip - cannot enable adv set\n");
     else {
 
         ret = true;
@@ -2804,8 +2863,8 @@ bool hciAdvSetEnable(hci_adv_set_t handle)
             ret = false;
         }
 
-        //if all check poass - do the actual ON procedure
-        ret = ret && mHciAdvSetEnable(set);
+        //if all checks pass - do the actual ON procedure
+        ret = ret && mHciAdvSetEnable(set, true);
     }
     pthread_mutex_unlock(&mAdvSetsLock);
 
@@ -2830,10 +2889,10 @@ bool hciAdvSetDisable(hci_adv_set_t handle)
         logw("Set handle 0x"HCI_ADV_SET_FMT"x not found\n", HCI_ADV_SET_CONV(handle));
     else if (!set->hwEnabled)
         logw("Set 0x"HCI_ADV_SET_FMT"x is disabled - cannot disable it again\n", HCI_ADV_SET_CONV(handle));
-    else if (!mHciAdvSetEnable || !mHciAdvSetDisable)
-        logw("No methods for enable/disable defined for this chip - cannot enable adv set\n");
+    else if (!mHciAdvSetEnable)
+        logw("No method for enable/disable defined for this chip - cannot enable adv set\n");
     else
-        ret = mHciAdvSetDisable(set);
+        ret = mHciAdvSetEnable(set, false);
 
     pthread_mutex_unlock(&mAdvSetsLock);
 
