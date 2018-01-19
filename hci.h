@@ -36,6 +36,9 @@
 
 #define HCI_DEV_NAME_LEN        248
 
+//this alsmost always means "max power but i don't care to specify how much exactly"
+#define HCI_ADV_TX_PWR_LVL_DONT_CARE      127
+
 /* eir data types */
 #define HCI_EIR_TYPE_FLAGS                0x01
 #define HCI_EIR_TYPE_INCOMPL_LIST_UUID16  0x02
@@ -189,7 +192,7 @@ bool hciAdvSetFree(hci_adv_set_t set);
 /* local copies are made for data */
 bool hciAdvSetConfigureData(hci_adv_set_t set, bool scanRsp, const uint8_t *data, uint32_t len);
 bool hciAdvSetSetAdvParams(hci_adv_set_t set, uint16_t advIntervalMin, uint16_t advIntervalMax, uint8_t advType, uint8_t ownAddressType, struct bt_addr *directAddr, uint8_t advChannelMap, uint8_t advFilterPolicy, int8_t advDesiredTxPowerLevel);
-bool hciAdvSetOwnRandomAddr(hci_adv_set_t set, struct bt_addr *ownRandomAddr);
+bool hciAdvSetOwnRandomAddr(hci_adv_set_t set, const struct bt_addr *ownRandomAddr);
 bool hciAdvSetEnable(hci_adv_set_t set);
 bool hciAdvSetDisable(hci_adv_set_t set);
 bool hciAdvSetGetCurTxPowerLevel(hci_adv_set_t set, int8_t *advTxPowerLevelP);

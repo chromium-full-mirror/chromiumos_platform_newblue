@@ -340,9 +340,9 @@ out:
 int main(int argc, char** argv)
 {
     static const uint8_t mac[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
+    hci_adv_set_t advSet[3] = {0,};
     const bool vTrue = true;
     const bool vFalse = false;
-    hci_adv_set_t advSet;
     unsigned i;
     int svc;
     sem_t sem;
@@ -447,11 +447,11 @@ int main(int argc, char** argv)
     gattBuiltinSetAppearance(GAP_APPEAR_GENERIC_WATCH);
 
     // advertise
-    advSet = hciAdvSetAllocate();
-    if (!advSet)
+    advSet[0] = hciAdvSetAllocate();
+    if (!advSet[0])
         loge("Failed to allocate an adv set\n");
 
-    if (!hciAdvSetSetAdvParams(advSet,
+    if (!hciAdvSetSetAdvParams(advSet[0],
 				0x0020,
 				0x0100,
 				HCI_ADV_TYPE_ADV_IND,
@@ -459,7 +459,7 @@ int main(int argc, char** argv)
 				NULL,
 				HCI_ADV_CHAN_MAP_USE_CHAN_37 | HCI_ADV_CHAN_MAP_USE_CHAN_38 | HCI_ADV_CHAN_MAP_USE_CHAN_39,
 				HCI_ADV_FILTER_POL_SCAN_ALL_CONNECT_ALL,
-				127 /* max power ever! */))
+				100 /* strong */))
         loge("Failed to set LE adv set params\n");
 
     static const uint8_t data[] = {
@@ -468,16 +468,77 @@ int main(int argc, char** argv)
                 3, HCI_EIR_TYPE_INCOMPL_LIST_UUID16, 0x05, 0x18, /* incomplete uuid list - {time service} */
                 5, HCI_EIR_FLAVE_CONN_INTS, 0x10, 0x00, 0xff, 0x00, /* relatively large range of relatively large connection intervals accepted */
     };
-    if (!hciAdvSetConfigureData(advSet, false, data, sizeof(data)))
+    if (!hciAdvSetConfigureData(advSet[0], false, data, sizeof(data)))
         loge("Failed to set LE adv data\n");
 
     logi("Enabling LE adv now\n");
-    if (!hciAdvSetEnable(advSet))
+    if (!hciAdvSetEnable(advSet[0]))
         loge("Failed to try to enable advertising\n");
 
 
+    //now let's try some multi-adv
+    for (i = 1; i < sizeof(advSet) / sizeof(*advSet); i++) {
+        hci_adv_set_t set;
+        static const uint8_t advData[] = {
+		2, HCI_EIR_TYPE_FLAGS, 2, /* flags - general discoverable */
+        };
+        uint8_t scanData[] = {
+		6, HCI_EIR_TYPE_FULL_NAME, 'N', 'B', 't', '1', '0' + i, /* name - "NBt10" and up */
+        };
+        struct bt_addr myRandomMac = { .type = BT_ADDR_TYPE_LE_RANDOM, .addr = {0xDD, 0x00, 0xAA, 0x00, 0xBB, 0xBB + i}};
+        advSet[i] = set = hciAdvSetAllocate();
+        if (!set) {
+            loge("Failed to create multi set %u\n", i);
+            break;
+        }
+        if (!hciAdvSetSetAdvParams(set,
+				0x0040,
+				0x0100,
+				HCI_ADV_TYPE_ADV_IND,
+				HCI_ADV_OWN_ADDR_TYPE_RANDOM,
+				NULL,
+				HCI_ADV_CHAN_MAP_USE_CHAN_37 | HCI_ADV_CHAN_MAP_USE_CHAN_38 | HCI_ADV_CHAN_MAP_USE_CHAN_39,
+				HCI_ADV_FILTER_POL_SCAN_ALL_CONNECT_ALL,
+				(i & 1) ? HCI_ADV_TX_PWR_LVL_DONT_CARE : -10))
+            loge("Failed to set LE adv set %u params\n", i);
+
+        if (!hciAdvSetConfigureData(set, false, advData, sizeof(advData)))
+            loge("Failed to set LE adv set %u adv data\n", i);
+
+        if (!hciAdvSetConfigureData(set, true, scanData, sizeof(scanData)))
+            loge("Failed to set LE adv set %u scan data\n", i);
+
+        if (!hciAdvSetOwnRandomAddr(set, &myRandomMac))
+            loge("Failed to set LE adv set %u random addr\n", i);
+
+        if (!hciAdvSetEnable(set))
+            loge("Failed to try to enable adv set %u\n", i);
+    }
+
+    //print tx power for each adv in a set
+    for (i = 0; i < sizeof(advSet) / sizeof(*advSet); i++) {
+        int8_t power;
+
+        if (!advSet[i])
+            continue;
+        if (!hciAdvSetGetCurTxPowerLevel(advSet[i], &power))
+            loge("Failed to get adv power for set %u\n", i);
+        else
+            logi(" adv set %u is at %d dBm\n", i, power);
+    }
+
     logi("waiting...press a key\n");
     getchar();
+
+    //disable and free adv sets
+    for (i = 0; i < sizeof(advSet) / sizeof(*advSet); i++) {
+        if (!advSet[i])
+            continue;
+        if (!hciAdvSetDisable(advSet[i]))
+            loge("Failed to disable adv %u\n", i);
+        if (!hciAdvSetFree(advSet[i]))
+            loge("Failed to free adv %u\n", i);
+    }
 
     stopTimeService = true;
     if (pthread_join(setTimeThread, NULL))

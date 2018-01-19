@@ -2130,6 +2130,163 @@ void hciGetLocalAddress(uint8_t *addr)
 }
 
 /*
+ * FUNCTION: hciAdvSetEnableDisableMethodAndroidVendorCmds
+ * USE:      Enable or disable an adv set on BT4 chips that support android-vendor BT extension
+ * PARAMS:   set - the set to operate on
+ *           enable - on or off?
+ * RETURN:   success
+ * NOTES:    called with mAdvSetsLock held
+ *           This is one of the few "adv set on/off handlers". This one is used
+ *           when the android-vendor methods are available and BT 5.0 is not
+ */
+static bool hciAdvSetEnableDisableMethodAndroidVendorCmds(struct hciAdvSet *set, bool enable)
+{
+    struct hciCmplLeReadAdvChannelTxPower pwrLvlEvt;
+    int8_t desiredPowerLvl = set->powerLevel;
+    struct hciAdvSet *t;
+    bool *usedSets;
+    uint16_t i;
+    int ret;
+
+    /*
+     * Some explanation here: Android Vendor Extensions for BT 4 provide for multi-adv,
+     * but caveats exist. If the chip says it supports X slots, in reality it supports
+     * X - 1 slots with this custom API (indexed at 1) and the default 4.0 API (slot 0).
+     * "but," you might say - "default API has no TX power control!" Yes. Slot 0 has no
+     * tx power control. this makes our logic here a bit more complex since we can at
+     * times enable an adv if it has no power request, but cannot if it does. We could
+     * try to be clever and relocate an existing adv to slot 0, but really it is not
+     * worth the trouble. Android, for example, will entirely ignore slot 0. thus we
+     * are already doing better. This code will try to allocate slot 0 to an adv if it
+     * has no TX power requirement though, through the nature of how it is written. Any
+     * further cleverness is IMHO not worth it. So, what should you take away from all
+     * this? If you do not care for setting TX power, use HCI_ADV_TX_PWR_LVL_DONT_CARE.
+     * Usually this *WILL* be max TX power (likely what you want anyways) and will not
+     * use up one of the desirable configurable-power slots if slot 0 is available.
+     */
+
+    if (!enable) { // disable the set we do not need
+
+        if (hciVendorLeMultiAdvSetAdvEnableSync(false, set->hwSetNum)) {
+            logw("Failed to disable AndroidVendorExt adv %u\n", set->hwSetNum);
+            return false;
+        }
+        set->hwEnabled = false;
+        return true;
+    }
+
+    //sanity checks specific to this method
+    if (desiredPowerLvl != HCI_ADV_TX_PWR_LVL_DONT_CARE) {
+        if (desiredPowerLvl > 20) {
+            logi("AndroidVendorExtensions adv does not support adv power level over 20dBm - cutting set 0x"HCI_ADV_SET_FMT"x down to 20dBm from %ddBm\n", HCI_ADV_SET_CONV(set->handle), set->powerLevel);
+            desiredPowerLvl = 20;
+        }
+        if (desiredPowerLvl < -70) {
+            logi("AndroidVendorExtensions adv does not support adv power level below -70dBm - raising set 0x"HCI_ADV_SET_FMT"x up to -70dBm from %ddBm\n", HCI_ADV_SET_CONV(set->handle), set->powerLevel);
+            desiredPowerLvl = -70;
+        }
+    }
+
+    //we want to enable: first find a free slot (if any)
+    usedSets = alloca(mMaxAdvSets);
+    memset(usedSets, 0, mMaxAdvSets);
+    for (t = mAdvSets; t; t = t->next) {
+        if (t->hwEnabled) {
+            if (usedSets[t->hwSetNum])
+                logw("It seems that HW adv set %u is used by two advs... this is bad\n", t->hwSetNum);
+            else
+                usedSets[t->hwSetNum] = true;
+        }
+    }
+    for (i = 0; i < mMaxAdvSets; i++) {
+        //skip slot 0 if we have a power request
+        if (!i && desiredPowerLvl != HCI_ADV_TX_PWR_LVL_DONT_CARE)
+            continue;
+        if (!usedSets[i])
+            break;
+    }
+    if (i == mMaxAdvSets) {
+        logw("Cannot enable adv 0x"HCI_ADV_SET_FMT"x because there are no free slots\n", HCI_ADV_SET_CONV(set->handle));
+        return false;
+    }
+    logd("picked slot %u for adv set 0x"HCI_ADV_SET_FMT"x\n", i, HCI_ADV_SET_CONV(set->handle));
+
+    //if no power level was requested, use max
+    if (desiredPowerLvl == HCI_ADV_TX_PWR_LVL_DONT_CARE)
+        desiredPowerLvl = 20;
+
+    //configure the slot: number
+    set->hwSetNum = i;
+
+    //configure the slot: adv data
+    if (set->hwSetNum)
+        ret = hciVendorLeMultiAdvSetAdvDataSync(set->advDataLen, set->advData, set->hwSetNum);
+    else
+        ret = hciLeSetAdvDataSync(set->advDataLen, set->advData);
+    if (ret) {
+        logw("Cannot enable adv 0x"HCI_ADV_SET_FMT"x on channel %u because VendorSetAdvData command failed: %02X\n", HCI_ADV_SET_CONV(set->handle), set->hwSetNum, ret);
+        return false;
+    }
+
+    //configure the slot: scan rsp data
+    if (set->hwSetNum)
+        ret = hciVendorLeMultiAdvSetScanRspDataSync(set->scanRspDataLen, set->scanRspData, set->hwSetNum);
+    else
+        ret = hciLeSetScanResponseDataSync(set->scanRspDataLen, set->scanRspData);
+    if (ret) {
+        logw("Cannot enable adv 0x"HCI_ADV_SET_FMT"x on channel %u because VendorSetScanRspData command failed: %02X\n", HCI_ADV_SET_CONV(set->handle), set->hwSetNum, ret);
+        return false;
+    }
+
+    //configure the slot: adv params
+    if (set->hwSetNum)
+        ret = hciVendorLeMultiAdvSetAdvParamsSync(set->intervalMin, set->intervalMax, set->advType, set->ownAddressType, set->ownRandomAddr.addr, set->directAddr.type == BT_ADDR_TYPE_LE_RANDOM ? 1 : 0, set->directAddr.addr, set->channelMap, set->filterPolicy, set->hwSetNum, desiredPowerLvl);
+    else
+        ret = hciLeSetAdvParamsSync(set->intervalMin, set->intervalMax, set->advType, set->ownAddressType, set->directAddr.type == BT_ADDR_TYPE_LE_RANDOM ? 1 : 0, set->directAddr.addr, set->channelMap, set->filterPolicy);
+    if (ret) {
+        logw("Cannot enable adv 0x"HCI_ADV_SET_FMT"x on channel %u because VendorSetAdvParams command failed: %02X\n", HCI_ADV_SET_CONV(set->handle), set->hwSetNum, ret);
+        return false;
+    }
+
+    //configure the slot: own random address (if needed)
+    if (set->ownAddressType == HCI_ADV_OWN_ADDR_TYPE_RANDOM || set->ownAddressType == HCI_ADV_OWN_ADDR_TYPE_AUTO_RESOLV_ELSE_RANDOM) {
+        if (set->hwSetNum)
+            ret = hciVendorLeMultiAdvSetRandomAddrSync(set->ownRandomAddr.addr, set->hwSetNum);
+        else
+            ret = hciLeSetRandomAddressSync(set->ownRandomAddr.addr);
+        if (ret) {
+            logw("Cannot enable adv 0x"HCI_ADV_SET_FMT"x on channel %u because VendorSetRandomAddr command failed: %02X\n", HCI_ADV_SET_CONV(set->handle), set->hwSetNum, ret);
+            return false;
+        }
+    }
+
+    //configure the slot: record/read *actual* TX power level
+    if (set->hwSetNum)
+        set->hwPowerLevel = desiredPowerLvl;
+    else {
+        ret = hciLeReadAdvChannelTxPowerSync(&pwrLvlEvt);
+        if (ret) {
+            logw("Cannot enable adv 0x"HCI_ADV_SET_FMT"x on channel %u because GetTxPwrLvl command failed: %02X\n", HCI_ADV_SET_CONV(set->handle), set->hwSetNum, ret);
+            return false;
+        }
+        set->hwPowerLevel = pwrLvlEvt.txPower;
+    }
+
+    //enable the slot
+    if (set->hwSetNum)
+        ret = hciVendorLeMultiAdvSetAdvEnableSync(true, set->hwSetNum);
+    else
+        ret = hciLeSetAdvEnableSync(true);
+    if (ret) {
+        logw("Cannot enable adv 0x"HCI_ADV_SET_FMT"x on channel %u because VendorSetAdvEnable command failed: %02X\n", HCI_ADV_SET_CONV(set->handle), set->hwSetNum, ret);
+        return false;
+    }
+
+    set->hwEnabled = true;
+    return true;
+}
+
+/*
  * FUNCTION: hciAdvSetEnableDisableMethodBT4
  * USE:      Enable or disable an adv set on normal BT4 devices
  * PARAMS:   set - the set to operate on
@@ -2137,10 +2294,11 @@ void hciGetLocalAddress(uint8_t *addr)
  * RETURN:   success
  * NOTES:    called with mAdvSetsLock held
  *           This is one of the few "adv set on/off handlers". This one is used
- *           when neither the BT5.0 nor the android-vendor methods are available.
+ *           when neither the BT 5.0 nor the android-vendor methods are available.
  */
 static bool hciAdvSetEnableDisableMethodBT4(struct hciAdvSet *set, bool enable)
 {
+    struct hciCmplLeReadAdvChannelTxPower pwrLvlEvt;
     struct hciAdvSet *t;
     int ret;
 
@@ -2185,6 +2343,12 @@ static bool hciAdvSetEnableDisableMethodBT4(struct hciAdvSet *set, bool enable)
             return false;
         }
     }
+    ret = hciLeReadAdvChannelTxPowerSync(&pwrLvlEvt);
+    if (ret) {
+        logw("Cannot enable adv 0x"HCI_ADV_SET_FMT"x because GetTxPwrLvl command failed: %02X\n", HCI_ADV_SET_CONV(set->handle), ret);
+        return false;
+    }
+    set->hwPowerLevel = pwrLvlEvt.txPower;
     ret = hciLeSetAdvEnableSync(true);
     if (ret) {
         logw("Cannot enable adv 0x"HCI_ADV_SET_FMT"x because SetAdvEnable command failed: %02X\n", HCI_ADV_SET_CONV(set->handle), ret);
@@ -2474,6 +2638,7 @@ static bool hciBtStackUp(void)
         if (!ret) {
             mMaxAdvSets = evt.maxAdvtInstances;
             mCanSetAdvTxPower = true;
+            mHciAdvSetEnable = hciAdvSetEnableDisableMethodAndroidVendorCmds;
             logi(" Controller supports up to %u adv sets\n", mMaxAdvSets);
         }
         else if (ret == HCI_ERR_Unknown_HCI_Command)
@@ -2661,7 +2826,7 @@ bool hciAdvSetConfigureData(hci_adv_set_t handle, bool scanRsp, const uint8_t *d
  * RETURN:   success
  * NOTES:    this does not in any way touch hardware
  */
-bool hciAdvSetOwnRandomAddr(hci_adv_set_t handle, struct bt_addr *ownRandomAddr)
+bool hciAdvSetOwnRandomAddr(hci_adv_set_t handle, const struct bt_addr *ownRandomAddr)
 {
     struct hciAdvSet *set;
     bool ret = false;

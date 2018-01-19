@@ -118,6 +118,18 @@
                                                    return -1;                                                        \
                                                return (unsigned)utilGetLE8(&evt->status);                            \
                                            }
+
+
+/*
+ * FUNCTION: hciLeReadAdvChannelTxPowerSync
+ * USE:      read default adv channel tx power
+ * PARAMS:   evt - the returned event
+ */
+HCI_SIMPLY_SYNC_READ_NOCMDPARAMS(LeReadAdvChannelTxPower, (struct hciCmplLeReadAdvChannelTxPower *evt), HCI_OGF_LE, HCI_CMD_LE_Read_Adv_Channel_TX_Power)
+    REQUIRE_VERSION(HCI_VERSION_4_0);
+    REQUIRE_FEATURE(0, HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER);
+HCI_SIMPLY_SYNC_END
+
 /*
  * FUNCTION: hciLeSetAdvParamsSync
  * USE:      set adv params
@@ -152,6 +164,100 @@ HCI_SIMPLY_SYNC_WRITE(LeSetRandomAddress, (uint8_t *mac), HCI_OGF_LE, HCI_CMD_LE
     REQUIRE_VERSION(HCI_VERSION_4_0);
     REQUIRE_FEATURE(0, HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER);
     HCI_COPY_IN_MAC(mac);
+HCI_SIMPLY_SYNC_END
+
+/*
+ * FUNCTION: hciVendorLeMultiAdvSetAdvParamsSync
+ * USE:      set adv params for an advertising set
+ * PARAMS:   advIntervalMin - minimum adv interval (in units of 0.625ms)
+ *           advIntervalMax - maximum adv interval (in units of 0.625ms)
+ *           advType - adv type: HCI_ADV_TYPE_ADV_*
+ *           ownAddressType - own addr type: HCI_ADV_OWN_ADDR_TYPE_*
+ *           directRandomAddress - set to 1 if direct adv to random addr, else ignored
+ *           directAddr - if direct adv, the mac address of target, else ignored
+ *           advChannelMap - channels to use: bitmask of HCI_ADV_CHAN_MAP_USE_*
+ *           advFilterPolicy - filter policy: HCI_ADV_FILTER_POL_*
+ *           advInstanceIdx - the instance number
+ *           txPower - the desired TX power  (actually an int8_t)
+ * NOTES:    android vendor BT 4.0 extension - additional tests neede to make sure it is usable
+ */
+HCI_SIMPLY_SYNC_WRITE(VendorLeMultiAdvSetAdvParams, (uint16_t advIntervalMin, uint16_t advIntervalMax, uint8_t advType, uint8_t ownAddressType, const uint8_t *ownAddress, uint8_t directRandomAddress, const uint8_t *directAddr, uint8_t advChannelMap, uint8_t advFilterPolicy, uint8_t advInstanceIdx, uint8_t txPower), HCI_OGF_Vendor, HCI_CMD_Vendor_LE_Multi_Adv_Set_Adv_Params)
+    REQUIRE_VERSION(HCI_VERSION_4_0);
+    REQUIRE_FEATURE(0, HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER);
+    cmd->subOcf = HCI_CMD_Vendor_LE_Multi_Adv_Set_Adv_Params_sub_ocf;
+    HCI_COPY_IN_U16(advIntervalMin);
+    HCI_COPY_IN_U16(advIntervalMax);
+    HCI_COPY_IN_U8(advType);
+    HCI_COPY_IN_U8(ownAddressType);
+    HCI_COPY_IN_MAC(ownAddress);
+    HCI_COPY_IN_U8(directRandomAddress);
+    HCI_COPY_IN_MAC(directAddr);
+    HCI_COPY_IN_U8(advChannelMap);
+    HCI_COPY_IN_U8(advFilterPolicy);
+    HCI_COPY_IN_U8(advInstanceIdx);
+    HCI_COPY_IN_U8(txPower);
+HCI_SIMPLY_SYNC_END
+
+/*
+ * FUNCTION: hciVendorLeMultiAdvSetAdvDataSync
+ * USE:      Set advertising data for an advertising set
+ * PARAMS:   advDataLen - the length of the data
+ *           advData - the data itself
+ *           advInstanceIdx - the instance number
+ * NOTES:    android vendor BT 4.0 extension - additional tests neede to make sure it is usable
+ */
+HCI_SIMPLY_SYNC_WRITE(VendorLeMultiAdvSetAdvData, (uint8_t advDataLen, const uint8_t *advData, uint8_t advInstanceIdx), HCI_OGF_Vendor, HCI_CMD_Vendor_LE_Multi_Adv_Set_Adv_Data)
+    REQUIRE_VERSION(HCI_VERSION_4_0)
+    REQUIRE_FEATURE(0, HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER);
+    cmd->subOcf = HCI_CMD_Vendor_LE_Multi_Adv_Set_Adv_Data_sub_ocf;
+    HCI_COPY_IN_U8(advDataLen);
+    HCI_COPY_IN_DATA(advData, advDataLen);
+    HCI_COPY_IN_U8(advInstanceIdx);
+HCI_SIMPLY_SYNC_END
+
+/*
+ * FUNCTION: hciVendorLeMultiAdvSetScanRspDataSync
+ * USE:      Set scan response data for an advertising set
+ * PARAMS:   scanRspDataLen - the length of the data
+ *           scanRspData - the data itself
+ *           advInstanceIdx - the instance number
+ * NOTES:    android vendor BT 4.0 extension - additional tests neede to make sure it is usable
+ */
+HCI_SIMPLY_SYNC_WRITE(VendorLeMultiAdvSetScanRspData, (uint8_t scanRspDataLen, const uint8_t *scanRspData, uint8_t advInstanceIdx), HCI_OGF_Vendor, HCI_CMD_Vendor_LE_Multi_Adv_Set_Scan_Rsp_Data)
+    REQUIRE_VERSION(HCI_VERSION_4_0)
+    REQUIRE_FEATURE(0, HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER);
+    cmd->subOcf = HCI_CMD_Vendor_LE_Multi_Adv_Set_Scan_Rsp_Data_sub_ocf;
+    HCI_COPY_IN_U8(scanRspDataLen);
+    HCI_COPY_IN_DATA(scanRspData, scanRspDataLen);
+    HCI_COPY_IN_U8(advInstanceIdx);
+HCI_SIMPLY_SYNC_END
+
+/*
+ * FUNCTION: hciVendorLeMultiAdvSetRandomAddrSync
+ * USE:      set random address
+ * PARAMS:   mac - the address to use
+ *           advInstanceIdx - the instance number
+ * NOTES:    android vendor BT 4.0 extension - additional tests neede to make sure it is usable
+ */
+HCI_SIMPLY_SYNC_WRITE(VendorLeMultiAdvSetRandomAddr, (uint8_t *mac, uint8_t advInstanceIdx), HCI_OGF_Vendor, HCI_CMD_Vendor_LE_Multi_Adv_Set_Random_Addr)
+    REQUIRE_VERSION(HCI_VERSION_4_0);
+    REQUIRE_FEATURE(0, HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER);
+    cmd->subOcf = HCI_CMD_Vendor_LE_Multi_Adv_Set_Random_Addr_sub_ocf;
+    HCI_COPY_IN_MAC(mac);
+    HCI_COPY_IN_U8(advInstanceIdx);
+HCI_SIMPLY_SYNC_END
+
+/*
+ * FUNCTION: hciVendorLeMultiAdvSetAdvEnableSync
+ * USE:      Enable/Disable an advertising set
+ * PARAMS:   enabled - on?
+ *           advInstanceIdx - the instance number
+ * NOTES:    android vendor BT 4.0 extension - additional tests neede to make sure it is usable
+ */
+HCI_SIMPLY_SYNC_WRITE(VendorLeMultiAdvSetAdvEnable, (bool enabled, uint8_t advInstanceIdx), HCI_OGF_Vendor, HCI_CMD_Vendor_LE_Multi_Adv_Set_Adv_Enable)
+    cmd->subOcf = HCI_CMD_Vendor_LE_Multi_Adv_Set_Adv_Enable_sub_ocf;
+    HCI_COPY_IN_BOOL(enabled);
+    HCI_COPY_IN_U8(advInstanceIdx);
 HCI_SIMPLY_SYNC_END
 
 /*

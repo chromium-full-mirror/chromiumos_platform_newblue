@@ -2830,14 +2830,15 @@ struct hciCmplVendorLeGetVendorCapabilities {
     uint8_t isEnergyMeteringSupported;
 } __packed;
 
-#define HCI_CMD_Vendor_LE_Multi_Adv_Set_Adv_Param                0x154 /* complete, note: duplicate OCF, sub-OCF exists */
-#define HCI_CMD_Vendor_LE_Multi_Adv_Set_Adv_Param_sub_ocf        0x01
-struct hciVendorLeMultiAdvSetAdvParam {
+#define HCI_CMD_Vendor_LE_Multi_Adv_Set_Adv_Params               0x154 /* complete, note: duplicate OCF, sub-OCF exists */
+#define HCI_CMD_Vendor_LE_Multi_Adv_Set_Adv_Params_sub_ocf       0x01
+struct hciVendorLeMultiAdvSetAdvParams {
     uint8_t subOcf;
     uint16_t advIntervalMin;
     uint16_t advIntervalMax;
     uint8_t advType;
     uint8_t ownAddressType;
+    uint8_t ownAddress[6];
     uint8_t directRandomAddress;
     uint8_t directAddr[6];
     uint8_t advChannelMap;
@@ -2845,7 +2846,7 @@ struct hciVendorLeMultiAdvSetAdvParam {
     uint8_t advInstanceIdx;
     uint8_t txPower; /* actually a int8_t */
 } __packed;
-struct hciCmplVendorLeMultiAdvSetAdvParam {
+struct hciCmplVendorLeMultiAdvSetAdvParams {
     uint8_t status;
     uint8_t subOcf;
 } __packed;
