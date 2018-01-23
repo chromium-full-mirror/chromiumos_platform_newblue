@@ -1,3 +1,8 @@
+/*
+ * Copyright 2018 The Chromium OS Authors. All rights reserved.
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file.
+ */
 #ifndef _INCLUDED_FROM_HCI_H_
 #error "do not ever include this file anywhere"
 #endif
@@ -571,3 +576,20 @@ HCI_SIMPLY_SYNC_CMD_W_STATUS(Inquiry, (uint32_t lap, uint8_t inqLen, uint8_t num
     HCI_COPY_IN_U8(numResp)
 HCI_SIMPLY_SYNC_END
 
+/*
+ * FUNCTION: hciLeStartEncryption
+ * USE:      Encrypt the connection using the given parameters
+ * PARAMS:   conn - connection handle
+ *           rand - random value
+ *           diversifier - encrypted diversifier
+ *           LTK - 16 bytes long term key
+ */
+HCI_SIMPLY_SYNC_CMD_W_STATUS(LeStartEncryption, (uint16_t conn, uint64_t rand, uint16_t diversifier, const uint8_t *LTK), HCI_OGF_LE, HCI_CMD_LE_Start_Encryption)
+    uint8_t ltkLen = HCI_LE_KEY_LEN;
+    REQUIRE_VERSION(HCI_VERSION_4_0)
+    REQUIRE_FEATURE(0, HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER)
+    HCI_COPY_IN_U16(conn)
+    HCI_COPY_IN_U64(rand)
+    HCI_COPY_IN_U16(diversifier)
+    HCI_COPY_IN_DATA(LTK, ltkLen);
+HCI_SIMPLY_SYNC_END

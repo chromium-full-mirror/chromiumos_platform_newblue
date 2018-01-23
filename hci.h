@@ -16,6 +16,7 @@
 #define HCI_PIN_MAX_LEN         16
 #define HCI_LINK_KEY_LEN        16
 #define HCI_OOB_LEN             16
+#define HCI_LE_KEY_LEN          16
 
 #define HCI_SSP_NUMERIC_INVALID 1000000UL
 #define HCI_SSP_ENTRY_STARTED   0
