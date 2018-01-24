@@ -5079,6 +5079,41 @@ uint8_t l2cApiConnectionlessDataTx(const struct bt_addr *addr, psm_t psm, sg dat
 }
 
 /*
+ * FUNCTION: l2cApiLeEncryptConn
+ * USE:      Encrypt a connection with the given key
+ * PARAMS:   handle - L2CAP connection handle
+ *           rand - random value
+ *           ediv - encrypted diversifier value
+ *           key - LTK or STK applied during encryption
+ * RETURN:
+ * NOTES:
+ */
+bool l2cApiLeEncryptConn(l2c_handle_t handle, uint64_t rand, uint16_t ediv, const uint8_t *key)
+{
+    bool ret = false;
+    struct l2cAclConn *aclConn;
+    struct l2cConn *conn;
+
+    pthread_mutex_lock(&mConnsLock);
+
+    conn = l2cConnFindByHandle(handle);
+    if (!conn) {
+        loge("Cannot find Connection to encrypt\n");
+    } else {
+        aclConn = l2cAclConnFindByHandle(conn->acl);
+        if (!aclConn)
+            loge("Cannot find Connection to encrypt\n");
+        else if (aclConn->encrypted)
+            logw("Connection was encrypted already\n");
+        else
+            ret = hciLeEncryptConn(aclConn->conn, rand, ediv, key);
+    }
+    pthread_mutex_unlock(&mConnsLock);
+
+    return ret;
+}
+
+/*
  * FUNCTION: l2ccAclLinkUpTimeout
  * USE:      Timeout timer for ACL link opening
  * PARAMS:   which - the timer ID
