@@ -1,3 +1,8 @@
+/*
+ * Copyright 2018 The Chromium OS Authors. All rights reserved.
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file.
+ */
 #ifndef _HCI_H_
 #define _HCI_H_
 
@@ -181,6 +186,8 @@ bool hciUpdateLeParams(hci_conn_t aclConn, uint16_t minInt, uint16_t maxInt, uin
 bool hciDemandEncr(hci_conn_t aclConn, bool demandMitmSafe);
 /* LE connection info */
 bool hciLeConnGetInfo(hci_conn_t aclConn, bool *masterP, uint64_t *peerFtrsP, uint16_t *intP, uint16_t *latP, uint16_t *toP, uint8_t *mcaP);
+/* Encrypt a connection with the given key */
+bool hciLeEncryptConn(hci_conn_t aclConn, uint64_t rand, uint16_t ediv, const uint8_t *key);
 
 /* misc */
 void hciInquiryUpdatePersistDeviceDb(const struct bt_addr *addr, const uint32_t *devClsP, const void *eir, uint8_t eirLen);

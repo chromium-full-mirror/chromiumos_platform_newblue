@@ -1615,7 +1615,7 @@ static void hciCmdSubmitWithDoneSimpleCbk(void* cbkData1, void* cbkData2, bool g
 {
     struct hciEvtCmdComplete *cmpl = (struct hciEvtCmdComplete*)(evt + 1);
     struct hciEvtCmdStatus *stat = (struct hciEvtCmdStatus*)(evt + 1);
-    uint8_t *paramP = (uint8_t*)(cmpl + 1); //for compelte 
+    uint8_t *paramP = (uint8_t*)(cmpl + 1); //for compelte
     hciOpDoneCbk cbkF = (hciOpDoneCbk)cbkData1;
     uint8_t status;
 
@@ -3188,7 +3188,7 @@ static bool hciConnEncryptLe(struct hciAclConn *conn, bool demandMitmSafe)
         loge("Encryption not supported remotely\n");
         return false;
     }
-    
+
     //TODO: LE Security Manager integration
 
     return false;
@@ -3199,7 +3199,7 @@ static bool hciConnEncryptLe(struct hciAclConn *conn, bool demandMitmSafe)
  * USE:      Start an LE connection to a given address
  * PARAMS:   mac - the mac
  *           randomAddr - peer address is random?
- *           scanInt - connect scan interval 
+ *           scanInt - connect scan interval
  *           scanWindow - connect scan window
  *           intMin - minimum wanted interval
  *           intMax - maximum wanted interval
@@ -3478,6 +3478,40 @@ bool hciLeConnGetInfo(hci_conn_t aclConn, bool *masterP, uint64_t *peerFtrsP, ui
 }
 
 /*
+ * FUNCTION: hciLeEncryptConn
+ * USE:      Encrypt a connection using the given key
+ * PARAMS:   aclConn - the connection
+ *           rand - random value
+ *           ediv - encrypted diversifier value
+ *           key - the key used for encryption
+ * RETURN:   true if attempt will be made
+ * NOTES:
+ */
+bool hciLeEncryptConn(hci_conn_t aclConn, uint64_t rand, uint16_t ediv, const uint8_t *key)
+{
+    struct hciAclConn* conn;
+    bool ret = false;
+
+    pthread_mutex_lock(&mConnsLock);
+
+    conn = hciConnFindByHandle(aclConn);
+    if (!conn)
+        logw("Cannot find Connection to encrypt\n");
+    else if (conn->state != CONN_STATE_RUNNING)
+        logw("Cannot encrypt a not-yet-established connection\n");
+    else if (conn->encrypted)
+        logw("Connection already encrypted up to requested level\n");
+    else if (!BT_ADDR_IS_LE(conn->peerAddr))
+        logw("Not an LE connection\n");
+    else if (key)
+        ret = hciLeStartEncryptionSync(conn->id, rand, ediv, key);
+
+    pthread_mutex_unlock(&mConnsLock);
+
+    return ret;
+}
+
+/*
  * FUNCTION: hciTryToTx
  * USE:      Try to send some data
  * PARAMS:   aclConn - the connection
@@ -3686,7 +3720,7 @@ static void hciConnCfg(struct hciAclConn *c, uint32_t step, uint32_t aux)
 
     /* if we got here, the configuration step ended and it is time to proceed */
     if (success) {
-        c->state = CONN_STATE_RUNNING; 
+        c->state = CONN_STATE_RUNNING;
         if (hciScheduleConnUpNotif(c->handle, &c->peerAddr, &c->selfAddr, c->isMaster, c->encrypted, c->mitmSafe)) {
             /* if there are any backlogged RX messages, queue them up too */
             while (c->rxBacklog) {
