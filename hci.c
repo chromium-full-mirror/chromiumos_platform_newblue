@@ -919,26 +919,51 @@ static void hciCmdSendWorkDeallocator(void *workItem)
 /*
  * FUNCTION: hciCbkWorkLeLtkReq
  * USE:      Called in worker thread - request key from someone
- * PARAMS:   aclConn - the conenction
+ * PARAMS:   aclConn - the connection
  *           randomNum - provied by other side
  *           diversifier - provied by other side
  * RETURN:   none
- * NOTES:    proper hci reply command will be called
+ * NOTES:    caller should soon call hciLeProvideLtk() with reply
  */
 static void hciCbkWorkLeLtkReq(hci_conn_t aclConn, uint64_t randomNum, uint16_t diversifier)
 {
-    uint8_t key[HCI_LE_KEY_LEN];
     struct hciAclConn* conn;
 
     pthread_mutex_lock(&mConnsLock);
     conn = hciConnFindByHandle(aclConn);
     if (!conn)
         logd("Conn for key req not found\n");
-    else if (l2cAclLeLtkRequest(conn->id, randomNum, diversifier, key))
-        hciLeLtkRequestReplySync(conn->id, key);
-    else
+    else if (!l2cAclLeLtkRequest(conn->id, randomNum, diversifier)) {
+        logd("LTK key req from L2C failed - assuming no key\n");
         hciLeLtkRequestNegativeReplySync(conn->id);
+    }
     pthread_mutex_unlock(&mConnsLock);
+}
+
+/*
+ * FUNCTION: hciCbkWorkLeLtkReq
+ * USE:      Called by higher layer - provide key
+ * PARAMS:   aclConn - the connection
+ *           key - key to use or NULL if none
+ * RETURN:   false on error
+ * NOTES:    proper hci reply command will be called
+ */
+bool hciLeProvideLtk(hci_conn_t aclConn, const uint8_t *key)
+{
+    struct hciAclConn* conn;
+    bool ret = false;
+
+    pthread_mutex_lock(&mConnsLock);
+    conn = hciConnFindByHandle(aclConn);
+    if (!conn)
+        logd("Conn for key req reply found\n");
+    else if (key)
+        ret = !hciLeLtkRequestReplySync(conn->id, key);
+    else
+        ret = !hciLeLtkRequestNegativeReplySync(conn->id);
+    pthread_mutex_unlock(&mConnsLock);
+
+    return ret;
 }
 
 /*

@@ -188,6 +188,9 @@ bool hciDemandEncr(hci_conn_t aclConn, bool demandMitmSafe);
 bool hciLeConnGetInfo(hci_conn_t aclConn, bool *masterP, uint64_t *peerFtrsP, uint16_t *intP, uint16_t *latP, uint16_t *toP, uint8_t *mcaP);
 /* Encrypt a connection with the given key */
 bool hciLeEncryptConn(hci_conn_t aclConn, uint64_t rand, uint16_t ediv, const uint8_t *key);
+/* Provide LTK for a connection for which an LTK request had arrived. pass NULL to say "no" */
+bool hciLeProvideLtk(hci_conn_t aclConn, const uint8_t *key);
+
 
 /* misc */
 void hciInquiryUpdatePersistDeviceDb(const struct bt_addr *addr, const uint32_t *devClsP, const void *eir, uint8_t eirLen);

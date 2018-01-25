@@ -46,11 +46,17 @@ struct l2cEncrState {
     bool isMitmSafe;
 };
 
+struct l2cKeyReqState {
+    uint64_t rand;
+    uint16_t ediv;
+};
+
 #define L2C_STATE_OPEN       0 /* dataPtr points to l2c_handle_t */
 #define L2C_STATE_MTU        1 /* dataPtr points to a uint16_t mtu */
 #define L2C_STATE_ENCR       2 /* dataPtr points l2cEncrState */
 #define L2C_STATE_RX         3 /* dataPtr points to an sg */
-#define L2C_STATE_CLOSED     4 /* dataPtr points nowhere, or error on openining */
+#define L2C_STATE_KEY_REQ    4 /* if you are the security manager - key request came in - reply via l2cApiLeProvideLtk(). dataPtr points to l2cKeyReqState */
+#define L2C_STATE_CLOSED     5 /* dataPtr points nowhere, or error on openining */
 typedef void (*l2cStateCbk)(void *userData, void *instance, uint8_t state, const void *data, uint32_t len);
 
 #define SVC_ALLOC_SUCCESS             0 /* must alloc state, success */
@@ -142,10 +148,10 @@ void l2cApiDisconnect(l2c_handle_t handle);
 /* external code can use this to send to the other side - never blocks. returns L2C_TX_* */
 uint8_t l2cApiDataTx(l2c_handle_t handle, sg data);
 
-/* exteranl code can use this to know when it shoudl retry its write. Do not do that in the callback! - queue it for later */
+/* external code can use this to know when it should retry its write. Do not do that in the callback! - queue it for later */
 uniq_t l2cApiRegisterWriteBufNotif(multiNotifCbk cbk, void *cbkData);
 
-/* exteranl code can use this to unregister from notif created by l2cApiRegisterWriteBufNotif() */
+/* external code can use this to unregister from notif created by l2cApiRegisterWriteBufNotif() */
 void l2cApiUnegisterWriteBufNotif(uniq_t notifHandle);
 
 /* if no connection exists, one will *not* be created. if sending does not work, there is no retry callback */
@@ -154,7 +160,11 @@ uint8_t l2cApiConnectionlessDataTx(const struct bt_addr *addr, psm_t psm, sg dat
 /* external code can use this to encrypt a connection */
 bool l2cApiLeEncryptConn(l2c_handle_t handle, uint64_t randomNum, uint16_t diversifier, const uint8_t *key);
 
+/* external code can use this to become the "security manager" for a given acl connection. only one is allowed per acl conn - first come - first served */
+bool l2cApiLeSetSecurityManagerForAclConn(l2c_handle_t handle);
 
+/* external code can call this to provide a LTK (likely in a reply to L2C_STATE_KEY_REQ state message). pass NULL for "no" */
+bool l2cApiLeProvideLtk(l2c_handle_t handle, const uint8_t *key);
 
 /* LOWER LAYER INTERFACE API */
 
@@ -170,8 +180,8 @@ void l2cAclCreditAvail(bool le);
 void l2cAclLinkParamsChange(hci_conn_t aclConn, bool success, uint16_t interval, uint16_t latency, uint16_t timeout);
 /* lower layer calls this when connection encryption changes. called with FALSE if encr failed since BT cannot realyl go from encrypted to not */
 void l2cAclLinkEncrChange(hci_conn_t aclConn, bool isEncrypted, bool isMitmSafe);
-/* lower layer calls this when connection encryption request from the other side comes - return key or null */
-bool l2cAclLeLtkRequest(hci_conn_t aclConn, uint64_t rand, uint16_t ediv, uint8_t* key);
+/* lower layer calls this when connection encryption request from the other side comes */
+bool l2cAclLeLtkRequest(hci_conn_t aclConn, uint64_t rand, uint16_t ediv);
 
 #endif
 

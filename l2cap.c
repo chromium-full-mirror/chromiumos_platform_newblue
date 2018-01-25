@@ -307,6 +307,8 @@ struct l2cAclConn {
 
     uint8_t            reqIdent; /* ident for an outstanding request */
 
+    l2c_handle_t       securityManager;      /* 0 if none yet */
+
     struct {
         union { /* LE-only data */
             l2cConnUpdateDoneCbk connUpdtDoneCbk;
@@ -5735,7 +5737,7 @@ void l2cAclLinkDown(hci_conn_t aclConnID, uint8_t reason)
 /*
  * FUNCTION: l2cAclLinkEncrChange
  * USE:      Called when a new ACL encryption changed
- * PARAMS:   aclConn - the conection ID
+ * PARAMS:   aclConnID - the conection ID
  *           isEncrypted - is link now encrypted?
  *           isMitmSafe - is link now MITM-safe?
  * RETURN:   NONE
@@ -5760,17 +5762,105 @@ void l2cAclLinkEncrChange(hci_conn_t aclConnID, bool isEncrypted, bool isMitmSaf
 /*
  * FUNCTION: l2cAclLeLtkRequest
  * USE:      Called when an Le connection needs a key
- * PARAMS:   aclConn - the conection ID
+ * PARAMS:   aclConnID - the conection ID
  *           randomNum - provided by other side
  *           diversifier - provided by other side
- *           key - store key her if you want to use one
- * RETURN:   true if key was provided into "key"
+ * RETURN:   false on immediate failure
  * NOTES:
  */
-bool l2cAclLeLtkRequest(hci_conn_t aclConn, uint64_t randomNum, uint16_t diversifier, uint8_t* key)
+bool l2cAclLeLtkRequest(hci_conn_t aclConnID, uint64_t randomNum, uint16_t diversifier)
 {
-    //TODO
-    return false;
+    struct l2cKeyReqState keyReq = {.rand = randomNum, .ediv = diversifier, };
+    struct l2cAclConn *aclConn;
+    struct l2cConn *conn;
+    bool ret = false;
+
+    pthread_mutex_lock(&mConnsLock);
+    aclConn = l2cAclConnFindById(aclConnID);
+    if (!aclConn)
+        logw("Link acl "HCI_CONN_FMT"x not found. LTK req ignored.\n", HCI_CONN_CONV(aclConnID));
+    else if (!aclConn->securityManager)
+        logi("Link acl "HCI_CONN_FMT"x has no assigned security manager. LTK req ignored.\n", HCI_CONN_CONV(aclConnID));
+    else {
+        conn = l2cConnFindByHandle(aclConn->securityManager);
+        if (!conn)
+            logi("Link acl "HCI_CONN_FMT"x's assigned security manager does nt exist anymore. LTK req ignored.\n", HCI_CONN_CONV(aclConnID));
+        else
+            ret = l2cSvcWorkScheduleStateCall(conn, L2C_STATE_KEY_REQ, &keyReq, sizeof(keyReq));
+    }
+
+    pthread_mutex_unlock(&mConnsLock);
+    return ret;
+}
+
+/*
+ * FUNCTION: l2cApiLeProvideLtk
+ * USE:      Called by SM - provide key
+ * PARAMS:   handle - connection handle
+ *           key - key to use or NULL if none
+ * RETURN:   false on error
+ * NOTES:    proper hci reply command will be called
+ */
+bool l2cApiLeProvideLtk(l2c_handle_t handle, const uint8_t *key)
+{
+    struct l2cAclConn *aclConn = NULL;
+    struct l2cConn *conn;
+    bool ret = false;
+
+    pthread_mutex_lock(&mConnsLock);
+    conn = l2cConnFindByHandle(handle);
+    if (conn)
+        aclConn = l2cAclConnFindByHandle(conn->acl);
+
+    if (!conn)
+        logw("L2C conn "HANDLEFMT"x not found. LTK reply ignored.\n", HANDLECNV(handle));
+    else if (!aclConn)
+        logw("L2C conn "HANDLEFMT"x's acl conn not found. LTK reply ignored. Also, this is bad!\n", HANDLECNV(handle));
+    else
+        ret = hciLeProvideLtk(aclConn->conn, key);
+
+    pthread_mutex_unlock(&mConnsLock);
+    return ret;
+}
+
+/*
+ * FUNCTION: l2cApiLeSetSecurityManagerForHciConn
+ * USE:      Called by a security manager to become one for a given acl connection
+ * PARAMS:   handle - connection handle
+ * RETURN:   true if no security manager already existed for a given acl
+ *           connection and the requestor became one, requestor already
+ *           was the security manager for this acl connection, or the previous
+ *           security manager was no longer in existence (l2c conn had been closed)
+ * NOTES:
+ */
+bool l2cApiLeSetSecurityManagerForAclConn(l2c_handle_t handle)
+{
+    struct l2cConn *conn;
+    struct l2cAclConn *aclConn;
+    bool ret = false;
+
+    pthread_mutex_lock(&mConnsLock);
+
+    conn = l2cConnFindByHandle(handle);
+    if (!conn) {
+        loge("Connection not found\n");
+        goto out;
+    }
+
+    aclConn = l2cAclConnFindByHandle(conn->acl);
+    if (!aclConn) {
+        loge("ACL link not found\n");
+        goto out;
+    }
+
+    if (!aclConn->securityManager || !l2cConnFindByHandle(aclConn->securityManager))
+        aclConn->securityManager = handle;
+
+    ret = (aclConn->securityManager == handle);
+
+out:
+    pthread_mutex_unlock(&mConnsLock);
+    return ret;
 }
 
 /*
