@@ -127,6 +127,7 @@ struct hciCmdSendWorkItem {
 #define CBK_WORK_PARAMS_CHANGE      6
 #define CBK_WORK_ENCR_CHANGE        7
 #define CBK_WORK_ACL_DATA           8
+#define CBK_WORK_LE_KEY_REQ         9
 
 struct hciCbkWorkItem {
     uint8_t       cbkWorkItemType;
@@ -191,6 +192,12 @@ struct hciCbkWorkItem {
             sg                            packet;
             bool                          first;
         } aclDataRx;
+
+        struct {
+            hci_conn_t                    conn;
+            uint64_t                      randomNum;
+            uint16_t                      diversifier;
+        } leKeyReq;
     };
 };
 
@@ -341,6 +348,7 @@ static bool hciHandleConnAclLeUp(uint8_t status, uint16_t id, bool isMaster, con
 static bool hciHandleConnAclEncr(uint16_t cid, bool encrOn);
 static bool hciHandleConnAclAuth(uint16_t cid, bool authOn);
 static bool hciHandleConnAclLeUpdate(uint8_t status, uint16_t cid, uint16_t interval, uint16_t latency, uint16_t timeout);
+static bool hciHandleConnLeLtkReq(uint16_t cid, uint64_t randomNum, uint16_t diversifier);
 static bool hciConnUpdate(uint16_t cid, uint16_t minInt, uint16_t maxInt, uint16_t latency, uint16_t timeout);
 static void hciCmdStatusCbk(void *cbkData, uint8_t status);
 static bool hciConnDisconnect(uint16_t cid);
@@ -909,6 +917,31 @@ static void hciCmdSendWorkDeallocator(void *workItem)
 }
 
 /*
+ * FUNCTION: hciCbkWorkLeLtkReq
+ * USE:      Called in worker thread - request key from someone
+ * PARAMS:   aclConn - the conenction
+ *           randomNum - provied by other side
+ *           diversifier - provied by other side
+ * RETURN:   none
+ * NOTES:    proper hci reply command will be called
+ */
+static void hciCbkWorkLeLtkReq(hci_conn_t aclConn, uint64_t randomNum, uint16_t diversifier)
+{
+    uint8_t key[HCI_LE_KEY_LEN];
+    struct hciAclConn* conn;
+
+    pthread_mutex_lock(&mConnsLock);
+    conn = hciConnFindByHandle(aclConn);
+    if (!conn)
+        logd("Conn for key req not found\n");
+    else if (l2cAclLeLtkRequest(conn->id, randomNum, diversifier, key))
+        hciLeLtkRequestReplySync(conn->id, key);
+    else
+        hciLeLtkRequestNegativeReplySync(conn->id);
+    pthread_mutex_unlock(&mConnsLock);
+}
+
+/*
  * FUNCTION: hciCbkWorker
  * USE:      Worker thread for calling callbacks for HCI completed items
  * PARAMS:   unused - unused
@@ -955,6 +988,9 @@ static void* hciCbkWorker(void *unused)
             break;
         case CBK_WORK_ACL_DATA:
             l2cAclDataRx(w->aclDataRx.conn, w->aclDataRx.packet, w->aclDataRx.first);
+            break;
+        case CBK_WORK_LE_KEY_REQ:
+            hciCbkWorkLeLtkReq(w->leKeyReq.conn, w->leKeyReq.randomNum, w->leKeyReq.diversifier);
             break;
         default:
             loge("Unknown callback work type %u\n", w->cbkWorkItemType);
@@ -1169,6 +1205,35 @@ static bool hciScheduleConnParamChange(hci_conn_t conn, bool success, uint16_t i
     w->leParamChange.interval = interval;
     w->leParamChange.latency = latency;
     w->leParamChange.timeout = timeout;
+
+    if (workQueuePut(mCallbackWork, w))
+        return true;
+
+    free(w);
+    return false;
+}
+
+/*
+ * FUNCTION: hciScheduleLeLtkRequest
+ * USE:      Enqueue a call to the connection key request notif
+ * PARAMS:   conn - the conenction
+ *           randomNum - provied by other side
+ *           diversifier - provied by other side
+ * RETURN:   true if enqueued, false else
+ * NOTES:
+ */
+static bool hciScheduleLeLtkRequest(hci_conn_t conn, uint64_t randomNum, uint16_t diversifier)
+{
+    struct hciCbkWorkItem *w;
+
+    w = (struct hciCbkWorkItem*)malloc(sizeof(struct hciCbkWorkItem));
+    if (!w)
+        return false;
+
+    w->cbkWorkItemType = CBK_WORK_LE_KEY_REQ;
+    w->leKeyReq.conn = conn;
+    w->leKeyReq.randomNum = randomNum;
+    w->leKeyReq.diversifier = diversifier;
 
     if (workQueuePut(mCallbackWork, w))
         return true;
@@ -1948,6 +2013,15 @@ static bool hciConnEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evt
             logd("ACL LE conn %d update to {%d,%d,%d}\n", cid, interval, latency, timeout);
             if (!hciHandleConnAclLeUpdate(status, cid, interval, latency, timeout))
                 loge("Failed to handle LE conn update\n");
+        } else if (evtType == HCI_EVTLE_LTK_Request) {
+            struct hciEvtLeLtkRequest *req = (struct hciEvtLeLtkRequest*)(meta + 1);
+            uint16_t cid = utilGetLE16(&req->conn);
+            uint64_t randomNum = utilGetLE16(&req->randomNum);
+            uint16_t diversifier = utilGetLE16(&req->diversifier);
+
+            logd("ACL LE kery req for conn 0x%02x with rand 0x"FMT64"x and div 0x%02x\n", cid, CNV64(randomNum), diversifier);
+            if (!hciHandleConnLeLtkReq(cid, randomNum, diversifier))
+                loge("Failed to handle LE key req\n");
         } else
             return false;
     } else
@@ -2602,8 +2676,8 @@ static bool hciBtStackUp(void)
     /* set event handlers for connection states */
     {
         static const uint8_t connEvtTypes[] = {HCI_EVT_Disconnection_Complete, HCI_EVT_Encryption_Change,
-                                               HCI_EVT_Authentication_Complete, HCI_EVT_LE_Meta, HCI_EVT_LE_Meta, 0};
-        static const uint16_t connEvtExtras[] = {0, 0, 0, HCI_EVTLE_Connection_Complete, HCI_EVTLE_Connection_Update_Complete};
+                                               HCI_EVT_Authentication_Complete, HCI_EVT_LE_Meta, HCI_EVT_LE_Meta, HCI_EVT_LE_Meta, 0};
+        static const uint16_t connEvtExtras[] = {0, 0, 0, HCI_EVTLE_Connection_Complete, HCI_EVTLE_Connection_Update_Complete, HCI_EVTLE_LTK_Request};
 
         if (!hciSetManyEventPersistentHandlers(connEvtTypes, connEvtExtras, hciConnEvtCbk, NULL)) {
             ret = -2;
@@ -3932,6 +4006,28 @@ static bool hciHandleConnAclLeUpdate(uint8_t status, uint16_t cid, uint16_t inte
         }
         ret = hciScheduleConnParamChange(c->handle, !status, c->le.interval, c->le.latency, c->le.timeout);
     }
+    pthread_mutex_unlock(&mConnsLock);
+    return ret;
+}
+
+/*
+ * FUNCTION: hciHandleConnLeLtkReq
+ * USE:      Handle key request for an LE connection
+ * PARAMS:   cid - the connection id
+ *           randomNum - provied by other side
+ *           diversifier - provied by other side
+ * RETURN:   true on success
+ * NOTES:
+ */
+static bool hciHandleConnLeLtkReq(uint16_t cid, uint64_t randomNum, uint16_t diversifier)
+{
+    struct hciAclConn *c;
+    bool ret = false;
+
+    pthread_mutex_lock(&mConnsLock);
+    c = hciConnFindById(cid);
+    if (c)
+        ret = hciScheduleLeLtkRequest(c->handle, randomNum, diversifier);
     pthread_mutex_unlock(&mConnsLock);
     return ret;
 }

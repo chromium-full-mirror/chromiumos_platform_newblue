@@ -152,7 +152,7 @@ void l2cApiUnegisterWriteBufNotif(uniq_t notifHandle);
 uint8_t l2cApiConnectionlessDataTx(const struct bt_addr *addr, psm_t psm, sg data);
 
 /* external code can use this to encrypt a connection */
-bool l2cApiLeEncryptConn(l2c_handle_t handle, uint64_t rand, uint16_t ediv, const uint8_t *key);
+bool l2cApiLeEncryptConn(l2c_handle_t handle, uint64_t randomNum, uint16_t diversifier, const uint8_t *key);
 
 
 
@@ -170,7 +170,8 @@ void l2cAclCreditAvail(bool le);
 void l2cAclLinkParamsChange(hci_conn_t aclConn, bool success, uint16_t interval, uint16_t latency, uint16_t timeout);
 /* lower layer calls this when connection encryption changes. called with FALSE if encr failed since BT cannot realyl go from encrypted to not */
 void l2cAclLinkEncrChange(hci_conn_t aclConn, bool isEncrypted, bool isMitmSafe);
-
+/* lower layer calls this when connection encryption request from the other side comes - return key or null */
+bool l2cAclLeLtkRequest(hci_conn_t aclConn, uint64_t rand, uint16_t ediv, uint8_t* key);
 
 #endif
 

@@ -5758,6 +5758,22 @@ void l2cAclLinkEncrChange(hci_conn_t aclConnID, bool isEncrypted, bool isMitmSaf
 }
 
 /*
+ * FUNCTION: l2cAclLeLtkRequest
+ * USE:      Called when an Le connection needs a key
+ * PARAMS:   aclConn - the conection ID
+ *           randomNum - provided by other side
+ *           diversifier - provided by other side
+ *           key - store key her if you want to use one
+ * RETURN:   true if key was provided into "key"
+ * NOTES:
+ */
+bool l2cAclLeLtkRequest(hci_conn_t aclConn, uint64_t randomNum, uint16_t diversifier, uint8_t* key)
+{
+    //TODO
+    return false;
+}
+
+/*
  * FUNCTION: l2cUtilFcs
  * USE:      Calculate an L2CAP FCS (CRC-16 with poly 0x8005) for some data
  * PARAMS:   fcs - input fcs

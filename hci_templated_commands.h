@@ -125,6 +125,36 @@
                                            }
 
 
+
+/*
+ * FUNCTION: hciLeLtkRequestReplySync
+ * USE:      give the chip the for a given connection
+ * PARAMS:   conn - the connection id
+ *           LTK - the key to use
+ */
+HCI_SIMPLY_SYNC_WRITE(LeLtkRequestReply, (uint16_t conn, const uint8_t *LTK), HCI_OGF_LE, HCI_CMD_LE_LTK_Request_Reply)
+    uint8_t ltkLen = HCI_LE_KEY_LEN;
+    REQUIRE_VERSION(HCI_VERSION_4_0);
+    REQUIRE_FEATURE(0, HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER);
+    REQUIRE_LE_FEATURE(HCI_LE_FTR_ENCRYPTION)
+    HCI_COPY_IN_U16(conn)
+    HCI_COPY_IN_DATA(LTK, ltkLen);
+HCI_SIMPLY_SYNC_END
+
+/*
+ * FUNCTION: hciLeLtkRequestNegativeReplySync
+ * USE:      tell the chip we have no key to give for a given connection
+ * PARAMS:   conn - the connection id
+ */
+HCI_SIMPLY_SYNC_WRITE(LeLtkRequestNegativeReply, (uint16_t conn), HCI_OGF_LE, HCI_CMD_LE_LTK_Request_Negative_Reply)
+    uint8_t ltkLen = HCI_LE_KEY_LEN;
+    REQUIRE_VERSION(HCI_VERSION_4_0);
+    REQUIRE_FEATURE(0, HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER);
+    REQUIRE_LE_FEATURE(HCI_LE_FTR_ENCRYPTION)
+    HCI_COPY_IN_U16(conn)
+HCI_SIMPLY_SYNC_END
+
+
 /*
  * FUNCTION: hciLeReadAdvChannelTxPowerSync
  * USE:      read default adv channel tx power
@@ -588,6 +618,7 @@ HCI_SIMPLY_SYNC_CMD_W_STATUS(LeStartEncryption, (uint16_t conn, uint64_t rand, u
     uint8_t ltkLen = HCI_LE_KEY_LEN;
     REQUIRE_VERSION(HCI_VERSION_4_0)
     REQUIRE_FEATURE(0, HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER)
+    REQUIRE_LE_FEATURE(HCI_LE_FTR_ENCRYPTION)
     HCI_COPY_IN_U16(conn)
     HCI_COPY_IN_U64(rand)
     HCI_COPY_IN_U16(diversifier)
