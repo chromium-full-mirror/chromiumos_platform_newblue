@@ -206,7 +206,9 @@ bool hciAdvSetSetAdvParams(hci_adv_set_t set, uint16_t advIntervalMin, uint16_t 
 bool hciAdvSetOwnRandomAddr(hci_adv_set_t set, const struct bt_addr *ownRandomAddr);
 bool hciAdvSetEnable(hci_adv_set_t set);
 bool hciAdvSetDisable(hci_adv_set_t set);
+
 bool hciAdvSetGetCurTxPowerLevel(hci_adv_set_t set, int8_t *advTxPowerLevelP);
+bool hciAdvSetGetCurAdvAddr(hci_adv_set_t set, struct bt_addr *ownAddr);
 
 
 #endif

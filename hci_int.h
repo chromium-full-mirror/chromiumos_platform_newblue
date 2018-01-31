@@ -3132,6 +3132,22 @@ struct hciEvtPrsmChange {
     uint8_t PSRM;
 } __packed;
 
+#define HCI_EVT_Vendor                                           0xFF /* all versions */
+struct hciEvtVendor {
+    uint8_t subevent;
+     //data
+} __packed;
+
+#define HCI_EVTVENDOR_Android_Subevent_Store_Thresh_Breach       0x54
+#define HCI_EVTVENDOR_Android_Subevent_Advt_State_Change         0x55
+
+#define HCI_EVTVENDOR_Android_Subevent_Advt_State_Change_Reason  0x00 //always
+struct hciEvtVendorAndroidVendorExtAdvtStateChange {
+    uint8_t advInstance;
+    uint8_t reason;
+    uint16_t connHandle;
+} __packed;
+
 
 /* ==== BT 1.2 ==== */
 

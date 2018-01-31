@@ -17,6 +17,7 @@
 #include "hci_int.h"
 #include "persist.h"
 #include "config.h"
+#include "timer.h"
 #include "l2cap.h"
 #include "aapi.h"
 #include "util.h"
@@ -70,7 +71,7 @@ struct hciEvtHdr {
 #define ACL_CONN_ID_INVALID       (ACL_HDR_MASK_CONN_ID + 2)
 
 /* returns true if this is the event we wanted, false else. Do not block! If evt is passed as NULL, stack is shutting down. Do not try to enqueue/dequeue handlers here either */
-typedef bool (*hciEvtCbk)(const struct hciEvtHdr *evt, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID);
+typedef bool (*hciEvtCbk)(const struct hciEvtHdr *evt, uint32_t evtSz, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID);
 typedef void (*hciSimpleCbk)(void* cbkData1, void* cbkData2, bool stackGoingDown, struct hciEvtHdr *evt);
 
 struct hciEvtWaitState {
@@ -220,7 +221,7 @@ struct hciAclConn {
     struct hciAclConn *next;
     struct hciAclConn *prev;
     struct bt_addr     peerAddr;
-    struct bt_addr     selfAddr; /* XXX */
+    struct bt_addr     selfAddr;
     hci_conn_t         handle;
 
     uint16_t           id;
@@ -233,11 +234,12 @@ struct hciAclConn {
 
     union {
         struct {
-            uint64_t   ftrs;
-            uint16_t   interval;
-            uint16_t   latency;
-            uint16_t   timeout;
-            uint8_t    mca;
+            uint64_t       ftrs;
+            uint16_t       interval;
+            uint16_t       latency;
+            uint16_t       timeout;
+            uint8_t        mca;
+            hci_adv_set_t  advSet;
         } le;
         //EDR struct here if needed
     };
@@ -271,18 +273,20 @@ struct hciAdvSet {
 };
 
 #define CONN_STATE_WAIT            0
-#define CONN_STATE_CFG             1
-#define CONN_STATE_RUNNING         2
-#define CONN_STATE_DELETING        3
+#define CONN_STATE_ADV_SET_BLAMING 1
+#define CONN_STATE_CFG             2
+#define CONN_STATE_RUNNING         3
+#define CONN_STATE_DELETING        4
 
 #define CONN_CFG_STEP_LE           0x0000
+
+#define ADV_SET_BLAME_TIMEOUT_ANDROID_VENDOR    100 /* 100ms is as good a number as any */
 
 #define STACK_STATE_DOWN           0 //down and not ready for up
 #define STACK_STATE_READY_FOR_UP   1 //ready to be brought up
 #define STACK_STATE_COMING_UP      2 //on the way up
 #define STACK_STATE_UP             3 //working
 #define STACK_STATE_GOING_DOWN     4 //on the way down
-
 
 /* useful constants */
 static const char *mBtVers[] = {"1.0b", "1.1", "1.2", "2.0", "2.1", "3.0", "4.0", "4.1", "4.2", "5.0"};
@@ -360,6 +364,8 @@ static bool hciSetupResetEventHandler(bool cmdWaitLockHeld);
 
 /* adv indirection function pointers. Called with mAdvSetsLock held*/
 static bool (*mHciAdvSetEnable)(struct hciAdvSet *set, bool enable);
+static bool (*mHciAdvSetHandleAndBlameNewConn)(struct hciAclConn *conn); //return true if done, false if not yet. if false is returned, you MUST later call hciConnCfg(c, CONN_CFG_STEP_LE, 0); and set state to CFG when decided
+
 
 
 /* templated commands - they need the above vars hence include here */
@@ -647,10 +653,11 @@ static void hciRxEvt(sg packet)
     const struct hciEvtCmdComplete *cmdComplete;
     const struct hciEvtCmdStatus *cmdStatus;
     const struct hciEvtLeMeta *leMeta;
+    const struct hciEvtVendor *vendor;
     const struct hciEvtHdr *evt;
     uint8_t evtType, len;
+    uint32_t i, evtLen;
     void* sgiter;
-    uint32_t i;
 
 
     /*
@@ -659,20 +666,22 @@ static void hciRxEvt(sg packet)
      * we check? Iterate SG of course... Why? To save a copy and a malloc() & a free()
      */
     sgiter = sgIterStart(packet);
-    if (sgiter && sgIterCurLen(sgiter) == sgLength(packet))
+    evtLen = sgLength(packet);
+    if (sgiter && sgIterCurLen(sgiter) == evtLen)
         evt = (const struct hciEvtHdr*)sgIterCurData(sgiter);
     else {
-        evt = malloc(sgLength(packet));
+        evt = malloc(evtLen);
         if (!evt) {
             loge("Failed to alloc flat event representation\n");
             sgFree(packet);
         }
-        sgSerialize(packet, 0, sgLength(packet), (struct hciEvtHdr*)evt);
+        sgSerialize(packet, 0, evtLen, (struct hciEvtHdr*)evt);
         sgiter = NULL;
         sgFree(packet);
     }
 
     leMeta = (struct hciEvtLeMeta*)(evt + 1);
+    vendor = (struct hciEvtVendor*)(evt + 1);
     cmdComplete = (struct hciEvtCmdComplete*)(evt + 1);
     cmdStatus = (struct hciEvtCmdStatus*)(evt + 1);
 
@@ -759,13 +768,21 @@ static void hciRxEvt(sg packet)
             if (evtType != cur->evtType)
                 continue;
 
-            /* if LE event, check code and skip handler if wrong */
+            /* if LE & Vendor events, check code and skip handler if wrong */
             if (evtType == HCI_EVT_LE_Meta) {
                 if(len < sizeof(struct hciEvtLeMeta)) {
                     logw("Got LE meta event of len %ub\n", len);
                     break;
                 }
                 if (utilGetLE8(&leMeta->subevent) != cur->extra)
+                    continue;
+            }
+            if (evtType == HCI_EVT_Vendor) {
+                if(len < sizeof(struct hciEvtVendor)) {
+                    logw("Got vendor event of len %ub\n", len);
+                    break;
+                }
+                if (utilGetLE8(&vendor->subevent) != cur->extra)
                     continue;
             }
 
@@ -790,7 +807,7 @@ static void hciRxEvt(sg packet)
             }
 
             /* if we're here, this handler matches - let's see what it says */
-            handled = cur->cbk(evt, cur->cbkData, cur->evtWaitStateID, cur->forCmdID);
+            handled = cur->cbk(evt, evtLen, cur->cbkData, cur->evtWaitStateID, cur->forCmdID);
         }
 
         if (handled && cur && !cur->persistent)
@@ -1168,8 +1185,8 @@ static bool hciScheduleConnUpNotif(hci_conn_t conn, const struct bt_addr *peerAd
     w->connUp.isMaster = isMaster;
     w->connUp.isEncrypted = isEncrypted;
 
-    memcpy(&w->connUp.peerAddr, peerAddr, sizeof(w->connUp.peerAddr));
-    memcpy(&w->connUp.selfAddr, selfAddr, sizeof(w->connUp.selfAddr));
+    w->connUp.peerAddr = *peerAddr;
+    w->connUp.selfAddr = *selfAddr;
 
     if (workQueuePut(mCallbackWork, w))
         return true;
@@ -1492,7 +1509,7 @@ void hciDown(void)
     logd("Cancelling all event waiters\n");
     pthread_mutex_lock(&mCmdWaitLock);
     while (mEvtWaitHead) {
-        mEvtWaitHead->cbk(NULL, mEvtWaitHead->cbkData, mEvtWaitHead->evtWaitStateID, mEvtWaitHead->forCmdID);
+        mEvtWaitHead->cbk(NULL, 0, mEvtWaitHead->cbkData, mEvtWaitHead->evtWaitStateID, mEvtWaitHead->forCmdID);
         hciEvtWaitDequeueInt(mEvtWaitHead);
     }
     while (mConns) {
@@ -1602,13 +1619,14 @@ out_ret:
  * FUNCTION: hciCmdSubmitSimpleCbk
  * USE:      Command callback for hciCmdSubmitSimple
  * PARAMS:   evt - the event
+ *           evtSz - event size
  *           cbkData - struct hciSimpleCbkData - our data
  *           evtWaitStateID - event waiterID
  *           forCmdID - commandID
  * RETURN:   true if we handled it, false else
  * NOTES:
  */
-static bool hciCmdSubmitSimpleCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
+static bool hciCmdSubmitSimpleCbk(const struct hciEvtHdr *evt, uint32_t evtSz, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
 {
     struct hciSimpleCbkData *cbkd = (struct hciSimpleCbkData*)cbkData;
     struct hciEvtCmdComplete *cmpl = (struct hciEvtCmdComplete*)(evt + 1);
@@ -1970,13 +1988,14 @@ static void hciInquiryEvtLeSingleItem(const struct bt_addr *addr, uint8_t advTyp
  * FUNCTION: hciConnEvtCbk
  * USE:      Called with connection state events
  * PARAMS:   evt - the event
+ *           evtSz - event size
  *           cbkData - callback data
  *           evtWaitStateID - event wait state ID (unused)
  *           forCmdID - event commadn ID (unused)
  * RETURN:   false on error
  * NOTES:
  */
-static bool hciConnEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
+static bool hciConnEvtCbk(const struct hciEvtHdr *evt, uint32_t evtSz, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
 {
     uint8_t evtType;
     if (!evt)
@@ -2049,6 +2068,49 @@ static bool hciConnEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evt
                 loge("Failed to handle LE key req\n");
         } else
             return false;
+    } else if (evtType == HCI_EVT_Vendor) {
+        struct hciEvtVendor *vendor = (struct hciEvtVendor*)(evt + 1);
+        evtType = utilGetLE8(&vendor->subevent);
+
+        if (evtType == HCI_EVTVENDOR_Android_Subevent_Advt_State_Change) {
+            struct hciEvtVendorAndroidVendorExtAdvtStateChange *sce = (struct hciEvtVendorAndroidVendorExtAdvtStateChange*)(vendor + 1);
+
+            if (evtSz != sizeof(*vendor) + sizeof(*sce))
+                logw("Invalid event size for vendor subevent for advt change - ignored\n");
+            else if (sce->reason != HCI_EVTVENDOR_Android_Subevent_Advt_State_Change_Reason)
+                logw("Invalid reason code for vendor subevent for advt change - ignored\n");
+            else {
+                struct hciAclConn* conn;
+                hci_adv_set_t setH = 0;
+                struct hciAdvSet *t;
+
+                pthread_mutex_lock(&mAdvSetsLock);
+                for (t = mAdvSets; t; t = t->next) {
+                    if (t->hwEnabled && t->hwSetNum == sce->advInstance) {
+                        t->hwEnabled = false; //even if conn not found, this set was still fingered for being the cause so it is still already off
+                        setH = t->handle;
+                        break;
+                    }
+                }
+                pthread_mutex_unlock(&mAdvSetsLock);
+
+                pthread_mutex_lock(&mConnsLock);
+                conn = hciConnFindById(sce->connHandle);
+                if (!conn)
+                    logw("Connection id not found for vendor advt change event\n");
+                else if (!setH)
+                    logw("Adv id not found for vendor advt change event\n");
+                else if (conn->state != CONN_STATE_ADV_SET_BLAMING)
+                    logw("Conn is not in blaming state for vendor advt change event\n");
+                else {
+                    conn->le.advSet = setH;
+                    conn->state = CONN_STATE_CFG;
+                    hciConnCfg(conn, CONN_CFG_STEP_LE, 0);
+                }
+                pthread_mutex_unlock(&mConnsLock);
+            }
+        } else
+            return false;
     } else
         return false;
 
@@ -2059,13 +2121,14 @@ static bool hciConnEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evt
  * FUNCTION: hciInquiryEvtCbk
  * USE:      Called with inquiry events
  * PARAMS:   evt - the event
+ *           evtSz - event size
  *           cbkData - callback data
  *           evtWaitStateID - event wait state ID (unused)
  *           forCmdID - event commadn ID (unused)
  * RETURN:   false on error
  * NOTES:
  */
-static bool hciInquiryEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
+static bool hciInquiryEvtCbk(const struct hciEvtHdr *evt, uint32_t evtSz, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
 {
     uint8_t evtType;
     struct bt_addr addr;
@@ -2111,13 +2174,14 @@ static bool hciInquiryEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t 
  * FUNCTION: hciResetEvtCbk
  * USE:      Called when a reset complete event arrives. Tears down any existing state and sets the in-reset state.
  * PARAMS:   evt - the event (unused)
+ *           evtSz - event size
  *           cbkData - callback data (unused)
  *           evtWaitStateID - event wait state ID (unused)
  *           forCmdID - event command ID (unused)
  * RETURN:   false on error
  * NOTES:
  */
-static bool hciResetEvtCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
+static bool hciResetEvtCbk(const struct hciEvtHdr *evt, uint32_t evtSz, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
 {
     //notify everyone that all connections are down
 
@@ -2386,6 +2450,67 @@ static bool hciAdvSetEnableDisableMethodAndroidVendorCmds(struct hciAdvSet *set,
 }
 
 /*
+ * FUNCTION: hciAdvSetHandleAndBlameNewConnMethodAndroidVendorCmdsTimeCbk
+ * USE:      Timer timeout for adv-set blaming for AndroidVendor connections
+ * PARAMS:   timer - the timer handle
+ *           aclConnHandle - the acl connection handle
+ * RETURN:   none
+ * NOTES:    if the connection still has not been blamed, we blame it on adv set that was on zero (it was pre-populated in hciAdvSetHandleAndBlameNewConnMethodAndroidVendorCmds)
+ */
+static void hciAdvSetHandleAndBlameNewConnMethodAndroidVendorCmdsTimeCbk(uniq_t timer,  uint64_t aclConnHandle)
+{
+    hci_adv_set_t blamedSet = 0;
+    struct hciAclConn* conn;
+    struct hciAdvSet *t;
+
+    //if we got here and conn is still in "wait" state we assume the current blame (set 0) is correct and kick it into config state
+
+    pthread_mutex_lock(&mConnsLock);
+    conn = hciConnFindByHandle((hci_conn_t)aclConnHandle);
+    if (conn && conn->state == CONN_STATE_ADV_SET_BLAMING) {
+        blamedSet = conn->le.advSet;
+        conn->state = CONN_STATE_CFG;
+        hciConnCfg(conn, CONN_CFG_STEP_LE, 0);
+    }
+    pthread_mutex_unlock(&mConnsLock);
+
+    pthread_mutex_lock(&mAdvSetsLock);
+    for (t = mAdvSets; t; t = t->next) {
+        if (t->handle == blamedSet) //adv stops when a connection is formed
+            t->hwEnabled = false;
+    }
+    pthread_mutex_unlock(&mAdvSetsLock);
+}
+
+/*
+ * FUNCTION: hciAdvSetHandleAndBlameNewConnMethodAndroidVendorCmds
+ * USE:      Blame a new connection on an adv set and update accounting info
+ * PARAMS:   conn - the ACL connection
+ * RETURN:   false always - for this we must always wait for a later "blame" event
+ * NOTES:    called with mAdvSetsLock held
+ *           This is one of the few "adv set conn blame handlers". This one is used
+ *           when the android-vendor methods are available and BT 5.0 is not
+ *           conn->le.advSet will be set to the adv set that is currently in slot 0
+ *           since that is the one we blame if no "blame event" shows up
+ */
+static bool hciAdvSetHandleAndBlameNewConnMethodAndroidVendorCmds(struct hciAclConn *conn)
+{
+    struct hciAdvSet *t;
+
+    for (t = mAdvSets; t; t = t->next) {
+        if (t->hwEnabled && !t->hwSetNum)
+            conn->le.advSet = t->handle;
+    }
+
+    /*
+     * we ALWAYS MUST wait here. Either the event will come telling us which adv set
+     * caused the connection or the timer will fire and we'll assume it was set zero
+     */
+    timerSet(ADV_SET_BLAME_TIMEOUT_ANDROID_VENDOR, hciAdvSetHandleAndBlameNewConnMethodAndroidVendorCmdsTimeCbk, conn->handle);
+    return false;
+}
+
+/*
  * FUNCTION: hciAdvSetEnableDisableMethodBT4
  * USE:      Enable or disable an adv set on normal BT4 devices
  * PARAMS:   set - the set to operate on
@@ -2455,6 +2580,35 @@ static bool hciAdvSetEnableDisableMethodBT4(struct hciAdvSet *set, bool enable)
     }
 
     set->hwEnabled = true;
+    return true;
+}
+
+/*
+ * FUNCTION: hciAdvSetHandleAndBlameNewConnMethodBT4
+ * USE:      Blame a new connection on an adv set and update accounting info
+ * PARAMS:   conn - the ACL connection
+ * RETURN:   true always - no point in waiting. We either know or do not
+ * NOTES:    called with mAdvSetsLock held
+ *           This is one of the few "adv set conn blame handlers". This one is used
+ *           when neither the BT 5.0 nor the android-vendor methods are available.
+ *           conn->le.advSet will be set to the adv set that caused this connection,
+ *           or to 0 if we do not know
+ */
+static bool hciAdvSetHandleAndBlameNewConnMethodBT4(struct hciAclConn *conn)
+{
+    struct hciAdvSet *t;
+
+    /* easy enough here - just blame the set that is on */
+    for (t = mAdvSets; t; t = t->next) {
+        if (t->hwEnabled) {
+            t->hwEnabled = false;  //adv stops when a connection is formed
+            conn->le.advSet = t->handle;
+            return true;
+        }
+    }
+
+    //we do not know but waiting will not resolve it
+    conn->le.advSet = 0;
     return true;
 }
 
@@ -2700,9 +2854,10 @@ static bool hciBtStackUp(void)
 
     /* set event handlers for connection states */
     {
-        static const uint8_t connEvtTypes[] = {HCI_EVT_Disconnection_Complete, HCI_EVT_Encryption_Change,
-                                               HCI_EVT_Authentication_Complete, HCI_EVT_LE_Meta, HCI_EVT_LE_Meta, HCI_EVT_LE_Meta, 0};
-        static const uint16_t connEvtExtras[] = {0, 0, 0, HCI_EVTLE_Connection_Complete, HCI_EVTLE_Connection_Update_Complete, HCI_EVTLE_LTK_Request};
+        static const uint8_t connEvtTypes[] = {HCI_EVT_Disconnection_Complete, HCI_EVT_Encryption_Change, HCI_EVT_Authentication_Complete,
+                                               HCI_EVT_LE_Meta, HCI_EVT_LE_Meta, HCI_EVT_LE_Meta, HCI_EVT_Vendor, 0};
+        static const uint16_t connEvtExtras[] = {0, 0, 0, HCI_EVTLE_Connection_Complete, HCI_EVTLE_Connection_Update_Complete,
+                                                 HCI_EVTLE_LTK_Request, HCI_EVTVENDOR_Android_Subevent_Advt_State_Change,};
 
         if (!hciSetManyEventPersistentHandlers(connEvtTypes, connEvtExtras, hciConnEvtCbk, NULL)) {
             ret = -2;
@@ -2715,6 +2870,7 @@ static bool hciBtStackUp(void)
     mMaxAdvSets = 1;
     mCanSetAdvTxPower = false;
     mHciAdvSetEnable = hciAdvSetEnableDisableMethodBT4;
+    mHciAdvSetHandleAndBlameNewConn = hciAdvSetHandleAndBlameNewConnMethodBT4;
     if (mBtVer >= HCI_VERSION_5_0) {
         struct hciCmplLeReadNumSupportedAdvSets evt;
 
@@ -2738,6 +2894,7 @@ static bool hciBtStackUp(void)
             mMaxAdvSets = evt.maxAdvtInstances;
             mCanSetAdvTxPower = true;
             mHciAdvSetEnable = hciAdvSetEnableDisableMethodAndroidVendorCmds;
+            mHciAdvSetHandleAndBlameNewConn = hciAdvSetHandleAndBlameNewConnMethodAndroidVendorCmds;
             logi(" Controller supports up to %u adv sets\n", mMaxAdvSets);
         }
         else if (ret == HCI_ERR_Unknown_HCI_Command)
@@ -3025,6 +3182,42 @@ bool hciAdvSetGetCurTxPowerLevel(hci_adv_set_t handle, int8_t *advTxPowerLevelP)
 
     return ret;
 }
+
+/*
+ * FUNCTION: hciAdvSetGetCurAdvAddr
+ * USE:      Get the current adv addr of an adv set. Set must be enabled!
+ * PARAMS:   handle - the handle to this set
+ *           ownAddr - where to store the result
+ * RETURN:   success
+ * NOTES:    this does not in any way touch hardware
+ */
+bool hciAdvSetGetCurAdvAddr(hci_adv_set_t handle, struct bt_addr *ownAddr)
+{
+    struct hciAdvSet *set;
+    bool ret = false;
+
+    pthread_mutex_lock(&mAdvSetsLock);
+    set = hciAdvSetFindByHandle(handle);
+    if (!set)
+        logw("Set handle 0x"HCI_ADV_SET_FMT"x not found\n", HCI_ADV_SET_CONV(handle));
+    else if (!set->hwEnabled)
+        logw("Set 0x"HCI_ADV_SET_FMT"x is not enabled - cannot get its address\n", HCI_ADV_SET_CONV(handle));
+    else {
+
+        if (set->ownAddressType == HCI_ADV_OWN_ADDR_TYPE_RANDOM)
+            *ownAddr = set->ownRandomAddr;
+        else {
+            memcpy(ownAddr->addr, mLocalAddr, sizeof(ownAddr->addr));
+            ownAddr->type = BT_ADDR_TYPE_LE_PUBLIC;
+        }
+
+        ret = true;
+    }
+    pthread_mutex_unlock(&mAdvSetsLock);
+
+    return ret;
+}
+
 
 /*
  * FUNCTION: hciAdvSetEnable
@@ -3458,6 +3651,7 @@ bool hciDisconnect(const struct bt_addr* addr)
                 logd("cannot cancel in-progress EDR connection\n");
             conn->state = CONN_STATE_DELETING;
             break;
+        case CONN_STATE_ADV_SET_BLAMING:
         case CONN_STATE_CFG:
         case CONN_STATE_RUNNING:
             hciConnDisconnect(conn->id);
@@ -3699,6 +3893,7 @@ static void hciHandleConnAclDown(uint16_t cid, uint8_t reason)
         case CONN_STATE_WAIT:
             logw("Unexpected connection down in wait state!\n");
             /* fallthrough */
+        case CONN_STATE_ADV_SET_BLAMING:
         case CONN_STATE_CFG:
         case CONN_STATE_RUNNING:
             if (!hciScheduleConnDownNotif(conn->handle, reason))
@@ -3717,13 +3912,14 @@ static void hciHandleConnAclDown(uint16_t cid, uint8_t reason)
  * FUNCTION: hciConnCfgCbk
  * USE:      event handler for hciConnCfg()
  * PARAMS:   evt - the resuting event
+ *           evtSz - event size
  *           cbkData - the data from hciConnCfg (step and aux encoded into a pointer)
  *           evtWaitStateID - unused
  *           forCmdID - unused
  * RETURN:   true if this is our event (always yes)
  * NOTES:    call with mConnsLock held
  */
-static bool hciConnCfgCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
+static bool hciConnCfgCbk(const struct hciEvtHdr *evt, uint32_t evtSz, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
 {
     struct hciEvtLeMeta *leMetaEvt = (struct hciEvtLeMeta*)(evt + 1);
     struct hciEvtReadRemoteSupportedFeaturesComplete *rrsf = (struct hciEvtReadRemoteSupportedFeaturesComplete*)(evt + 1);
@@ -3743,7 +3939,7 @@ static bool hciConnCfgCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evt
     pthread_mutex_lock(&mConnsLock);
 
     switch (step) {
-    case CONN_CFG_STEP_LE + 0: /* first LE config step = get remote features */
+    case CONN_CFG_STEP_LE + 0: /* first LE config step = get remote features & get self addr */
         cid = utilGetLE16(&rrf->conn);
         sta = utilGetLE8(&rrf->status);
         c = hciConnFindById(cid);
@@ -3751,6 +3947,11 @@ static bool hciConnCfgCbk(const struct hciEvtHdr *evt, void *cbkData, uniq_t evt
             break;
         if (sta)
             break;
+        if (!hciAdvSetGetCurAdvAddr(c->le.advSet, &c->selfAddr)) {
+            logw("Unable to get self addr from adv - assuming public things may not work well for this connection\n");
+            memcpy(c->selfAddr.addr, mLocalAddr, sizeof(c->selfAddr.addr));
+            c->selfAddr.type = BT_ADDR_TYPE_LE_PUBLIC;
+        }
         c->le.ftrs = utilGetLE64(&rrf->leFeatures);
         step++;
         break;
@@ -3931,6 +4132,7 @@ static struct hciAclConn* hciConnAclUp(bool established, uint16_t id, const uint
 static bool hciHandleConnAclLeUp(uint8_t status, uint16_t id, bool isMaster, const uint8_t *mac, bool addrRandom, uint16_t interval, uint16_t latency, uint16_t timeout, uint8_t mca)
 {
     struct hciAclConn *c;
+    bool advSetDetermined;
 
     pthread_mutex_lock(&mConnsLock);
     c = hciConnAclUp(!status, id, mac, addrRandom ? BT_ADDR_TYPE_LE_RANDOM : BT_ADDR_TYPE_LE_PUBLIC, false, isMaster);
@@ -3939,11 +4141,17 @@ static bool hciHandleConnAclLeUp(uint8_t status, uint16_t id, bool isMaster, con
         c->le.latency = latency;
         c->le.timeout = timeout;
         c->le.mca = mca;
-        /* XXX: TODO: once we start advertising random addresses, this will need to evolve */
-        memcpy(c->selfAddr.addr, mLocalAddr, sizeof(c->selfAddr.addr));
-        c->selfAddr.type = BT_ADDR_TYPE_LE_PUBLIC;
 
-        hciConnCfg(c, CONN_CFG_STEP_LE, 0);
+        pthread_mutex_lock(&mAdvSetsLock);
+        advSetDetermined = mHciAdvSetHandleAndBlameNewConn(c);
+        pthread_mutex_unlock(&mAdvSetsLock);
+
+        if (!advSetDetermined)
+            c->state = CONN_STATE_ADV_SET_BLAMING;
+        else {
+            c->state = CONN_STATE_CFG;
+            hciConnCfg(c, CONN_CFG_STEP_LE, 0);
+        }
     }
     pthread_mutex_unlock(&mConnsLock);
     return !!c;
