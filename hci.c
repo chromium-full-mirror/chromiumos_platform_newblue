@@ -2330,8 +2330,12 @@ static bool hciAdvSetEnableDisableMethodAndroidVendorCmds(struct hciAdvSet *set,
 
     if (!enable) { // disable the set we do not need
 
-        if (hciVendorLeMultiAdvSetAdvEnableSync(false, set->hwSetNum)) {
-            logw("Failed to disable AndroidVendorExt adv %u\n", set->hwSetNum);
+        if (set->hwSetNum)
+            ret = hciVendorLeMultiAdvSetAdvEnableSync(false, set->hwSetNum);
+        else
+            ret = hciLeSetAdvEnableSync(false);
+        if (ret) {
+            logw("Cannot disable adv 0x"HCI_ADV_SET_FMT"x on channel %u because VendorSetAdvEnable command failed: %02X\n", HCI_ADV_SET_CONV(set->handle), set->hwSetNum, ret);
             return false;
         }
         set->hwEnabled = false;
