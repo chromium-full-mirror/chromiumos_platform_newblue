@@ -56,12 +56,17 @@ struct persistKey {
 #define PERS_NAME_DEVICE_NAME            0x00000001 /* type: PERS_TYPE_BYTE_ARRAY, size: 0..HCI_DEV_NAME_LEN */
 #define PERS_NAME_DISC_TIMEOUT           0x00000002 /* type: PERS_TYPE_UINT, size: 1 */
 #define PERS_NAME_DEV_CLS                0x00000003 /* type: PERS_TYPE_UINT, size: 4 */
-#define PERS_NAME_KEYS                   0x00000004 /* type: PERS_TYPE_ARRAY of {PERS_NAME_KEY_TYPE, PERS_NAME_KEY_VAL} */
+#define PERS_NAME_KEYS                   0x00000004 /* type: PERS_TYPE_ARRAY of {PERS_NAME_KEY} */
 #define PERS_NAME_KEY                    0x00000005 /* type: PERS_TYPE_BYTE_ARRAY, size: sizeof(struct persistKey) */
 #define PERS_NAME_DEVICE                 0x00000006 /* type: PERS_TYPE_ARRAY of {PERS_NAME_DEVICE_NAME, PERS_NAME_BT_ADDR, PERS_NAME_DEV_CLS, PERS_NAME_KEYS, PERS_NAME_LAST_SEEN} */
 #define PERS_NAME_KNOWN_DEVICES          0x00000007 /* type: PERS_TYPE_ARRAY of PERS_NAME_KNOWN_DEVICES */
 #define PERS_NAME_BT_ADDR                0x00000008 /* type: PERS_TYPE_BT_ADDR */
 #define PERS_NAME_LAST_SEEN              0x00000009 /* type: PERS_TYPE_UINT, size: 8, milliseconds since epoch */
+#define PERS_NAME_NUMBERS                0x0000000a /* type: PERS_TYPE_ARRAY of {PERS_NAME_NUM} */
+#define PERS_NAME_NUM                    0x0000000b /* type: PERS_TYPE_ARRAY of 2 elems {PERS_NAME_NUM_NAME, PERS_NAME_NUM_VAL} */
+#define PERS_NAME_NUM_NAME               0x0000000c /* type: PERS_TYPE_UINT, size: 1 */
+#define PERS_NAME_NUM_VAL                0x0000000d /* type: PERS_TYPE_UINT, size: 8 */
+
 
 /* types */
 #define PERS_TYPE_UINT                   0x00000001
@@ -1215,6 +1220,30 @@ void persistAddKnownDev(const struct bt_addr *addr, const void *name, const uint
 }
 
 /*
+ * FUNCTION: persistFindNamedContainerInDevNodeForAddrOrSelf
+ * USE:      Find a named array container in device node for a given addr or self (if addr is null)
+ * PARAMS:   addr - the address or NULL for ourselves
+ *           containerName - container name to find
+ * RETURN:   the node or NULL
+ * NOTES:    call with mLock held
+ */
+static struct persistProp* persistFindNamedContainerInDevNodeForAddrOrSelf(const struct bt_addr *addr, uint32_t containerName)
+{
+    struct persistProp *parent;
+
+    //self?
+    if (!addr)
+        return persistPropFind(mPropsHead, containerName, PERS_TYPE_ARRAY);
+
+    //someone else?
+    parent = persistAddKnownDevInt(addr, NULL, NULL, false, NULL); /* if we're adding a key for it means we saw it and/or are talking to it */
+    if (parent)
+        return persistPropFind(((struct persistArrayInRam*)(parent + 1))->head, containerName, PERS_TYPE_ARRAY);
+
+    return NULL;
+}
+
+/*
  * FUNCTION: persistAddDevKey
  * USE:      Add a new key to a given device (or ourselves)
  * PARAMS:   addr - the address or NULL for ourselves
@@ -1231,20 +1260,50 @@ bool persistAddDevKey(const struct bt_addr *addr, uint8_t keyType, const uint8_t
 
 
     pthread_mutex_lock(&mLock);
-    if (addr) {
-        parent = persistAddKnownDevInt(addr, NULL, NULL, false, NULL); /* if we're adding a key for it means we saw it and/or are talking to it */
-        if (parent)
-            parent = persistPropFind(((struct persistArrayInRam*)(parent + 1))->head, PERS_NAME_KEYS, PERS_TYPE_ARRAY);
-    } else
-        parent = persistPropFind(mPropsHead, PERS_NAME_KEYS, PERS_TYPE_ARRAY);
- 
+    parent = persistFindNamedContainerInDevNodeForAddrOrSelf(addr, PERS_NAME_KEYS);
+
     if (!parent) {
-        logw("Failed to find key list parent for given addess - >abandonning key addition\n");
+        logw("Failed to find key list parent for given addess -> abandonning key addition\n");
         goto out;
     }
     parArr = (struct persistArrayInRam*)(parent + 1);
 
     ret = persistAddKey(&parArr->head, &parArr->tail, keyType, key);
+
+out:
+    pthread_mutex_unlock(&mLock);
+    persistStore();
+    return ret;
+}
+
+/*
+ * FUNCTION: persistDelDevPropsByName
+ * USE:      Delete all properties of a given name for a given device
+ * PARAMS:   addr - the address
+ *           name - properties name
+ * RETURN:   success
+ * NOTES:    recursive
+ */
+static bool persistDelDevPropsByName(const struct bt_addr *addr, uint32_t name)
+{
+    struct persistArrayInRam *propsArr;
+    struct persistProp *dev, *props, *k;
+    bool ret = true;
+
+    pthread_mutex_lock(&mLock);
+    props = persistFindNamedContainerInDevNodeForAddrOrSelf(addr, name);
+    if (!props) {
+        logd("Keys/Numbers property not found probably means we have no keys/numbers stored for the device\n");
+        goto out;
+    }
+
+    propsArr = (struct persistArrayInRam*)(props + 1);
+    propsArr->tail = NULL;
+    while (propsArr->head) {
+        k = propsArr->head;
+        propsArr->head = propsArr->head->next;
+        persistPropFree(k);
+    }
 
 out:
     pthread_mutex_unlock(&mLock);
@@ -1261,41 +1320,13 @@ out:
  */
 bool persistDelDevKeys(const struct bt_addr *addr)
 {
-    struct persistArrayInRam *keyArr;
-    struct persistProp *dev, *keys, *k;
-    bool ret = true;
-
-    pthread_mutex_lock(&mLock);
-    dev = persistFindKnownDev(addr);
-    if (!dev) {
-        logd("Device not found probably means we have no keys stored for it either\n");
-        goto out;
-    }
-
-    keys = persistPropFind(((struct persistArrayInRam*)(dev + 1))->head, PERS_NAME_KEYS, PERS_TYPE_ARRAY);
-    if (!keys) {
-        logd("Keys property not found probably means we have no keys stored for the device\n");
-        goto out;
-    }
-
-    keyArr = (struct persistArrayInRam*)(keys + 1);
-    keyArr->tail = NULL;
-    while (keyArr->head) {
-        k = keyArr->head;
-        keyArr->head = keyArr->head->next;
-        persistPropFree(k);
-    }
-
-out:
-    pthread_mutex_unlock(&mLock);
-    persistStore();
-    return ret;
+    return persistDelDevPropsByName(addr, PERS_NAME_KEYS);
 }
 
 /*
  * FUNCTION: persistGetDevKey
  * USE:      Get a key (ours or another device's)
- * PARAMS:   addr - the address for whic hto retreive th ekey (NULL for our own)
+ * PARAMS:   addr - the address for which to retreive the key (NULL for our own)
  *           keyType - key type to find
  *           key - key is returned here (HCI_LINK_KEY_LEN bytes)
  * RETURN:   true if key was found and returned
@@ -1310,15 +1341,9 @@ bool persistGetDevKey(const struct bt_addr *addr, uint8_t keyType, uint8_t *key)
 
 
     pthread_mutex_lock(&mLock);
-    if (addr) {
-        parent = persistAddKnownDevInt(addr, NULL, NULL, false, NULL); /* if we're finding a key for it means we saw it and/or are talking to it */
-        if (parent)
-            parent = persistPropFind(((struct persistArrayInRam*)(parent + 1))->head, PERS_NAME_KEYS, PERS_TYPE_ARRAY);
-    } else
-        parent = persistPropFind(mPropsHead, PERS_NAME_KEYS, PERS_TYPE_ARRAY);
- 
+    parent = persistFindNamedContainerInDevNodeForAddrOrSelf(addr, PERS_NAME_KEYS);
     if (!parent) {
-        logw("Failed to find key list parent for given addess - >abandonning key search\n");
+        logw("Failed to find key list parent for given addess -> abandonning key search\n");
         goto out;
     }
     parArr = (struct persistArrayInRam*)(parent + 1);
@@ -1336,5 +1361,161 @@ out:
     return ret;
 }
 
+/*
+ * FUNCTION: persistFindNum
+ * USE:      find a named number in the parent "all numbers" array
+ * PARAMS:   head - the hgead of the parent array
+ *           numType - type of number being looked for
+ * RETURN:   the prop containing key VALUE or NULL
+ * NOTES:    call with mLock held
+ */
+static struct persistProp* persistFindNum(struct persistProp *head, uint8_t numType)
+{
+    for (;head;head = head->next) {
+        struct persistArrayInRam *arr = (struct persistArrayInRam*)(head + 1);
+        struct persistProp *inner, *seenNameValProp = NULL;
+        bool nameSeen = false, valSeen = false;
+        uint8_t lastSeenName = 0;
 
+        if (head->info.name != PERS_NAME_NUM || head->info.type != PERS_TYPE_ARRAY)
+            continue;
+
+        for (inner = arr->head; inner; inner = inner->next) {
+            if (inner->info.name == PERS_NAME_NUM_NAME && inner->info.type == PERS_TYPE_UINT && inner->info.len == sizeof(uint8_t)) {
+                if (nameSeen) //only one name expected - this is weird - bail
+                    return NULL;
+                lastSeenName = *(uint8_t*)(inner + 1);
+                nameSeen = true;
+            }
+            if (inner->info.name == PERS_NAME_NUM_VAL && inner->info.type == PERS_TYPE_UINT && inner->info.len == sizeof(uint64_t)) {
+                if (valSeen) //only one val expected - this is weird - bail
+                    return NULL;
+                seenNameValProp = inner;
+                valSeen = true;
+            }
+        }
+        if (nameSeen && valSeen && lastSeenName == numType)
+            return seenNameValProp;
+    }
+    return NULL;
+}
+
+/*
+ * FUNCTION: persistAddNumber
+ * USE:      Add a number of the given type and add it to the given list
+ * PARAMS:   headP - list head stored here
+ *           tailP - lsit tail stored here
+ *           numType - type of number being added
+ *           num - the number
+ * RETURN:   success
+ * NOTES:    call with mLock held
+ */
+static bool persistAddNumber(struct persistProp **headP, struct persistProp **tailP, uint8_t numType, uint64_t num)
+{
+    struct persistProp *valProp, *nameProp, *parentProp;
+    struct persistArrayInRam *parentPropArr;
+
+    //if it already exists, replace it
+    valProp = persistFindNum(*headP, numType);
+    if (valProp) {
+        *(uint64_t*)(valProp + 1) = num;
+        return true;
+    }
+
+    //1. construct a new value-holding array
+    parentProp = persistPropAddEmptyArray(headP, tailP, PERS_NAME_NUM);
+    if (!parentProp)
+        return NULL;
+
+    parentPropArr = (struct persistArrayInRam*)(parentProp + 1);
+
+    //2. add name & val
+    nameProp = persistPropAddInt(&parentPropArr->head, &parentPropArr->tail, PERS_NAME_NUM_NAME, false, sizeof(numType), numType);
+    valProp = persistPropAddInt(&parentPropArr->head, &parentPropArr->tail, PERS_NAME_NUM_VAL, false, sizeof(num), num);
+
+    //if all is ok - return
+    if (nameProp && valProp)
+        return true;
+
+    //else cleanup and fail
+    persistPropDelete(headP, tailP, parentProp);
+    return false;
+}
+
+/*
+ * FUNCTION: persistAddDevNumber
+ * USE:      Add a new "number" to a given device (or ourselves)
+ * PARAMS:   addr - the address or NULL for ourselves
+ *           numType - type of number being added
+ *           num - the number (64 bits)
+ * RETURN:   success
+ * NOTES:    any existing numbers of same type are overwritten
+ */
+bool persistAddDevNumber(const struct bt_addr *addr, uint8_t numType, uint64_t num)
+{
+    struct persistArrayInRam *parArr;
+    struct persistProp *parent;
+    bool ret = false;
+
+    pthread_mutex_lock(&mLock);
+    parent = persistFindNamedContainerInDevNodeForAddrOrSelf(addr, PERS_NAME_NUMBERS);
+    if (!parent) {
+        logw("Failed to find key list parent for given addess -> abandonning number addition\n");
+        goto out;
+    }
+    parArr = (struct persistArrayInRam*)(parent + 1);
+
+    ret = persistAddNumber(&parArr->head, &parArr->tail, numType, num);
+
+out:
+    pthread_mutex_unlock(&mLock);
+    persistStore();
+    return ret;
+}
+
+/*
+ * FUNCTION: persistGetDevNumber
+ * USE:      Get a number (ours or another device's)
+ * PARAMS:   addr - the address for which to retreive the number (NULL for our own)
+ *           numType - type of number being added
+ *           num - the number is returned here (always 64 bits)
+ * RETURN:   true if key was found and returned
+ * NOTES:
+ */
+bool persistGetDevNumber(const struct bt_addr *addr, uint8_t numType, uint64_t *num)
+{
+    struct persistArrayInRam *parArr;
+    struct persistProp *parent, *numProp;
+    bool ret = false;
+
+    pthread_mutex_lock(&mLock);
+    parent = persistFindNamedContainerInDevNodeForAddrOrSelf(addr, PERS_NAME_NUMBERS);
+    if (!parent) {
+        logw("Failed to find key list parent for given addess - >abandonning key search\n");
+        goto out;
+    }
+    parArr = (struct persistArrayInRam*)(parent + 1);
+    numProp = persistFindNum(parArr->head, numType);
+    if (!numProp)
+        goto out;
+
+    *num = *(uint64_t*)(numProp + 1);
+    ret = true;
+
+out:
+    pthread_mutex_unlock(&mLock);
+    return ret;
+}
+
+/*
+ * FUNCTION: persistDelDevNumbers
+ * USE:      Delete all numbers for a given device
+ * PARAMS:   addr - the address
+ * RETURN:   success
+ * NOTES:
+ */
+bool persistDelDevNumbers(const struct bt_addr *addr)
+{
+    return persistDelDevPropsByName(addr, PERS_NAME_NUMBERS);
+}
 
