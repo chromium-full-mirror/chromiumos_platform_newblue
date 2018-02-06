@@ -2,7 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 CFLAGS = -Wall -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -g  -I. -DEXECUTABLE
-CPPFLAGS = -Wall -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -g  -I. -DEXECUTABLE -D_UNITTEST_
+CPPFLAGS = -Wall -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -g  -I. -DEXECUTABLE -D_UNITTEST_ -DPREF_PATH=\"/tmp/bt.newblue.prefs\"
 
 TEST := new_blue_test
 
@@ -36,7 +36,9 @@ $(TEST): $(OBJ) $(OBJ_TEST) usb_vendor_plugin hci_vendor_plugin
 	$(CC) $(CFLAGS) -o $@ -g $(OBJ) $(OBJ_TEST) -ldl -lpthread -lrt
 
 OBJ_UNITTEST = \
-	tests/sm_unittest.o
+	tests/unittest.o \
+	tests/sm_unittest.o \
+	tests/persist_unittest.o
 
 new_blue_unittest: $(OBJ_UNITTEST) $(OBJ)
 	$(CXX) $(CPPFLAGS) -o $@ $^ -lgtest -ldl -lpthread

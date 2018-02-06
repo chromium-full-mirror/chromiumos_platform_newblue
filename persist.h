@@ -1,3 +1,8 @@
+/*
+ * Copyright 2018 The Chromium OS Authors. All rights reserved.
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file.
+ */
 #ifndef _PERSIST_H_
 #define _PERSIST_H_
 
@@ -39,8 +44,8 @@ bool persistAddDevKey(const struct bt_addr *addr, uint8_t keyType, const uint8_t
 bool persistGetDevKey(const struct bt_addr *addr, uint8_t keyType, uint8_t *key);       //addr = NULL for our own keys, all keys are HCI_LINK_KEY_LEN bytes long
 bool persistDelDevKeys(const struct bt_addr *addr);                                     //addr = NULL for our own keys, all keys are HCI_LINK_KEY_LEN bytes long
 
-bool persistAddDevNumber(const struct bt_addr *addr, uint8_t numType, uint64_t num);     //addr = NULL for our own numbers
-bool persistGetDevNumber(const struct bt_addr *addr, uint8_t keyType, uint64_t *num);   //addr = NULL for our own numbers
+bool persistAddDevNumber(const struct bt_addr *addr, uint8_t numType, uint64_t num);    //addr = NULL for our own numbers
+bool persistGetDevNumber(const struct bt_addr *addr, uint8_t numType, uint64_t *num);   //addr = NULL for our own numbers
 bool persistDelDevNumbers(const struct bt_addr *addr);                                  //addr = NULL for our own numbers
 
 
