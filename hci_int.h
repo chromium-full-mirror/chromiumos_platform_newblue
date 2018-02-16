@@ -2683,7 +2683,7 @@ struct hciLeSetExtendedAdvEnableItem {
 struct hciLeSetExtendedAdvEnable {
     uint8_t enable;
     uint8_t numSets;
-    struct hciLeSetExtendedAdvEnableItem sets[];
+    struct hciLeSetExtendedAdvEnableItem sets[1]; /* 1 here since then we can use this command easily to control a single set at a time, other uses can be made with more work */
 } __packed;
 struct hciCmplLeSetExtendedAdvEnable {
     uint8_t status;

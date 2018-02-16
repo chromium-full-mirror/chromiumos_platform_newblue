@@ -42,8 +42,20 @@
 
 #define HCI_DEV_NAME_LEN        248
 
-//this alsmost always means "max power but i don't care to specify how much exactly"
+//this almost always means "max power but i don't care to specify how much exactly"
 #define HCI_ADV_TX_PWR_LVL_DONT_CARE      127
+
+//PHY types
+#define HCI_LE_PHY_1M                     1
+#define HCI_LE_PHY_2M                     2
+#define HCI_LE_PHY_CODED                  3
+
+//needless fragmentation is NOT allowed for legacy ADV PDUs
+#define HCI_EXTD_ADV_DATA_OP_MIDDLE_FRAG  0 //middle fragment of a long data set
+#define HCI_EXTD_ADV_DATA_OP_FIRST_FRAG   1 //first part of a long data set
+#define HCI_EXTD_ADV_DATA_OP_LAST_FRAG    2 //last part of a long data set
+#define HCI_EXTD_ADV_DATA_OP_COMPLETE     3 //a complete adv data set
+#define HCI_EXTD_ADV_DATA_OP_UNCHANGED    4 //no data included - use old data
 
 /* eir data types */
 #define HCI_EIR_TYPE_FLAGS                0x01

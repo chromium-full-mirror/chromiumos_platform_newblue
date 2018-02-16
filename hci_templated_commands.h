@@ -7,6 +7,7 @@
 #error "do not ever include this file anywhere"
 #endif
 
+#include <alloca.h>
 
 /*
  * This generates simple SYNC functions for BT commands.
@@ -37,8 +38,7 @@
                                                struct hciEvtCmdStatus *evt = &evtD;                                  \
                                                const uint8_t _ogf = ogf;                                             \
                                                const uint16_t _ocf = ocf;                                            \
-                                               const bool want_sta = true;                                           \
-                                               uint32_t _len = 0;
+                                               const bool want_sta = true;
 
 #define HCI_SIMPLY_SYNC_WRITE(name, params, ogf, ocf)                                                                \
                                            static int hci##name##Sync params                                         \
@@ -50,8 +50,25 @@
                                                struct hciCmpl##name *evt = &evtD;                                    \
                                                const uint8_t _ogf = ogf;                                             \
                                                const uint16_t _ocf = ocf;                                            \
+                                               const bool want_sta = false;
+
+#define HCI_SIMPLY_SYNC_WRITE_VAR_LEN(name, params, ogf, ocf, lenParam)                                              \
+                                           static int hci##name##Sync params                                         \
+                                           {                                                                         \
+                                               struct hci##name *cmd;                                                \
+                                               const uint32_t cmdSz = sizeof(*cmd) + lenParam;                       \
+                                               struct hciCmpl##name evtD;                                            \
+                                               struct hciCmpl##name *evt = &evtD;                                    \
+                                               const uint8_t _ogf = ogf;                                             \
+                                               const uint16_t _ocf = ocf;                                            \
                                                const bool want_sta = false;                                          \
-                                               uint32_t _len = 0;
+                                               const uint8_t varLenWriteMarker = 1; /* allow COPY_IN_VAR_LEN_DATA */ \
+                                               if (cmdSz > 255) {                                                    \
+                                                   loge("attempt to call 0x%02X.%04X  with %ub of data\n",           \
+                                                         _ogf, _ocf, (int)(lenParam + sizeof(struct hci##name)));    \
+                                                   return -2;                                                        \
+                                               }                                                                     \
+                                               cmd = alloca(cmdSz);
 
 #define HCI_SIMPLY_SYNC_WRITE_NOCMDPARAMS(name, ogf, ocf)                                                            \
                                            static int hci##name##Sync (void)                                         \
@@ -62,8 +79,7 @@
                                                struct hciCmpl##name *evt = &evtD;                                    \
                                                const uint8_t _ogf = ogf;                                             \
                                                const uint16_t _ocf = ocf;                                            \
-                                               const bool want_sta = false;                                          \
-                                               uint32_t _len = 0;
+                                               const bool want_sta = false;
 
 #define HCI_SIMPLY_SYNC_READ(name, params, ogf, ocf)                                                                 \
                                            static int hci##name##Sync params                                         \
@@ -73,8 +89,7 @@
                                                const uint32_t cmdSz = sizeof(*cmd);                                  \
                                                const uint8_t _ogf = ogf;                                             \
                                                const uint16_t _ocf = ocf;                                            \
-                                               const bool want_sta = false;                                          \
-                                               uint32_t _len = 0;
+                                               const bool want_sta = false;
 
 #define HCI_SIMPLY_SYNC_READ_NOCMDPARAMS(name, params, ogf, ocf)                                                     \
                                            static int hci##name##Sync params                                         \
@@ -83,8 +98,7 @@
                                                const uint32_t cmdSz = 0;                                             \
                                                const uint8_t _ogf = ogf;                                             \
                                                const uint16_t _ocf = ocf;                                            \
-                                               const bool want_sta = false;                                          \
-                                               uint32_t _len = 0;
+                                               const bool want_sta = false;
 
 #define REQUIRE_VERSION(_v)                    if (mBtVer < _v) {                                                    \
                                                    loge("attempt to call 0x%02X.%04X on v%u\n", _ogf, _ocf, mBtVer); \
@@ -109,6 +123,8 @@
 #define HCI_COPY_IN_U8(name)                   utilSetLE8(&cmd->name, name);
 #define HCI_COPY_IN_BOOL(name)                 utilSetLE8(&cmd->name, name ? 1 : 0);
 #define HCI_COPY_IN_MAC(name)                  memcpy(cmd->name, name, sizeof(cmd->name));
+#define HCI_COPY_IN_VAR_LEN_DATA(name,len)     if (varLenWriteMarker)                                                \
+                                                   memcpy(cmd->name, name, len);  //only allowed in HCI_SIMPLY_SYNC_WRITE_VAR_LEN
 #define HCI_COPY_IN_DATA(name,len)             if (len > sizeof(cmd->name)) {                                        \
                                                    logw("Truncating "#name" to %ub\n",(int)sizeof(cmd->name));       \
                                                    len = sizeof(cmd->name);                                          \
@@ -124,7 +140,105 @@
                                                return (unsigned)utilGetLE8(&evt->status);                            \
                                            }
 
+/*
+ * FUNCTION: hciLeSetExtendedAdvParamsSync
+ * USE:      set extended adv params (BT5)
+ * PARAMS:   advSetHandle - the adv set handle
+ *           advSetProperties - adv type to use (bitfield)
+ *           primaryAdvIntervalMin - minimum adv interval (in units of 0.625ms), actually a uint24_t
+ *           primaryAdvIntervalMax - maximum adv interval (in units of 0.625ms), actually a uint24_t
+ *           primaryAdvChannelMap - channels to use: bitmask of HCI_ADV_CHAN_MAP_USE_*
+ *           ownAddrType - own addr type: HCI_ADV_OWN_ADDR_TYPE_*
+ *           peerAddrType - set to 1 if direct adv to random addr, else ignored
+ *           peerMac - if direct adv, the mac address of target, else ignored
+ *           filterPolicy - filter policy: HCI_ADV_FILTER_POL_*
+ *           txPower - requested adv transmit power in dBm
+ *           primaryAdvPhy - PHY to use for primary adv, one of HCI_LE_PHY_* (CANNOT be HCI_LE_PHY_2M)
+ *           secondaryAdvMaxSkip - how many adv can be skipped for secondary adv
+ *           secondaryAdvPhy - PHY to use for secondary adv one of HCI_LE_PHY_*
+ *           advSid - the SID value to send in adv packets (0x00..0x0f)
+ *           enableScanRequestNotif - do we want an event when we are scanned?
+ *           evt - the event structure to stash the chip's relpy in
+ */
+HCI_SIMPLY_SYNC_READ(LeSetExtendedAdvParams, (uint8_t advSetHandle, uint16_t advSetProperties, uint32_t primaryAdvIntervalMin, uint32_t primaryAdvIntervalMax, uint8_t primaryAdvChannelMap, uint8_t ownAddrType, uint8_t peerAddrType, const uint8_t *peerMac, uint8_t filterPolicy, int8_t txPower, uint8_t primaryAdvPhy, uint8_t secondaryAdvMaxSkip, uint8_t secondaryAdvPhy, uint8_t advSid, bool enableScanRequestNotif, struct hciCmplLeSetExtendedAdvParams *evt), HCI_OGF_LE, HCI_CMD_LE_Set_Extended_Adv_Params )
+    REQUIRE_VERSION(HCI_VERSION_5_0);
+    REQUIRE_FEATURE(0, HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER);
+    HCI_COPY_IN_U8(advSetHandle);
+    HCI_COPY_IN_U16(advSetProperties);
+    HCI_COPY_IN_U24(primaryAdvIntervalMin);
+    HCI_COPY_IN_U24(primaryAdvIntervalMax);
+    HCI_COPY_IN_U8(primaryAdvChannelMap);
+    HCI_COPY_IN_U8(ownAddrType);
+    HCI_COPY_IN_U8(peerAddrType);
+    HCI_COPY_IN_MAC(peerMac);
+    HCI_COPY_IN_U8(filterPolicy);
+    HCI_COPY_IN_U8(txPower);
+    HCI_COPY_IN_U8(primaryAdvPhy);
+    HCI_COPY_IN_U8(secondaryAdvMaxSkip);
+    HCI_COPY_IN_U8(secondaryAdvPhy);
+    HCI_COPY_IN_U8(advSid);
+    HCI_COPY_IN_BOOL(enableScanRequestNotif)
+HCI_SIMPLY_SYNC_END
 
+/*
+ * FUNCTION: hciLeSetExtendedAdvDataSync
+ * USE:      set extended adv data (BT5)
+ * PARAMS:   advSetHandle - the adv set handle
+ *           operation - one of HCI_EXTD_ADV_DATA_OP_*
+ *           fragmentPreference - may the chip choose to fragment data over the air? (merely a suggestion)
+ *           advDataLen - number of bytes that follow
+ *           advData - the data
+ */
+HCI_SIMPLY_SYNC_WRITE_VAR_LEN(LeSetExtendedAdvData, (uint8_t advSetHandle, uint8_t operation, bool fragmentPreference, uint8_t advDataLen, const uint8_t *advData), HCI_OGF_LE, HCI_CMD_LE_Set_Extended_Adv_Data, advDataLen)
+    REQUIRE_VERSION(HCI_VERSION_5_0);
+    REQUIRE_FEATURE(0, HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER);
+    HCI_COPY_IN_U8(advSetHandle);
+    HCI_COPY_IN_U8(operation);
+    HCI_COPY_IN_BOOL(fragmentPreference);
+    HCI_COPY_IN_U8(advDataLen);
+    HCI_COPY_IN_VAR_LEN_DATA(advData, advDataLen);
+HCI_SIMPLY_SYNC_END
+
+
+/*
+ * FUNCTION: hciLeSetExtendedScanRspDataSync
+ * USE:      set extended adv scan rsp data (BT5)
+ * PARAMS:   advSetHandle - the adv set handle
+ *           operation - one of HCI_EXTD_ADV_DATA_OP_*, but HCI_EXTD_ADV_DATA_OP_UNCHANGED is not allowed
+ *           fragmentPreference - may the chip choose to fragment data over the air? (merely a suggestion)
+ *           scanRspDataLen - number of bytes that follow
+ *           scanRspData - the data
+ */
+HCI_SIMPLY_SYNC_WRITE_VAR_LEN(LeSetExtendedScanRspData, (uint8_t advSetHandle, uint8_t operation, bool fragmentPreference, uint8_t scanRspDataLen, const uint8_t *scanRspData), HCI_OGF_LE, HCI_CMD_LE_Set_Extended_Scan_Rsp_Data, scanRspDataLen)
+    REQUIRE_VERSION(HCI_VERSION_5_0);
+    REQUIRE_FEATURE(0, HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER);
+    HCI_COPY_IN_U8(advSetHandle);
+    HCI_COPY_IN_U8(operation);
+    HCI_COPY_IN_BOOL(fragmentPreference);
+    HCI_COPY_IN_U8(scanRspDataLen);
+    HCI_COPY_IN_VAR_LEN_DATA(scanRspData, scanRspDataLen);
+HCI_SIMPLY_SYNC_END
+
+/*
+ * FUNCTION: hciLeSetExtendedAdvEnableSync
+ * USE:      set extended adv on or off (BT5)
+ * PARAMS:   enable - enable or disable this set?
+ *           advSetHandle - the adv set handle
+ *           duration - adv duration in units of 10ms, or 0 for forever
+ *           maxExtdAdvEvts - max number of extended adv events, or 0 for forever
+ * NOTES:    this is a limited version of what this command can do, but
+ *           it is more convenient - this gives us control over just one
+ *           set at a time, whcih is OK for us.
+ */
+HCI_SIMPLY_SYNC_WRITE(LeSetExtendedAdvEnable, (bool enable, uint8_t advSetHandle, uint16_t duration, uint8_t maxExtdAdvEvts), HCI_OGF_LE, HCI_CMD_LE_Set_Extended_Adv_Enable)
+    REQUIRE_VERSION(HCI_VERSION_5_0);
+    REQUIRE_FEATURE(0, HCI_LMP_FTR_LE_SUPPORTED_CONTROLLER);
+    HCI_COPY_IN_BOOL(enable);
+    utilSetLE8(&cmd->numSets, 1);
+    utilSetLE8(&cmd->sets[0].advSetHandle, advSetHandle);
+    utilSetLE16(&cmd->sets[0].duration, duration);
+    utilSetLE16(&cmd->sets[0].maxExtdAdvEvts, maxExtdAdvEvts);
+HCI_SIMPLY_SYNC_END
 
 /*
  * FUNCTION: hciLeLtkRequestReplySync
