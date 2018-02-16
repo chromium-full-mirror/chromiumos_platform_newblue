@@ -1985,6 +1985,52 @@ static void hciInquiryEvtLeSingleItem(const struct bt_addr *addr, uint8_t advTyp
 }
 
 /*
+ * FUNCTION: hciAdvSetTerminatedEventHandle
+ * USE:      Called when we know an adv set stopped being advertised (usually due to a connection)
+ * PARAMS:   advInstance - the hw instance id of the adv set
+ *           aclConnId - the connection this caused (or ACL_CONN_ID_INVALID is none)
+ * RETURN:   none
+ * NOTES:    will take mAdvSetsLock and mConnsLock (not concurrently). If a connection is found and
+ *           it is still in a BLAMING state, it will be adjusted to config state and advSet param
+ *           will be filled.
+ */
+static void hciAdvSetTerminatedEventHandle(uint8_t advInstance, uint16_t aclConnId)
+{
+    hci_adv_set_t setH = 0;
+    struct hciAdvSet *t;
+
+    pthread_mutex_lock(&mAdvSetsLock);
+    for (t = mAdvSets; t; t = t->next) {
+        if (t->hwEnabled && t->hwSetNum == advInstance) {
+            t->hwEnabled = false; //even if conn not found, this set was still fingered for being the cause so it is still already off
+            setH = t->handle;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&mAdvSetsLock);
+
+    if (!setH)
+        logw("Adv id not found for vendor advt change event\n");
+    else if (aclConnId != ACL_CONN_ID_INVALID) {
+
+        struct hciAclConn* conn;
+
+        pthread_mutex_lock(&mConnsLock);
+        conn = hciConnFindById(aclConnId);
+        if (!conn)
+            logw("Connection id not found for vendor advt change event\n");
+        else if (conn->state != CONN_STATE_ADV_SET_BLAMING)
+            logw("Conn is not in blaming state for vendor advt change event\n");
+        else {
+            conn->le.advSet = setH;
+            conn->state = CONN_STATE_CFG;
+            hciConnCfg(conn, CONN_CFG_STEP_LE, 0);
+        }
+        pthread_mutex_unlock(&mConnsLock);
+    }
+}
+
+/*
  * FUNCTION: hciConnEvtCbk
  * USE:      Called with connection state events
  * PARAMS:   evt - the event
@@ -2066,6 +2112,10 @@ static bool hciConnEvtCbk(const struct hciEvtHdr *evt, uint32_t evtSz, void *cbk
             logd("ACL LE kery req for conn 0x%02x with rand 0x"FMT64"x and div 0x%02x\n", cid, CNV64(randomNum), diversifier);
             if (!hciHandleConnLeLtkReq(cid, randomNum, diversifier))
                 loge("Failed to handle LE key req\n");
+        } else if (evtType == HCI_EVTLE_Adv_Set_Terminated) {
+            struct hciEvtLeAdvSetTerminated *req = (struct hciEvtLeAdvSetTerminated*)(meta + 1);
+
+            hciAdvSetTerminatedEventHandle(req->advSetHandle, req->status ? ACL_CONN_ID_INVALID : req->conn);
         } else
             return false;
     } else if (evtType == HCI_EVT_Vendor) {
@@ -2079,36 +2129,8 @@ static bool hciConnEvtCbk(const struct hciEvtHdr *evt, uint32_t evtSz, void *cbk
                 logw("Invalid event size for vendor subevent for advt change - ignored\n");
             else if (sce->reason != HCI_EVTVENDOR_Android_Subevent_Advt_State_Change_Reason)
                 logw("Invalid reason code for vendor subevent for advt change - ignored\n");
-            else {
-                struct hciAclConn* conn;
-                hci_adv_set_t setH = 0;
-                struct hciAdvSet *t;
-
-                pthread_mutex_lock(&mAdvSetsLock);
-                for (t = mAdvSets; t; t = t->next) {
-                    if (t->hwEnabled && t->hwSetNum == sce->advInstance) {
-                        t->hwEnabled = false; //even if conn not found, this set was still fingered for being the cause so it is still already off
-                        setH = t->handle;
-                        break;
-                    }
-                }
-                pthread_mutex_unlock(&mAdvSetsLock);
-
-                pthread_mutex_lock(&mConnsLock);
-                conn = hciConnFindById(sce->connHandle);
-                if (!conn)
-                    logw("Connection id not found for vendor advt change event\n");
-                else if (!setH)
-                    logw("Adv id not found for vendor advt change event\n");
-                else if (conn->state != CONN_STATE_ADV_SET_BLAMING)
-                    logw("Conn is not in blaming state for vendor advt change event\n");
-                else {
-                    conn->le.advSet = setH;
-                    conn->state = CONN_STATE_CFG;
-                    hciConnCfg(conn, CONN_CFG_STEP_LE, 0);
-                }
-                pthread_mutex_unlock(&mConnsLock);
-            }
+            else
+                hciAdvSetTerminatedEventHandle(sce->advInstance, sce->connHandle);
         } else
             return false;
     } else
@@ -2859,9 +2881,10 @@ static bool hciBtStackUp(void)
     /* set event handlers for connection states */
     {
         static const uint8_t connEvtTypes[] = {HCI_EVT_Disconnection_Complete, HCI_EVT_Encryption_Change, HCI_EVT_Authentication_Complete,
-                                               HCI_EVT_LE_Meta, HCI_EVT_LE_Meta, HCI_EVT_LE_Meta, HCI_EVT_Vendor, 0};
+                                               HCI_EVT_LE_Meta, HCI_EVT_LE_Meta, HCI_EVT_LE_Meta, HCI_EVT_Vendor, HCI_EVT_LE_Meta, 0};
         static const uint16_t connEvtExtras[] = {0, 0, 0, HCI_EVTLE_Connection_Complete, HCI_EVTLE_Connection_Update_Complete,
-                                                 HCI_EVTLE_LTK_Request, HCI_EVTVENDOR_Android_Subevent_Advt_State_Change,};
+                                                 HCI_EVTLE_LTK_Request, HCI_EVTVENDOR_Android_Subevent_Advt_State_Change,
+                                                 HCI_EVTLE_Adv_Set_Terminated};
 
         if (!hciSetManyEventPersistentHandlers(connEvtTypes, connEvtExtras, hciConnEvtCbk, NULL)) {
             ret = -2;
