@@ -1,3 +1,8 @@
+/*
+ * Copyright 2018 The Chromium OS Authors. All rights reserved.
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file.
+ */
 #ifndef _CONFIG_H_
 #define _CONFIG_H_
 
@@ -35,10 +40,12 @@
 /*
  * Where to store stack config/state
  */
+#ifndef PREF_PATH
 #ifdef ANDROID
 #define PREF_PATH                           "/data/data/com.android.bluetooth/bt.newblue.prefs"
 #else
 #define PREF_PATH                           "bt.newblue.prefs"
+#endif
 #endif
 
 /*

@@ -1,3 +1,8 @@
+/*
+ * Copyright 2018 The Chromium OS Authors. All rights reserved.
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file.
+ */
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <stdlib.h>
@@ -87,6 +92,8 @@ static struct persistProp *mPropsTail = NULL;
 /* fwd decls */
 static bool persistPropListLoad(struct persistProp **headP, struct persistProp **tailP, int fd, uint64_t len);
 static bool persistSetPropInList(struct persistProp **headP, struct persistProp **tailP, uint32_t name, uint32_t type, const void *buf, uint32_t len, bool replaceExisting);
+static bool persistAddNumber(struct persistProp **headP, struct persistProp **tailP, uint8_t numType, uint64_t num);
+static struct persistProp* persistFindNum(struct persistProp *head, uint8_t numType);
 
 /*
  * FUNCTION: persistGetRealtime
@@ -446,6 +453,48 @@ static struct persistProp* persistFindKey(struct persistProp *head, uint8_t keyT
 }
 
 /*
+ * FUNCTION: persistGenRandomBytes
+ * USE:      Generate random bytes
+ * PARAMS:   out - where the random bytes are stored
+ *           len - the size of desired length of random bytes
+ * RETURN:   success with the valid output
+ * NOTES:
+ */
+static bool persistGenRandomBytes(uint8_t *out, uint8_t len)
+{
+    int fd;
+    bool ret;
+
+    fd = open("/dev/urandom", O_RDONLY);
+    if (fd == -1) {
+        logw("Failed to open urandom\n");
+        return false;
+    }
+
+    ret = r_read(fd, out, len);
+    close(fd);
+
+    if (!ret) {
+        logw("Failed to read urandom\n");
+        return false;
+    }
+    return true;
+}
+
+/*
+ * FUNCTION: persistGenRand
+ * USE:      Generate a random 64-bit number
+ * PARAMS:   out - where the random number is be stored
+ * RETURN:   success with the valid output
+ * NOTES:
+ */
+static bool persistGenRand(uint64_t *out) {
+    if (!out)
+        return false;
+    return persistGenRandomBytes((uint8_t *)out, sizeof(*out));
+}
+
+/*
  * FUNCTION: persistAddKey
  * USE:      Add a key of the given type and add it to the given list (and optionally generate it)
  * PARAMS:   headP - list head stored here
@@ -458,27 +507,14 @@ static struct persistProp* persistFindKey(struct persistProp *head, uint8_t keyT
 static bool persistAddKey(struct persistProp **headP, struct persistProp **tailP, uint8_t keyType, const uint8_t *key)
 {
     struct persistKey pkey;
-    bool ret;
-    int fd;
 
     pkey.keyType = keyType;
 
     if (key)
         memcpy(pkey.key, key, sizeof(pkey.key));
     else {
-        fd = open("/dev/urandom", O_RDONLY);
-        if (fd == -1) {
-            logw("Failed to open urandom\n");
+        if (!persistGenRandomBytes(pkey.key, HCI_LE_KEY_LEN))
             return false;
-        }
-
-        ret = r_read(fd, pkey.key, sizeof(pkey.key));
-        close(fd);
-
-        if (!ret) {
-            logw("Failed to read urandom\n");
-            return false;
-        }
     }
 
     return persistSetPropInList(headP, tailP, PERS_NAME_KEY, PERS_TYPE_BYTE_ARRAY, &pkey, sizeof(pkey), false);
@@ -494,7 +530,7 @@ static bool persistAddKey(struct persistProp **headP, struct persistProp **tailP
 static void persistLoadRequiredProps(void)
 {
     static const char defaultName[] = "NB.t";
-    struct persistProp *keylist, *key;
+    struct persistProp *keylist, *key, *numList;
 
     if (!persistPropFind(mPropsHead, PERS_NAME_DEVICE_NAME, PERS_TYPE_BYTE_ARRAY))
         if (!persistPropAddByteArr(&mPropsHead, &mPropsTail, PERS_NAME_DEVICE_NAME, strlen(defaultName), defaultName))
@@ -536,6 +572,23 @@ static void persistLoadRequiredProps(void)
         if (!persistFindKey(keyArr->head, KEY_TYPE_DHK))
             if (!persistAddKey(&keyArr->head, &keyArr->tail, KEY_TYPE_DHK, NULL))
                 loge("failed to create & store DHK\n");
+    }
+
+    numList = persistPropFind(mPropsHead, PERS_NAME_NUMBERS, PERS_TYPE_ARRAY);
+    if (!numList)
+        numList = persistPropAddEmptyArray(&mPropsHead, &mPropsTail, PERS_NAME_NUMBERS);
+    if (!numList)
+        loge("Failed to add device numbers default prop\n");
+    else {
+        struct persistArrayInRam *numArr = (struct persistArrayInRam*)(numList + 1);
+        uint64_t num = 0;
+
+        if (!persistFindNum(numArr->head, PERSIST_NUM_TYPE_SM_RANDOM)) {
+            if (!persistGenRand(&num))
+                loge("failed to generate SM Random\n");
+            else if (!persistAddNumber(&numArr->head, &numArr->tail, PERSIST_NUM_TYPE_SM_RANDOM, num))
+                loge("failed to create & store SM Random\n");
+        }
     }
 }
 
@@ -651,7 +704,6 @@ void persistStore(void)
     struct persistFileHdr hdr;
     struct persistProp *t;
     int fd;
-
 
     pthread_mutex_lock(&mLock);
     utilSetBE32(&hdr.magic, PERSIST_MAGIC);
@@ -1062,7 +1114,7 @@ static struct persistProp* persistFindKnownDev(const struct bt_addr *addr)
  * FUNCTION: persistGetKnownDev
  * USE:      Find info given a mac address
  * PARAMS:   addr - the address to look up
- *           name - name gets stored here (shoudl fit at least HCI_DEV_NAME_LEN bytes). may be null
+ *           name - name gets stored here (should fit at least HCI_DEV_NAME_LEN bytes). may be null
  *           nameLen - name's length gets stored here. may be null
  *           devCls - device class gets stored here. may be null
  * RETURN:   true if device was found (not a promise that any data was returned)
@@ -1177,7 +1229,7 @@ static struct persistProp* persistAddKnownDevInt(const struct bt_addr *addr, con
         logw("Failed to save device name\n");
 
     if (haveName) {
-        /* never replace an existing name with a shortened one. Always replce with a full one */
+        /* never replace an existing name with a shortened one. Always replace with a full one */
         struct persistArrayInRam *devItems;
 
         devItems = (struct persistArrayInRam*)(dev + 1);
@@ -1195,6 +1247,10 @@ static struct persistProp* persistAddKnownDevInt(const struct bt_addr *addr, con
     if (!persistPropFind(devArr->head, PERS_NAME_KEYS, PERS_TYPE_ARRAY))
         if (!persistPropAddEmptyArray(&devArr->head, &devArr->tail, PERS_NAME_KEYS))
             logw("Failed to add the missing keys container to device\n");
+
+    if (!persistPropFind(devArr->head, PERS_NAME_NUMBERS, PERS_TYPE_ARRAY))
+        if (!persistPropAddEmptyArray(&devArr->head, &devArr->tail, PERS_NAME_NUMBERS))
+            logw("Failed to add the missing numbers container to device\n");
 
 out:
     return dev;
