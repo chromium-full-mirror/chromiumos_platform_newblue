@@ -150,19 +150,7 @@ TEST_F(PersistTestSuite, DeviceNumerGetAddDel) {
     uint64_t randNumTwo = 87654321;
     uint64_t num = 0;
 
-    // set a number for local device
-    ASSERT_TRUE(persistGetDevNumber(NULL, PERSIST_NUM_TYPE_SM_RANDOM, &num));
-    ASSERT_TRUE(persistAddDevNumber(NULL, PERSIST_NUM_TYPE_SM_RANDOM, randNumOne));
-    ASSERT_TRUE(persistGetDevNumber(NULL, PERSIST_NUM_TYPE_SM_RANDOM, &num));
-    ASSERT_EQ(num, randNumOne);
-
-    // replace the randNumOne with randNumTwo for local device
-    ASSERT_TRUE(persistAddDevNumber(NULL, PERSIST_NUM_TYPE_SM_RANDOM, randNumTwo));
-    ASSERT_TRUE(persistGetDevNumber(NULL, PERSIST_NUM_TYPE_SM_RANDOM, &num));
-    ASSERT_EQ(num, randNumTwo);
-
-    // delete numbers of local device
-    ASSERT_TRUE(persistDelDevNumbers(NULL));
+    // there should be no random number for local device
     ASSERT_FALSE(persistGetDevNumber(NULL, PERSIST_NUM_TYPE_SM_RANDOM, &num));
 
     // set a number for device one

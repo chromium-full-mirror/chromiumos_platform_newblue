@@ -530,7 +530,7 @@ static bool persistAddKey(struct persistProp **headP, struct persistProp **tailP
 static void persistLoadRequiredProps(void)
 {
     static const char defaultName[] = "NB.t";
-    struct persistProp *keylist, *key, *numList;
+    struct persistProp *keylist, *key;
 
     if (!persistPropFind(mPropsHead, PERS_NAME_DEVICE_NAME, PERS_TYPE_BYTE_ARRAY))
         if (!persistPropAddByteArr(&mPropsHead, &mPropsTail, PERS_NAME_DEVICE_NAME, strlen(defaultName), defaultName))
@@ -572,23 +572,6 @@ static void persistLoadRequiredProps(void)
         if (!persistFindKey(keyArr->head, KEY_TYPE_DHK))
             if (!persistAddKey(&keyArr->head, &keyArr->tail, KEY_TYPE_DHK, NULL))
                 loge("failed to create & store DHK\n");
-    }
-
-    numList = persistPropFind(mPropsHead, PERS_NAME_NUMBERS, PERS_TYPE_ARRAY);
-    if (!numList)
-        numList = persistPropAddEmptyArray(&mPropsHead, &mPropsTail, PERS_NAME_NUMBERS);
-    if (!numList)
-        loge("Failed to add device numbers default prop\n");
-    else {
-        struct persistArrayInRam *numArr = (struct persistArrayInRam*)(numList + 1);
-        uint64_t num = 0;
-
-        if (!persistFindNum(numArr->head, PERSIST_NUM_TYPE_SM_RANDOM)) {
-            if (!persistGenRand(&num))
-                loge("failed to generate SM Random\n");
-            else if (!persistAddNumber(&numArr->head, &numArr->tail, PERSIST_NUM_TYPE_SM_RANDOM, num))
-                loge("failed to create & store SM Random\n");
-        }
     }
 }
 
