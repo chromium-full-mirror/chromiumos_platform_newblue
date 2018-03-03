@@ -361,6 +361,7 @@ static void hciConnCfg(struct hciAclConn *c, uint32_t step, uint32_t aux);
 static bool hciRxAclForRunningConn(struct hciAclConn* conn, uint16_t hdr, sg packet);
 static void hciConnAclStructDel(struct hciAclConn* conn);
 static bool hciSetupResetEventHandler(bool cmdWaitLockHeld);
+static void hciAdvSetGetCurAdvAddrLocked(struct hciAdvSet *set, struct bt_addr *ownAddr);
 
 /* adv indirection function pointers. Called with mAdvSetsLock held*/
 static bool (*mHciAdvSetEnable)(struct hciAdvSet *set, bool enable);
@@ -2003,10 +2004,12 @@ static void hciAdvSetTerminatedEventHandle(uint8_t advInstance, uint16_t aclConn
 {
     hci_adv_set_t setH = 0;
     struct hciAdvSet *t;
+    struct bt_addr self;
 
     pthread_mutex_lock(&mAdvSetsLock);
     for (t = mAdvSets; t; t = t->next) {
         if (t->hwEnabled && t->hwSetNum == advInstance) {
+            hciAdvSetGetCurAdvAddrLocked(t, &self);
             t->hwEnabled = false; //even if conn not found, this set was still fingered for being the cause so it is still already off
             setH = t->handle;
             break;
@@ -2028,6 +2031,7 @@ static void hciAdvSetTerminatedEventHandle(uint8_t advInstance, uint16_t aclConn
             logw("Conn is not in blaming state for vendor advt change event\n");
         else {
             conn->le.advSet = setH;
+            conn->selfAddr = self;
             conn->state = CONN_STATE_CFG;
             hciConnCfg(conn, CONN_CFG_STEP_LE, 0);
         }
@@ -2529,8 +2533,11 @@ static bool hciAdvSetHandleAndBlameNewConnMethodAndroidVendorCmds(struct hciAclC
     struct hciAdvSet *t;
 
     for (t = mAdvSets; t; t = t->next) {
-        if (t->hwEnabled && !t->hwSetNum)
+        if (t->hwEnabled && !t->hwSetNum) {
+            hciAdvSetGetCurAdvAddrLocked(t, &conn->selfAddr);
             conn->le.advSet = t->handle;
+            break;
+        }
     }
 
     /*
@@ -3216,6 +3223,24 @@ bool hciAdvSetGetCurTxPowerLevel(hci_adv_set_t handle, int8_t *advTxPowerLevelP)
 }
 
 /*
+ * FUNCTION: hciAdvSetGetCurAdvAddrLocked
+ * USE:      Get the current adv addr of an adv set.
+ * PARAMS:   set - the adv set structure
+ *           ownAddr - where to store the result
+ * RETURN:   success
+ * NOTES:    must be called with mAdvSetsLock held, assumes set is currently active
+ */
+static void hciAdvSetGetCurAdvAddrLocked(struct hciAdvSet *set, struct bt_addr *ownAddr)
+{
+    if (set->ownAddressType == HCI_ADV_OWN_ADDR_TYPE_RANDOM)
+        *ownAddr = set->ownRandomAddr;
+    else {
+        memcpy(ownAddr->addr, mLocalAddr, sizeof(ownAddr->addr));
+        ownAddr->type = BT_ADDR_TYPE_LE_PUBLIC;
+    }
+}
+
+/*
  * FUNCTION: hciAdvSetGetCurAdvAddr
  * USE:      Get the current adv addr of an adv set. Set must be enabled!
  * PARAMS:   handle - the handle to this set
@@ -3235,14 +3260,7 @@ bool hciAdvSetGetCurAdvAddr(hci_adv_set_t handle, struct bt_addr *ownAddr)
     else if (!set->hwEnabled)
         logw("Set 0x"HCI_ADV_SET_FMT"x is not enabled - cannot get its address\n", HCI_ADV_SET_CONV(handle));
     else {
-
-        if (set->ownAddressType == HCI_ADV_OWN_ADDR_TYPE_RANDOM)
-            *ownAddr = set->ownRandomAddr;
-        else {
-            memcpy(ownAddr->addr, mLocalAddr, sizeof(ownAddr->addr));
-            ownAddr->type = BT_ADDR_TYPE_LE_PUBLIC;
-        }
-
+        hciAdvSetGetCurAdvAddrLocked(set, ownAddr);
         ret = true;
     }
     pthread_mutex_unlock(&mAdvSetsLock);
@@ -3979,11 +3997,6 @@ static bool hciConnCfgCbk(const struct hciEvtHdr *evt, uint32_t evtSz, void *cbk
             break;
         if (sta)
             break;
-        if (!hciAdvSetGetCurAdvAddr(c->le.advSet, &c->selfAddr)) {
-            logw("Unable to get self addr from adv - assuming public things may not work well for this connection\n");
-            memcpy(c->selfAddr.addr, mLocalAddr, sizeof(c->selfAddr.addr));
-            c->selfAddr.type = BT_ADDR_TYPE_LE_PUBLIC;
-        }
         c->le.ftrs = utilGetLE64(&rrf->leFeatures);
         step++;
         break;
