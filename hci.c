@@ -950,9 +950,14 @@ static void hciCbkWorkLeLtkReq(hci_conn_t aclConn, uint64_t randomNum, uint16_t 
     conn = hciConnFindByHandle(aclConn);
     if (!conn)
         logd("Conn for key req not found\n");
-    else if (!l2cAclLeLtkRequest(conn->id, randomNum, diversifier)) {
+    else if (!l2cAclLeLtkRequest(aclConn, randomNum, diversifier)) {
         logd("LTK key req from L2C failed - assuming no key\n");
-        hciLeLtkRequestNegativeReplySync(conn->id);
+        struct hciLeLtkRequestNegativeReply cmd;
+        utilSetLE16(&cmd.conn, conn->id);
+        //we cannot call a sync function in this thread, so do the async thing
+        if (!hciCmdSubmitSimpleWithStatusWithDoneCbk(HCI_OGF_LE, HCI_CMD_LE_LTK_Request_Negative_Reply, &cmd, sizeof(cmd), hciCmdStatusCbk, NULL)) {
+            logi("Failed to request negative link key reply for acl conn "HCI_CONN_FMT"u (id %u)\n", HCI_CONN_CONV(aclConn), conn->id);
+        }
     }
     pthread_mutex_unlock(&mConnsLock);
 }
