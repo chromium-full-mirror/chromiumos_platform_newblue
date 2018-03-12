@@ -51,12 +51,13 @@ struct l2cKeyReqState {
     uint16_t ediv;
 };
 
-#define L2C_STATE_OPEN       0 /* dataPtr points to l2c_handle_t */
-#define L2C_STATE_MTU        1 /* dataPtr points to a uint16_t mtu */
-#define L2C_STATE_ENCR       2 /* dataPtr points l2cEncrState */
-#define L2C_STATE_RX         3 /* dataPtr points to an sg */
-#define L2C_STATE_KEY_REQ    4 /* if you are the security manager - key request came in - reply via l2cApiLeProvideLtk(). dataPtr points to l2cKeyReqState */
-#define L2C_STATE_CLOSED     5 /* dataPtr points nowhere, or error on openining */
+#define L2C_STATE_OPEN         0 /* dataPtr points to l2c_handle_t */
+#define L2C_STATE_MTU          1 /* dataPtr points to a uint16_t mtu */
+#define L2C_STATE_ENCR         2 /* dataPtr points l2cEncrState */
+#define L2C_STATE_RX           3 /* dataPtr points to an sg */
+#define L2C_STATE_KEY_REQ      4 /* if you are the security manager - key request came in - reply via l2cApiLeProvideLtk(). dataPtr points to l2cKeyReqState */
+#define L2C_STATE_ENCR_KEY_REF 5 /* dataPtr points l2cEncrState */
+#define L2C_STATE_CLOSED       6 /* dataPtr points nowhere, or error on openining */
 typedef void (*l2cStateCbk)(void *userData, void *instance, uint8_t state, const void *data, uint32_t len);
 
 #define SVC_ALLOC_SUCCESS             0 /* must alloc state, success */
@@ -178,10 +179,12 @@ void l2cAclDataRx(hci_conn_t aclConn, sg packet, bool first);
 void l2cAclCreditAvail(bool le);
 /* lower layer calls this when connection parameters change */
 void l2cAclLinkParamsChange(hci_conn_t aclConn, bool success, uint16_t interval, uint16_t latency, uint16_t timeout);
-/* lower layer calls this when connection encryption changes. called with FALSE if encr failed since BT cannot realyl go from encrypted to not */
+/* lower layer calls this when connection encryption changes. called with FALSE if encr failed since BT cannot really go from encrypted to not */
 void l2cAclLinkEncrChange(hci_conn_t aclConn, bool isEncrypted, bool isMitmSafe);
 /* lower layer calls this when connection encryption request from the other side comes */
 bool l2cAclLeLtkRequest(hci_conn_t aclConn, uint64_t rand, uint16_t ediv);
+/* lower layer calls this when connection encryption key refreshed. called with FALSE if encr failed to resume with a new key since BT cannot really go from encrypted to not */
+void l2cAclLinkEncrKeyRefresh(hci_conn_t aclConn, bool isEncrypted, bool isMitmSafe);
 
 #endif
 

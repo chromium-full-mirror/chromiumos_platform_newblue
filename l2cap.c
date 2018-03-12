@@ -5375,17 +5375,19 @@ out:
  * PARAMS:   aclConn - the ACL link at hand
  *           isEncrypted - is it now encrypted?
  *           isMitmSafe - is it now MITM-safe?
+ *           isKeyRefreshed - is a new key used for encryption
  * RETURN:   NONE
  * NOTES:    Call with mConnsLock held
  */
-static void l2cAclLinkEncrChangeInt(struct l2cAclConn *aclConn, bool isEncrypted, bool isMitmSafe)
+static void l2cAclLinkEncrChangeInt(struct l2cAclConn *aclConn, bool isEncrypted, bool isMitmSafe,
+                                    bool isKeyRefreshed)
 {
     struct l2cConn *iter = mConns, *conn;
     struct l2cEncrState es;
     bool changed;
 
     changed = (!aclConn->encrypted != !isEncrypted) || (!aclConn->mitmSafe != !isMitmSafe);
-    if (!changed) {
+    if (!isKeyRefreshed && !changed) {
         logd("Unchanged encr call\n");
         return;
     }
@@ -5395,8 +5397,9 @@ static void l2cAclLinkEncrChangeInt(struct l2cAclConn *aclConn, bool isEncrypted
     es.isEncr = isEncrypted;
     es.isMitmSafe = isMitmSafe;
 
-
-    /* at this point we're sure connection encryption status changed - inform everyone */
+    /* at this point we're sure connection encryption status changed for non-key-refreshed, so
+     * inform everyone
+     */
     while (iter) {
         conn = iter;
         iter = iter->next;
@@ -5419,8 +5422,11 @@ static void l2cAclLinkEncrChangeInt(struct l2cAclConn *aclConn, bool isEncrypted
         }
 
         /* notify existing connections */
-        if (conn->state == L2C_CONN_STATE_ESTABLISHED && !l2cSvcWorkScheduleStateCall(conn, L2C_STATE_ENCR, &es, sizeof(es)))
+        if (conn->state == L2C_CONN_STATE_ESTABLISHED &&
+            !l2cSvcWorkScheduleStateCall(
+                conn, isKeyRefreshed ? L2C_STATE_ENCR_KEY_REF : L2C_STATE_ENCR, &es, sizeof(es))) {
             loge("Failed to send close state\n");
+        }
     }
 }
 
@@ -5753,7 +5759,7 @@ void l2cAclLinkEncrChange(hci_conn_t aclConnID, bool isEncrypted, bool isMitmSaf
     aclConn = l2cAclConnFindById(aclConnID);
     if (aclConn) {
         logd("Link acl "HCI_CONN_FMT"x encr change to %d,%d. Handling\n", HCI_CONN_CONV(aclConn->conn), isEncrypted,isMitmSafe);
-        l2cAclLinkEncrChangeInt(aclConn, isEncrypted, isMitmSafe);
+        l2cAclLinkEncrChangeInt(aclConn, isEncrypted, isMitmSafe, false);
     } else
         logd("Link acl "HCI_CONN_FMT"x not found. Encr change ignored.\n", HCI_CONN_CONV(aclConnID));
     pthread_mutex_unlock(&mConnsLock);
@@ -5821,6 +5827,31 @@ bool l2cApiLeProvideLtk(l2c_handle_t handle, const uint8_t *key)
 
     pthread_mutex_unlock(&mConnsLock);
     return ret;
+}
+
+/*
+ * FUNCTION: l2cAclLinkEncrKeyRefresh
+ * USE:      Called when a ACL encryption is refreshed with a new key
+ * PARAMS:   aclConnID - the conection ID
+ *           isEncrypted - is link now encrypted?
+ *           isMitmSafe - is link now MITM-safe?
+ * RETURN:   NONE
+ * NOTES:
+ */
+void l2cAclLinkEncrKeyRefresh(hci_conn_t aclConnID, bool isEncrypted, bool isMitmSafe)
+{
+    struct l2cAclConn *aclConn;
+
+    logd("l2cAclLinkEncrKeyRefresh(acl "HCI_CONN_FMT"x, %d, %d)\n", HCI_CONN_CONV(aclConnID), isEncrypted, isMitmSafe);
+
+    pthread_mutex_lock(&mConnsLock);
+    aclConn = l2cAclConnFindById(aclConnID);
+    if (aclConn) {
+        logd("Link acl "HCI_CONN_FMT"x encr key refreshed and changed to %d,%d. Handling\n", HCI_CONN_CONV(aclConn->conn), isEncrypted,isMitmSafe);
+        l2cAclLinkEncrChangeInt(aclConn, isEncrypted, isMitmSafe, true);
+    } else
+        logd("Link acl "HCI_CONN_FMT"x not found. Encr key refreshed ignored.\n", HCI_CONN_CONV(aclConnID));
+    pthread_mutex_unlock(&mConnsLock);
 }
 
 /*

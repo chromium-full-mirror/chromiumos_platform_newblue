@@ -1,3 +1,8 @@
+/*
+ * Copyright 2018 The Chromium OS Authors. All rights reserved.
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file.
+ */
 //todo: only one LE connection attempt can exist at a time
 //our "extra" param for event filtering canhandle other events to as long as we're willing to have a giant switch-case... and check against it in all structs
 //todo: always request remote versions & features before using them (eg: le encrypt support) and before telling anyone a link is up!
@@ -129,6 +134,7 @@ struct hciCmdSendWorkItem {
 #define CBK_WORK_ENCR_CHANGE        7
 #define CBK_WORK_ACL_DATA           8
 #define CBK_WORK_LE_KEY_REQ         9
+#define CBK_WORK_ENCR_KEY_REFRESH   10
 
 struct hciCbkWorkItem {
     uint8_t       cbkWorkItemType;
@@ -187,6 +193,12 @@ struct hciCbkWorkItem {
             bool                          nowEncrypted;
             bool                          isMitmSafe;
         } encrChange;
+
+        struct {
+            hci_conn_t                    conn;
+            bool                          nowEncrypted;
+            bool                          isMitmSafe;
+        } encrKeyRefresh;
 
         struct {
             hci_conn_t                    conn;
@@ -351,6 +363,7 @@ static void hciHandleConnAclDown(uint16_t cid, uint8_t reason);
 static bool hciHandleConnAclLeUp(uint8_t status, uint16_t id, bool isMaster, const uint8_t *mac, bool addrRandom, uint16_t interval, uint16_t latency, uint16_t timeout, uint8_t mca);
 static bool hciHandleConnAclEncr(uint16_t cid, bool encrOn);
 static bool hciHandleConnAclAuth(uint16_t cid, bool authOn);
+static bool hciHandleConnAclEncrKeyRefresh(uint16_t cid, bool encrOn);
 static bool hciHandleConnAclLeUpdate(uint8_t status, uint16_t cid, uint16_t interval, uint16_t latency, uint16_t timeout);
 static bool hciHandleConnLeLtkReq(uint16_t cid, uint64_t randomNum, uint16_t diversifier);
 static bool hciConnUpdate(uint16_t cid, uint16_t minInt, uint16_t maxInt, uint16_t latency, uint16_t timeout);
@@ -964,7 +977,7 @@ static void hciCbkWorkLeLtkReq(hci_conn_t aclConn, uint64_t randomNum, uint16_t 
 }
 
 /*
- * FUNCTION: hciCbkWorkLeLtkReq
+ * FUNCTION: hciLeProvideLtk
  * USE:      Called by higher layer - provide key
  * PARAMS:   aclConn - the connection
  *           key - key to use or NULL if none
@@ -1039,6 +1052,9 @@ static void* hciCbkWorker(void *unused)
             break;
         case CBK_WORK_LE_KEY_REQ:
             hciCbkWorkLeLtkReq(w->leKeyReq.conn, w->leKeyReq.randomNum, w->leKeyReq.diversifier);
+            break;
+        case CBK_WORK_ENCR_KEY_REFRESH:
+            l2cAclLinkEncrKeyRefresh(w->encrKeyRefresh.conn, w->encrKeyRefresh.nowEncrypted, w->encrKeyRefresh.isMitmSafe);
             break;
         default:
             loge("Unknown callback work type %u\n", w->cbkWorkItemType);
@@ -1264,7 +1280,7 @@ static bool hciScheduleConnParamChange(hci_conn_t conn, bool success, uint16_t i
 /*
  * FUNCTION: hciScheduleLeLtkRequest
  * USE:      Enqueue a call to the connection key request notif
- * PARAMS:   conn - the conenction
+ * PARAMS:   conn - the connection
  *           randomNum - provied by other side
  *           diversifier - provied by other side
  * RETURN:   true if enqueued, false else
@@ -1293,7 +1309,7 @@ static bool hciScheduleLeLtkRequest(hci_conn_t conn, uint64_t randomNum, uint16_
 /*
  * FUNCTION: hciScheduleConnEncrChange
  * USE:      Enqueue a call to the connection encr change notif
- * PARAMS:   conn - the conenction
+ * PARAMS:   conn - the connection
  *           nowEncrypted - are we now encrypted?
  *           isMitmSafe - are we now MITM-safe?
  * RETURN:   true if enqueued, false else
@@ -1310,6 +1326,7 @@ static bool hciScheduleConnEncrChange(hci_conn_t conn, bool nowEncrypted, bool i
     w->cbkWorkItemType = CBK_WORK_ENCR_CHANGE;
     w->encrChange.conn = conn;
     w->encrChange.nowEncrypted = nowEncrypted;
+    w->encrChange.isMitmSafe = isMitmSafe;
 
     if (workQueuePut(mCallbackWork, w))
         return true;
@@ -1318,6 +1335,34 @@ static bool hciScheduleConnEncrChange(hci_conn_t conn, bool nowEncrypted, bool i
     return false;
 }
 
+/*
+ * FUNCTION: hciScheduleConnEncrKeyRefresh
+ * USE:      Enqueue a call to the connection encryption key fresh notification
+ * PARAMS:   conn - the connection
+ *           nowEncrypted - are we now encrypted?
+ *           isMitmSafe - are we now MITM-safe?
+ * RETURN:   true if enqueued, false else
+ * NOTES:
+ */
+static bool hciScheduleConnEncrKeyRefresh(hci_conn_t conn, bool nowEncrypted, bool isMitmSafe)
+{
+    struct hciCbkWorkItem *w;
+
+    w = (struct hciCbkWorkItem*)malloc(sizeof(struct hciCbkWorkItem));
+    if (!w)
+        return false;
+
+    w->cbkWorkItemType = CBK_WORK_ENCR_KEY_REFRESH;
+    w->encrKeyRefresh.conn = conn;
+    w->encrKeyRefresh.nowEncrypted = nowEncrypted;
+    w->encrKeyRefresh.isMitmSafe = isMitmSafe;
+
+    if (workQueuePut(mCallbackWork, w))
+        return true;
+
+    free(w);
+    return false;
+}
 
 /*
  * FUNCTION: hciScheduleConnDataRx
@@ -2083,6 +2128,15 @@ static bool hciConnEvtCbk(const struct hciEvtHdr *evt, uint32_t evtSz, void *cbk
         logd("ACL conn %d auth with status %d\n", cid, status);
         if (!hciHandleConnAclAuth(cid, !status))
             loge("Failed to handle conn auth\n");
+    } else if (evtType == HCI_EVT_Encryption_Key_Refresh_Complete) {
+        struct hciEvtEncrKeyRefreshComplete *encr = (struct hciEvtEncrKeyRefreshComplete*)(evt + 1);
+        uint8_t status = utilGetLE8(&encr->status);
+        uint16_t cid = utilGetLE16(&encr->conn);
+        bool encrOn = !status;
+
+        logd("ACL conn %d encr key refreshed %d with status %d\n", cid, encrOn, status);
+        if (!hciHandleConnAclEncrKeyRefresh(cid, encrOn))
+            loge("Failed to handle conn encr key refreshed\n");
     } else if (evtType == HCI_EVT_LE_Meta) {
         struct hciEvtLeMeta *meta = (struct hciEvtLeMeta*)(evt + 1);
         evtType = utilGetLE8(&meta->subevent);
@@ -2118,7 +2172,7 @@ static bool hciConnEvtCbk(const struct hciEvtHdr *evt, uint32_t evtSz, void *cbk
             uint64_t randomNum = utilGetLE16(&req->randomNum);
             uint16_t diversifier = utilGetLE16(&req->diversifier);
 
-            logd("ACL LE kery req for conn 0x%02x with rand 0x"FMT64"x and div 0x%02x\n", cid, CNV64(randomNum), diversifier);
+            logd("ACL LE key req for conn 0x%02x with rand 0x"FMT64"x and div 0x%02x\n", cid, CNV64(randomNum), diversifier);
             if (!hciHandleConnLeLtkReq(cid, randomNum, diversifier))
                 loge("Failed to handle LE key req\n");
         } else if (evtType == HCI_EVTLE_Adv_Set_Terminated) {
@@ -2893,8 +2947,9 @@ static bool hciBtStackUp(void)
     /* set event handlers for connection states */
     {
         static const uint8_t connEvtTypes[] = {HCI_EVT_Disconnection_Complete, HCI_EVT_Encryption_Change, HCI_EVT_Authentication_Complete,
-                                               HCI_EVT_LE_Meta, HCI_EVT_LE_Meta, HCI_EVT_LE_Meta, HCI_EVT_Vendor, HCI_EVT_LE_Meta, 0};
-        static const uint16_t connEvtExtras[] = {0, 0, 0, HCI_EVTLE_Connection_Complete, HCI_EVTLE_Connection_Update_Complete,
+                                               HCI_EVT_Encryption_Key_Refresh_Complete, HCI_EVT_LE_Meta, HCI_EVT_LE_Meta, HCI_EVT_LE_Meta,
+                                               HCI_EVT_Vendor, HCI_EVT_LE_Meta, 0};
+        static const uint16_t connEvtExtras[] = {0, 0, 0, 0, HCI_EVTLE_Connection_Complete, HCI_EVTLE_Connection_Update_Complete,
                                                  HCI_EVTLE_LTK_Request, HCI_EVTVENDOR_Android_Subevent_Advt_State_Change,
                                                  HCI_EVTLE_Adv_Set_Terminated};
 
@@ -4250,6 +4305,30 @@ static bool hciHandleConnAclAuth(uint16_t cid, bool authOn)
         logd("cid %d was %sauthed\n", cid, c->mitmSafe ? "" : "not ");
         c->mitmSafe = authOn;
         ret = hciScheduleConnEncrChange(c->handle, c->encrypted, c->mitmSafe);
+    }
+    pthread_mutex_unlock(&mConnsLock);
+    return ret;
+}
+
+/* FUNCTION: hciHandleConnAclEncrKeyRefresh
+ * USE:      Notify all interested in encryption key refresh
+ * PARAMS:   cid - the connection id
+ *           encrOn - is encryption on
+ * RETURN:   true on success
+ * NOTES:
+ */
+static bool hciHandleConnAclEncrKeyRefresh(uint16_t cid, bool encrOn)
+{
+    struct hciAclConn *c;
+    bool ret = false;
+
+    logd("cid %d now %sencrypted with a new key\n", cid, encrOn ? "" : "not ");
+
+    pthread_mutex_lock(&mConnsLock);
+    c = hciConnFindById(cid);
+    if (c) {
+        logd("cid %d was %sencrypted\n", cid, c->encrypted ? "" : "not ");
+        ret = hciScheduleConnEncrKeyRefresh(c->handle, c->encrypted, c->mitmSafe);
     }
     pthread_mutex_unlock(&mConnsLock);
     return ret;
