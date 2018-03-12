@@ -116,27 +116,28 @@ struct smAuthReq {
 
 /* definition of structs and macros based on our implementation */
 #define SM_PHASE_START                  0  /* nothing happened yet. */
-#define SM_PHASE_REQ_SENT               1  /* we sent pair req. waiting for pair resp. */
-#define SM_PHASE_REQ_RESP               2  /* the peer has sent us a pair request, we replied. waiting for Mconfim. OR we sent req and got resp */
-#define SM_PHASE_CONF_SENT              3  /* we sent Mconfirm. waiting for Sconfirm. */
-#define SM_PHASE_CONF_RESP              4  /* the peer has sent us Mconfirm, we replied with Sconfirm. waiting for Mrand. OR we sent Mconfirm and got Sconfim. */
-#define SM_PHASE_RAND_SENT              5  /* we sent Mrand. wainting for Srand. */
-#define SM_PHASE_RAND_RESP              6  /* the peer has sent us Mrand, we replied with Srand. OR we sent Mrand and got Srand. */
-#define SM_PHASE_STK_SENT               7  /* the controller asked us for LTK, we replied with STK. OR we started encryption with STK. */
-#define SM_PHASE_STK_ENCRYPTED          8  /* we received encryption changed event with STK sent previously */
-#define SM_PHASE_ENCRYPT_INFO_SENT      9  /* we sent our LTK via encryption information */
-#define SM_PHASE_ENCRYPT_INFO_RECEIVED  10 /* we received peer's LTK via encryption information*/
-#define SM_PHASE_MASTER_ID_SENT         11 /* we sent our EDIV and Rand via master identification */
-#define SM_PHASE_MASTER_ID_RECEIVED     12 /* we received peer's EDIV and Rand via master identification */
-#define SM_PHASE_ID_INFO_SENT           13 /* we sent our IRK via identity information */
-#define SM_PHASE_ID_INFO_RECEIVED       14 /* we received peer's IRK via identity information */
-#define SM_PHASE_ID_ADDR_INFO_SENT      15 /* we sent our public address via identity address information */
-#define SM_PHASE_ID_ADDR_INFO_RECEIVED  16 /* we received peer's address via identity address information */
-#define SM_PHASE_SIGN_INFO_SENT         17 /* we sent our CSRK via signing information */
-#define SM_PHASE_SIGN_INFO_RECEIVED     18 /* we received peer's CSRK via signing information */
-#define SM_PHASE_DONE                   19 /* pairing is done. OR the peer was paired previously. */
-#define SM_PHASE_LTK_SENT               20 /* the controller asked us for LTK, we replied with LTK. OR we started encryption with LTK. */
-#define SM_PHASE_LTK_ENCRYPTED          21 /* pairing is done and we received encryption changed event with LTK sent previously */
+#define SM_PHASE_SEC_REQ_SENT           1  /* we sent security req. waiting for pair req. */
+#define SM_PHASE_REQ_SENT               2  /* we sent pair req. waiting for pair resp. */
+#define SM_PHASE_REQ_RESP               3  /* the peer has sent us a pair request, we replied. waiting for Mconfim. OR we sent req and got resp */
+#define SM_PHASE_CONF_SENT              4  /* we sent Mconfirm. waiting for Sconfirm. */
+#define SM_PHASE_CONF_RESP              5  /* the peer has sent us Mconfirm, we replied with Sconfirm. waiting for Mrand. OR we sent Mconfirm and got Sconfim. */
+#define SM_PHASE_RAND_SENT              6  /* we sent Mrand. wainting for Srand. */
+#define SM_PHASE_RAND_RESP              7  /* the peer has sent us Mrand, we replied with Srand. OR we sent Mrand and got Srand. */
+#define SM_PHASE_STK_SENT               8  /* the controller asked us for LTK, we replied with STK. OR we started encryption with STK. */
+#define SM_PHASE_STK_ENCRYPTED          9  /* we received encryption changed event with STK sent previously */
+#define SM_PHASE_ENCRYPT_INFO_SENT      10  /* we sent our LTK via encryption information */
+#define SM_PHASE_ENCRYPT_INFO_RECEIVED  11 /* we received peer's LTK via encryption information*/
+#define SM_PHASE_MASTER_ID_SENT         12 /* we sent our EDIV and Rand via master identification */
+#define SM_PHASE_MASTER_ID_RECEIVED     13 /* we received peer's EDIV and Rand via master identification */
+#define SM_PHASE_ID_INFO_SENT           14 /* we sent our IRK via identity information */
+#define SM_PHASE_ID_INFO_RECEIVED       15 /* we received peer's IRK via identity information */
+#define SM_PHASE_ID_ADDR_INFO_SENT      16 /* we sent our public address via identity address information */
+#define SM_PHASE_ID_ADDR_INFO_RECEIVED  17 /* we received peer's address via identity address information */
+#define SM_PHASE_SIGN_INFO_SENT         18 /* we sent our CSRK via signing information */
+#define SM_PHASE_SIGN_INFO_RECEIVED     19 /* we received peer's CSRK via signing information */
+#define SM_PHASE_DONE                   20 /* pairing is done. OR the peer was paired previously. */
+#define SM_PHASE_LTK_SENT               21 /* the controller asked us for LTK, we replied with LTK. OR we started encryption with LTK. */
+#define SM_PHASE_LTK_ENCRYPTED          22 /* pairing is done and we received encryption changed event with LTK sent previously */
 
 #define SM_WAIT_INTVL_FACTOR            2     /* the wait interval grows exponentially with base 2 */
 #define SM_DEF_WAIT_INTVL               0     /* 0 sec in msec - default wait interval */
@@ -672,6 +673,26 @@ static bool smWriteReversedBytes(uint8_t *out, int outLen, const uint8_t *in, in
 }
 
 /*
+ * FUNCTION: smSendSecurityReq
+ * USE:      Send security request
+ * PARAMS:   inst - the instance
+ * RETURN:   success
+ * NOTES:
+ */
+static bool smSendSecurityReq(struct smInstance *inst)
+{
+    struct smAuthReq req;
+
+    inst->isInitiator = false;
+    utilSetLE8(&req.authReq, inst->myAuthReq);
+    if (!smTx(inst, SM_SECURITY_REQUEST, &req, sizeof(req))) {
+        logw("%s(): Failed to send security request command\n", __func__);
+        return false;
+    }
+    return true;
+}
+
+/*
  * FUNCTION: smSendPairReq
  * USE:      Send pairing request
  * PARAMS:   inst - the instance
@@ -1008,7 +1029,7 @@ static void smRx(struct smInstance *inst, sg packet)
     struct smMasterInfo masterInfo;
     struct smIdentityAddrInfo addrInfo;
     struct smAuthReq authReq;
-    uint8_t typ, addrType, err;
+    uint8_t typ, addrType, err, auth;
     uint64_t rand, ediv;
     uint8_t mac[BT_MAC_LEN] = {0,};
     uint8_t ltk[HCI_LE_KEY_LEN] = {0,};
@@ -1038,7 +1059,8 @@ static void smRx(struct smInstance *inst, sg packet)
             break;
         }
 
-        if (inst->phase != SM_PHASE_START || inst->isInitiator)
+        if ((inst->phase == SM_PHASE_SEC_REQ_SENT && inst->isInitiator) ||
+            (inst->phase != SM_PHASE_START) || inst->isInitiator)
             break;
 
         inst->isInitiator = false;
@@ -1411,7 +1433,8 @@ static void smRx(struct smInstance *inst, sg packet)
             break;
         }
 
-        if (inst->phase == SM_PHASE_DONE) {
+        /* TODO(mcchou): check if we should allow re-encrypt when encrypted with LTK already */
+        if ((inst->phase == SM_PHASE_DONE || inst->phase == SM_PHASE_LTK_ENCRYPTED) && inst->isInitiator) {
             /* if previously paired, use peer's LTK, random number and EDIV to start encryption */
             if (!persistGetDevNumber(&inst->peerAddr, PERSIST_NUM_TYPE_SM_RANDOM, &rand) ||
                 !persistGetDevNumber(&inst->peerAddr, PERSIST_NUM_TYPE_SM_EDIV, &ediv) ||
@@ -1421,6 +1444,13 @@ static void smRx(struct smInstance *inst, sg packet)
             inst->isInitiator = true; /* for re-establishment, we are the initiator for sure */
             l2cApiLeEncryptConn(inst->conn, rand, ediv, ltk);
         } else if (inst->phase == SM_PHASE_START) {
+            auth = utilGetLE8(&authReq.authReq);
+            if ((auth & SM_AUTH_REQ_BOND_MASK) != SM_AUTH_REQ_BOND_NO &&
+                (auth & SM_AUTH_REQ_BOND_MASK) != SM_AUTH_REQ_BOND_BOND) {
+                logw("Invalid authReq in security request\n");
+                break;
+            }
+            inst->peerAuthReq = auth; /* TODO(mcchou): use whether received from the responder */
             smSendPairReq(inst); /* all fields required were set when the instance was allocated */
         } else {
             break;
@@ -1568,6 +1598,7 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
     uint16_t ediv = 0, myEdiv = 0;
     uint64_t myRand = 0;
     uint8_t key[HCI_LE_KEY_LEN] = {0,};
+    uint8_t rawKey[HCI_LE_KEY_LEN] = {0,};
 
     switch (evt) {
     case L2C_STATE_OPEN:
@@ -1591,7 +1622,7 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
         }
         encrState = (struct l2cEncrState *)data;
 
-        if (inst->phase != SM_PHASE_DONE && inst->phase != SM_PHASE_STK_SENT)
+        if (inst->phase != SM_PHASE_LTK_SENT && inst->phase != SM_PHASE_STK_SENT)
             goto fail;
 
         if (!smIsEncryptExpected(encrState, inst)) {
@@ -1642,8 +1673,6 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
             break;;
         }
         keyReqState = (struct l2cKeyReqState *)data;
-        smReadReversedBytes((uint8_t *)&ediv, sizeof(ediv), (uint8_t *)&keyReqState->ediv,
-                            sizeof(keyReqState->ediv));
 
         if (inst->isInitiator) {
             logw("received key request when we are the initiator\n");
@@ -1655,15 +1684,18 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
          * with the numbers exchanged in previous pairing session. In this case, we are the
          * responder where the peer will use our LTK for security re-establishment.
          */
-        if (inst->phase == SM_PHASE_DONE) {
+        if (inst->phase == SM_PHASE_DONE || inst->phase == SM_PHASE_LTK_ENCRYPTED) {
             logd("Received key request for connection re-establishment\n");
             if (!persistGetDevNumber(&inst->peerAddr, PERSIST_NUM_TYPE_SM_MY_RANDOM, &myRand)) {
                 logw("Failed to retrieve random number to verify connection re-establishment\n");
-            } else if (!smGenEdiv(&myEdiv, inst, myRand, true) || myEdiv != ediv) {
+            } else if (!smGenEdiv(&myEdiv, inst, myRand, true) || myEdiv != keyReqState->ediv) {
                 logw("Failed to verify EDIV for connection re-establishment\n");
-            } else  {
+            } else if (!persistGetDevKey(&inst->peerAddr, KEY_TYPE_MY_LTK, key) ||
+                       !smReadReversedBytes(rawKey, sizeof(rawKey), key, sizeof(key))) {
+                logw("Failed to retrieve LTK for connection re-establishment\n");
+            } else {
                 inst->isInitiator = false; /* for re-establishment, we are the responder for sure */
-                l2cApiLeProvideLtk(inst->conn, key);
+                l2cApiLeProvideLtk(inst->conn, rawKey);
                 smTransitPhase(inst, SM_PHASE_LTK_SENT);
             }
             break;
@@ -1673,11 +1705,34 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
             goto fail;
 
         /* the controller takes the key in little endian order, so reverse it before sending */
-        if (!smReadReversedBytes(key, sizeof(key), inst->stk.key, sizeof(inst->stk.key)) ||
-            !l2cApiLeProvideLtk(inst->conn, key))
+        if (!smReadReversedBytes(rawKey, sizeof(rawKey), inst->stk.key, sizeof(inst->stk.key)) ||
+            !l2cApiLeProvideLtk(inst->conn, rawKey))
             goto fail;
 
         smTransitPhase(inst, SM_PHASE_STK_SENT);
+
+        break;
+
+    case L2C_STATE_ENCR_KEY_REF:
+        if (len != sizeof(struct l2cEncrState)) {
+            loge("invalid length for encryption event\n");
+            break;
+        }
+        encrState = (struct l2cEncrState *)data;
+
+        if (inst->phase != SM_PHASE_LTK_SENT)
+            goto fail;
+
+        if (!smIsEncryptExpected(encrState, inst)) {
+            logw("Failed to encrypt the connection %llu\n", inst->conn);
+            goto fail;
+        }
+
+        /* if the encryption of key refreshing went well, no further action is needed for either
+         * initiator or responder
+         */
+        if (inst->phase == SM_PHASE_LTK_SENT)
+            smTransitPhase(inst, SM_PHASE_LTK_ENCRYPTED);
 
         break;
 

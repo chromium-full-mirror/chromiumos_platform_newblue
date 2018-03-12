@@ -1,3 +1,8 @@
+/*
+ * Copyright 2018 The Chromium OS Authors. All rights reserved.
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file.
+ */
 #include <stdlib.h>
 #include <string.h>
 #include "workQueue.h"
@@ -357,7 +362,7 @@ static struct gattCliCon *mCliCons = NULL;
 /* fwd decls */
 static void gattCliTodoEnqItem(struct gattConnState *conn, struct gattCliTodoItem *todo, bool inFront);
 static void gattCliTodoNext(l2c_handle_t conn, struct gattCliTodoItem *now);
-static void gattTodoItemFree(struct gattCliTodoItem *todo); 
+static void gattTodoItemFree(struct gattCliTodoItem *todo);
 static void gattWorkItemFree(struct gattWorkItem *wi);
 
 
@@ -536,7 +541,7 @@ static struct gattService *gattServiceFindByRangeRef(att_range_t rangeRef)
  * PARAMS:   who - whom to send to
  *           s - the data to send
  * RETURN:   ATT_TX_RET_*
- * NOTES:    
+ * NOTES:
  */
 static uint8_t gattAttSrvTxCbk(l2c_handle_t who, sg s)
 {
@@ -551,7 +556,7 @@ static uint8_t gattAttSrvTxCbk(l2c_handle_t who, sg s)
  *           who - whom the connection is to
  *           cid - ATT's connection ID
  *           transId - ATT's transaction ID
- *           handle - handle 
+ *           handle - handle
  *           byteOfst - byte offset for the read/write
  *           reason - ATT_READ_FOR_* or ATT_WRITE_FOR_*
  *           len - requested length
@@ -595,7 +600,7 @@ static bool gattEnqueueSrvRwCall(uint8_t workType, struct gattService *svc, l2c_
  *           who - whom the connection is to
  *           cid - ATT's connection ID
  *           transId - ATT's transaction ID
- *           handle - handle 
+ *           handle - handle
  *           byteOfst - byte offset for the read
  *           reason - ATT_READ_FOR_*
  *           len - requested length
@@ -614,7 +619,7 @@ static bool gattEnqueueSrvReadCall(struct gattService *svc, l2c_handle_t who, in
  *           who - whom the connection is to
  *           cid - ATT's connection ID
  *           transId - ATT's transaction ID
- *           handle - handle 
+ *           handle - handle
  *           byteOfst - byte offset for the write
  *           reason - ATT_WRITE_FOR_*
  *           len - requested length
@@ -633,7 +638,7 @@ static bool gattEnqueueSrvWriteCall(struct gattService *svc, l2c_handle_t who, i
  * PARAMS:   svc - the relevant service
  *           who - whom the connection is to
  *           cid - ATT's connection ID
- *           handle - handle 
+ *           handle - handle
  *           evt - what happened
  *           ref - the value to pass to callback
  * RETURN:   false on immediate failure
@@ -1070,6 +1075,14 @@ static void gattConnEvt(void *userData, void *instance, uint8_t evt, const void 
     case L2C_STATE_ENCR:
         if (len != sizeof(struct l2cEncrState)) {
             loge("invalid length for encr event\n");
+            break;
+        }
+        attEncrAuthUpdate(state->conn, ((struct l2cEncrState*)data)->isEncr, ((struct l2cEncrState*)data)->isMitmSafe);
+        break;
+
+    case L2C_STATE_ENCR_KEY_REF:
+        if (len != sizeof(struct l2cEncrState)) {
+            loge("invalid length for encr key event\n");
             break;
         }
         attEncrAuthUpdate(state->conn, ((struct l2cEncrState*)data)->isEncr, ((struct l2cEncrState*)data)->isMitmSafe);
@@ -1755,7 +1768,7 @@ static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem 
             if (sgLength(data) == sizeof(uint16_t)) { /* has a uuid-16 */
                 attReadUuid(&uuid, data);
                 sgFree(data);
-            } else if (sgLength(data)) { 
+            } else if (sgLength(data)) {
                 sgFree(data);
                 logw("Invalid include def (uuid area)\n");
                 *killTodoItem = true;
@@ -1919,7 +1932,7 @@ static bool gattAttCliFindInfoCbk(uniq_t trans, l2c_handle_t to, uint16_t handle
              */
             conn->inFinalStep = true;
             pthread_mutex_unlock(&mGattLock);
-            ret = gattCliFinalStep(conn, todo, &handle, NULL, uuid, NULL, haveMore, &killTodoItem); 
+            ret = gattCliFinalStep(conn, todo, &handle, NULL, uuid, NULL, haveMore, &killTodoItem);
             pthread_mutex_lock(&mGattLock);
             conn = gattConnFindByL2cConn(to);
             if (conn)
@@ -2079,7 +2092,7 @@ static bool gattCliStepSucceeded(struct gattConnState *conn, struct gattCliTodoI
                 break;
             }
             todo->write.handle = valHandle;
-            todo->write.data = todo->intentData.write.data; 
+            todo->write.data = todo->intentData.write.data;
             todo->write.ofst = todo->intentData.write.ofst;
             todo->intentData.write.data = NULL;
             break;
@@ -2125,7 +2138,7 @@ static bool gattCliStepSucceeded(struct gattConnState *conn, struct gattCliTodoI
                 break;
             }
             todo->write.handle = valHandle;
-            todo->write.data = todo->intentData.writeDescr.data; 
+            todo->write.data = todo->intentData.writeDescr.data;
             todo->write.ofst = todo->intentData.writeDescr.ofst;
             todo->intentData.writeDescr.data = NULL;
             break;
@@ -2229,7 +2242,7 @@ static bool gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *han
              */
             conn->inFinalStep = true;
             pthread_mutex_unlock(&mGattLock);
-            ret = gattCliFinalStep(conn, todo, handleP, endGrpHandleP, finalStepUuidP, data, haveMore, &killTodoItem); 
+            ret = gattCliFinalStep(conn, todo, handleP, endGrpHandleP, finalStepUuidP, data, haveMore, &killTodoItem);
             pthread_mutex_lock(&mGattLock);
             conn = gattConnFindByL2cConn(to);
             if (conn)
@@ -2298,7 +2311,7 @@ static void gattAttCliWriteCbk(uniq_t trans, l2c_handle_t to)
              */
             conn->inFinalStep = true;
             pthread_mutex_unlock(&mGattLock);
-            ret = gattCliFinalStep(conn, todo, NULL, NULL, NULL, NULL, false, &killTodoItem); 
+            ret = gattCliFinalStep(conn, todo, NULL, NULL, NULL, NULL, false, &killTodoItem);
             pthread_mutex_lock(&mGattLock);
             conn = gattConnFindByL2cConn(to);
             if (conn)
