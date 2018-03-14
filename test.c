@@ -163,7 +163,7 @@ struct {
     uint8_t dstOffset;  // daylight saving time offset to add
 }__packed mGattLocalTimeInfo;
 
-static bool testGattSrvValueReadCbk(int svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t wantedLen)
+static bool testGattSrvValueReadCbk(int svc, l2c_handle_t who, att_cid_t cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t wantedLen)
 {
     uint8_t err = ATT_ERROR_NONE;
     const uint8_t *ptr = NULL;
@@ -187,7 +187,7 @@ static bool testGattSrvValueReadCbk(int svc, l2c_handle_t who, int cid, int tran
         ptr = (const uint8_t *)&mGattHandleReferenceTimeInfo;
         len = sizeof(mGattHandleReferenceTimeInfo);
     } else {
-        logw("Unexpected read from handle %u of svc %u from conn "HANDLEFMT"\n", handle, svc, HANDLECNV(who));
+        logw("Unexpected read from handle %u of svc %u from conn "HANDLEFMT"d\n", handle, svc, HANDLECNV(who));
         return false;
     }
 
@@ -200,7 +200,7 @@ static bool testGattSrvValueReadCbk(int svc, l2c_handle_t who, int cid, int tran
     if (len > wantedLen)
         len = wantedLen;
 
-    logi("testGattSrvValueReadCbk: cid: %d, transId: %d, handle: handle: %d\n", cid, transId, handle);
+    logi("testGattSrvValueReadCbk: cid: "UNIQ_FMT"d, transId: %d, handle: handle: %d\n", ATT_CID_CONV(cid), transId, handle);
 
     /* In order to verify the pairing process, ATT_ERROR_INSUFFICIENT_AUTH is
      * returned intentionally so that the remote GATT client will initiate
@@ -209,11 +209,11 @@ static bool testGattSrvValueReadCbk(int svc, l2c_handle_t who, int cid, int tran
     return true;
 }
 
-static bool testGattSrvValueWriteCbk(int svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
+static bool testGattSrvValueWriteCbk(int svc, l2c_handle_t who, att_cid_t cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
 {
     uint8_t err = ATT_ERROR_NONE;
 
-    logi("testGattSrvValueWriteCbk: cid: %d, transId: %d, handle: handle: %d\n", cid, transId, handle);
+    logi("testGattSrvValueWriteCbk: cid: "UNIQ_FMT"d, transId: %d, handle: handle: %d\n", ATT_CID_CONV(cid), transId, handle);
 
     if (handle == mGattHandleCurTimeCfg) {
         mGattCurTimeCfg.cCC = *(const uint8_t *)data;
@@ -231,14 +231,14 @@ static bool testGattSrvValueWriteCbk(int svc, l2c_handle_t who, int cid, int tra
     return true;
 }
 
-static void testGattSrvIndCbk(int svc, l2c_handle_t who, int cid, uint16_t handle, uint8_t evt, uint64_t ref)
+static void testGattSrvIndCbk(int svc, l2c_handle_t who, att_cid_t cid, uint16_t handle, uint8_t evt, uint64_t ref)
 {
     if (svc != mSvcTime) {
         logw("Unexpected notification callback in Current Time service\n");
         return;
     }
 
-    logi("time notification sent: cid: %d, handle: handle: %d\n", cid, handle);
+    logi("time notification sent: cid: "UNIQ_FMT"d, handle: handle: %d\n", ATT_CID_CONV(cid), handle);
 }
 
 static void testGattInitTime() {

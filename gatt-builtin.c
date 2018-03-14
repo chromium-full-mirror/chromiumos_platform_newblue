@@ -51,7 +51,7 @@ static struct {
  * RETURN:   NONE
  * NOTES:    call gattSrvCbkReply() with results. returning false will send ATT_ERROR_UNLIKELY_ERROR to the client
  */
-static bool gattBuiltinReadF(int svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t wantedLen)
+static bool gattBuiltinReadF(int svc, l2c_handle_t who, att_cid_t cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t wantedLen)
 {
     uint8_t err = ATT_ERROR_NONE;
     const uint8_t *ptr = NULL;
@@ -104,7 +104,7 @@ static bool gattBuiltinReadF(int svc, l2c_handle_t who, int cid, int transId, ui
  * RETURN:   NONE
  * NOTES:    this callback is unused here
  */
-static bool gattBuiltinWriteF(int svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
+static bool gattBuiltinWriteF(int svc, l2c_handle_t who, att_cid_t cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
 {
     /* in reality we can never get here since GATT & ATT enforce for us the read-only-ness of other handles */
     logw("Unexpected write to handle %u of svc %u from conn "HANDLEFMT"\n", handle, svc, HANDLECNV(who));
@@ -123,7 +123,7 @@ static bool gattBuiltinWriteF(int svc, l2c_handle_t who, int cid, int transId, u
  * RETURN:   NONE
  * NOTES:    this callback is unused here
  */
-static void gattBuiltinIndF(int svc, l2c_handle_t who, int cid, uint16_t handle, uint8_t evt, uint64_t ref) /* GATT_SRV_EVT_* */
+static void gattBuiltinIndF(int svc, l2c_handle_t who, att_cid_t cid, uint16_t handle, uint8_t evt, uint64_t ref) /* GATT_SRV_EVT_* */
 {
     logw("Unexpected ind notification for %u of svc %u from conn "HANDLEFMT"\n", handle, svc, HANDLECNV(who));
     return;

@@ -289,7 +289,7 @@ struct gattWorkItem {
                 gattSrvValueWriteCbk writeF;
             };
             int                      svcRef;
-            int                      cid;
+            att_cid_t                cid;
             int                      transId;
             uint16_t                 handle;
             uint16_t                 byteOfst;
@@ -302,7 +302,7 @@ struct gattWorkItem {
             l2c_handle_t             who;
             gattSrvIndCbk            indF;
             int                      svcRef;
-            int                      cid;
+            att_cid_t                cid;
             uint16_t                 handle;
             uint8_t                  evt;
         } srvIndCall;
@@ -564,7 +564,7 @@ static uint8_t gattAttSrvTxCbk(l2c_handle_t who, sg s)
  * RETURN:   false on immediate failure
  * NOTES:    call with mGattLock held
  */
-static bool gattEnqueueSrvRwCall(uint8_t workType, struct gattService *svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
+static bool gattEnqueueSrvRwCall(uint8_t workType, struct gattService *svc, l2c_handle_t who, att_cid_t cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
 {
     struct gattWorkItem *wi = (struct gattWorkItem*)calloc(1, sizeof(struct gattWorkItem) + (data ? len : 0));
 
@@ -607,7 +607,7 @@ static bool gattEnqueueSrvRwCall(uint8_t workType, struct gattService *svc, l2c_
  * RETURN:   false on immediate failure
  * NOTES:    call with mGattLock held
  */
-static bool gattEnqueueSrvReadCall(struct gattService *svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t maxLen)
+static bool gattEnqueueSrvReadCall(struct gattService *svc, l2c_handle_t who, att_cid_t cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t maxLen)
 {
     return gattEnqueueSrvRwCall(GATT_WORK_SRV_READ_CALL, svc, who, cid, transId, handle, byteOfst, reason, maxLen, NULL);
 }
@@ -627,7 +627,7 @@ static bool gattEnqueueSrvReadCall(struct gattService *svc, l2c_handle_t who, in
  * RETURN:   false on immediate failure
  * NOTES:    call with mGattLock held
  */
-static bool gattEnqueueSrvWriteCall(struct gattService *svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
+static bool gattEnqueueSrvWriteCall(struct gattService *svc, l2c_handle_t who, att_cid_t cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
 {
     return gattEnqueueSrvRwCall(GATT_WORK_SRV_WRITE_CALL, svc, who, cid, transId, handle, byteOfst, reason, len, data);
 }
@@ -644,7 +644,7 @@ static bool gattEnqueueSrvWriteCall(struct gattService *svc, l2c_handle_t who, i
  * RETURN:   false on immediate failure
  * NOTES:    call with mGattLock held
  */
-static bool gattEnqueueSrvIndCall(struct gattService *svc, l2c_handle_t who, int cid, uint16_t handle, uint8_t evt, uint64_t ref)
+static bool gattEnqueueSrvIndCall(struct gattService *svc, l2c_handle_t who, att_cid_t cid, uint16_t handle, uint8_t evt, uint64_t ref)
 {
     struct gattWorkItem *wi = (struct gattWorkItem*)calloc(1, sizeof(struct gattWorkItem));
 
@@ -819,7 +819,7 @@ static bool gattEnqueueCliSubUnsubCall(struct gattCliCon *clicon, struct gattCli
  * RETURN:   NONE
  * NOTES:
  */
-static void gattAttSrvIndCbk(l2c_handle_t to, int cid, att_range_t rangeRef, uint16_t offset, uint8_t evt, uint64_t ref)
+static void gattAttSrvIndCbk(l2c_handle_t to, att_cid_t cid, att_range_t rangeRef, uint16_t offset, uint8_t evt, uint64_t ref)
 {
     uint8_t err = ATT_ERROR_NONE;
     struct gattService *svc;
@@ -847,7 +847,7 @@ static void gattAttSrvIndCbk(l2c_handle_t to, int cid, att_range_t rangeRef, uin
  * RETURN:   false on immediate failure
  * NOTES:    when read completes, a call to attSrvCbkReply() should be made
  */
-static bool gattAttSvrReadCbk(l2c_handle_t who, int cid, att_range_t rangeRef, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t maxLen)
+static bool gattAttSvrReadCbk(l2c_handle_t who, att_cid_t cid, att_range_t rangeRef, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t maxLen)
 {
     uint8_t err = ATT_ERROR_NONE;
     struct gattService *svc;
@@ -970,7 +970,7 @@ out:
  * RETURN:   false on immediate failure
  * NOTES:    when write completes, a call to attSrvCbkReply() should be made
  */
-static bool gattAttSvrWriteCbk(l2c_handle_t who, int cid, att_range_t rangeRef, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
+static bool gattAttSvrWriteCbk(l2c_handle_t who, att_cid_t cid, att_range_t rangeRef, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
 {
     /* attributes GATT creates internally for the user {service headers, includes, characteristic headers} are not writeable. All write pass to user */
     uint8_t err = ATT_ERROR_NONE;
@@ -1004,7 +1004,7 @@ out:
  * RETURN:   NONE
  * NOTES:
  */
-static bool gattAttExecWriteCbk(l2c_handle_t who, int cid, int transId, bool exec)
+static bool gattAttExecWriteCbk(l2c_handle_t who, att_cid_t cid, int transId, bool exec)
 {
     //TODO
     return false;
@@ -1216,7 +1216,7 @@ static void gattWorkQueueFreeItem(void *item)
  * RETURN:   unused
  * NOTES:
  */
-void gattSrvCbkReply(int cid, int transId, uint16_t handle, uint8_t err, const void *data, uint16_t len)
+void gattSrvCbkReply(att_cid_t cid, int transId, uint16_t handle, uint8_t err, const void *data, uint16_t len)
 {
     attSrvCbkReply(cid, transId, handle, err, data, len);
 }
@@ -3155,7 +3155,7 @@ out:
  * RETURN:   false on immediate failure
  * NOTES:
  */
-bool gattServiceSendInd(int svcRef, int cid, uint16_t handle, const void *buf, uint16_t len, bool withConfirm, uint64_t ref)
+bool gattServiceSendInd(int svcRef, att_cid_t cid, uint16_t handle, const void *buf, uint16_t len, bool withConfirm, uint64_t ref)
 {
     uint8_t ret = L2C_TX_ERROR;
     struct gattService *svc;

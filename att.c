@@ -262,7 +262,7 @@ struct attConn {
         uint64_t indRef;
         uint16_t indOffset;
 
-        int cid; /* for higher layer */
+        att_cid_t cid; /* for higher layer */
         int nextTransId;
 
         struct attSrvPendingOp penOp;
@@ -301,7 +301,7 @@ struct attWorkItem {
     l2c_handle_t who;
     union {
         struct {
-            int cid; /* having both this and "who" here makes life a bit easier */
+            att_cid_t cid; /* having both this and "who" here makes life a bit easier */
         } srv;
         struct {
             uniq_t trans;
@@ -429,7 +429,7 @@ static struct attConn* attConnFindByL2cConn(l2c_handle_t who)
  * RETURN:   struct attConn or NULL if not found
  * NOTES:    plase call while holding mAttLock
  */
-static struct attConn* attConnFindBySrvCid(int srvCid)
+static struct attConn* attConnFindBySrvCid(att_cid_t srvCid)
 {
     struct attConn *conn = mConns;
 
@@ -818,10 +818,7 @@ static bool attConnListAddIfNew(l2c_handle_t l2cConn)
     conn->isLE = BT_ADDR_IS_LE(peer);
 
     /* find a free server CID */
-    conn->srv.cid = mConns ? mConns->srv.cid : 1;
-    while (attConnFindBySrvCid(conn->srv.cid))
-        if (++conn->srv.cid < 0)
-            conn->srv.cid = 1;
+    conn->srv.cid = uniqGetNext();
 
     /* link it in */
     conn->next = mConns;
@@ -895,7 +892,6 @@ void attSrvDeinit(void)
     struct attSrvRange *range;
     struct attSrvVal *val;
     struct attConn *conn;
-    int newCid;
     uint32_t i;
 
     pthread_mutex_lock(&mAttLock);
@@ -1680,7 +1676,7 @@ static bool attSendPacketEmptyPacket(l2c_handle_t to, uint8_t opcode)
  * RETURN:   ATT_TX_RET_*
  * NOTES:
  */
-uint8_t attSrvValueNotifyChanged(att_range_t rangeRef, uint16_t offset, int cid, sg data, bool notify, uint64_t ref)
+uint8_t attSrvValueNotifyChanged(att_range_t rangeRef, uint16_t offset, att_cid_t cid, sg data, bool notify, uint64_t ref)
 {
     uint8_t ret = ATT_TX_RET_ATT_ERROR;
     struct attSrvRange *range;
@@ -1719,7 +1715,7 @@ out:
  * RETURN:   L2C connection handle or 0 on failure
  * NOTES:    this is used externally
  */
-l2c_handle_t attSrvCidResolve(int srvCid)
+l2c_handle_t attSrvCidResolve(att_cid_t srvCid)
 {
     struct attConn* conn;
     l2c_handle_t ret = 0;
@@ -3247,7 +3243,6 @@ void attSrvDataRx(l2c_handle_t from, sg s)
         break;
     }
 
-out:
     pthread_mutex_unlock(&mAttLock);
     if (!ret)
         loge("ATT failed to handle this message\n");
@@ -3267,7 +3262,7 @@ out:
  * RETURN:   unused
  * NOTES:
  */
-void attSrvCbkReply(int cid, int transId, uint16_t handle, uint8_t err, const void *data, uint16_t len)
+void attSrvCbkReply(att_cid_t cid, int transId, uint16_t handle, uint8_t err, const void *data, uint16_t len)
 {
     struct attConn* conn;
     uint8_t opcode;

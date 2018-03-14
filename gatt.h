@@ -60,12 +60,12 @@ bool gattProfileInit(void);
 void gattProfileDeinit(void);
 
 /* replies to callbacks */
-void gattSrvCbkReply(int cid, int transId, uint16_t handle, uint8_t err, const void *data, uint16_t len); /* err is ATT_ERROR_* */
+void gattSrvCbkReply(att_cid_t cid, int transId, uint16_t handle, uint8_t err, const void *data, uint16_t len); /* err is ATT_ERROR_* */
 
 /* callbacks */
-typedef bool (*gattSrvValueReadCbk)(int svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len);
-typedef bool (*gattSrvValueWriteCbk)(int svc, l2c_handle_t who, int cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data);
-typedef void (*gattSrvIndCbk)(int svc, l2c_handle_t who, int cid, uint16_t handle, uint8_t evt, uint64_t ref); /* GATT_SRV_EVT_* */
+typedef bool (*gattSrvValueReadCbk)(int svc, l2c_handle_t who, att_cid_t cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len);
+typedef bool (*gattSrvValueWriteCbk)(int svc, l2c_handle_t who, att_cid_t cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data);
+typedef void (*gattSrvIndCbk)(int svc, l2c_handle_t who, att_cid_t cid, uint16_t handle, uint8_t evt, uint64_t ref); /* GATT_SRV_EVT_* */
 
 /* service lifecycle */
 int gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles, gattSrvValueReadCbk readF, gattSrvValueWriteCbk writeF, gattSrvIndCbk indF);
@@ -86,7 +86,7 @@ uint16_t gattServiceAddChar(int svc, const struct uuid *uuid, uint8_t props, uin
 uint16_t gattServiceAddCharDescr(int svc, const struct uuid *uuid, uint32_t perms);
 
 /* TX path */
-bool gattServiceSendInd(int svc, int cid, uint16_t handle, const void *data, uint16_t len, bool withConfirm, uint64_t ref);
+bool gattServiceSendInd(int svc, att_cid_t cid, uint16_t handle, const void *data, uint16_t len, bool withConfirm, uint64_t ref);
 
 
 
