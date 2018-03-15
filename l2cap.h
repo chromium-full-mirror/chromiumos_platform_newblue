@@ -97,6 +97,8 @@ struct l2cServiceFixedChDescriptor {
 };
 
 
+typedef bool (*L2capDefaultSecurityManagerCbk)(hci_conn_t hciConn, uint64_t randomNum, uint16_t diversifier);
+
 /* call this to register a PSM-based service. pass 0 for any psm. returns zero or your psm */
 psm_t l2cApiServicePsmRegister(psm_t psm, const struct l2cServicePsmDescriptor *service);
 
@@ -166,6 +168,10 @@ bool l2cApiLeSetSecurityManagerForAclConn(l2c_handle_t handle);
 
 /* external code can call this to provide a LTK (likely in a reply to L2C_STATE_KEY_REQ state message). pass NULL for "no" */
 bool l2cApiLeProvideLtk(l2c_handle_t handle, const uint8_t *key);
+
+/* external code can use this to become the "security manager" by default, l2cApiLeSetSecurityManagerForAclConn overrides this.
+   pass NULL to undo this. Note callback param is an HCI handle since no l2c connection may yet exist */
+void l2cApiLeSetDefaultSecurityManager(L2capDefaultSecurityManagerCbk cbk);
 
 /* LOWER LAYER INTERFACE API */
 

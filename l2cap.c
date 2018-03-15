@@ -381,6 +381,15 @@ struct l2cSvcWork {
         struct {
             bool useLeBuffers;
         } tryTx;
+        struct {
+            L2capDefaultSecurityManagerCbk cbk;
+            hci_conn_t hciConn;
+            uint64_t randomNum;
+            uint16_t diversifier;
+        } defaultSm;
+        struct {
+            sem_t *sem;
+        } flush;
     };
 };
 #define L2C_WORK_PSM_INST_ALLOC          0
@@ -395,6 +404,8 @@ struct l2cSvcWork {
 #define L2C_WORK_ACL_CONN_UPDT           9
 #define L2C_WORK_ACL_DEMAND_ENCR         10
 #define L2C_WORK_TRY_HCI_TX              11
+#define L2C_WORK_DEFAULT_SM_CALL         12
+#define L2C_WORK_FLUSH                   13
 
 /* our per-service struct for PSM-based services */
 struct l2cPsmSvc {
@@ -568,6 +579,9 @@ static struct l2cSigPduSendItem *sigSendTailLe = NULL;
 
 static struct multiNotifList *mWriteNotif = NULL;
 
+static pthread_mutex_t mSecMgrLock = PTHREAD_MUTEX_INITIALIZER;
+static L2capDefaultSecurityManagerCbk mDefaultSecMgr = NULL;
+
 
 
 /*
@@ -666,7 +680,7 @@ static struct l2cSvcWork* l2cSvcWorkAlloc(int type, uint32_t extraLen)
  * USE:      Schedule a service allocation
  * PARAMS:   psm - the psm which this is for
  *           handle - the handle to pass to the service alloc handler
- * RETURN:   NONE
+ * RETURN:   false on immediate error
  * NOTES:    actual call will happen in the worker thread
  */
 static bool l2cSvcWorkSchedulePsmAlloc(psm_t psm, l2c_handle_t handle)
@@ -693,7 +707,7 @@ static bool l2cSvcWorkSchedulePsmAlloc(psm_t psm, l2c_handle_t handle)
  * PARAMS:   psm - the psm which this is for
  *           handle - the handle to pass to the service RX connectionless handler
  *           payload - the data that arrived
- * RETURN:   NONE
+ * RETURN:   false on immediate error
  * NOTES:    actual call will happen in the worker thread. Buffer is copied
  */
 static bool l2cSvcWorkSchedulePsmConnectionlessRx(psm_t psm, l2c_handle_t handle, sg payload)
@@ -723,7 +737,7 @@ static bool l2cSvcWorkSchedulePsmConnectionlessRx(psm_t psm, l2c_handle_t handle
  * USE:      Schedule a service allocation
  * PARAMS:   chan - the channel this is for
  *           handle - the handle to pass to the service alloc handler
- * RETURN:   NONE
+ * RETURN:   false on immediate error
  * NOTES:    actual call will happen in the worker thread
  */
 static bool l2cSvcWorkScheduleFixedChAlloc(uint16_t chan, l2c_handle_t handle)
@@ -750,7 +764,7 @@ static bool l2cSvcWorkScheduleFixedChAlloc(uint16_t chan, l2c_handle_t handle)
  * PARAMS:   chan - the channel this is for
  *           doneCbk - callback to call when done (or NULL)
  *           cbkData - data to pass to callback
- * RETURN:   NONE
+ * RETURN:   false on immediate error
  * NOTES:    actual work will happen in the worker thread
  */
 static bool l2cSvcWorkScheduleFixedChUnregister(uint16_t chan, void (*doneCbk)(void*), void *cbkData)
@@ -778,7 +792,7 @@ static bool l2cSvcWorkScheduleFixedChUnregister(uint16_t chan, void (*doneCbk)(v
  * PARAMS:   psm - the psm which this is for
  *           doneCbk - callback to call when done (or NULL)
  *           cbkData - data to pass to callback
- * RETURN:   NONE
+ * RETURN:   false on immediate error
  * NOTES:    actual work will happen in the worker thread
  */
 static bool l2cSvcWorkSchedulePsmUnregister(psm_t psm, void (*doneCbk)(void*), void *cbkData)
@@ -809,7 +823,7 @@ static bool l2cSvcWorkSchedulePsmUnregister(psm_t psm, void (*doneCbk)(void*), v
  *           state - state vaklue to pass to the callback
  *           data - buffer a copy of which is passed to the callback
  *           len - the length of the buffer
- * RETURN:   NONE
+ * RETURN:   false on immediate error
  * NOTES:    actual call will happen in the worker thread. cannot supply a buffer!
  */
 static bool l2cSvcWorkScheduleStateCallDirect(l2cStateCbk stateCbk, void *userData, void *instance, uint8_t state, const void *data, uint32_t len)
@@ -843,7 +857,7 @@ static bool l2cSvcWorkScheduleStateCallDirect(l2cStateCbk stateCbk, void *userDa
  *           state - state vaklue to pass to the callback
  *           data - buffer a copy of which is passed to the callback
  *           len - the length of the buffer
- * RETURN:   NONE
+ * RETURN:   false on immediate error
  * NOTES:    actual call will happen in the worker thread. Buffer is copied
  */
 static bool l2cSvcWorkScheduleStateCall(struct l2cConn* conn, uint8_t state, const void *data, uint32_t len)
@@ -857,7 +871,7 @@ static bool l2cSvcWorkScheduleStateCall(struct l2cConn* conn, uint8_t state, con
  * PARAMS:   doneCbk - the callback to call
  *           cbkData - data pointer to pass to the callback
  *           success - success sttaus to pass to the callback
- * RETURN:   NONE
+ * RETURN:   false on immediate error
  * NOTES:    actual call will happen in the worker thread.
  */
 static bool l2cSvcWorkScheduleConnUpdtCbk(l2cConnUpdateDoneCbk doneCbk, void *cbkData, bool success)
@@ -882,7 +896,7 @@ static bool l2cSvcWorkScheduleConnUpdtCbk(l2cConnUpdateDoneCbk doneCbk, void *cb
  * FUNCTION: l2cSvcWorkScheduleAclLinkOpen
  * USE:      Schedule an ACL link open call to the lower layer
  * PARAMS:   addr - the address of peer to connect to
- * RETURN:   NONE
+ * RETURN:   false on immediate error
  * NOTES:    actual call will happen in the worker thread.
  */
 static bool l2cSvcWorkScheduleAclLinkOpen(const struct bt_addr *addr)
@@ -904,7 +918,7 @@ static bool l2cSvcWorkScheduleAclLinkOpen(const struct bt_addr *addr)
  * FUNCTION: l2cSvcWorkScheduleAclLinkClose
  * USE:      Schedule an ACL link close call to the lower layer
  * PARAMS:   addr - the address of peer to disconnect from
- * RETURN:   NONE
+ * RETURN:   false on immediate error
  * NOTES:    actual call will happen in the worker thread.
  */
 static bool l2cSvcWorkScheduleAclLinkClose(const struct bt_addr *addr)
@@ -930,7 +944,7 @@ static bool l2cSvcWorkScheduleAclLinkClose(const struct bt_addr *addr)
  *           maxInt - update command parameter
  *           lat - update command parameter
  *           to - update command parameter
- * RETURN:   NONE
+ * RETURN:   false on immediate error
  * NOTES:    actual call will happen in the worker thread.
  */
 static bool l2cSvcWorkScheduleAclConnUpdt(hci_conn_t aclConnID, uint16_t minInt, uint16_t maxInt, uint16_t lat, uint16_t to)
@@ -958,7 +972,7 @@ static bool l2cSvcWorkScheduleAclConnUpdt(hci_conn_t aclConnID, uint16_t minInt,
  * USE:      Schedule a connection encryption request
  * PARAMS:   aclConnID - the connection ID
  *           demandMitmSafe - demand authentication too?
- * RETURN:   NONE
+ * RETURN:   false on immediate error
  * NOTES:    actual call will happen in the worker thread.
  */
 static bool l2cSvcWorkScheduleAclDemandEncr(hci_conn_t aclConnID, bool demandMitmSafe)
@@ -982,7 +996,7 @@ static bool l2cSvcWorkScheduleAclDemandEncr(hci_conn_t aclConnID, bool demandMit
  * FUNCTION: l2cSvcWorkScheduleTryTx
  * USE:      Schedule an attempt to do some TX
  * PARAMS:   useLeBuffers - which buffer set to try TX on
- * RETURN:   NONE
+ * RETURN:   false on immediate error
  * NOTES:    actual call will happen in the worker thread.
  */
 static bool l2cSvcWorkScheduleTryTx(bool useLeBuffers)
@@ -1000,6 +1014,71 @@ static bool l2cSvcWorkScheduleTryTx(bool useLeBuffers)
     free(w);
     return false;
 }
+
+/*
+ * FUNCTION: l2cSvcWorkScheduleDefaultSmCall
+ * USE:      Schedule an attempt to call the dafult security manager
+ * PARAMS:   mgrCbk - the manager to call
+ *           hciConn - the hci acl connection
+ *           randomNum - the random number gotten from peer
+ *           diversifier - the diversifier gotten from peer
+ * RETURN:   false on immediate error
+ * NOTES:    actual call will happen in the worker thread.
+ */
+static bool l2cSvcWorkScheduleDefaultSmCall(L2capDefaultSecurityManagerCbk mgrCbk, hci_conn_t hciConn, uint64_t randomNum, uint16_t diversifier)
+{
+    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_DEFAULT_SM_CALL, 0);
+    if (!w)
+        return false;
+
+    w->defaultSm.cbk = mgrCbk;
+    w->defaultSm.hciConn = hciConn;
+    w->defaultSm.randomNum = randomNum;
+    w->defaultSm.diversifier = diversifier;
+
+    if (workQueuePut(mServiceWork, w))
+        return true;
+
+    loge("Failed to enqueue service work for ACL default SM call!\n");
+    free(w);
+    return false;
+}
+
+/*
+ * FUNCTION: l2cSvcWorkScheduleFlush
+ * USE:      Flush the workQueue
+ * PARAMS:   NONE
+ * RETURN:   success
+ * NOTES:    blocks till all existing work items have been finished
+ */
+static bool l2cSvcWorkScheduleFlush(void)
+{
+    struct l2cSvcWork *w = l2cSvcWorkAlloc(L2C_WORK_FLUSH,0);
+    bool ret = false;
+    sem_t sem;
+
+    if (!w)
+        return false;
+
+    if (sem_init(&sem, 0, 0)) {
+        free(w);
+        loge("Failed to alloc workQ flush sem\n");
+        return false;
+    }
+
+    w->flush.sem = &sem;
+
+    if (workQueuePut(mServiceWork, w)) {
+        r_sem_wait(&sem);
+        ret = true;
+    } else
+        free(w);
+
+    sem_destroy(&sem);
+
+    return ret;
+}
+
 
 /*
  * FUNCTION: l2cConnTimeout
@@ -3621,6 +3700,12 @@ static void* l2cSvcWorker(void* unused)
         case L2C_WORK_TRY_HCI_TX:
             l2cTryMakeSendProgress(work->tryTx.useLeBuffers);
             break;
+        case L2C_WORK_DEFAULT_SM_CALL:
+            work->defaultSm.cbk(work->defaultSm.hciConn, work->defaultSm.randomNum, work->defaultSm.diversifier);
+            break;
+        case L2C_WORK_FLUSH:
+            sem_post(work->flush.sem);
+            break;
         default: {
             loge("Unknown work type %d\n", work->type);
             break;
@@ -5777,13 +5862,20 @@ void l2cAclLinkEncrChange(hci_conn_t aclConnID, bool isEncrypted, bool isMitmSaf
 bool l2cAclLeLtkRequest(hci_conn_t aclConnID, uint64_t randomNum, uint16_t diversifier)
 {
     struct l2cKeyReqState keyReq = {.rand = randomNum, .ediv = diversifier, };
+    L2capDefaultSecurityManagerCbk defaultSecMgr;
     struct l2cAclConn *aclConn;
     struct l2cConn *conn;
     bool ret = false;
 
+    pthread_mutex_lock(&mSecMgrLock);
+    defaultSecMgr = mDefaultSecMgr;
+    pthread_mutex_unlock(&mSecMgrLock);
+
     pthread_mutex_lock(&mConnsLock);
     aclConn = l2cAclConnFindById(aclConnID);
-    if (!aclConn)
+    if ((!aclConn || !aclConn->securityManager) && defaultSecMgr && !l2cSvcWorkScheduleDefaultSmCall(defaultSecMgr, aclConnID, randomNum, diversifier))
+        logi("Default security manager call failed for acl "HCI_CONN_FMT"x. LTK req ignored.\n", HCI_CONN_CONV(aclConnID));
+    else if (!aclConn)
         logw("Link acl "HCI_CONN_FMT"x not found. LTK req ignored.\n", HCI_CONN_CONV(aclConnID));
     else if (!aclConn->securityManager)
         logi("Link acl "HCI_CONN_FMT"x has no assigned security manager. LTK req ignored.\n", HCI_CONN_CONV(aclConnID));
@@ -5855,7 +5947,7 @@ void l2cAclLinkEncrKeyRefresh(hci_conn_t aclConnID, bool isEncrypted, bool isMit
 }
 
 /*
- * FUNCTION: l2cApiLeSetSecurityManagerForHciConn
+ * FUNCTION: l2cApiLeSetSecurityManagerForAclConn
  * USE:      Called by a security manager to become one for a given acl connection
  * PARAMS:   handle - connection handle
  * RETURN:   true if no security manager already existed for a given acl
@@ -5892,6 +5984,39 @@ bool l2cApiLeSetSecurityManagerForAclConn(l2c_handle_t handle)
 out:
     pthread_mutex_unlock(&mConnsLock);
     return ret;
+}
+
+/*
+ * FUNCTION: l2cApiLeSetDefaultSecurityManager
+ * USE:      Called by a security manager to become one by default, is no per-connection
+ *           security manager has been set
+ * PARAMS:   cbk - the function to call when a key is needed or NULL
+ * RETURN:   none
+ * NOTES:    This sets the security manager to be used when no l2c connection yet exists
+ *           on an hci acl connection. This means that sm had not yet had a chance to call
+ *           l2cApiLeSetSecurityManagerForAclConn(). This can happen if someone connects
+ *           and immediately tries to encrypt, with no prior traffic. This is allowed,
+ *           but no traffic means that SM has not been opened, and thus has no l2c conn
+ *           associated with it. No l2c conn means we have no instance to send the key
+ *           state to. This this callback is used. If an l2c conn exists that has called
+ *           l2cApiLeSetSecurityManagerForAclConn, it is used for security management
+ *           instead.
+ */
+void l2cApiLeSetDefaultSecurityManager(L2capDefaultSecurityManagerCbk cbk)
+{
+    /*
+     * Since we actualyl pass the callback pointer in the work items on the work queue,
+     * we need to make sure none escape this change func call. To do this we use the
+     * ability to "flush" the work queue - wait till all current items finish. We do it
+     * twice. Once before changing and once after. The first case makes sure that change
+     * to NULL indeed no longer calls this callback after this func ends. Second makes
+     * sure that a change to a pointer take effect before this func returns.
+     */
+    pthread_mutex_lock(&mSecMgrLock);
+    l2cSvcWorkScheduleFlush();
+    mDefaultSecMgr = cbk;
+    l2cSvcWorkScheduleFlush();
+    pthread_mutex_unlock(&mSecMgrLock);
 }
 
 /*
