@@ -2188,7 +2188,7 @@ static bool hciConnEvtCbk(const struct hciEvtHdr *evt, uint32_t evtSz, void *cbk
         if (evtType == HCI_EVTVENDOR_Android_Subevent_Advt_State_Change) {
             struct hciEvtVendorAndroidVendorExtAdvtStateChange *sce = (struct hciEvtVendorAndroidVendorExtAdvtStateChange*)(vendor + 1);
 
-            if (evtSz != sizeof(*vendor) + sizeof(*sce))
+            if (evtSz != sizeof(*evt) + sizeof(*vendor) + sizeof(*sce))
                 logw("Invalid event size for vendor subevent for advt change - ignored\n");
             else if (sce->reason != HCI_EVTVENDOR_Android_Subevent_Advt_State_Change_Reason)
                 logw("Invalid reason code for vendor subevent for advt change - ignored\n");
