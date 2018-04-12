@@ -3623,8 +3623,7 @@ static bool hciConnectLe(const uint8_t *mac, bool randomAddr, uint16_t scanInt, 
     utilSetLE16(&cmd.minConnLen, 0); /* not a useful hint, i know */
     utilSetLE16(&cmd.maxConnLen, intMin * 2);
 
-
-    if (!hciCmdSubmitSimpleWithStatusWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_LE_Create_Connection, &cmd, sizeof(cmd), hciCmdStatusCbk, NULL)) {
+    if (!hciCmdSubmitSimpleWithStatusWithDoneCbk(HCI_OGF_LE, HCI_CMD_LE_Create_Connection, &cmd, sizeof(cmd), hciCmdStatusCbk, NULL)) {
         logi("Failed to request connect to "MACFMT"\n", MACCONV(mac));
         return false;
     }
