@@ -126,6 +126,12 @@ uint16_t mGattHandleCurTimeCfg = 0;
 uint16_t mGattHandleLocalTimeInfo = 0;
 uint16_t mGattHandleReferenceTimeInfo = 0;
 
+static struct bt_addr mTargetAddr = {
+    .type = BT_ADDR_TYPE_LE_RANDOM,
+    .addr = {0x50, 0x8E, 0xFC, 0x0A, 0x11, 0x11}
+};
+uniq_t mObserverId = 0;
+
 struct dateTime {
     uint16_t year;    // used in LE service with little endian.
     uint8_t month;
@@ -337,19 +343,39 @@ out:
     return svc;
 }
 
+bool isSameAddr(const struct bt_addr *a, const struct bt_addr *b) {
+    if (!a || !b)
+        return false;
+    return !memcmp(a, b, sizeof(struct bt_addr));
+}
+
+void unpairTimerCb() {
+    smUnpair(&mTargetAddr);
+}
+
+void pairObserverCallback(void *observerData, const void *pairStateChange, uniq_t observerId) {
+    struct smPairStateChange state;
+
+    if (observerId != mObserverId || !pairStateChange)
+        return;
+
+    state = *(struct smPairStateChange *)pairStateChange;
+    if (!isSameAddr(&state.peerAddr, &mTargetAddr))
+        return;
+
+    logi("Pairing state with "ADDRFMT" changed to %d with err %d\n", ADDRCONV(mTargetAddr),
+         state.pairState, state.pairErr);
+
+    // Unpair with the target device once it's paired
+    if (state.pairState == SM_PAIR_STATE_PAIRED)
+        timerSet(5000, unpairTimerCb, 0);
+}
+
 int main(int argc, char** argv)
 {
     static const uint8_t mac[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
     hci_adv_set_t advSet[3] = {0,};
-    const bool vTrue = true;
-    const bool vFalse = false;
-    unsigned i;
-    int svc;
     sem_t sem;
-    uniq_t h;
-    // "8ce255c0-200a-11e0-ac64-0800200c9a66", the UUID used by BluetoothChat sample program
-    uint8_t uuid[] = { 0x8c, 0xe2, 0x55, 0xc0, 0x20, 0x0a, 0x11, 0xe0,
-                       0xac, 0x64, 0x08, 0x00, 0x20, 0x0c, 0x9a, 0x66 };
 
     fprintf(stderr, "NewBlue test\n");
     logi("LOG UP\n");
@@ -375,46 +401,6 @@ int main(int argc, char** argv)
         sleep(1);
     logi("stack is up\n");
 
-    if (argc == 2 && !strcmp(argv[1], "scan")) {
-
-        //try LE discovery
-        {
-            struct LeDiscDev *leDevices = NULL, *t;
-
-            logi("Trying some LE discovery...\n");
-            h = hciDiscoverLeStart(leDiscoveryCbk, &leDevices, true, false);
-            if (h) {
-                sleep(20);
-                fprintf(stderr, "\n");
-                logi("discovery stop = %s\n", hciDiscoverLeStop(h) ? "OK" : "FAIL");
-
-                while (leDevices) {
-                    char str[128];
-                    t = leDevices;
-                    leDevices = leDevices->next;
-
-                    logi("Device %c %02X:%02X:%02X:%02X:%02X:%02X\n", t->randomAddr ? 'R' : 'P', t->mac[5], t->mac[4], t->mac[3], t->mac[2], t->mac[1], t->mac[0]);
-                    if (t->rssi != HCI_RSSI_UNKNOWN)
-                        logi("\tRSSI: %d dBm\n", t->rssi);
-                    else
-                        logi("\tRSSI unknown\n");
-                    logi("\tADV_TYPE: %d, RSP? %s\n", t->advType, t->haveRsp ? "YES" : "NO");
-
-                    logData(str, t->advData, t->advLen);
-                    logi("\tADV %s\n", str);
-
-                    if (t->haveRsp) {
-                        logData(str, t->rspData, t->rspLen);
-                        logi("\tRSP %s\n", str);
-                    }
-                    free(t);
-                }
-
-            } else
-                loge("Failed to do LE discovery\n");
-        }
-    }
-
     l2cInit();
 
     if (!attInit())
@@ -427,128 +413,218 @@ int main(int argc, char** argv)
     if (!smInit(HCI_DISP_CAP_NONE))
         loge("Failed to init SM");
 
-    mSvcTime = gattSetup();
-    logi("gattSetup: svc="GATTHANDLEFMT"\n", GATTHANDLECNV(mSvcTime));
-    if (!gattServiceStart(mSvcTime, true, true))
-        loge("Failed to start service: "GATTHANDLEFMT"\n", mSvcTime);
-    logd("Current time service created as svc "GATTHANDLEFMT" at handle 0x%04X\n", GATTHANDLECNV(mSvcTime), gattServiceGetHandleBaseBySvc(mSvcTime));
+    if (argc == 2 && !strcmp(argv[1], "scan")) {
+        /*
+         * Option: scan
+         * Use:    start LE scanning for a while and terminate
+         */
 
-    testGattInitTime();
+        uniq_t h;
+        struct LeDiscDev *leDevices = NULL, *t;
 
-    pthread_t setTimeThread;
-    if (pthread_create(&setTimeThread, NULL, testGattSetTime, NULL)) {
-        loge("Failed to create pthread for current time service.\n");
-        return -1;
+        logi("Trying some LE discovery...\n");
+        h = hciDiscoverLeStart(leDiscoveryCbk, &leDevices, true, false);
+        if (h) {
+            sleep(20);
+            fprintf(stderr, "\n");
+            logi("discovery stop = %s\n", hciDiscoverLeStop(h) ? "OK" : "FAIL");
+
+            while (leDevices) {
+                char str[128];
+                t = leDevices;
+                leDevices = leDevices->next;
+
+                logi("Device %c %02X:%02X:%02X:%02X:%02X:%02X\n", t->randomAddr ? 'R' : 'P',
+                     t->mac[5], t->mac[4], t->mac[3], t->mac[2], t->mac[1], t->mac[0]);
+                if (t->rssi != HCI_RSSI_UNKNOWN)
+                    logi("\tRSSI: %d dBm\n", t->rssi);
+                else
+                    logi("\tRSSI unknown\n");
+                logi("\tADV_TYPE: %d, RSP? %s\n", t->advType, t->haveRsp ? "YES" : "NO");
+
+                logData(str, t->advData, t->advLen);
+                logi("\tADV %s\n", str);
+
+                if (t->haveRsp) {
+                    logData(str, t->rspData, t->rspLen);
+                    logi("\tRSP %s\n", str);
+                }
+                free(t);
+            }
+
+        } else
+            loge("Failed to do LE discovery\n");
     }
+    else if (argc == 2 && !strcmp(argv[1], "pair")) {
+        /*
+         * Option: pair
+         * Use:    set up a GATT connection with the device with mTargetAddr and start pairing
+         */
 
+        bool found = false;
+        uniq_t scanId;
+        unsigned i, round = 3;
+        struct LeDiscDev *leDevices = NULL, *t;
+        struct smPairSecurityRequirements secReqs = {.bond = true, .mitm = false};
 
-    gattBuiltinSetDevName("SuperLongDeviceNameThatWillProbablyNotFitIntoASinglePacketEver");
-    gattBuiltinSetPreferredConnParamsWhenSlave(20, 30, 40, 400);
-    gattBuiltinSetAppearance(GAP_APPEAR_GENERIC_WATCH);
-
-    // advertise
-    advSet[0] = hciAdvSetAllocate();
-    if (!advSet[0])
-        loge("Failed to allocate an adv set\n");
-
-    if (!hciAdvSetSetAdvParams(advSet[0],
-				0x0020,
-				0x0100,
-				HCI_ADV_TYPE_ADV_IND,
-				HCI_ADV_OWN_ADDR_TYPE_PUBLIC,
-				NULL,
-				HCI_ADV_CHAN_MAP_USE_CHAN_37 | HCI_ADV_CHAN_MAP_USE_CHAN_38 | HCI_ADV_CHAN_MAP_USE_CHAN_39,
-				HCI_ADV_FILTER_POL_SCAN_ALL_CONNECT_ALL,
-				100 /* strong */))
-        loge("Failed to set LE adv set params\n");
-
-    static const uint8_t data[] = {
-		2, HCI_EIR_TYPE_FLAGS, 2, /* flags - general discoverable */
-		5, HCI_EIR_TYPE_FULL_NAME, 'N', 'B', 't', '2', /* name - "NBt2" */
-                3, HCI_EIR_TYPE_INCOMPL_LIST_UUID16, 0x05, 0x18, /* incomplete uuid list - {time service} */
-                5, HCI_EIR_FLAVE_CONN_INTS, 0x10, 0x00, 0xff, 0x00, /* relatively large range of relatively large connection intervals accepted */
-    };
-    if (!hciAdvSetConfigureData(advSet[0], false, data, sizeof(data)))
-        loge("Failed to set LE adv data\n");
-
-    logi("Enabling LE adv now\n");
-    if (!hciAdvSetEnable(advSet[0]))
-        loge("Failed to try to enable advertising\n");
-
-
-    //now let's try some multi-adv
-    for (i = 1; i < sizeof(advSet) / sizeof(*advSet); i++) {
-        hci_adv_set_t set;
-        static const uint8_t advData[] = {
-		2, HCI_EIR_TYPE_FLAGS, 2, /* flags - general discoverable */
-        };
-        uint8_t scanData[] = {
-		6, HCI_EIR_TYPE_FULL_NAME, 'N', 'B', 't', '1', '0' + i, /* name - "NBt10" and up */
-        };
-        struct bt_addr myRandomMac = { .type = BT_ADDR_TYPE_LE_RANDOM, .addr = {0xDD, 0x00, 0xAA, 0x00, 0xBB, 0xBB + i}};
-        advSet[i] = set = hciAdvSetAllocate();
-        if (!set) {
-            loge("Failed to create multi set %u\n", i);
-            break;
+        // register as an observer to pairing state changes
+        mObserverId = smRegisterPairObserver(NULL, pairObserverCallback);
+        if (!mObserverId) {
+            loge("Failed to register as an observer to pairing state changes\n");
+            goto cleanup;
         }
-        if (!hciAdvSetSetAdvParams(set,
-				0x0040,
-				0x0100,
-				HCI_ADV_TYPE_ADV_IND,
-				HCI_ADV_OWN_ADDR_TYPE_RANDOM,
-				NULL,
-				HCI_ADV_CHAN_MAP_USE_CHAN_37 | HCI_ADV_CHAN_MAP_USE_CHAN_38 | HCI_ADV_CHAN_MAP_USE_CHAN_39,
-				HCI_ADV_FILTER_POL_SCAN_ALL_CONNECT_ALL,
-				(i & 1) ? HCI_ADV_TX_PWR_LVL_DONT_CARE : -10))
-            loge("Failed to set LE adv set %u params\n", i);
 
-        if (!hciAdvSetConfigureData(set, false, advData, sizeof(advData)))
-            loge("Failed to set LE adv set %u adv data\n", i);
+        logi("Scanning for device "ADDRFMT" ...\n", ADDRCONV(mTargetAddr));
+        for (i = 0; i < round; ++i) {
+            scanId = hciDiscoverLeStart(leDiscoveryCbk, &leDevices, true, false);
+            if (!scanId) {
+                loge("Failed to do LE discovery\n");
+                break;
+            }
 
-        if (!hciAdvSetConfigureData(set, true, scanData, sizeof(scanData)))
-            loge("Failed to set LE adv set %u scan data\n", i);
+            // scan for 5 seconds
+            sleep(5);
+            fprintf(stderr, "\n");
+            logi("discovery stop = %s\n", hciDiscoverLeStop(scanId) ? "OK" : "FAIL");
 
-        if (!hciAdvSetOwnRandomAddr(set, &myRandomMac))
-            loge("Failed to set LE adv set %u random addr\n", i);
+            // find the target device to connect to and pair with it
+            while (leDevices) {
+                t = leDevices;
+                leDevices = leDevices->next;
+                logi("Device %c %02X:%02X:%02X:%02X:%02X:%02X\n", t->randomAddr ? 'R' : 'P',
+                     t->mac[5], t->mac[4], t->mac[3], t->mac[2], t->mac[1], t->mac[0]);
+                if ((found = !memcmp(mTargetAddr.addr, t->mac, sizeof(t->mac)))) {
+                    found = true;
+                    break;
+                } else {
+                    free(t);
+                    continue;
+                }
+            }
 
-        if (!hciAdvSetEnable(set))
-            loge("Failed to try to enable adv set %u\n", i);
+            if (found) {
+                logi("Target device found, try to pair with device "ADDRFMT" ...\n",
+                     ADDRCONV(mTargetAddr));
+                smPair(&mTargetAddr, &secReqs);
+                break;
+            }
+
+            // reset discovery session ID
+            scanId = 0;
+        }
+
+        logi("waiting...press a key\n");
+        getchar();
+    }
+    else if (argc == 1) {
+        /*
+         * Option: none
+         * Use:    set up GATT server with Current Time Service and start 3 advertisements
+         */
+
+        unsigned i;
+        int8_t txPower = 0;
+        // advSet[0]
+        static const uint8_t data[] = {
+            2, HCI_EIR_TYPE_FLAGS, 2, /* flags - general discoverable */
+            5, HCI_EIR_TYPE_FULL_NAME, 'N', 'B', 't', '2', /* name - "NBt2" */
+            3, HCI_EIR_TYPE_INCOMPL_LIST_UUID16, 0x05, 0x18, /* incomplete uuid list - {time service} */
+            5, HCI_EIR_FLAVE_CONN_INTS, 0x10, 0x00, 0xff, 0x00, /* relatively large range of relatively large connection intervals accepted */
+        };
+
+        mSvcTime = gattSetup();
+        logi("gattSetup: svc=%d\n", mSvcTime);
+        if (!gattServiceStart(mSvcTime, true, true))
+            loge("Failed to start service: %d\n", mSvcTime);
+        logd("Current time service created as svc %u at handle 0x%04X\n", mSvcTime, gattServiceGetHandleBaseBySvc(mSvcTime));
+
+        testGattInitTime();
+
+        pthread_t setTimeThread;
+        if (pthread_create(&setTimeThread, NULL, testGattSetTime, NULL)) {
+            loge("Failed to create pthread for current time service.\n");
+            return -1;
+        }
+
+        gattBuiltinSetDevName("SuperLongDeviceNameThatWillProbablyNotFitIntoASinglePacketEver");
+        gattBuiltinSetPreferredConnParamsWhenSlave(20, 30, 40, 400);
+        gattBuiltinSetAppearance(GAP_APPEAR_GENERIC_WATCH);
+
+        //now let's try some multi-adv
+        for (i = 0; i < sizeof(advSet) / sizeof(*advSet); i++) {
+            static const uint8_t advData[] = {2, HCI_EIR_TYPE_FLAGS, 2, /* flags - general discoverable */};
+            uint8_t scanData[] = {6, HCI_EIR_TYPE_FULL_NAME, 'N', 'B', 't', '1', '0' + i, /* name - "NBt10" and up */};
+            struct bt_addr myRandomMac = {.type = BT_ADDR_TYPE_LE_RANDOM, .addr = {0xDD, 0x00, 0xAA, 0x00, 0xBB, 0xBB + i}};
+
+            advSet[i] = hciAdvSetAllocate();
+            if (!advSet[i]) {
+                loge("Failed to create multi set %u\n", i);
+                break;
+            }
+            if (!i)
+                txPower = -10;
+            else if (i == 1)
+                txPower = HCI_ADV_TX_PWR_LVL_DONT_CARE;
+            else
+                txPower = -10;
+
+            if (!hciAdvSetSetAdvParams(
+                    advSet[i], !i ? 0x0020 : 0x0040, 0x0100, HCI_ADV_TYPE_ADV_IND,
+                    HCI_ADV_OWN_ADDR_TYPE_RANDOM, NULL,
+                    HCI_ADV_CHAN_MAP_USE_CHAN_37 | HCI_ADV_CHAN_MAP_USE_CHAN_38 | HCI_ADV_CHAN_MAP_USE_CHAN_39,
+                    HCI_ADV_FILTER_POL_SCAN_ALL_CONNECT_ALL, txPower))
+                loge("Failed to set LE adv set %u params\n", i);
+
+            if (!hciAdvSetConfigureData(advSet[i], false, !i ? data : advData, !i ? sizeof(data) : sizeof(advData)))
+                loge("Failed to set LE adv set %u adv data\n", i);
+
+            if (i && !hciAdvSetConfigureData(advSet[i], true, scanData, sizeof(scanData)))
+                loge("Failed to set LE adv set %u scan data\n", i);
+
+            if (!hciAdvSetOwnRandomAddr(advSet[i], !i ? &mTargetAddr : &myRandomMac))
+                loge("Failed to set LE adv set %u random addr\n", i);
+
+            if (!hciAdvSetEnable(advSet[i]))
+                loge("Failed to try to enable adv set %u\n", i);
+        }
+
+        //print tx power for each adv in a set
+        for (i = 0; i < sizeof(advSet) / sizeof(*advSet); i++) {
+            int8_t power;
+
+            if (!advSet[i])
+                continue;
+            if (!hciAdvSetGetCurTxPowerLevel(advSet[i], &power))
+                loge("Failed to get adv power for set %u\n", i);
+            else
+                logi(" adv set %u is at %d dBm\n", i, power);
+        }
+
+        logi("waiting...press a key\n");
+        getchar();
+
+        //disable and free adv sets
+        for (i = 0; i < sizeof(advSet) / sizeof(*advSet); i++) {
+            if (!advSet[i])
+                continue;
+            if (!hciAdvSetDisable(advSet[i]))
+                loge("Failed to disable adv %u\n", i);
+            if (!hciAdvSetFree(advSet[i]))
+                loge("Failed to free adv %u\n", i);
+        }
+
+        stopTimeService = true;
+        if (pthread_join(setTimeThread, NULL))
+            loge("Failed to join the pthread of current time service.\n");
+        logi("The pthread of current time service was terminated.\n");
+
+        if (mSvcTime) {
+            gattServiceStop(mSvcTime);
+            gattServiceDestroy(mSvcTime);
+        }
     }
 
-    //print tx power for each adv in a set
-    for (i = 0; i < sizeof(advSet) / sizeof(*advSet); i++) {
-        int8_t power;
-
-        if (!advSet[i])
-            continue;
-        if (!hciAdvSetGetCurTxPowerLevel(advSet[i], &power))
-            loge("Failed to get adv power for set %u\n", i);
-        else
-            logi(" adv set %u is at %d dBm\n", i, power);
-    }
-
-    logi("waiting...press a key\n");
-    getchar();
-
-    //disable and free adv sets
-    for (i = 0; i < sizeof(advSet) / sizeof(*advSet); i++) {
-        if (!advSet[i])
-            continue;
-        if (!hciAdvSetDisable(advSet[i]))
-            loge("Failed to disable adv %u\n", i);
-        if (!hciAdvSetFree(advSet[i]))
-            loge("Failed to free adv %u\n", i);
-    }
-
-    stopTimeService = true;
-    if (pthread_join(setTimeThread, NULL))
-        loge("Failed to join the pthread of current time service.\n");
-    logi("The pthread of current time service was terminated.\n");
-
-    if (mSvcTime) {
-        gattServiceStop(mSvcTime);
-        gattServiceDestroy(mSvcTime);
-    }
+cleanup:
     logi("bringing down\n");
     smDeinit();
     gattBuiltinDeinit();

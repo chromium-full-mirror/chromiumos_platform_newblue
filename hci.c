@@ -4097,7 +4097,7 @@ bool hciLeEncryptConn(hci_conn_t aclConn, uint64_t rand, uint16_t ediv, const ui
     else if (!BT_ADDR_IS_LE(conn->peerAddr))
         logw("Not an LE connection\n");
     else if (key)
-        ret = hciLeStartEncryptionSync(conn->id, rand, ediv, key);
+        ret = !hciLeStartEncryptionSync(conn->id, rand, ediv, key);
 
     pthread_mutex_unlock(&mConnsLock);
 
@@ -4402,6 +4402,11 @@ static struct hciAclConn* hciConnAclUp(bool established, uint16_t id, const uint
     } else if (c->state == CONN_STATE_TRYING) {
         c->state = CONN_STATE_CFG;
         c->id = id;
+        /* TODO: to be removed once a proper way of setting the local address is provided. since
+         * the default self address is 00:00:00:00:00:00 if no public/random address was set. */
+        hciGetLocalAddress(c->selfAddr.addr);
+        c->selfAddr.type = BT_ADDR_TYPE_LE_PUBLIC;
+
         if (isLE)
             c->isMaster = isMaster;
         hciScheduleMakeProgressOnLeConnectionReqs(); //we are in evt rx thread so no direct calls

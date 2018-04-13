@@ -106,7 +106,7 @@
 #define HCI_LE_CONN_INT_MAX                20 /* 25.0 ms */
 #define HCI_LE_CONN_LATENCY                10
 #define HCI_LE_CONN_TIMEOUT                83  /* .83 s */
-#define HCI_LE_CONN_USE_RAND_ADDR          true
+#define HCI_LE_CONN_USE_RAND_ADDR          false /* TODO: should be true but 00:00:00:00:00:00 will be used as the local random address if we don't set one */
 #define HCI_LE_CONN_SCAN_INTERVAL          24 /* 15 ms */
 #define HCI_LE_CONN_SCAN_WINDOW            6  /* 3.75 ms */
 

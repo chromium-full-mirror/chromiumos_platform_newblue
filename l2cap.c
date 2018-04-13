@@ -5177,7 +5177,7 @@ uint8_t l2cApiConnectionlessDataTx(const struct bt_addr *addr, psm_t psm, sg dat
  *           rand - random value
  *           ediv - encrypted diversifier value
  *           key - LTK or STK applied during encryption
- * RETURN:
+ * RETURN:   true if encryption is requested; false otherwise
  * NOTES:
  */
 bool l2cApiLeEncryptConn(l2c_handle_t handle, uint64_t rand, uint16_t ediv, const uint8_t *key)
@@ -5376,7 +5376,7 @@ out:
 }
 
 /*
- * FUNCTION: l2cApiCreatePsmConnection
+ * FUNCTION: l2cApiCreateFixedChConnection
  * USE:      Request a FixedCh connection be created
  * PARAMS:   chan - the channel to connect to
  *           addr - the peer address

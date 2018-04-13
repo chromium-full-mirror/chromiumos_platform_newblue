@@ -12,6 +12,7 @@
 #include "l2cap.h"
 #include "log.h"
 #include "mt.h"
+#include "multiNotif.h"
 #include "persist.h"
 #include "sendQ.h"
 #include "sg.h"
@@ -94,7 +95,7 @@ struct smAuthReq {
 #define SM_ERR_CMD_NOT_SUPP             0x07 /* received command not supported by this device */
 #define SM_ERR_UNSPECCED_REASON         0x08 /* pairing failed due to an unspecified reason */
 #define SM_ERR_REPEATED_ATTEMPTS        0x09 /* too rapid an attempt to pair after a failure */
-#define SM_ERR_INVALID_PARAMS           0x0A /* unparseable command or invalid params in command */
+#define SM_ERR_INVALID_PARAMS           0x0A /* unparsable command or invalid params in command */
 
 /* things for authReq fields */
 #define SM_AUTH_REQ_BOND_MASK           0x03
@@ -121,11 +122,11 @@ struct smAuthReq {
 #define SM_PHASE_REQ_RESP               3  /* the peer has sent us a pair request, we replied. waiting for Mconfim. OR we sent req and got resp */
 #define SM_PHASE_CONF_SENT              4  /* we sent Mconfirm. waiting for Sconfirm. */
 #define SM_PHASE_CONF_RESP              5  /* the peer has sent us Mconfirm, we replied with Sconfirm. waiting for Mrand. OR we sent Mconfirm and got Sconfim. */
-#define SM_PHASE_RAND_SENT              6  /* we sent Mrand. wainting for Srand. */
+#define SM_PHASE_RAND_SENT              6  /* we sent Mrand. waiting for Srand. */
 #define SM_PHASE_RAND_RESP              7  /* the peer has sent us Mrand, we replied with Srand. OR we sent Mrand and got Srand. */
 #define SM_PHASE_STK_SENT               8  /* the controller asked us for LTK, we replied with STK. OR we started encryption with STK. */
 #define SM_PHASE_STK_ENCRYPTED          9  /* we received encryption changed event with STK sent previously */
-#define SM_PHASE_ENCRYPT_INFO_SENT      10  /* we sent our LTK via encryption information */
+#define SM_PHASE_ENCRYPT_INFO_SENT      10 /* we sent our LTK via encryption information */
 #define SM_PHASE_ENCRYPT_INFO_RECEIVED  11 /* we received peer's LTK via encryption information*/
 #define SM_PHASE_MASTER_ID_SENT         12 /* we sent our EDIV and Rand via master identification */
 #define SM_PHASE_MASTER_ID_RECEIVED     13 /* we received peer's EDIV and Rand via master identification */
@@ -144,6 +145,9 @@ struct smAuthReq {
 #define SM_MIN_WAIT_INTVL               4000  /* 4 sec in msec - minimum wait interval */
 #define SM_MAX_WAIT_INTVL               64000 /* 64 sec in msec - maximum wait interval */
 #define SM_STALL_INTVL                  30000 /* 30 sec in msec - timeout of a pairing process */
+
+#define SM_UNAUTH_NO_MITM_PROTECT       0 /* Unauthenticated no MITM protection */
+#define SM_AUTH_MITM_PROTECT            1 /* Authenticated MITM protection */
 
 struct smInstance {
     struct smInstance*    prev;
@@ -197,6 +201,8 @@ static struct smInstance *mActInstList = NULL;                /* the active inst
 static pthread_mutex_t mDevLock = PTHREAD_MUTEX_INITIALIZER;  /* lock for the banned device list */
 static struct smDevNode *mBannedDevList = NULL;               /* the device banned on pairing */
 
+static struct multiNotifList *mPairObservers = NULL;          /* the observers of pairing state changes */
+
 /* fwd decls */
 static bool smGenSTK(struct smInstance *inst);
 static bool smGenTK(struct smInstance *inst);
@@ -205,6 +211,7 @@ static bool smGenRandNum(uint8_t *out, uint8_t numLen);
 static bool smGenLtk(struct smInstance *inst);
 static bool smGenEdiv(uint16_t *out, const struct smInstance* inst, uint64_t rand, bool check);
 static_or_test void smEncrypt(uint8_t* dst, const uint8_t *src, const uint8_t *key);
+static void smNotifyPairObserver(const struct bt_addr *addr, smPairState state, smPairErr err);
 
 /* sendQ for packet transmissions */
 static struct sendQ *mSmSendQ;
@@ -234,6 +241,8 @@ static const uint8_t mPairAlgs[5][5] = {
  */
 static bool smSameAddr(const struct bt_addr *a, const struct bt_addr *b)
 {
+    if (!a || !b)
+        return false;
     return !memcmp(a, b, sizeof(struct bt_addr));
 }
 
@@ -563,21 +572,25 @@ tx_err:
 /*
  * FUNCTION: smParsePairReqResp
  * USE:      Parse a struct smPairReqResp into relevant instance variables
- * PARAMS:   inst - the instance
+ * PARAMS:   err - the output pairing error if there is any
+ *           inst - the instance
  *           pairReqResp - the struct
  *           isReq - indicate if we are parsing a pairing request
  * RETURN:   return 0 if all values were read & found valid; SM_ERR_* otherwise
  * NOTES:
  */
-static uint8_t smParsePairReqResp(struct smInstance *inst, const struct smPairReqResp *pairReqResp,
-                                  bool isReq)
+static uint8_t smParsePairReqResp(smPairState *err, struct smInstance *inst,
+                                  const struct smPairReqResp *pairReqResp, bool isReq)
 {
     uint8_t tmp, initKeyDistr, rspKeyDistr;
+
     tmp = utilGetLE8(&pairReqResp->ioCap);
     if (tmp != HCI_DISP_CAP_DISP_ONLY && tmp != HCI_DISP_CAP_DISP_YES_NO &&
         tmp != HCI_DISP_CAP_KBD_ONLY && tmp != HCI_DISP_CAP_NONE &&
         tmp != HCI_DISP_CAP_KBD_DISP) {
         logd("Invalid io caps RXed 0x%02X\n", tmp);
+        if (err)
+            *err = SM_PAIR_ERR_INVALID_PARAM;
         return SM_ERR_INVALID_PARAMS;
     }
     inst->peerIoCap = tmp;
@@ -585,6 +598,8 @@ static uint8_t smParsePairReqResp(struct smInstance *inst, const struct smPairRe
     tmp = utilGetLE8(&pairReqResp->oobDataFlag);
     if (tmp != 0 && tmp != 1) {
         logd("Invalid oob flag RXed 0x%02X\n", tmp);
+        if (err)
+            *err = SM_PAIR_ERR_INVALID_PARAM;
         return SM_ERR_INVALID_PARAMS;
     }
     inst->peerHasOob = !!tmp;
@@ -593,18 +608,24 @@ static uint8_t smParsePairReqResp(struct smInstance *inst, const struct smPairRe
     if ((tmp & SM_AUTH_REQ_BOND_MASK) != SM_AUTH_REQ_BOND_NO &&
          (tmp & SM_AUTH_REQ_BOND_MASK) != SM_AUTH_REQ_BOND_BOND) {
         logd("Invalid authReq RXed 0x%02X\n", tmp);
+        if (err)
+            *err = SM_PAIR_ERR_INVALID_PARAM;
         return SM_ERR_INVALID_PARAMS;
     }
     inst->peerAuthReq = tmp;
 
     if ((inst->peerAuthReq & SM_AUTH_REQ_MITM_FLAG) && inst->peerIoCap == HCI_DISP_CAP_NONE) {
         logd("Infeasible authReq RXed 0x%02X due to io caps 0x%02X\n", tmp, inst->peerIoCap);
+        if (err)
+            *err = SM_PAIR_ERR_AUTH_REQ_INFEASIBLE;
         return SM_ERR_AUTH_REQMENTS;
     }
 
     tmp = utilGetLE8(&pairReqResp->maxKeySz);
     if (tmp < SM_MIN_KEY_LEN || tmp > SM_MAX_KEY_LEN) {
         logd("Invalid maxKeySize RXed 0x%02X\n", tmp);
+        if (err)
+            *err = SM_PAIR_ERR_ENCR_KEY_SIZE;
         /* the invalid key size in pairing request will be handled when receiving confirm value */
         if (!isReq)
             return SM_ERR_ENCR_KEY_SZ;
@@ -703,7 +724,8 @@ static bool smSendPairReq(struct smInstance *inst)
 {
     struct smPairReqResp req;
 
-    inst->isInitiator = true;
+    if (!inst->isInitiator)
+        return false;
 
     utilSetLE8(&req.ioCap, mIoCap);
     /* TODO(mcchou): this needs to be changed accordingly for OOB support */
@@ -711,7 +733,6 @@ static bool smSendPairReq(struct smInstance *inst)
     utilSetLE8(&req.authReq, inst->myAuthReq);
     utilSetLE8(&req.maxKeySz, inst->myMaxKeySz);
     utilSetLE8(&req.initiatorKeyDistr, inst->myKeyDistr);
-    /* TODO(mcchou): this needs to be changed */
     utilSetLE8(&req.responderKeyDistr, inst->myKeyDistr);
 
     if (!smTx(inst, SM_PAIRING_REQ, &req, sizeof(req))) {
@@ -932,7 +953,7 @@ static void smTransitPhase(struct smInstance *inst, uint8_t phase) {
         logd("Phase transition skipped, phase %d\n", phase);
         return;
     }
-    if ((inst->phase == SM_PHASE_DONE || inst->phase == SM_PHASE_LTK_ENCRYPTED)
+    if ((phase == SM_PHASE_DONE || phase == SM_PHASE_LTK_ENCRYPTED)
         && inst->stallTimer) {
         timerCancel(inst->stallTimer);
         inst->stallTimer = 0;
@@ -940,6 +961,9 @@ static void smTransitPhase(struct smInstance *inst, uint8_t phase) {
 
     logd("Transit from phase %d to phase %d\n", inst->phase, phase);
     inst->phase = phase;
+
+    if (inst->phase == SM_PHASE_DONE)
+        smNotifyPairObserver(&inst->peerAddr, SM_PAIR_STATE_PAIRED, SM_PAIR_ERR_NONE);
 }
 
 /*
@@ -1003,11 +1027,89 @@ fail:
 static bool smSendPairFail(const struct smInstance *inst, uint8_t reason)
 {
     struct smPairFailed fail;
+    smPairState pairState = SM_PAIR_ERR_UNKNOWN;
+
+    /* delete keys and numbers associated with the peer device */
+    persistDelDevKeys(&inst->peerAddr);
+    persistDelDevNumbers(&inst->peerAddr);
 
     smBanDeviceForTime(&inst->peerAddr);
     utilSetLE8(&fail.reason, reason);
 
     return smTx(inst, SM_PAIRING_FAIL, &fail, sizeof(fail));
+}
+
+/*
+ * FUNCTION: smIsPaired
+ * USE:      check if the peer device is previously paired by checking the exchanged
+ *           LTK, EDIV and random number
+ * PARAMS:   mitm - indicate whether the existing pairing is MITM protected; valid if paired
+ *           bonded - indicate whether the existing pairing is bonded; valid if paired
+ *           addr - the address of the peer device
+ * RETURN:   true if previously paired; false otherwise
+ * NOTES:
+ */
+static bool smIsPaired(bool *mitm, bool *bonded, const struct bt_addr *addr)
+{
+    uint8_t key[HCI_LE_KEY_LEN] = {0,};
+    uint64_t num;
+    bool paired;
+
+    if (!addr)
+        return false;
+
+    paired = persistGetDevKey(addr, KEY_TYPE_LTK, key) &&
+             persistGetDevKey(addr, KEY_TYPE_MY_LTK, key) &&
+             persistGetDevNumber(addr, PERSIST_NUM_TYPE_SM_EDIV, &num) &&
+             persistGetDevNumber(addr, PERSIST_NUM_TYPE_SM_RANDOM, &num) &&
+             persistGetDevNumber(addr, PERSIST_NUM_TYPE_SM_MY_RANDOM, &num) &&
+             persistGetDevNumber(addr, PERSIST_NUM_TYPE_SM_MITM_PROTECT, &num);
+    if (!paired)
+        return false;
+
+    if (mitm)
+        *mitm = !!num;
+
+    if (bonded) {
+        *bonded = false;
+        if (persistGetDevNumber(addr, PERSIST_NUM_TYPE_SM_BOND, &num) && !!num &&
+            persistGetDevKey(addr, KEY_TYPE_IRK, key)) {
+            *bonded = true;
+        }
+    }
+
+    return true;
+}
+
+/*
+ * FUNCTION: smLtkEncrypt
+ * USE:      (Re-)encrypt the link using peer's random number, EVID and LTK
+ * PARAMS:   inst - the instance
+ * RETURN:   true if encryption request sent
+ * NOTES:    This should be called when we are the initiator of the link
+ */
+static bool smLtkEncrypt(struct smInstance *inst)
+{
+    uint64_t rand, ediv;
+    uint8_t ltk[HCI_LE_KEY_LEN] = {0,};
+    uint8_t rawLtk[HCI_LE_KEY_LEN] = {0,};
+
+    if (!inst)
+        return false;
+
+    if (!persistGetDevNumber(&inst->peerAddr, PERSIST_NUM_TYPE_SM_EDIV, &ediv) ||
+        !persistGetDevNumber(&inst->peerAddr, PERSIST_NUM_TYPE_SM_RANDOM, &rand) ||
+        !persistGetDevKey(&inst->peerAddr, KEY_TYPE_LTK, ltk)) {
+        logw("Failed to retrieve encryption info for encryption using LTK\n");
+        return false;
+    } else if (!smReadReversedBytes(rawLtk, sizeof(rawLtk), ltk, sizeof(ltk)) ||
+               !l2cApiLeEncryptConn(inst->conn, rand, ediv, rawLtk)) {
+        logw("Failed to encrypt using LTK\n");
+        return false;
+    } else {
+        logi("Encrypt using LTK\n");
+    }
+    return true;
 }
 
 /*
@@ -1029,9 +1131,11 @@ static void smRx(struct smInstance *inst, sg packet)
     struct smMasterInfo masterInfo;
     struct smIdentityAddrInfo addrInfo;
     struct smAuthReq authReq;
+    smPairErr pairErr = SM_PAIR_ERR_UNKNOWN;
     uint8_t typ, addrType, err, auth;
     uint64_t rand, ediv;
     uint8_t mac[BT_MAC_LEN] = {0,};
+    uint8_t stk[HCI_LE_KEY_LEN] = {0,};
     uint8_t ltk[HCI_LE_KEY_LEN] = {0,};
 
     if (!sgSerializeCutFront(packet, &hdr, sizeof(hdr))) {
@@ -1045,44 +1149,57 @@ static void smRx(struct smInstance *inst, sg packet)
     case SM_PAIRING_REQ:
         if (!sgSerializeCutFront(packet, &pairReqResp, sizeof(pairReqResp))) {
             logw("Incoming SM packet data extraction failed\n");
+            pairErr = SM_PAIR_ERR_INVALID_PARAM;
             break;
         }
         if (sgLength(packet)) {
             logw("Residual data in packet: %u\n", sgLength(packet));
             smSendPairFail(inst, SM_ERR_INVALID_PARAMS);
+            pairErr = SM_PAIR_ERR_INVALID_PARAM;
             break;
         }
 
         if (smIsDevBanned(&inst->peerAddr)) {
             smSendPairFail(inst, SM_ERR_REPEATED_ATTEMPTS);
             smBanDeviceForTime(&inst->peerAddr);
+            pairErr = SM_PAIR_ERR_REPEATED_ATTEMPT;
             break;
         }
 
         if ((inst->phase == SM_PHASE_SEC_REQ_SENT && inst->isInitiator) ||
-            (inst->phase != SM_PHASE_START) || inst->isInitiator)
+            (inst->phase != SM_PHASE_START) || inst->isInitiator) {
+            pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
             break;
+        }
 
         inst->isInitiator = false;
-        if ((err = smParsePairReqResp(inst, &pairReqResp, true))) {
+        if ((pairErr = smParsePairReqResp(&err, inst, &pairReqResp, true))) {
             smSendPairFail(inst, err);
             break;
         }
 
         if (inst->peerHasOob && !mHasOob) {
             smSendPairFail(inst, SM_ERR_OOB_NOT_AVAIL);
+            pairErr = SM_PAIR_ERR_OOB_NOT_AVAILABLE;
             break;
         }
 
-        if (!smGenRandNum(inst->myRandNum.rand, sizeof(inst->myRandNum.rand)))
-            break;
-        if (!smGenTK(inst))
-            break;
-        if (!smGenConfVal(&inst->myConfVal, inst, false))
+        /* as a responsder, we set our authentication requirement based on our IO capabilities and
+         * peer's requirement */
+        inst->myAuthReq = inst->peerAuthReq;
+        if (mIoCap == HCI_DISP_CAP_NONE)
+            inst->myAuthReq &= ~SM_AUTH_REQ_MITM_FLAG;
+        inst->myMaxKeySz = SM_MAX_KEY_LEN;
+
+        if (!smGenRandNum(inst->myRandNum.rand, sizeof(inst->myRandNum.rand)) ||
+            !smGenTK(inst) ||
+            !smGenConfVal(&inst->myConfVal, inst, false))
             break;
 
-        if (!smSendPairResp(inst))
+        if (!smSendPairResp(inst)) {
+            pairErr = SM_PAIR_ERR_SEND_SM_CMD;
             break;
+        }
         smTransitPhase(inst, SM_PHASE_REQ_RESP);
 
         goto done;
@@ -1090,30 +1207,42 @@ static void smRx(struct smInstance *inst, sg packet)
     case SM_PAIRING_RSP:
         if (!sgSerializeCutFront(packet, &pairReqResp, sizeof(pairReqResp))) {
             logw("Incoming SM packet data extraction failed\n");
+            pairErr = SM_PAIR_ERR_INVALID_PARAM;
             break;
         }
         if (sgLength(packet)) {
             logw("Residual data in packet: %u\n", sgLength(packet));
             smSendPairFail(inst, SM_ERR_INVALID_PARAMS);
+            pairErr = SM_PAIR_ERR_INVALID_PARAM;
             break;
         }
-        if (inst->phase != SM_PHASE_REQ_SENT || !inst->isInitiator)
+        if (inst->phase != SM_PHASE_REQ_SENT || !inst->isInitiator) {
+            pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
             break;
+        }
 
-        if ((err = smParsePairReqResp(inst, &pairReqResp, false))) {
+        if ((pairErr = smParsePairReqResp(&err, inst, &pairReqResp, false))) {
             smSendPairFail(inst, err);
             break;
         }
 
-        if (!smGenRandNum(inst->myRandNum.rand, sizeof(inst->myRandNum.rand)))
+        /* fail the pairing if peer does not distribute IRK when bonding is requested by us */
+        if ((inst->myAuthReq & SM_AUTH_REQ_BOND_MASK) == SM_AUTH_REQ_BOND_BOND &&
+             !(inst->peerKeyDistr & SM_KEY_DISTR_IRK)) {
+            smSendPairFail(inst, SM_ERR_AUTH_REQMENTS);
+            pairErr = SM_PAIR_ERR_AUTH_REQ_INFEASIBLE;
             break;
-        if (!smGenTK(inst))
-            break;
-        if (!smGenConfVal(&inst->myConfVal, inst, false))
+        }
+
+        if (!smGenRandNum(inst->myRandNum.rand, sizeof(inst->myRandNum.rand)) ||
+            !smGenTK(inst) ||
+            !smGenConfVal(&inst->myConfVal, inst, false))
             break;
 
-        if (!smSendPairConf(inst))
+        if (!smSendPairConf(inst)) {
+            pairErr = SM_PAIR_ERR_SEND_SM_CMD;
             break;
+        }
         smTransitPhase(inst, SM_PHASE_CONF_SENT);
 
         goto done;
@@ -1121,20 +1250,25 @@ static void smRx(struct smInstance *inst, sg packet)
     case SM_PAIRING_CONF:
         if (!sgSerializeCutFront(packet, &pairConf, sizeof(pairConf))) {
             logw("Incoming SM packet data extraction failed\n");
+            pairErr = SM_PAIR_ERR_INVALID_PARAM;
             break;
         }
         if (sgLength(packet)) {
             logw("Residual data in packet: %u\n", sgLength(packet));
             smSendPairFail(inst, SM_ERR_INVALID_PARAMS);
+            pairErr = SM_PAIR_ERR_INVALID_PARAM;
             break;
         }
         if ((inst->isInitiator && inst->phase != SM_PHASE_CONF_SENT) ||
-            (!inst->isInitiator && inst->phase != SM_PHASE_REQ_RESP))
+            (!inst->isInitiator && inst->phase != SM_PHASE_REQ_RESP)) {
+            pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
             break;
+        }
 
         if (!inst->isInitiator &&
             (inst->peerMaxKeySz < SM_MIN_KEY_LEN || inst->peerMaxKeySz > SM_MAX_KEY_LEN)) {
             smSendPairFail(inst, SM_ERR_ENCR_KEY_SZ);
+            pairErr = SM_PAIR_ERR_ENCR_KEY_SIZE;
             break;
         }
 
@@ -1143,12 +1277,16 @@ static void smRx(struct smInstance *inst, sg packet)
             break;
 
         if (inst->isInitiator) {
-            if (!smSendPairRand(inst))
+            if (!smSendPairRand(inst)) {
+                pairErr = SM_PAIR_ERR_SEND_SM_CMD;
                 break;
+            }
             smTransitPhase(inst, SM_PHASE_RAND_SENT);
         } else {
-            if (!smSendPairConf(inst))
+            if (!smSendPairConf(inst)) {
+                pairErr = SM_PAIR_ERR_SEND_SM_CMD;
                 break;
+            }
             smTransitPhase(inst, SM_PHASE_CONF_RESP);
         }
 
@@ -1157,11 +1295,13 @@ static void smRx(struct smInstance *inst, sg packet)
     case SM_PAIRING_RAND:
         if (!sgSerializeCutFront(packet, &pairRand, sizeof(pairRand))) {
             logw("Incoming SM packet data extraction failed\n");
+            pairErr = SM_PAIR_ERR_INVALID_PARAM;
             break;
         }
         if (sgLength(packet)) {
             logw("Residual data in packet: %u\n", sgLength(packet));
             smSendPairFail(inst, SM_ERR_INVALID_PARAMS);
+            pairErr = SM_PAIR_ERR_INVALID_PARAM;
             break;
         }
         if ((inst->isInitiator && inst->phase != SM_PHASE_RAND_SENT) ||
@@ -1177,10 +1317,13 @@ static void smRx(struct smInstance *inst, sg packet)
         if (memcmp(pairConf.confirmVal, inst->peerConfVal.confirmVal,
                    sizeof(pairConf.confirmVal)) != 0) {
             smSendPairFail(inst, SM_ERR_CONF_VAL_FAILED);
+            pairErr = SM_PAIR_ERR_CONF_VALUE_MISMATCHED;
             break;
         }
-        if (!inst->isInitiator && !smSendPairRand(inst))
+        if (!inst->isInitiator && !smSendPairRand(inst)) {
+            pairErr = SM_PAIR_ERR_SEND_SM_CMD;
             break;
+        }
         smTransitPhase(inst, SM_PHASE_RAND_RESP);
 
         if (!smGenSTK(inst)) {
@@ -1188,16 +1331,21 @@ static void smRx(struct smInstance *inst, sg packet)
                 logw("%s(): Chosen pairing algorithm 0x%02X failed to meet MITM\n", __func__,
                      inst->alg);
                 smSendPairFail(inst, SM_ERR_AUTH_REQMENTS);
+                pairErr = SM_PAIR_ERR_AUTH_REQ_INFEASIBLE;
             }
             break;
         }
 
         /* Rand value and EDIV should be set to 0 when setting up encryption with STK */
         if (inst->isInitiator) {
-            if (l2cApiLeEncryptConn(inst->conn, 0, 0, inst->stk.key))
-                smTransitPhase(inst, SM_PHASE_STK_SENT);
-            else
+            if (!smReadReversedBytes(stk, sizeof(stk), inst->stk.key, sizeof(inst->stk.key))) {
                 break;
+            } else if (!l2cApiLeEncryptConn(inst->conn, 0, 0, stk)) {
+                pairErr = SM_PAIR_ERR_L2C_CONN;
+                break;
+            } else {
+                smTransitPhase(inst, SM_PHASE_STK_SENT);
+            }
         }
 
         goto done;
@@ -1205,11 +1353,46 @@ static void smRx(struct smInstance *inst, sg packet)
     case SM_PAIRING_FAIL:
         if (!sgSerializeCutFront(packet, &pairFailed, sizeof(pairFailed))) {
             logw("Incoming SM packet data extraction failed\n");
+            pairErr = SM_PAIR_ERR_INVALID_PARAM;
             break;
         }
         if (sgLength(packet)) {
             logw("Residual data in packet: %u\n", sgLength(packet));
             smSendPairFail(inst, SM_ERR_INVALID_PARAMS);
+            pairErr = SM_PAIR_ERR_INVALID_PARAM;
+            break;
+        }
+
+        switch(pairFailed.reason) {
+        case SM_ERR_PASSKEY_ENTRY_FAILED:
+            pairErr = SM_PAIR_ERR_PASSKEY_FAILED;
+            break;
+        case SM_ERR_OOB_NOT_AVAIL:
+            pairErr = SM_PAIR_ERR_OOB_NOT_AVAILABLE;
+            break;
+        case SM_ERR_AUTH_REQMENTS:
+            pairErr = SM_PAIR_ERR_AUTH_REQ_INFEASIBLE;
+            break;
+        case SM_ERR_CONF_VAL_FAILED:
+            pairErr = SM_PAIR_ERR_CONF_VALUE_MISMATCHED;
+            break;
+        case SM_ERR_PAIRING_NOT_SUPPORTED:
+            pairErr = SM_PAIR_ERR_PAIRING_NOT_SUPPORTED;
+            break;
+        case SM_ERR_ENCR_KEY_SZ:
+            pairErr = SM_PAIR_ERR_ENCR_KEY_SIZE;
+            break;
+        case SM_ERR_CMD_NOT_SUPP:
+            pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
+            break;
+        case SM_ERR_REPEATED_ATTEMPTS:
+            pairErr = SM_PAIR_ERR_REPEATED_ATTEMPT;
+            break;
+        case SM_ERR_INVALID_PARAMS:
+            pairErr = SM_PAIR_ERR_INVALID_PARAM;
+            break;
+        case SM_ERR_UNSPECCED_REASON:
+        default:
             break;
         }
 
@@ -1219,29 +1402,40 @@ static void smRx(struct smInstance *inst, sg packet)
     case SM_ENCR_INFO:
         if (!sgSerializeCutFront(packet, &k, sizeof(k))) {
             logw("Incoming SM packet data extraction failed\n");
+            pairErr = SM_PAIR_ERR_INVALID_PARAM;
             break;
         }
         if (sgLength(packet)) {
             logw("Residual data in packet: %u\n", sgLength(packet));
             smSendPairFail(inst, SM_ERR_INVALID_PARAMS);
+            pairErr = SM_PAIR_ERR_INVALID_PARAM;
             break;
         }
 
         if (inst->isInitiator) {
-            if (inst->phase != SM_PHASE_STK_ENCRYPTED)
+            if (inst->phase != SM_PHASE_STK_ENCRYPTED) {
+                pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
                 break;
+            }
         } else {
             /* the phase check can differ based on the responder key distribution field */
             if (inst->myKeyDistr & SM_KEY_DISTR_CSRK) {
-                if (inst->phase != SM_PHASE_SIGN_INFO_SENT)
+                if (inst->phase != SM_PHASE_SIGN_INFO_SENT) {
+                    pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
                     break;
+                }
             } else if (inst->myKeyDistr & SM_KEY_DISTR_IRK) {
-                if (inst->phase != SM_PHASE_ID_ADDR_INFO_SENT)
+                if (inst->phase != SM_PHASE_ID_ADDR_INFO_SENT) {
+                    pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
                     break;
+                }
             } else if (inst->myKeyDistr & SM_KEY_DISTR_LTK) {
-                if (inst->phase != SM_PHASE_MASTER_ID_SENT)
+                if (inst->phase != SM_PHASE_MASTER_ID_SENT) {
+                    pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
                     break;
+                }
             } else if (inst->phase != SM_PHASE_STK_ENCRYPTED) {
+                pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
                 break;
             }
         }
@@ -1258,16 +1452,20 @@ static void smRx(struct smInstance *inst, sg packet)
     case SM_MASTER_INFO:
         if (!sgSerializeCutFront(packet, &masterInfo, sizeof(masterInfo))) {
             logw("Incoming SM packet data extraction failed\n");
+            pairErr = SM_PAIR_ERR_INVALID_PARAM;
             break;
         }
         if (sgLength(packet)) {
             logw("Residual data in packet: %u\n", sgLength(packet));
             smSendPairFail(inst, SM_ERR_INVALID_PARAMS);
+            pairErr = SM_PAIR_ERR_INVALID_PARAM;
             break;
         }
 
-        if (inst->phase != SM_PHASE_ENCRYPT_INFO_RECEIVED)
+        if (inst->phase != SM_PHASE_ENCRYPT_INFO_RECEIVED) {
+            pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
             break;
+        }
 
         /* process and store peer's EDIV and random number */
         ediv = utilGetLE16(&masterInfo.ediv);
@@ -1279,9 +1477,15 @@ static void smRx(struct smInstance *inst, sg packet)
         smTransitPhase(inst, SM_PHASE_MASTER_ID_RECEIVED);
 
         if (!(inst->peerKeyDistr & (SM_KEY_DISTR_IRK | SM_KEY_DISTR_CSRK))) {
-            /* as the initiator, if we don't expect more keys coming, we start key distribution */
-            if (inst->isInitiator && !smDistributeKeys(inst))
+            /* as the initiator, if we don't expect more keys, we start key distribution. according
+             * to the spec, a device "may" re-encrypt the link using LTK, but we don't until the
+             * next re-connection.
+             */
+            if (inst->isInitiator && !smDistributeKeys(inst)) {
+                pairErr = SM_PAIR_ERR_SEND_SM_CMD;
                 break;
+            }
+
             smTransitPhase(inst, SM_PHASE_DONE);
         }
 
@@ -1290,36 +1494,50 @@ static void smRx(struct smInstance *inst, sg packet)
     case SM_IDENTITY_INFO:
         if (!sgSerializeCutFront(packet, &k, sizeof(k))) {
             logw("Incoming SM packet data extraction failed\n");
+            pairErr = SM_PAIR_ERR_INVALID_PARAM;
             break;
         }
         if (sgLength(packet)) {
             logw("Residual data in packet: %u\n", sgLength(packet));
             smSendPairFail(inst, SM_ERR_INVALID_PARAMS);
+            pairErr = SM_PAIR_ERR_INVALID_PARAM;
             break;
         }
 
         /* the phase check can differ based on the key distribution fields */
         if (inst->isInitiator) {
             if (inst->peerKeyDistr & SM_KEY_DISTR_LTK) {
-                if (inst->phase != SM_PHASE_MASTER_ID_RECEIVED)
+                if (inst->phase != SM_PHASE_MASTER_ID_RECEIVED) {
+                    pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
                     break;
+                }
             } else if (inst->phase != SM_PHASE_STK_ENCRYPTED) {
+                pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
                 break;
             }
         } else {
             if (inst->peerKeyDistr & SM_KEY_DISTR_LTK) {
-                if (inst->phase != SM_PHASE_MASTER_ID_RECEIVED)
+                if (inst->phase != SM_PHASE_MASTER_ID_RECEIVED) {
+                    pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
                     break;
+                }
             } else if (inst->myKeyDistr & SM_KEY_DISTR_CSRK) {
-                if (inst->phase != SM_PHASE_SIGN_INFO_SENT)
+                if (inst->phase != SM_PHASE_SIGN_INFO_SENT) {
+                    pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
                     break;
+                }
             } else if (inst->myKeyDistr & SM_KEY_DISTR_IRK) {
-                if (inst->phase != SM_PHASE_ID_ADDR_INFO_SENT)
+                if (inst->phase != SM_PHASE_ID_ADDR_INFO_SENT) {
+                    pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
                     break;
+                }
             } else if (inst->myKeyDistr & SM_KEY_DISTR_LTK) {
-                if (inst->phase != SM_PHASE_MASTER_ID_SENT)
+                if (inst->phase != SM_PHASE_MASTER_ID_SENT) {
+                    pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
                     break;
+                }
             } else if (inst->phase != SM_PHASE_STK_ENCRYPTED) {
+                pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
                 break;
             }
         }
@@ -1336,24 +1554,35 @@ static void smRx(struct smInstance *inst, sg packet)
     case SM_IDENTITY_ADDR_INFO:
         if (!sgSerializeCutFront(packet, &addrInfo, sizeof(addrInfo))) {
             logw("Incoming SM packet data extraction failed\n");
+            pairErr = SM_PAIR_ERR_INVALID_PARAM;
             break;
         }
         if (sgLength(packet)) {
             logw("Residual data in packet: %u\n", sgLength(packet));
             smSendPairFail(inst, SM_ERR_INVALID_PARAMS);
+            pairErr = SM_PAIR_ERR_INVALID_PARAM;
             break;
         }
 
-        if (inst->phase != SM_PHASE_ID_INFO_RECEIVED)
+        if (inst->phase != SM_PHASE_ID_INFO_RECEIVED) {
+            pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
             break;
+        }
 
-        /* TODO(mcchou): store the address as a property in persist */
+        /* TODO(mcchou): store the address as a property in persist, note that according to spec,
+         * the address is considered valid after reconnecting using previously-exchanged LTK */
         smTransitPhase(inst, SM_PHASE_ID_ADDR_INFO_RECEIVED);
 
         if (!(inst->peerKeyDistr & SM_KEY_DISTR_CSRK)) {
-            /* as the initiator, if we don't expect more keys coming, we start key distribution */
-            if (inst->isInitiator && !smDistributeKeys(inst))
+            /* as the initiator, if we don't expect more keys, we start key distribution. according
+             * to the spec, a device "may" re-encrypt the link using LTK, but we don't until the
+             * next re-connection.
+             */
+            if (inst->isInitiator && !smDistributeKeys(inst)) {
+                pairErr = SM_PAIR_ERR_SEND_SM_CMD;
                 break;
+            }
+
             smTransitPhase(inst, SM_PHASE_DONE);
         }
 
@@ -1361,42 +1590,60 @@ static void smRx(struct smInstance *inst, sg packet)
     case SM_SIGNING_INFO:
         if (!sgSerializeCutFront(packet, &k, sizeof(k))) {
             logw("Incoming SM packet data extraction failed\n");
+            pairErr = SM_PAIR_ERR_INVALID_PARAM;
             break;
         }
         if (sgLength(packet)) {
             logw("Residual data in packet: %u\n", sgLength(packet));
             smSendPairFail(inst, SM_ERR_INVALID_PARAMS);
+            pairErr = SM_PAIR_ERR_INVALID_PARAM;
             break;
         }
 
         /* the phase check can differ based on the key distribution fields */
         if (inst->isInitiator) {
             if (inst->peerKeyDistr & SM_KEY_DISTR_IRK) {
-                if (inst->phase != SM_PHASE_ID_ADDR_INFO_RECEIVED)
+                if (inst->phase != SM_PHASE_ID_ADDR_INFO_RECEIVED) {
+                    pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
                     break;
+                }
             } else if (inst->peerKeyDistr & SM_KEY_DISTR_LTK) {
-                if (inst->phase != SM_PHASE_MASTER_ID_RECEIVED)
+                if (inst->phase != SM_PHASE_MASTER_ID_RECEIVED) {
+                    pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
                     break;
+                }
             } else if (inst->phase != SM_PHASE_STK_ENCRYPTED) {
+                pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
                 break;
             }
         } else {
             if (inst->peerKeyDistr & SM_KEY_DISTR_IRK) {
-                if (inst->phase != SM_PHASE_ID_ADDR_INFO_RECEIVED)
+                if (inst->phase != SM_PHASE_ID_ADDR_INFO_RECEIVED) {
+                    pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
                     break;
+                }
             } else if (inst->peerKeyDistr & SM_KEY_DISTR_LTK) {
-                if (inst->phase != SM_PHASE_MASTER_ID_RECEIVED)
+                if (inst->phase != SM_PHASE_MASTER_ID_RECEIVED) {
+                    pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
                     break;
+                }
             } else if (inst->myKeyDistr & SM_KEY_DISTR_CSRK) {
-                if (inst->phase != SM_PHASE_SIGN_INFO_SENT)
+                if (inst->phase != SM_PHASE_SIGN_INFO_SENT) {
+                    pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
                     break;
+                }
             } else if (inst->myKeyDistr & SM_KEY_DISTR_IRK) {
-                if (inst->phase != SM_PHASE_ID_ADDR_INFO_SENT)
+                if (inst->phase != SM_PHASE_ID_ADDR_INFO_SENT) {
+                    pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
                     break;
+                }
             } else if (inst->myKeyDistr & SM_KEY_DISTR_LTK) {
-                if (inst->phase != SM_PHASE_MASTER_ID_SENT)
+                if (inst->phase != SM_PHASE_MASTER_ID_SENT) {
+                    pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
                     break;
+                }
             } else if (inst->phase != SM_PHASE_STK_ENCRYPTED) {
+                pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
                 break;
             }
         }
@@ -1408,9 +1655,13 @@ static void smRx(struct smInstance *inst, sg packet)
             break;
         smTransitPhase(inst, SM_PHASE_SIGN_INFO_RECEIVED);
 
-        /* as the initiator, we start key distribution */
-        if (inst->isInitiator && !smDistributeKeys(inst))
+        /* as the initiator, if we start key distribution. according to the spec, a device "may"
+         * re-encrypt the link using LTK, but we don't until the next re-connection.
+         */
+        if (inst->isInitiator && !smDistributeKeys(inst)) {
+            pairErr = SM_PAIR_ERR_SEND_SM_CMD;
             break;
+        }
 
         smTransitPhase(inst, SM_PHASE_DONE);
 
@@ -1419,53 +1670,56 @@ static void smRx(struct smInstance *inst, sg packet)
     case SM_SECURITY_REQUEST:
         if (!sgSerializeCutFront(packet, &authReq, sizeof(authReq))) {
             logw("Incoming SM packet data extraction failed\n");
+            pairErr = SM_PAIR_ERR_INVALID_PARAM;
             break;
         }
         if (sgLength(packet)) {
             logw("Residual data in packet: %u\n", sgLength(packet));
             smSendPairFail(inst, SM_ERR_INVALID_PARAMS);
+            pairErr = SM_PAIR_ERR_INVALID_PARAM;
             break;
         }
 
         if (smIsDevBanned(&inst->peerAddr)) {
             smSendPairFail(inst, SM_ERR_REPEATED_ATTEMPTS);
             smBanDeviceForTime(&inst->peerAddr);
+            pairErr = SM_PAIR_ERR_REPEATED_ATTEMPT;
             break;
         }
 
-        /* TODO(mcchou): check if we should allow re-encrypt when encrypted with LTK already */
         if ((inst->phase == SM_PHASE_DONE || inst->phase == SM_PHASE_LTK_ENCRYPTED) && inst->isInitiator) {
-            /* if previously paired, use peer's LTK, random number and EDIV to start encryption */
-            if (!persistGetDevNumber(&inst->peerAddr, PERSIST_NUM_TYPE_SM_RANDOM, &rand) ||
-                !persistGetDevNumber(&inst->peerAddr, PERSIST_NUM_TYPE_SM_EDIV, &ediv) ||
-                !persistGetDevKey(&inst->peerAddr, KEY_TYPE_LTK, ltk))
-                break;
-
             inst->isInitiator = true; /* for re-establishment, we are the initiator for sure */
-            l2cApiLeEncryptConn(inst->conn, rand, ediv, ltk);
+            if (!smLtkEncrypt(inst)) {
+                pairErr = SM_PAIR_ERR_ENCR_CONN;
+                break;
+            }
         } else if (inst->phase == SM_PHASE_START) {
             auth = utilGetLE8(&authReq.authReq);
             if ((auth & SM_AUTH_REQ_BOND_MASK) != SM_AUTH_REQ_BOND_NO &&
                 (auth & SM_AUTH_REQ_BOND_MASK) != SM_AUTH_REQ_BOND_BOND) {
                 logw("Invalid authReq in security request\n");
+                pairErr = SM_PAIR_ERR_INVALID_PARAM;
                 break;
             }
             inst->peerAuthReq = auth; /* TODO(mcchou): use whether received from the responder */
             smSendPairReq(inst); /* all fields required were set when the instance was allocated */
         } else {
+            pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
             break;
         }
 
         goto done;
 
     default:
-        smSendPairFail(inst, SM_ERR_CMD_NOT_SUPP);
         logw("Unexpected packet type 0x%02X in SM. Dropping\n", typ);
+        smSendPairFail(inst, SM_ERR_CMD_NOT_SUPP);
+        pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
         break;
     }
 
     logd("Got packet type 0x%02X in phase %u when we are the %s\n", typ, inst->phase,
          inst->isInitiator ? "initiator" : "responder");
+    smNotifyPairObserver(&inst->peerAddr, SM_PAIR_STATE_FAILED, pairErr);
     smTransitPhase(inst, SM_PHASE_START);
 done:
     sgFree(packet);
@@ -1488,6 +1742,28 @@ static struct smInstance* smInstFindByConn(l2c_handle_t conn)
 
     while(inst) {
         if (inst->conn == conn)
+            return inst;
+        inst = inst->next;
+    }
+    return NULL;
+}
+
+/*
+ * FUNCTION: smInstFindByAddr
+ * USE:      Find the instance node by the peer address
+ * PARAMS:   addr
+ * RETURN:   the instance if matched; NULL otherwise
+ * NOTES:    call with mInstLock held
+ */
+static struct smInstance* smInstFindByAddr(const struct bt_addr *addr)
+{
+    struct smInstance *inst = mActInstList;
+
+    if (!addr)
+        return NULL;
+
+    while(inst) {
+        if (smSameAddr(addr, &inst->peerAddr))
             return inst;
         inst = inst->next;
     }
@@ -1523,6 +1799,7 @@ static void smStallTimerCb(uniq_t timerId, uint64_t conn)
     pthread_mutex_unlock(&mInstLock);
 
     l2cApiDisconnect(conn);
+    smNotifyPairObserver(&inst->peerAddr, SM_PAIR_STATE_FAILED, SM_PAIR_ERR_STALLED);
 }
 
 /*
@@ -1530,7 +1807,8 @@ static void smStallTimerCb(uniq_t timerId, uint64_t conn)
  * USE:      Delete an instance from the active instance list, cancel the pairing timer and free it
  * PARAMS:   inst - the instance
  * RETURN:   NONE
- * NOTES:
+ * NOTES:    This MUST be called only by smFixedChState when the state is L2C_STATE_CLOSED to avoid
+ *           potential race and freeing already-freed instance
  */
 static void smInstDeinit(struct smInstance* inst)
 {
@@ -1556,21 +1834,28 @@ static void smInstDeinit(struct smInstance* inst)
 /*
  * FUNCTION: smInstInit
  * USE:      Set default values for repeated attempt fields of the instance, add it to the
- *           active instance list and keep start the timer for pairing process
+ *           active instance list and keep start the timer for pairing process if an instance is
+ *           not yet in the active instance list
  * PARAMS:   inst - the instance
  * RETURN:   NONE
  * NOTES:
  */
 static void smInstInit(struct smInstance *inst)
 {
+    if (!inst)
+        return;
+
     pthread_mutex_lock(&mInstLock);
 
-    inst->prev = NULL;
-    inst->next = mActInstList;
-    if (mActInstList)
-        mActInstList->prev = inst;
-    mActInstList = inst;
+    if (!smInstFindByAddr(&inst->peerAddr)) {
+        inst->prev = NULL;
+        inst->next = mActInstList;
+        if (mActInstList)
+            mActInstList->prev = inst;
+        mActInstList = inst;
+    }
 
+    /* TODO(mcchou): fix stall timer according to Volume 3, Part H, 3.4 SMP TIMEOUT */
     inst->stallTimer = timerSet(SM_STALL_INTVL, smStallTimerCb, inst->conn);
 
     pthread_mutex_unlock(&mInstLock);
@@ -1593,41 +1878,85 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
     struct smInstance *inst = (struct smInstance*)instance;
     struct l2cEncrState *encrState = NULL;
     struct l2cKeyReqState *keyReqState = NULL;
+    struct bt_addr peerAddr;
+    struct bt_addr myAddr;
+    smPairErr pairErr = SM_PAIR_ERR_UNKNOWN;;
     l2c_handle_t conn;
     sg s;
     uint16_t ediv = 0, myEdiv = 0;
     uint64_t myRand = 0;
     uint8_t key[HCI_LE_KEY_LEN] = {0,};
     uint8_t rawKey[HCI_LE_KEY_LEN] = {0,};
+    uint8_t phase = inst->phase;
 
     switch (evt) {
     case L2C_STATE_OPEN:
         if (len != sizeof(l2c_handle_t)) {
             loge("invalid length for open event\n");
-            break;
+            goto fail;
         }
+
         conn = *(l2c_handle_t*)data;
+
         /* when we support outbound connections, this code will need to evolve */
-        if (inst->conn != conn)
+        if (!inst->isInitiator && inst->conn != conn) {
             loge("Handle change!!!\n");
+            pairErr = SM_PAIR_ERR_UNEXPECTED_L2C_EVT;
+            goto reset;
+        }
+
+        /* assign the connection, our address and peer address if smPair was called to start the
+         * pairing as an initiator
+         */
+        if (inst->isInitiator) {
+            if (inst->phase != SM_PHASE_START) {
+                pairErr = SM_PAIR_ERR_UNEXPECTED_L2C_EVT;
+                goto reset;
+            }
+
+            inst->conn = conn;
+
+            if (!l2cApiGetBtAddr(inst->conn, &peerAddr) ||
+                !l2cApiGetSelfBtAddr(inst->conn, &myAddr)) {
+                loge("Failed to get peer address or local address\n");
+                goto reset;
+            }
+            if (memcmp(&inst->peerAddr, &peerAddr, sizeof(struct bt_addr))) {
+                loge("Peer address mismatched\n");
+                goto reset;
+            }
+            inst->myAddr = myAddr;
+        }
 
         smInstInit(inst);
+
+        if (inst->isInitiator) {
+            if (!smSendPairReq(inst)) {
+                pairErr = SM_PAIR_ERR_SEND_SM_CMD;
+                goto reset;
+            }
+            smTransitPhase(inst, SM_PHASE_REQ_SENT);
+        }
 
         break;
 
     case L2C_STATE_ENCR:
         if (len != sizeof(struct l2cEncrState)) {
             loge("invalid length for encryption event\n");
-            break;
+            goto fail;
         }
+
         encrState = (struct l2cEncrState *)data;
 
-        if (inst->phase != SM_PHASE_LTK_SENT && inst->phase != SM_PHASE_STK_SENT)
-            goto fail;
+        if (inst->phase != SM_PHASE_LTK_SENT && inst->phase != SM_PHASE_STK_SENT) {
+            pairErr = SM_PAIR_ERR_UNEXPECTED_L2C_EVT;
+            goto reset;
+        }
 
         if (!smIsEncryptExpected(encrState, inst)) {
             logw("Failed to encrypt the connection %llu\n", inst->conn);
-            goto fail;
+            pairErr = SM_PAIR_ERR_ENCR_CONN;
+            goto reset;
         }
 
         /* if the encryption of re-establishment went well, no further action is needed for either
@@ -1646,8 +1975,10 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
             (inst->peerKeyDistr & (SM_KEY_DISTR_LTK | SM_KEY_DISTR_IRK | SM_KEY_DISTR_CSRK)))
             break;
 
-        if (!smDistributeKeys(inst))
-            goto fail;
+        if (!smDistributeKeys(inst)) {
+            pairErr = SM_PAIR_ERR_SEND_SM_CMD;
+            goto reset;
+        }
 
         /* if we are responder, we wait for key distribution from the peer if any */
         if (!inst->isInitiator &&
@@ -1661,7 +1992,7 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
     case L2C_STATE_RX:
         if (len != sizeof(sg)) {
             loge("invalid length for RX event\n");
-            break;
+            goto fail;
         }
         s = *(sg*)data;
         smRx(inst, s);
@@ -1670,29 +2001,36 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
     case L2C_STATE_KEY_REQ:
         if (len != sizeof(struct l2cKeyReqState)) {
             loge("invalid length for key request event\n");
-            break;;
+            goto fail;
         }
         keyReqState = (struct l2cKeyReqState *)data;
 
         if (inst->isInitiator) {
             logw("received key request when we are the initiator\n");
-            break;
+            pairErr = SM_PAIR_ERR_UNEXPECTED_L2C_EVT;
+            goto reset;
         }
 
-        /* TODO(mcchou): finish connection re-establishment mechanism
-         * For re-establishment, check if the EDIV and random number in key request state match
-         * with the numbers exchanged in previous pairing session. In this case, we are the
-         * responder where the peer will use our LTK for security re-establishment.
+        /* TODO(mcchou): finish connection re-establishment mechanism using
+         * l2cApiLeSetDefaultSecurityManager and remove the phase check of SM_PHASE_LTK_ENCRYPTED
+         */
+        /* Handle the case where the peer device try to re-establish security after exchanging LTK,
+         * by checking if the EDIV and random number in key request state match with the numbers
+         * exchanged in previous pairing session. In this case, we are the responder where the peer
+         * will use our LTK for security re-establishment.
          */
         if (inst->phase == SM_PHASE_DONE || inst->phase == SM_PHASE_LTK_ENCRYPTED) {
             logd("Received key request for connection re-establishment\n");
             if (!persistGetDevNumber(&inst->peerAddr, PERSIST_NUM_TYPE_SM_MY_RANDOM, &myRand)) {
                 logw("Failed to retrieve random number to verify connection re-establishment\n");
+                goto fail;
             } else if (!smGenEdiv(&myEdiv, inst, myRand, true) || myEdiv != keyReqState->ediv) {
                 logw("Failed to verify EDIV for connection re-establishment\n");
+                goto fail;
             } else if (!persistGetDevKey(&inst->peerAddr, KEY_TYPE_MY_LTK, key) ||
                        !smReadReversedBytes(rawKey, sizeof(rawKey), key, sizeof(key))) {
                 logw("Failed to retrieve LTK for connection re-establishment\n");
+                goto fail;
             } else {
                 inst->isInitiator = false; /* for re-establishment, we are the responder for sure */
                 l2cApiLeProvideLtk(inst->conn, rawKey);
@@ -1701,13 +2039,18 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
             break;
         }
 
-        if (inst->phase != SM_PHASE_RAND_RESP)
-            goto fail;
+        if (inst->phase != SM_PHASE_RAND_RESP) {
+            l2cApiLeProvideLtk(inst->conn, NULL); /* reply with no key */
+            pairErr = SM_PAIR_ERR_UNEXPECTED_L2C_EVT;
+            goto reset;
+        }
 
         /* the controller takes the key in little endian order, so reverse it before sending */
         if (!smReadReversedBytes(rawKey, sizeof(rawKey), inst->stk.key, sizeof(inst->stk.key)) ||
-            !l2cApiLeProvideLtk(inst->conn, rawKey))
-            goto fail;
+            !l2cApiLeProvideLtk(inst->conn, rawKey)) {
+            pairErr = SM_PAIR_ERR_ENCR_CONN;
+            goto reset;
+        }
 
         smTransitPhase(inst, SM_PHASE_STK_SENT);
 
@@ -1716,23 +2059,25 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
     case L2C_STATE_ENCR_KEY_REF:
         if (len != sizeof(struct l2cEncrState)) {
             loge("invalid length for encryption event\n");
-            break;
+            goto fail;
         }
         encrState = (struct l2cEncrState *)data;
 
-        if (inst->phase != SM_PHASE_LTK_SENT)
-            goto fail;
+        if (inst->phase != SM_PHASE_LTK_SENT) {
+            pairErr = SM_PAIR_ERR_UNEXPECTED_L2C_EVT;
+            goto reset;
+        }
 
         if (!smIsEncryptExpected(encrState, inst)) {
             logw("Failed to encrypt the connection %llu\n", inst->conn);
-            goto fail;
+            pairErr = SM_PAIR_ERR_ENCR_CONN;
+            goto reset;
         }
 
         /* if the encryption of key refreshing went well, no further action is needed for either
          * initiator or responder
          */
-        if (inst->phase == SM_PHASE_LTK_SENT)
-            smTransitPhase(inst, SM_PHASE_LTK_ENCRYPTED);
+        smTransitPhase(inst, SM_PHASE_LTK_ENCRYPTED);
 
         break;
 
@@ -1742,13 +2087,15 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
 
     default:
         logd("unknown L2C event %u\n", evt);
-        break;
+        goto fail;
     }
     return;
-fail:
-    logd("Got l2cap event 0x%02X in phase %u when we are the %s\n", evt, inst->phase,
-         inst->isInitiator ? "initiator" : "responder");
+reset:
     smTransitPhase(inst, SM_PHASE_START);
+fail:
+    logd("Got l2cap event 0x%02X in phase %u when we are the %s\n", evt, phase,
+         inst->isInitiator ? "initiator" : "responder");
+    smNotifyPairObserver(&inst->peerAddr, SM_PAIR_STATE_FAILED, pairErr);
 }
 
 /*
@@ -1766,8 +2113,7 @@ static uint8_t smFixedChAlloc(void *userData, l2c_handle_t conn, void **instance
     struct smInstance *inst;
     struct bt_addr peerAddr;
     struct bt_addr myAddr;
-    uint8_t key[HCI_LE_KEY_LEN] = {0,};
-    uint64_t num;
+    struct smPairSecurityRequirements secReqs;
 
     if (!l2cApiGetBtAddr(conn, &peerAddr)) {
         loge("Failed to get peer address\n");
@@ -1793,24 +2139,14 @@ static uint8_t smFixedChAlloc(void *userData, l2c_handle_t conn, void **instance
     if (!inst)
         return SVC_ALLOC_FAIL_OTHER;
 
-    memcpy(&inst->peerAddr, &peerAddr, sizeof(struct bt_addr));
-    memcpy(&inst->myAddr, &myAddr, sizeof(struct bt_addr));
+    inst->peerAddr = peerAddr;
+    inst->myAddr = myAddr;
     inst->conn = conn;
 
     inst->phase = SM_PHASE_START;
     /* if the peer is previously paired, set the phase to done */
-    if (persistGetDevKey(&inst->peerAddr, KEY_TYPE_LTK, key) &&
-        persistGetDevKey(&inst->peerAddr, KEY_TYPE_MY_LTK, key) &&
-        persistGetDevNumber(&inst->peerAddr, PERSIST_NUM_TYPE_SM_EDIV, &num) &&
-        persistGetDevNumber(&inst->peerAddr, PERSIST_NUM_TYPE_SM_RANDOM, &num) &&
-        persistGetDevNumber(&inst->peerAddr, PERSIST_NUM_TYPE_SM_MY_RANDOM, &num)) {
+    if (smIsPaired(NULL, NULL, &inst->peerAddr))
         inst->phase = SM_PHASE_DONE;
-    }
-
-    /* TODO(mcchou): default settings. we need to provide ATT a way to set authentication requirement for a certain instance */
-    inst->myAuthReq = SM_AUTH_REQ_BOND_BOND | SM_AUTH_REQ_MITM_FLAG;
-    inst->myMaxKeySz = SM_MAX_KEY_LEN;
-    inst->myKeyDistr = SM_KEY_DISTR_LTK | SM_KEY_DISTR_IRK | SM_KEY_DISTR_CSRK;
 
     *instanceP = inst;
 
@@ -1847,6 +2183,7 @@ bool smInit(uint8_t ioCapability)
 
     /* TODO(mcchou): this needs to be changed accordingly for the OOB support */
     mHasOob = false;
+
     if (!(mSmSendQ = sendQueueAlloc(MAX_PACKETS_SM_SEND_QUEUE))) {
         logw("%s(): Error allocating SM sendQ.\n", __func__);
         return false;
@@ -1856,6 +2193,12 @@ bool smInit(uint8_t ioCapability)
         logw("%s(): Error registering L2CAP service.\n", __func__);
         sendQueueFree(mSmSendQ);
         return false;
+    }
+
+    mPairObservers = multiNotifCreate();
+    if (!mPairObservers) {
+       logw("%s(): Error creating pairing observer list\n", __func__);
+       return false;
     }
 
     persistLoad();
@@ -1874,11 +2217,227 @@ bool smInit(uint8_t ioCapability)
  */
 void smDeinit(void)
 {
+    multiNotifDestroy(mPairObservers);
+
     persistStore();
 
     smBannedDevFreeAll();
     sendQueueFree(mSmSendQ);
     l2cApiServiceFixedChUnregister(L2C_FIXED_CH_NUM_SM, NULL, NULL);
+}
+
+/*
+ * FUNCTION: smRegisterPairObserver
+ * USE:      Register as an observer if interested in receiving notifications about pairing state
+ *           changes with remote LE devices
+ * PARAMS:   observerData - observer's own data passed when the callback is invoked
+ *           cbk - the callback invoked if there is any pairing state change
+ * RETURN:   a none-zero unique observer ID in success case; 0 otherwise
+ * NOTES:
+ */
+uniq_t smRegisterPairObserver(void *observerData, smPairStateChangeCbk cbk)
+{
+    if (!cbk)
+        return 0;
+    return multiNotifRegister(mPairObservers, cbk, observerData);
+}
+
+/*
+ * FUNCTION: smUnregisterPairObserver
+ * USE:      Unregister as an observer if no longer interested in receiving notifications about
+ *           pairing state changes with remote LE devices
+ * PARAMS:   observerId - an unique observer ID
+ * RETURN:   NONE
+ * NOTES:
+ */
+void smUnregisterPairObserver(uniq_t observerId)
+{
+    multiNotifUnregister(mPairObservers, observerId);
+}
+
+/*
+ * FUNCTION: smNotifyPairObserver
+ * USE:      Notify the observers about the state change of a device
+ * PARAMS:   addr - the address of a device
+ *           state - the new pairing state
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void smNotifyPairObserver(const struct bt_addr *addr, smPairState state, smPairErr err)
+{
+    struct smPairStateChange change;
+    bool notifyNotPaired = false;
+
+    switch(state) {
+    case SM_PAIR_STATE_NOT_PAIRED:
+    case SM_PAIR_STATE_START:
+    case SM_PAIR_STATE_PAIRED:
+    case SM_PAIR_STATE_CANCELED:
+    case SM_PAIR_STATE_FAILED:
+        break;
+    default:
+        logd("Drop unknown pair state %u with err %u\n", state, err);
+        return;
+    }
+
+    switch(err) {
+    case SM_PAIR_ERR_NONE:
+        if (state == SM_PAIR_STATE_FAILED) {
+            logd("Drop unexpected pair state %u with err %u\n", state, err);
+            return;
+        }
+        break;
+    case SM_PAIR_ERR_ALREADY_PAIRED:
+    case SM_PAIR_ERR_IN_PROGRESS:
+    case SM_PAIR_ERR_NO_SUCH_DEVICE:
+    case SM_PAIR_ERR_INVALID_PAIR_REQ:
+    case SM_PAIR_ERR_PASSKEY_FAILED:
+    case SM_PAIR_ERR_OOB_NOT_AVAILABLE:
+    case SM_PAIR_ERR_AUTH_REQ_INFEASIBLE:
+    case SM_PAIR_ERR_CONF_VALUE_MISMATCHED:
+    case SM_PAIR_ERR_PAIRING_NOT_SUPPORTED:
+    case SM_PAIR_ERR_ENCR_KEY_SIZE:
+    case SM_PAIR_ERR_REPEATED_ATTEMPT:
+    case SM_PAIR_ERR_INVALID_PARAM:
+    case SM_PAIR_ERR_MEMORY:
+    case SM_PAIR_ERR_L2C_CONN:
+    case SM_PAIR_ERR_UNEXPECTED_SM_CMD:
+    case SM_PAIR_ERR_SEND_SM_CMD:
+    case SM_PAIR_ERR_ENCR_CONN:
+    case SM_PAIR_ERR_UNEXPECTED_L2C_EVT:
+    case SM_PAIR_ERR_STALLED:
+    case SM_PAIR_ERR_UNKNOWN:
+        if (state != SM_PAIR_STATE_FAILED) {
+            logd("Drop unexpected pair state %u with err %u\n", state, err);
+            return;
+        }
+        break;
+    default:
+        logd("Drop unknown pair error %u with state %u\n", err, state);
+        return;
+    }
+
+    change.peerAddr = *addr;
+    change.pairState = state;
+    change.pairErr = err;
+    multiNotifNotify(mPairObservers, &change);
+}
+
+/*
+ * FUNCTION: smPair
+ * USE:      Pair with a peer device with security requirements enforced
+ * PARAMS:   addr - the address of the peer device
+ *           secReqs - the security requirements of the pairing
+ * RETURN:   NONE
+ * NOTES:    The outcome will be notified via smPairStateChangeCbk once a client registered as an
+ *           observer of pairing state changes
+ */
+void smPair(const struct bt_addr *addr, const struct smPairSecurityRequirements *secReqs)
+{
+    bool mitm = false, bonded = false;
+    struct smInstance *inst = NULL;
+    smPairErr pairErr = SM_PAIR_ERR_UNKNOWN;
+
+    if (!addr || !secReqs) {
+        logd("%s(): Invalid peer address or security requirements\n", __func__);
+        pairErr = SM_PAIR_ERR_INVALID_PAIR_REQ;
+        goto fail;
+    }
+
+    logd("%s(): "ADDRFMT"\n", __func__, ADDRCONV(*addr));
+
+    /* check if there is an existing instance with the same peer device */
+    pthread_mutex_lock(&mInstLock);
+    inst = smInstFindByAddr(addr);
+    pthread_mutex_unlock(&mInstLock);
+    if (inst) {
+        logd("%s(): Pairing in progress with "ADDRFMT"\n", __func__, ADDRCONV(*addr));
+        pairErr = SM_PAIR_ERR_IN_PROGRESS;
+        goto fail;
+    }
+
+    /* check if the device was previously paired with the security requirements met */
+    if (smIsPaired(&mitm, &bonded, addr) && (secReqs->bond ? bonded : true) &&
+        (secReqs->mitm ? mitm : true)) {
+        logd("%s(): Already paired with "ADDRFMT"\n", __func__, ADDRCONV(*addr));
+        pairErr = SM_PAIR_ERR_ALREADY_PAIRED;
+        goto fail;
+    }
+
+    /* clear the previously pairing info and start the new pairing */
+    logi("%s(): Clear pairing info if any to start pairing with higher security requirements "
+         ADDRFMT"\n", __func__, ADDRCONV(*addr));
+    persistDelDevKeys(addr);
+    persistDelDevNumbers(addr);
+
+    inst = (struct smInstance*)calloc(1, sizeof(struct smInstance));
+    if (!inst) {
+        logd("%s(): Failed to create instance for pairing with "ADDRFMT"\n", __func__,
+             ADDRCONV(*addr));
+        pairErr = SM_PAIR_ERR_MEMORY;
+        goto fail;
+    }
+
+    inst->peerAddr = *addr;
+
+    inst->isInitiator = true; /* we are the initiator of pairing */
+    inst->phase = SM_PHASE_START;
+    inst->myAuthReq = (secReqs->bond ? SM_AUTH_REQ_BOND_BOND : 0x00) |
+                      (secReqs->mitm ? SM_AUTH_REQ_MITM_FLAG : 0x00);
+    inst->myMaxKeySz = SM_MAX_KEY_LEN;
+    inst->myKeyDistr = SM_KEY_DISTR_LTK | SM_KEY_DISTR_IRK | SM_KEY_DISTR_CSRK;
+
+    if (!l2cApiCreateFixedChConnection(L2C_FIXED_CH_NUM_SM, addr, smFixedChState, NULL, inst)) {
+        logw("%s(): Error creating a fixed channel l2cap connection\n", __func__);
+        pairErr = SM_PAIR_ERR_L2C_CONN;
+        goto fail;
+    }
+
+    smNotifyPairObserver(&inst->peerAddr, SM_PAIR_STATE_START, SM_PAIR_ERR_NONE);
+    return;
+fail:
+    smNotifyPairObserver(addr, SM_PAIR_STATE_FAILED, pairErr);
+}
+
+/*
+ * FUNCTION: smUnpair
+ * USE:      Unpair with a peer device by removing all stored pairing info from the database OR
+ *           cancel the pairing with a peer device
+ * PARAMS:   addr - the address of the peer device
+ * RETURN:   None
+ * NOTES:    The outcome will be notified via smPairStateChangeCbk once a client registered as an
+ *           observer of pairing state changes
+ */
+void smUnpair(const struct bt_addr *addr)
+{
+    struct smInstance *inst;
+    bool cancelled = false;
+
+    if (!addr || !persistGetKnownDev(addr, NULL, NULL, NULL)) {
+        smNotifyPairObserver(addr, SM_PAIR_STATE_FAILED, SM_PAIR_ERR_NO_SUCH_DEVICE);
+        return;
+    }
+
+    logd("%s(): "ADDRFMT"\n", __func__, ADDRCONV(*addr));
+
+    /* check if there is an existing instance with the peer device */
+    pthread_mutex_lock(&mInstLock);
+    inst = smInstFindByAddr(addr);
+    pthread_mutex_unlock(&mInstLock);
+    if (inst) {
+        /* Let L2CAP handle the removal of the instance to avoid race condition */
+        if (inst->conn)
+            l2cApiDisconnect(inst->conn);
+        cancelled = inst->phase != SM_PHASE_DONE && inst->phase != SM_PHASE_LTK_ENCRYPTED;
+    }
+
+    persistDelDevKeys(addr);
+    persistDelDevNumbers(addr);
+
+    logd("%s(): Pairing with "ADDRFMT" is %s\n", __func__, ADDRCONV(*addr),
+         cancelled ? "cancelled" : "forgotten");
+    smNotifyPairObserver(addr, cancelled ? SM_PAIR_STATE_CANCELED : SM_PAIR_STATE_NOT_PAIRED,
+                         SM_PAIR_ERR_NONE);
 }
 
 /*
@@ -2205,6 +2764,12 @@ static bool smGenTK(struct smInstance *inst)
     default:
         logw("%s(): Unknown pairing algorithm 0x%02X", __func__, inst->alg);
       return false;
+    }
+
+    if(!persistAddDevNumber(&inst->peerAddr, PERSIST_NUM_TYPE_SM_MITM_PROTECT,
+                            inst->isMitmSafe ? SM_AUTH_MITM_PROTECT : SM_UNAUTH_NO_MITM_PROTECT)) {
+        logw("%s(): Failed to store MITM security property\n", __func__);
+        return false;
     }
 
     return true;
