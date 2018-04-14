@@ -4202,6 +4202,7 @@ static struct hciAclConn* hciConnAclUp(bool established, uint16_t id, const uint
         c->isMaster = isLE ? isMaster : false;
     } else if (c->state == CONN_STATE_WAIT) {
         c->state = CONN_STATE_CFG;
+        c->id = id;
         if (isLE)
             c->isMaster = isMaster;
         /* TODO: start next LE connection/restart adv/etc? */
