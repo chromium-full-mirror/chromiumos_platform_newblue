@@ -5710,12 +5710,14 @@ void l2cAclLinkUp(hci_conn_t aclConnID, const struct bt_addr *peerAddr, const st
 
                 if (conn) {
                     logi("Not initing FixedCh %d svc since connection is pending\n", svc->chan);
+                    svc = svc->next;
                     continue;
                 }
 
                 conn = l2cNewConnStruct(L2C_CONN_STATE_RX_OPEN_SVC, aclConn->handle, svc->chan, svc->chan, 0, 0, false);
                 if (!conn) {
                     logw("Not initing FixedCh %d svc - cannot alloc conn struct\n", svc->chan);
+                    svc = svc->next;
                     continue;
                 }
 
