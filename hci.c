@@ -2401,16 +2401,12 @@ static bool hciAdvSetEnableDisableMethodAndroidVendorCmds(struct hciAdvSet *set,
      * but caveats exist. If the chip says it supports X slots, in reality it supports
      * X - 1 slots with this custom API (indexed at 1) and the default 4.0 API (slot 0).
      * "but," you might say - "default API has no TX power control!" Yes. Slot 0 has no
-     * tx power control. this makes our logic here a bit more complex since we can at
-     * times enable an adv if it has no power request, but cannot if it does. We could
-     * try to be clever and relocate an existing adv to slot 0, but really it is not
-     * worth the trouble. Android, for example, will entirely ignore slot 0. thus we
-     * are already doing better. This code will try to allocate slot 0 to an adv if it
-     * has no TX power requirement though, through the nature of how it is written. Any
-     * further cleverness is IMHO not worth it. So, what should you take away from all
-     * this? If you do not care for setting TX power, use HCI_ADV_TX_PWR_LVL_DONT_CARE.
-     * Usually this *WILL* be max TX power (likely what you want anyways) and will not
-     * use up one of the desirable configurable-power slots if slot 0 is available.
+     * tx power control. But it is even worse. Slot 0 shared the "random address" with
+     * any connection attempt we make using a random address, so we cannot really use
+     * it to advertise at the same time as we try to connect to anyone. There are some
+     * ways to cleverly use it for both, but they are fragile and error-prone. Instead,
+     * we'll just use slots 1..N and not use slot 0. This way we can always safely set
+     * the chip random address for connection purposes.
      */
 
     if (!enable) { // disable the set we do not need
@@ -2440,8 +2436,8 @@ static bool hciAdvSetEnableDisableMethodAndroidVendorCmds(struct hciAdvSet *set,
     }
 
     //we want to enable: first find a free slot (if any)
-    usedSets = alloca(mMaxAdvSets);
-    memset(usedSets, 0, mMaxAdvSets);
+    usedSets = alloca(mMaxAdvSets + 1);
+    memset(usedSets, 0, mMaxAdvSets + 1);
     for (t = mAdvSets; t; t = t->next) {
         if (t->hwEnabled) {
             if (usedSets[t->hwSetNum])
@@ -2450,14 +2446,11 @@ static bool hciAdvSetEnableDisableMethodAndroidVendorCmds(struct hciAdvSet *set,
                 usedSets[t->hwSetNum] = true;
         }
     }
-    for (i = 0; i < mMaxAdvSets; i++) {
-        //skip slot 0 if we have a power request
-        if (!i && desiredPowerLvl != HCI_ADV_TX_PWR_LVL_DONT_CARE)
-            continue;
+    for (i = 1; i < mMaxAdvSets + 1; i++) {
         if (!usedSets[i])
             break;
     }
-    if (i == mMaxAdvSets) {
+    if (i == mMaxAdvSets + 1) {
         logw("Cannot enable adv 0x"HCI_ADV_SET_FMT"x because there are no free slots\n", HCI_ADV_SET_CONV(set->handle));
         return false;
     }
@@ -2552,23 +2545,15 @@ static void hciAdvSetHandleAndBlameNewConnMethodAndroidVendorCmdsTimeCbk(uniq_t 
     struct hciAclConn* conn;
     struct hciAdvSet *t;
 
-    //if we got here and conn is still in "wait" state we assume the current blame (set 0) is correct and kick it into config state
+    //if we got here and conn is still in "wait" state, bad things
 
     pthread_mutex_lock(&mConnsLock);
     conn = hciConnFindByHandle((hci_conn_t)aclConnHandle);
     if (conn && conn->state == CONN_STATE_ADV_SET_BLAMING) {
-        blamedSet = conn->le.advSet;
-        conn->state = CONN_STATE_CFG;
-        hciConnCfg(conn, CONN_CFG_STEP_LE, 0);
+        hciConnDisconnect(conn->id);
+        hciConnAclStructDel(conn);
     }
     pthread_mutex_unlock(&mConnsLock);
-
-    pthread_mutex_lock(&mAdvSetsLock);
-    for (t = mAdvSets; t; t = t->next) {
-        if (t->handle == blamedSet) //adv stops when a connection is formed
-            t->hwEnabled = false;
-    }
-    pthread_mutex_unlock(&mAdvSetsLock);
 }
 
 /*
@@ -2578,7 +2563,7 @@ static void hciAdvSetHandleAndBlameNewConnMethodAndroidVendorCmdsTimeCbk(uniq_t 
  * RETURN:   false always - for this we must always wait for a later "blame" event
  * NOTES:    called with mAdvSetsLock held
  *           This is one of the few "adv set conn blame handlers". This one is used
- *           when the android-vendor methods are available and BT 5.0 is not
+ *           when the android-vendor methods are available and BT 5.0 is not.
  *           conn->le.advSet will be set to the adv set that is currently in slot 0
  *           since that is the one we blame if no "blame event" shows up
  */
@@ -2586,17 +2571,11 @@ static bool hciAdvSetHandleAndBlameNewConnMethodAndroidVendorCmds(struct hciAclC
 {
     struct hciAdvSet *t;
 
-    for (t = mAdvSets; t; t = t->next) {
-        if (t->hwEnabled && !t->hwSetNum) {
-            hciAdvSetGetCurAdvAddrLocked(t, &conn->selfAddr);
-            conn->le.advSet = t->handle;
-            break;
-        }
-    }
+    conn->le.advSet = 0;
 
     /*
      * we ALWAYS MUST wait here. Either the event will come telling us which adv set
-     * caused the connection or the timer will fire and we'll assume it was set zero
+     * caused the connection or the timer will fire and we'll assume bad things
      */
     timerSet(ADV_SET_BLAME_TIMEOUT_ANDROID_VENDOR, hciAdvSetHandleAndBlameNewConnMethodAndroidVendorCmdsTimeCbk, conn->handle);
     return false;
@@ -2984,17 +2963,19 @@ static bool hciBtStackUp(void)
         logi("Will try BT4 android-vendor multi-adv support\n");
 
         ret = hciVendorLeGetVendorCapabilitiesSync(&evt);
-        if (!ret) {
-            mMaxAdvSets = evt.maxAdvtInstances;
+        if (ret == HCI_ERR_Unknown_HCI_Command)
+            logi(" android-vendor extensions not found - will use normal advertising\n");
+        else if (ret)
+            logw(" Vendor test command errored out (0x%02x) - will use normal advertising\n", ret);
+        else if (evt.maxAdvtInstances <= 1)
+            logw(" Vendor read number supported adv sets command returned a nonsensical value: %u\n", evt.maxAdvtInstances);
+        else {
+            mMaxAdvSets = evt.maxAdvtInstances - 1; // we cannot count slot 0
             mCanSetAdvTxPower = true;
             mHciAdvSetEnable = hciAdvSetEnableDisableMethodAndroidVendorCmds;
             mHciAdvSetHandleAndBlameNewConn = hciAdvSetHandleAndBlameNewConnMethodAndroidVendorCmds;
             logi(" Controller supports up to %u adv sets\n", mMaxAdvSets);
         }
-        else if (ret == HCI_ERR_Unknown_HCI_Command)
-            logi(" android-vendor extensions not found - will use normal advertising\n");
-        else
-            logw(" Vendor test command errored out (0x%02x) - will use normal advertising\n", ret);
     }
     else {
         mMaxAdvSets = 0;
