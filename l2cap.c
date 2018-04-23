@@ -366,7 +366,11 @@ struct l2cSvcWork {
         } connUpdtCbk;
         struct {
             struct bt_addr addr;
-        } aclLink;
+            //todo: more params for non-default conns?
+        } linkOpen;
+        struct {
+            hci_conn_t aclConn;
+        } linkClose;
         struct {
             hci_conn_t aclConnID;
             uint16_t minInt;
@@ -905,7 +909,7 @@ static bool l2cSvcWorkScheduleAclLinkOpen(const struct bt_addr *addr)
     if (!w)
         return false;
 
-    memcpy(&w->aclLink.addr, addr, sizeof(struct bt_addr));
+    w->linkOpen.addr = *addr;
     if (workQueuePut(mServiceWork, w))
         return true;
 
@@ -917,17 +921,17 @@ static bool l2cSvcWorkScheduleAclLinkOpen(const struct bt_addr *addr)
 /*
  * FUNCTION: l2cSvcWorkScheduleAclLinkClose
  * USE:      Schedule an ACL link close call to the lower layer
- * PARAMS:   addr - the address of peer to disconnect from
+ * PARAMS:   aclConn - the connection to close
  * RETURN:   false on immediate error
  * NOTES:    actual call will happen in the worker thread.
  */
-static bool l2cSvcWorkScheduleAclLinkClose(const struct bt_addr *addr)
+static bool l2cSvcWorkScheduleAclLinkClose(hci_conn_t aclConn)
 {
     struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_ACL_LINK_CLOSE, 0);
     if (!w)
         return false;
 
-    memcpy(&w->aclLink.addr, addr, sizeof(struct bt_addr));
+    w->linkClose.aclConn = aclConn;
     if (workQueuePut(mServiceWork, w))
         return true;
 
@@ -3682,11 +3686,12 @@ static void* l2cSvcWorker(void* unused)
             work->connUpdtCbk.doneCbk(work->connUpdtCbk.cbkData, work->connUpdtCbk.success);
             break;
         case L2C_WORK_ACL_LINK_OPEN:
-            if (!hciConnect(&work->aclLink.addr))
+            //todo: non-default settings?
+            if (!hciConnect(&work->linkOpen.addr, NULL, NULL, NULL, NULL, NULL, NULL, NULL))
                 loge("HCI refused to connect\n");
             break;
         case L2C_WORK_ACL_LINK_CLOSE:
-            if (!hciDisconnect(&work->aclLink.addr))
+            if (!hciDisconnect(work->linkClose.aclConn))
                 loge("HCI refused to disconnect\n");
             break;
         case L2C_WORK_ACL_CONN_UPDT:
@@ -5217,7 +5222,7 @@ static void l2cAclLinkUpTimeout(uniq_t which,  uint64_t aclConnHandle)
     if (aclConn && aclConn->openTimer == which) {
         logi("ACL link open failed for "HANDLEFMT"\n", HANDLECNV(aclConn->handle));
         aclConn->state = L2C_ACL_STATE_TEARDOWN;
-        if (!l2cSvcWorkScheduleAclLinkClose(&aclConn->peerAddr))
+        if (!l2cSvcWorkScheduleAclLinkClose(aclConn->handle))
             loge("Failed to schedule call to close ACL link "HANDLEFMT"\n", HANDLECNV(aclConn->handle));
         l2cAclLinkDownInt(aclConn, false);
     }
@@ -5533,7 +5538,7 @@ static void l2cAclConnTeardownTimerCbk(uniq_t which, uint64_t cbkData)
     if (aclConn && aclConn->teardownTimer == which) {
         logd("Link timer expired for acl "HCI_CONN_FMT"x. Closing\n", HCI_CONN_CONV(aclConn->conn));
         aclConn->state = L2C_ACL_STATE_TEARDOWN;
-        if (!l2cSvcWorkScheduleAclLinkClose(&aclConn->peerAddr))
+        if (!l2cSvcWorkScheduleAclLinkClose(aclConn->handle))
             loge("Failed to schedule call to close acl "HCI_CONN_FMT"x\n", HCI_CONN_CONV(aclConn->conn));
         l2cAclLinkDownInt(aclConn, true);
     }

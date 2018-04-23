@@ -186,10 +186,10 @@ bool hciDiscoverLeStop(uniq_t handle);
 #define HCI_BOUNDARY_START      1
 #define HCI_BOUNDARY_CONT       2
 
-/* connect using default settings */
-bool hciConnect(const struct bt_addr* addr);
+/* connect */
+hci_conn_t hciConnect(const struct bt_addr* addr, const uint8_t *selfRandomAddr, uint16_t *scanIntervalP, uint16_t *scanWindowP, uint16_t *connIntervalMinP, uint16_t *connIntervalMaxP, uint16_t *latencyP, uint16_t *timeoutP);
 /* disconnect/cancel connection attempt */
-bool hciDisconnect(const struct bt_addr* addr);
+bool hciDisconnect(hci_conn_t aclConn);
 /* try to send data -> HCI_TX_SEND_*   boundary = HCI_BOUNDARY_* */
 uint8_t hciTryToTx(hci_conn_t aclConn, sg data, uint8_t boundary);
 /* LE connection update */

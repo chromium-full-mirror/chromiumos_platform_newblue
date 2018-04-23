@@ -135,6 +135,7 @@ struct hciCmdSendWorkItem {
 #define CBK_WORK_ACL_DATA           8
 #define CBK_WORK_LE_KEY_REQ         9
 #define CBK_WORK_ENCR_KEY_REFRESH   10
+#define CBK_WORK_MAKE_NEXT_LE_CONN  11
 
 struct hciCbkWorkItem {
     uint8_t       cbkWorkItemType;
@@ -284,11 +285,25 @@ struct hciAdvSet {
     int8_t             powerLevel;
 };
 
+struct hciLeConnReq {
+    struct hciLeConnReq *next;
+    hci_conn_t aclConn;
+    uint16_t scanInt;
+    uint16_t scanWindow;
+    uint16_t intMin;
+    uint16_t intMax;
+    uint16_t latency;
+    uint16_t timeout;
+    bool useRandomAddr;
+    uint8_t selfRandomAddr[BT_MAC_LEN];
+};
+
 #define CONN_STATE_WAIT            0
-#define CONN_STATE_ADV_SET_BLAMING 1
-#define CONN_STATE_CFG             2
-#define CONN_STATE_RUNNING         3
-#define CONN_STATE_DELETING        4
+#define CONN_STATE_TRYING          1
+#define CONN_STATE_ADV_SET_BLAMING 2
+#define CONN_STATE_CFG             3
+#define CONN_STATE_RUNNING         4
+#define CONN_STATE_DELETING        5
 
 #define CONN_CFG_STEP_LE           0x0000
 
@@ -320,6 +335,9 @@ static pthread_t mCallbackThread;
 
 static pthread_mutex_t mConnsLock = PTHREAD_MUTEX_INITIALIZER;
 static struct hciAclConn *mConns = NULL;
+static struct hciLeConnReq *mLeConnReqsHead = NULL;
+static struct hciLeConnReq *mLeConnReqsTail = NULL;
+static bool mLeConnInProgress = false;
 
 static pthread_mutex_t mAdvSetsLock = PTHREAD_MUTEX_INITIALIZER;
 static struct hciAdvSet *mAdvSets = NULL;
@@ -353,6 +371,8 @@ static bool mCanSetAdvTxPower;
 
 /* fwd declarations */
 static bool hciBtStackUp(void);
+static bool hciScheduleMakeProgressOnLeConnectionReqs(void); //necessary if we are in evt rx thread
+static void hciMakeProgressOnLeConnectionReqs(void);
 static bool hciScheduleConnUpNotif(hci_conn_t conn, const struct bt_addr *peerAddr, const struct bt_addr *selfAddr, bool isMaster, bool isEncrypted, bool isMitmSafe);
 static bool hciScheduleConnDownNotif(hci_conn_t conn, uint8_t reason);
 static bool hciScheduleConnDataRx(hci_conn_t conn, sg packet, bool first);
@@ -1056,6 +1076,9 @@ static void* hciCbkWorker(void *unused)
         case CBK_WORK_ENCR_KEY_REFRESH:
             l2cAclLinkEncrKeyRefresh(w->encrKeyRefresh.conn, w->encrKeyRefresh.nowEncrypted, w->encrKeyRefresh.isMitmSafe);
             break;
+        case CBK_WORK_MAKE_NEXT_LE_CONN:
+            hciMakeProgressOnLeConnectionReqs();
+            break;
         default:
             loge("Unknown callback work type %u\n", w->cbkWorkItemType);
             break;
@@ -1356,6 +1379,31 @@ static bool hciScheduleConnEncrKeyRefresh(hci_conn_t conn, bool nowEncrypted, bo
     w->encrKeyRefresh.conn = conn;
     w->encrKeyRefresh.nowEncrypted = nowEncrypted;
     w->encrKeyRefresh.isMitmSafe = isMitmSafe;
+
+    if (workQueuePut(mCallbackWork, w))
+        return true;
+
+    free(w);
+    return false;
+}
+
+
+/*
+ * FUNCTION: hciScheduleMakeProgressOnLeConnectionReqs
+ * USE:      Enqueue a call to hciMakeProgressOnLeConnectionReqs
+ * PARAMS:   NONE
+ * RETURN:   true if enqueued, false else
+ * NOTES:
+ */
+static bool hciScheduleMakeProgressOnLeConnectionReqs(void)
+{
+    struct hciCbkWorkItem *w;
+
+    w = (struct hciCbkWorkItem*)malloc(sizeof(struct hciCbkWorkItem));
+    if (!w)
+        return false;
+
+    w->cbkWorkItemType = CBK_WORK_MAKE_NEXT_LE_CONN;
 
     if (workQueuePut(mCallbackWork, w))
         return true;
@@ -3585,7 +3633,7 @@ static bool hciConnEncryptLe(struct hciAclConn *conn, bool demandMitmSafe)
  *           timeout - wanted timeout
  *           useOwnRandomAddr - send peer our random addr?
  * RETURN:   true if attempt will be made
- * NOTES:    call with mConnsLock held
+ * NOTES:    call with mConnsLock held. Caller assumed to know limitations (one at a time, radom addr shared with adv, etc)
  */
 static bool hciConnectLe(const uint8_t *mac, bool randomAddr, uint16_t scanInt, uint16_t scanWindow, uint16_t intMin, uint16_t intMax, uint16_t latency, uint16_t timeout, bool useOwnRandomAddr)
 {
@@ -3608,6 +3656,98 @@ static bool hciConnectLe(const uint8_t *mac, bool randomAddr, uint16_t scanInt, 
         logi("Failed to request connect to "MACFMT"\n", MACCONV(mac));
         return false;
     }
+    return true;
+}
+
+/*
+ * FUNCTION: hciMakeProgressOnLeConnectionReqs
+ * USE:      Try to make progress on our queue of LE connection requests
+ * PARAMS:   NONE
+ * RETURN:   NONE
+ * NOTES:    call with mConnsLock held, do not do it on the event handler thread (will deadlock in case of random addr use)
+ */
+static void hciMakeProgressOnLeConnectionReqs(void)
+{
+    struct hciLeConnReq *req;
+    struct hciAclConn *conn;
+    bool done = false;
+
+    while (!done) {
+        //can we do anything?
+        if (!mLeConnReqsHead)
+            return;
+        if (mLeConnInProgress)
+            return;
+
+        //grab a request
+        req = mLeConnReqsHead;
+        mLeConnReqsHead = mLeConnReqsHead->next;
+        if (!mLeConnReqsHead)
+            mLeConnReqsTail = NULL;
+
+        //verify the connection exists still and is in valid state
+        conn = hciConnFindByHandle(req->aclConn);
+        if (!conn)
+            logi("Connection request found for a nonexistent connection. Ignoring\n");
+        else if (conn->state != CONN_STATE_WAIT)
+            logi("Connection request found for a connection not in wait state. Ignoring\n");
+        else {
+            conn->state = CONN_STATE_TRYING;
+            if (req->useRandomAddr && hciLeSetRandomAddressSync(req->selfRandomAddr))
+                logi("Failed to set random address for connection. Dropping request and connection\n");
+            else if (!hciConnectLe(conn->peerAddr.addr, conn->peerAddr.type == BT_ADDR_TYPE_LE_RANDOM, req->scanInt, req->scanWindow, req->intMin, req->intMax, req->latency, req->timeout, req->useRandomAddr))
+                logi("Failed to start connection request. Dropping request and connection\n");
+            else
+                done = true;
+
+            if (!done)
+                hciConnAclStructDel(conn);
+        }
+        free(req);
+    }
+}
+
+/*
+ * FUNCTION: hciEnqueueConnectLe
+ * USE:      Enqueue a request to make an LE connection
+ * PARAMS:   aclConn - the acl conn struct allocated for this connection
+ *           randomAddr - peer address is random?
+ *           scanInt - connect scan interval
+ *           scanWindow - connect scan window
+ *           intMin - minimum wanted interval
+ *           intMax - maximum wanted interval
+ *           latency - wanted latency
+ *           timeout - wanted timeout
+ *           useOwnRandomAddr - send peer our random addr?
+ * RETURN:   true if attempt will be made
+ * NOTES:    call with mConnsLock held
+ */
+static bool hciEnqueueConnectLe(hci_conn_t aclConn, uint16_t scanInt, uint16_t scanWindow, uint16_t intMin, uint16_t intMax, uint16_t latency, uint16_t timeout, const uint8_t *sendRandomAddr)
+{
+    struct hciLeConnReq *req = calloc(1, sizeof(struct hciLeConnReq));
+
+    if (!req)
+        return false;
+
+    req->aclConn = aclConn;
+    req->scanInt = scanInt;
+    req->scanWindow = scanWindow;
+    req->intMin = intMin;
+    req->intMax = intMax;
+    req->latency = latency;
+    req->timeout = timeout;
+    req->useRandomAddr = !!sendRandomAddr;
+    if (sendRandomAddr)
+        memcpy(req->selfRandomAddr, sendRandomAddr, sizeof(req->selfRandomAddr));
+
+    if (mLeConnReqsTail)
+        mLeConnReqsTail->next = req;
+    else
+        mLeConnReqsHead = req;
+    mLeConnReqsTail = req;
+
+    hciMakeProgressOnLeConnectionReqs();
+
     return true;
 }
 
@@ -3677,32 +3817,104 @@ static struct hciAclConn* hciConnAclStructNew(uint16_t id, const struct bt_addr 
 /*
  * FUNCTION: hciConnect
  * USE:      Start a connection to a given address
- * PARAMS:   addr - the address
- * RETURN:   true if attempt will be made
- * NOTES:    For LE default params will be used
+ * PARAMS:   addr - the address to connect to
+ *           selfRandomAddr - if null will use public addr, else this is the random address to use as own for connection
+ *           scanIntervalP - if not null, scan interval to use. if null - stack picks
+ *           scanWindowP - if not null, scan window to use. if null - stack picks
+ *           connIntervalMinP - if not null, min conn interval to use. if null - stack picks
+ *           connIntervalMaxP - if not null, max conn interval to use. if null - stack picks
+ *           latencyP - if not null, latency to use. if null - stack picks
+ *           timeoutP - if not null, timeout to use. if null - stack picks
+ * RETURN:   connectin handle if an attempt will be made to connect. 0 else
  */
-bool hciConnect(const struct bt_addr* addr)
+hci_conn_t hciConnect(const struct bt_addr* addr, const uint8_t *selfRandomAddr, uint16_t *scanIntervalP, uint16_t *scanWindowP, uint16_t *connIntervalMinP, uint16_t *connIntervalMaxP, uint16_t *latencyP, uint16_t *timeoutP)
 {
-    bool ret = false;
+    uint32_t scanInterval, scanWindow, connIntervalMin, connIntervalMax, latency, timeout;
+    hci_conn_t ret = 0;
 
-    logd("Requested a conect to "ADDRFMT"\n", ADDRCONV(*addr));
+    logd("Requesting a connection to "ADDRFMT"\n", ADDRCONV(*addr));
+
+    //EDR is not supported
+    if (BT_ADDR_IS_EDR(*addr)) {
+        loge("EDR unsupported\n");
+        return false;
+    }
+
+    //read params
+    if (scanIntervalP && scanWindowP) {
+        scanInterval = *scanIntervalP;
+        scanWindow = *scanWindowP;
+    }
+    else if (scanIntervalP) {
+        scanInterval = *scanIntervalP;
+        scanWindow = (scanInterval + 1) / 2;
+        if (scanWindow < 0x0004)  //min as per spec
+            scanWindow = 0x0004;
+    }
+    else if (scanWindowP) {
+        scanWindow = *scanWindowP;
+        scanInterval = scanWindow * 2;
+        if (scanInterval > 0x4000)  //max as per spec
+            scanInterval = 0x4000;
+    }
+    else {
+        scanWindow = HCI_LE_CONN_SCAN_WINDOW;
+        scanInterval = HCI_LE_CONN_SCAN_INTERVAL;
+    }
+
+    if (connIntervalMinP && connIntervalMaxP) {
+        connIntervalMin = *connIntervalMinP;
+        connIntervalMax = *connIntervalMaxP;
+    }
+    else if (connIntervalMinP) {
+        connIntervalMin = *connIntervalMinP;
+        connIntervalMax = (connIntervalMin + 3) / 2;
+        if (connIntervalMax > 0x0c80)  //max as per spec
+            connIntervalMax = 0x0c80;
+    }
+    else if (connIntervalMaxP) {
+        connIntervalMax = *connIntervalMaxP;
+        connIntervalMin = (connIntervalMax * 2) / 3;
+        if (connIntervalMin < 0x0006)  //min as per spec
+            connIntervalMax = 0x0006;
+    }
+    else {
+        connIntervalMin = HCI_LE_CONN_INT_MIN;
+        connIntervalMax = HCI_LE_CONN_INT_MAX;
+    }
+
+    latency = latencyP ? *latencyP : HCI_LE_CONN_LATENCY;
+    timeout = timeoutP ? *timeoutP : HCI_LE_CONN_TIMEOUT;
+
+    //sanity check params before we get too far
+    if (scanInterval < scanWindow || scanWindow < 0x0004 || scanInterval > 0x4000) { //as per spec
+        logw("Scan settings for connection creation are invalid\n");
+        return 0;
+    }
+    if (connIntervalMin > connIntervalMax || connIntervalMin < 0x0006 || connIntervalMax > 0x0c80) { //as per spec
+        logw("Connection interval settings for connection creation are invalid\n");
+        return 0;
+    }
+    if (latency > 0x01f3) { //as per spec
+        logw("Latency setting for connection creation are invalid\n");
+        return 0;
+    }
+    if (timeout < 0x000a || timeout > 0x0c80 || timeout * 8 <= (1 + latency) * connIntervalMax * 2) { //as per spec
+        logw("Timeout setting for connection creation are invalid\n");
+        return 0;
+    }
 
     pthread_mutex_lock(&mConnsLock);
     if (hciConnFindByAddr(addr))
-        logw("refusing to connect to address i already have a connection to\n");
+        logw("refusing to connect to address I already have a connection to\n");
     else {
         struct hciAclConn* conn = hciConnAclStructNew(ACL_CONN_ID_INVALID, addr, CONN_STATE_WAIT, true);
         if (!conn)
             loge("Failed to allocate conn struct\n");
-        else {
-            if (!BT_ADDR_IS_EDR(*addr))
-                ret = hciConnectLe(addr->addr, addr->type == BT_ADDR_TYPE_LE_RANDOM, HCI_LE_CONN_SCAN_INTERVAL,
-                                   HCI_LE_CONN_SCAN_WINDOW, HCI_LE_CONN_INT_MIN, HCI_LE_CONN_INT_MAX,
-                                   HCI_LE_CONN_LATENCY, HCI_LE_CONN_TIMEOUT, HCI_LE_CONN_USE_RAND_ADDR);
-
-            if (!ret)
-                hciConnAclStructDel(conn);
-       }
+        else if (hciEnqueueConnectLe(conn->handle, scanInterval, scanWindow, connIntervalMin, connIntervalMax, latency, timeout, selfRandomAddr))
+            ret = conn->handle;
+        else
+            hciConnAclStructDel(conn);
     }
     pthread_mutex_unlock(&mConnsLock);
 
@@ -3711,24 +3923,27 @@ bool hciConnect(const struct bt_addr* addr)
 
 /*
  * FUNCTION: hciDisconnect
- * USE:      Kill a connection [attempt] to a given address
- * PARAMS:   addr - the address
+ * USE:      Kill a connection [attempt]
+ * PARAMS:   aclConn - the connection handle
  * RETURN:   true if attempt will be made
  * NOTES:
  */
-bool hciDisconnect(const struct bt_addr* addr)
+bool hciDisconnect(hci_conn_t aclConn)
 {
     struct hciAclConn* conn;
 
     pthread_mutex_lock(&mConnsLock);
-    conn = hciConnFindByAddr(addr);
+    conn = hciConnFindByHandle(aclConn);
     if (!conn)
-        logw("Failed to find connection to disconnect "ADDRFMT"\n", ADDRCONV(*addr));
+        logw("Failed to find connection to disconnect\n");
     else {
         bool isLE = BT_ADDR_IS_LE(conn->peerAddr);
 
         switch (conn->state) {
         case CONN_STATE_WAIT:
+            hciConnAclStructDel(conn);   //conn req will go away when we get to it
+            break;
+        case CONN_STATE_TRYING:
             if (isLE) {
                 if (!hciConnLeCancel())
                     loge("Failed to request LE conection cancellation for "ADDRFMT"\n", ADDRCONV(conn->peerAddr));
@@ -3976,7 +4191,8 @@ static void hciHandleConnAclDown(uint16_t cid, uint8_t reason)
     else {
         switch(conn->state) {
         case CONN_STATE_WAIT:
-            logw("Unexpected connection down in wait state!\n");
+        case CONN_STATE_TRYING:
+            logw("Unexpected connection down in wait or trying state!\n");
             /* fallthrough */
         case CONN_STATE_ADV_SET_BLAMING:
         case CONN_STATE_CFG:
@@ -4156,6 +4372,8 @@ static struct hciAclConn* hciConnAclUp(bool established, uint16_t id, const uint
     struct hciAclConn *c;
     struct bt_addr addr;
 
+    mLeConnInProgress = false;
+
     memcpy(addr.addr, mac, sizeof(addr.addr));
     addr.type = addrType;
 
@@ -4181,12 +4399,12 @@ static struct hciAclConn* hciConnAclUp(bool established, uint16_t id, const uint
             return NULL;
         }
         c->isMaster = isLE ? isMaster : false;
-    } else if (c->state == CONN_STATE_WAIT) {
+    } else if (c->state == CONN_STATE_TRYING) {
         c->state = CONN_STATE_CFG;
         c->id = id;
         if (isLE)
             c->isMaster = isMaster;
-        /* TODO: start next LE connection/restart adv/etc? */
+        hciScheduleMakeProgressOnLeConnectionReqs(); //we are in evt rx thread so no direct calls
     } else {
         loge("Connection in state %d at up time\n", c->state);
     }
@@ -4370,6 +4588,43 @@ static bool hciHandleConnLeLtkReq(uint16_t cid, uint64_t randomNum, uint16_t div
     return ret;
 }
 
+
+/*
+ * FUNCTION: hciConnLeCancelDoneCbk
+ * USE:      Event callback for command complete event used by hciConnLeCancel()
+ * PARAMS:   cbkData - unused
+ *           status - from command
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void hciConnLeCancelDoneCbk(void *cbkData, uint8_t status)
+{
+    if (status == HCI_STAT_GOING_DOWN)
+        return;
+
+    if (status)
+        logw("Failed to stop LE connection, status = 0x%02x\n", status);
+
+    pthread_mutex_lock(&mConnsLock);
+    if (mLeConnInProgress) {  //spec acknowledges this race between connection succeeded and being cancelled - handle it here
+        struct hciAclConn *c;
+
+        c = mConns;
+        while (c && c->state != CONN_STATE_DELETING)
+            c = c->next;
+
+        if (c) //found the connection we were trying to make
+            hciConnAclStructDel(c);
+        else
+            logw("Cannot find connection that we just cancelled\n");
+    }
+
+    mLeConnInProgress = false;
+    hciMakeProgressOnLeConnectionReqs();
+    pthread_mutex_unlock(&mConnsLock);
+}
+
+
 /*
  * FUNCTION: hciConnLeCancel
  * USE:      Cancel an ongoing LE connection attempt
@@ -4379,7 +4634,7 @@ static bool hciHandleConnLeLtkReq(uint16_t cid, uint64_t randomNum, uint16_t div
  */
 static bool hciConnLeCancel(void)
 {
-    return hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_LE, HCI_CMD_LE_Create_Connection_Cancel, NULL, 0, hciCmdStatusCbk, NULL);
+    return hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_LE, HCI_CMD_LE_Create_Connection_Cancel, NULL, 0, hciConnLeCancelDoneCbk, NULL);
 }
 
 /*
