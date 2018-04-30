@@ -4452,6 +4452,8 @@ static void l2cConnRequestClose(struct l2cAclConn* acl, struct l2cConn *conn, bo
     if (tellOurSide)
         if (!l2cSvcWorkScheduleStateCall(conn, L2C_STATE_CLOSED, NULL, 0))
             loge("Failed to tell our side that connection is closed\n");
+
+    tellOtherSide = tellOtherSide && conn->psm;
     if (tellOtherSide)
         if (!l2cSigSendDiscReq(acl, conn->localCh, conn->remCh))
              loge("Failed to send disc req msg to the other side\n");
