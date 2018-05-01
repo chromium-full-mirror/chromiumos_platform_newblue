@@ -199,6 +199,10 @@
 /* Max number of packets for the Security Manager sendQueue */
 #define MAX_PACKETS_SM_SEND_QUEUE           8
 
+/*
+ * How many notifications to the upper layer that SM is willing to buffer up
+ */
+#define SM_NUM_OUTSTANDING_NOTIFY          32
 
 #endif
 

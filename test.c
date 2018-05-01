@@ -349,10 +349,6 @@ bool isSameAddr(const struct bt_addr *a, const struct bt_addr *b) {
     return !memcmp(a, b, sizeof(struct bt_addr));
 }
 
-void unpairTimerCb() {
-    smUnpair(&mTargetAddr);
-}
-
 void pairObserverCallback(void *observerData, const void *pairStateChange, uniq_t observerId) {
     struct smPairStateChange state;
 
@@ -367,8 +363,10 @@ void pairObserverCallback(void *observerData, const void *pairStateChange, uniq_
          state.pairState, state.pairErr);
 
     // Unpair with the target device once it's paired
-    if (state.pairState == SM_PAIR_STATE_PAIRED)
-        timerSet(5000, unpairTimerCb, 0);
+    if (state.pairState == SM_PAIR_STATE_PAIRED) {
+        sleep(5);
+        smUnpair(&mTargetAddr);
+    }
 }
 
 int main(int argc, char** argv)
@@ -410,8 +408,10 @@ int main(int argc, char** argv)
     if (!gattBuiltinInit())
         loge("Failed to init GATT services\n");
 
-    if (!smInit(HCI_DISP_CAP_NONE))
-        loge("Failed to init SM");
+    if (!smInit(HCI_DISP_CAP_NONE)) {
+        loge("Failed to init SM\n");
+        goto cleanup;
+    }
 
     if (argc == 2 && !strcmp(argv[1], "scan")) {
         /*

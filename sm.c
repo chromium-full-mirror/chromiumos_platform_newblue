@@ -19,6 +19,7 @@
 #include "timer.h"
 #include "types.h"
 #include "util.h"
+#include "workQueue.h"
 
 #include "sm.h"
 
@@ -149,6 +150,8 @@ struct smAuthReq {
 #define SM_UNAUTH_NO_MITM_PROTECT       0 /* Unauthenticated no MITM protection */
 #define SM_AUTH_MITM_PROTECT            1 /* Authenticated MITM protection */
 
+#define SM_WORK_NOTIFY_PAIR_STATE_CHG   0 /* work type of notifying upper layer about the pairing state change */
+
 struct smInstance {
     struct smInstance*    prev;
     struct smInstance*    next;
@@ -203,6 +206,9 @@ static struct smDevNode *mBannedDevList = NULL;               /* the device bann
 
 static struct multiNotifList *mPairObservers = NULL;          /* the observers of pairing state changes */
 
+static pthread_t mNotifWorker;                                /* the worker thread for notifying applications */
+static struct workQueue *mNotifWork = NULL;                   /* the work queue of notification works */
+
 /* fwd decls */
 static bool smGenSTK(struct smInstance *inst);
 static bool smGenTK(struct smInstance *inst);
@@ -230,6 +236,66 @@ static const uint8_t mPairAlgs[5][5] = {
     {SM_ALG_JUST_WORK, SM_ALG_JUST_WORK, SM_ALG_JUST_WORK, SM_ALG_JUST_WORK, SM_ALG_JUST_WORK},
     {SM_ALG_PASS_KEY,  SM_ALG_PASS_KEY,  SM_ALG_PASS_KEY,  SM_ALG_JUST_WORK, SM_ALG_PASS_KEY },
 };
+
+/* work struct of notifying application(s) */
+struct smNotifWork {
+    int type;
+    union {
+        struct {
+            struct bt_addr addr;
+            smPairState state;
+            smPairErr err;
+        } pairStateChg;
+    };
+};
+
+/*
+ * FUNCTION: smNotifWorkFree
+ * USE:      Clean up SM notification work item in mNotifWork
+ * PARAMS:   workItem - a work item
+ * RETURN:
+ * NOTES:
+ */
+static void smNotifWorkFree(void *workItem)
+{
+    free(workItem);
+}
+
+/*
+ * FUNCTION: smNotifWorker
+ * USE:      Worker thread to notify application layer without blocking any lower layer thread
+ * PARAMS:   unused - not used
+ * RETURN:
+ * NOTES:
+ */
+static void* smNotifWorker(void *unused)
+{
+    struct smNotifWork *work;
+    struct smPairStateChange pairStateChg;
+    int status;
+
+    pthread_setname_np(pthread_self(), "bt_sm_worker");
+    while (1) {
+        status = workQueueGet(mNotifWork, (void**)&work);
+        if (status)
+            break;
+
+        switch(work->type) {
+        case SM_WORK_NOTIFY_PAIR_STATE_CHG:
+            pairStateChg.peerAddr = work->pairStateChg.addr;
+            pairStateChg.pairState = work->pairStateChg.state;
+            pairStateChg.pairErr = work->pairStateChg.err;
+            multiNotifNotify(mPairObservers, &pairStateChg);
+            break;
+        default:
+            logd("Unknown SM work type %d\n", work->type);
+            break;
+        }
+        free(work);
+    }
+
+    return NULL;
+}
 
 /*
  * FUNCTION: smSameAddr
@@ -2189,23 +2255,47 @@ bool smInit(uint8_t ioCapability)
         return false;
     }
 
-    if(!l2cApiServiceFixedChRegister(L2C_FIXED_CH_NUM_SM, &descr)) {
-        logw("%s(): Error registering L2CAP service.\n", __func__);
-        sendQueueFree(mSmSendQ);
-        return false;
-    }
-
     mPairObservers = multiNotifCreate();
     if (!mPairObservers) {
        logw("%s(): Error creating pairing observer list\n", __func__);
-       return false;
+       goto notif_fail;
+    }
+
+    mNotifWork = workQueueAlloc(SM_NUM_OUTSTANDING_NOTIFY);
+    if (!mNotifWork) {
+        logw("%s(): Error allocating SM notification work queue\n", __func__);
+        goto work_fail;
+    }
+
+    if (pthread_create(&mNotifWorker, NULL, smNotifWorker, NULL)) {
+        logw("%s(): Error creating SM notification worker\n", __func__);
+        goto thread_fail;
+    }
+
+    if(!l2cApiServiceFixedChRegister(L2C_FIXED_CH_NUM_SM, &descr)) {
+        logw("%s(): Error registering L2CAP service.\n", __func__);
+        goto register_fail;
     }
 
     persistLoad();
 
-    logd("%s() smInit finished correctly\n", __func__);
+    logd("%s(): smInit finished correctly\n", __func__);
 
     return true;
+
+register_fail:
+    workQueueWakeAll(mNotifWork, 1);
+    pthread_join(mNotifWorker, NULL);
+thread_fail:
+    workQueueFree(mNotifWork, smNotifWorkFree);
+    mNotifWork = NULL;
+work_fail:
+    multiNotifDestroy(mPairObservers);
+    mPairObservers = NULL;
+notif_fail:
+    sendQueueFree(mSmSendQ);
+    mSmSendQ = NULL;
+    return false;
 }
 
 /*
@@ -2217,13 +2307,22 @@ bool smInit(uint8_t ioCapability)
  */
 void smDeinit(void)
 {
-    multiNotifDestroy(mPairObservers);
+    l2cApiServiceFixedChUnregister(L2C_FIXED_CH_NUM_SM, NULL, NULL);
 
-    persistStore();
+    if (mNotifWork) {
+        workQueueWakeAll(mNotifWork, 1);
+        pthread_join(mNotifWorker, NULL);
+        workQueueFree(mNotifWork, smNotifWorkFree);
+    }
+
+    if (mPairObservers)
+        multiNotifDestroy(mPairObservers);
+
+    if (mSmSendQ)
+        sendQueueFree(mSmSendQ);
 
     smBannedDevFreeAll();
-    sendQueueFree(mSmSendQ);
-    l2cApiServiceFixedChUnregister(L2C_FIXED_CH_NUM_SM, NULL, NULL);
+    persistStore();
 }
 
 /*
@@ -2265,7 +2364,7 @@ void smUnregisterPairObserver(uniq_t observerId)
  */
 static void smNotifyPairObserver(const struct bt_addr *addr, smPairState state, smPairErr err)
 {
-    struct smPairStateChange change;
+    struct smNotifWork *work;
     bool notifyNotPaired = false;
 
     switch(state) {
@@ -2317,10 +2416,20 @@ static void smNotifyPairObserver(const struct bt_addr *addr, smPairState state, 
         return;
     }
 
-    change.peerAddr = *addr;
-    change.pairState = state;
-    change.pairErr = err;
-    multiNotifNotify(mPairObservers, &change);
+    work = (struct smNotifWork *)calloc(1, sizeof(struct smNotifWork));
+    if (!work) {
+        loge("Failed to allocate SM work item\n");
+        return;
+    }
+    work->type = SM_WORK_NOTIFY_PAIR_STATE_CHG;
+    work->pairStateChg.addr = *addr;
+    work->pairStateChg.state = state;
+    work->pairStateChg.err = err;
+
+    if (!workQueuePut(mNotifWork, work)) {
+        loge("Failed to enqueue SM work for pairing state change\n");
+        free(work);
+    }
 }
 
 /*
