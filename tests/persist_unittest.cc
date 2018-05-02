@@ -20,6 +20,52 @@ extern "C" {
 
 namespace {
 
+struct enumCbkData {
+    // fields for verification
+    bool numFound;
+    bool keyFound;
+    struct bt_addr addrFound;
+
+    uint8_t targetNumType;
+    uint64_t targetNum;
+    uint8_t targetKeyType;
+    uint8_t targetKey[HCI_LE_KEY_LEN];
+};
+
+bool persistEnumF(void *cbkData, const struct bt_addr *addr, const void *name,
+                       uint32_t nameLen, uint32_t devCls, uint32_t haveKeys,
+                       const uint8_t *wantedKey, uint32_t haveNums, const uint64_t *wantedNum) {
+    uint64_t targetNum = 0;
+    struct enumCbkData *data = NULL;
+    if (!cbkData)
+        return true;
+
+    data = (struct enumCbkData *)(cbkData);
+
+    if (wantedNum) {
+        if (!(haveNums & (1 << data->targetNumType)))
+            return true;
+        if (*wantedNum != data->targetNum)
+            return true;
+        else
+          data->numFound = true;
+    }
+
+    if (wantedKey) {
+        if (!(haveKeys & (1 << data->targetKeyType)))
+            return true;
+        if (memcmp(data->targetKey, wantedKey, sizeof(data->targetKey)))
+            return true;
+        else
+            data->keyFound = true;
+    }
+
+    if (data->numFound || data->keyFound)
+        data->addrFound = *addr;
+
+    return true;
+}
+
 class PersistTestSuite: public testing::Test {
   public:
     const struct bt_addr *getDevOneAddr() { return &devOneAddr; }
@@ -28,7 +74,7 @@ class PersistTestSuite: public testing::Test {
     std::string getDevTwoName() { return devTwoName; }
 
   protected:
-    virtual void SetUp() {
+    void SetUp() override {
         int addrOne[BT_MAC_LEN] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
         int addrTwo[BT_MAC_LEN] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
         uint32_t nameOneLen = devOneName.size() + 1;
@@ -43,10 +89,11 @@ class PersistTestSuite: public testing::Test {
         devTwoAddr.type = BT_ADDR_TYPE_LE_RANDOM;
         memcpy(devTwoAddr.addr, addrTwo, sizeof(devTwoAddr.addr));
 
+
         persistAddKnownDev(&devOneAddr, devOneName.c_str(), &nameOneLen, true, NULL);
         persistAddKnownDev(&devTwoAddr, devTwoName.c_str(), &nameTwoLen, true, NULL);
     }
-    virtual void TearDown() {
+    void TearDown() override {
         unlink(PREF_PATH);
     }
 
@@ -175,4 +222,114 @@ TEST_F(PersistTestSuite, DeviceNumerGetAddDel) {
     ASSERT_TRUE(persistAddDevNumber(getDevTwoAddr(), PERSIST_NUM_TYPE_SM_RANDOM, randNumTwo));
 }
 
+TEST_F(PersistTestSuite, EnumerateDevicesForTargetNum) {
+    uint64_t randNumOne = 12345678;
+    uint64_t randNumTwo = 87654321;
+    uint64_t num = 0;
+    uint8_t numType = PERSIST_NUM_TYPE_SM_RANDOM;
+    struct enumCbkData cbkData = {.keyFound = false, .numFound = false};
+
+    // set a number for device one
+    ASSERT_FALSE(persistGetDevNumber(getDevOneAddr(), numType, &num));
+    ASSERT_TRUE(persistAddDevNumber(getDevOneAddr(), numType, randNumOne));
+    ASSERT_TRUE(persistGetDevNumber(getDevOneAddr(), numType, &num));
+    ASSERT_EQ(num, randNumOne);
+
+    // set a number for device two
+    ASSERT_FALSE(persistGetDevNumber(getDevTwoAddr(), numType, &num));
+    ASSERT_TRUE(persistAddDevNumber(getDevTwoAddr(), numType, randNumTwo));
+    ASSERT_TRUE(persistGetDevNumber(getDevTwoAddr(), numType, &num));
+    ASSERT_EQ(num, randNumTwo);
+
+    cbkData.targetNumType = numType;
+    cbkData.targetNum = randNumOne;
+
+    // enumerate through the DB to find the target number
+    ASSERT_TRUE(persistEnumKnownDevs(persistEnumF, (void *)&cbkData, NULL, &numType));
+    ASSERT_TRUE(cbkData.numFound);
+    ASSERT_FALSE(cbkData.keyFound);
+    ASSERT_EQ(memcmp(&cbkData.addrFound, getDevOneAddr(), sizeof(struct bt_addr)), 0);
+}
+
+TEST_F(PersistTestSuite, EnumerateDevicesForKey) {
+    uint8_t keyOne[HCI_LE_KEY_LEN] = {0x4C, 0x68, 0x38, 0x41, 0x39, 0xF5, 0x74, 0xD8,
+                                      0x36, 0xBC, 0xF3, 0x4E, 0x9D, 0xFB, 0x01, 0xBF,};
+    uint8_t keyTwo[HCI_LE_KEY_LEN] = {0x57, 0x83, 0xD5, 0x21, 0x56, 0xAD, 0x6F, 0x0E,
+                                      0x63, 0x88, 0x27, 0x4E, 0xC6, 0x70, 0x2E, 0xE0,};
+    uint8_t key[HCI_LE_KEY_LEN] = {0,};
+    uint8_t keyType = KEY_TYPE_IRK;
+    struct enumCbkData cbkData = {.keyFound = false, .numFound = false};
+
+    // set the IRK for device one
+    ASSERT_FALSE(persistGetDevKey(getDevOneAddr(), keyType, key));
+    ASSERT_TRUE(persistAddDevKey(getDevOneAddr(), keyType, keyOne));
+    ASSERT_TRUE(persistGetDevKey(getDevOneAddr(), keyType, key));
+    ASSERT_EQ(memcmp(keyOne, key, sizeof(keyOne)), 0);
+
+    // set the IRK for device Two
+    ASSERT_FALSE(persistGetDevKey(getDevTwoAddr(), keyType, key));
+    ASSERT_TRUE(persistAddDevKey(getDevTwoAddr(), keyType, keyTwo));
+    ASSERT_TRUE(persistGetDevKey(getDevTwoAddr(), keyType, key));
+    ASSERT_EQ(memcmp(keyTwo, key, sizeof(keyOne)), 0);
+
+    cbkData.targetKeyType = keyType;
+    memcpy(cbkData.targetKey, keyOne, sizeof(cbkData.targetKey));
+
+    // enumerate through the DB to find the target key
+    ASSERT_TRUE(persistEnumKnownDevs(persistEnumF, (void *)&cbkData, &keyType, NULL));
+    ASSERT_TRUE(cbkData.keyFound);
+    ASSERT_FALSE(cbkData.numFound);
+    ASSERT_EQ(memcmp(&cbkData.addrFound, getDevOneAddr(), sizeof(struct bt_addr)), 0);
+}
+
+TEST_F(PersistTestSuite, EnumerateDevicesForNumAndKey) {
+    uint64_t randNumOne = 12345678;
+    uint64_t randNumTwo = 87654321;
+    uint64_t num = 0;
+    uint8_t numType = PERSIST_NUM_TYPE_SM_RANDOM;
+
+    uint8_t keyOne[HCI_LE_KEY_LEN] = {0x4C, 0x68, 0x38, 0x41, 0x39, 0xF5, 0x74, 0xD8,
+                                      0x36, 0xBC, 0xF3, 0x4E, 0x9D, 0xFB, 0x01, 0xBF,};
+    uint8_t keyTwo[HCI_LE_KEY_LEN] = {0x57, 0x83, 0xD5, 0x21, 0x56, 0xAD, 0x6F, 0x0E,
+                                      0x63, 0x88, 0x27, 0x4E, 0xC6, 0x70, 0x2E, 0xE0,};
+    uint8_t key[HCI_LE_KEY_LEN] = {0,};
+    uint8_t keyType = KEY_TYPE_IRK;
+
+    struct enumCbkData cbkData = {.keyFound = false, .numFound = false};
+
+    // set a number for device one
+    ASSERT_FALSE(persistGetDevNumber(getDevOneAddr(), numType, &num));
+    ASSERT_TRUE(persistAddDevNumber(getDevOneAddr(), numType, randNumOne));
+    ASSERT_TRUE(persistGetDevNumber(getDevOneAddr(), numType, &num));
+    ASSERT_EQ(num, randNumOne);
+
+    // set a number for device two
+    ASSERT_FALSE(persistGetDevNumber(getDevTwoAddr(), numType, &num));
+    ASSERT_TRUE(persistAddDevNumber(getDevTwoAddr(), numType, randNumTwo));
+    ASSERT_TRUE(persistGetDevNumber(getDevTwoAddr(), numType, &num));
+    ASSERT_EQ(num, randNumTwo);
+
+    // set the IRK for device one
+    ASSERT_FALSE(persistGetDevKey(getDevOneAddr(), keyType, key));
+    ASSERT_TRUE(persistAddDevKey(getDevOneAddr(), keyType, keyOne));
+    ASSERT_TRUE(persistGetDevKey(getDevOneAddr(), keyType, key));
+    ASSERT_EQ(memcmp(keyOne, key, sizeof(keyOne)), 0);
+
+    // set the IRK for device Two
+    ASSERT_FALSE(persistGetDevKey(getDevTwoAddr(), keyType, key));
+    ASSERT_TRUE(persistAddDevKey(getDevTwoAddr(), keyType, keyTwo));
+    ASSERT_TRUE(persistGetDevKey(getDevTwoAddr(), keyType, key));
+    ASSERT_EQ(memcmp(keyTwo, key, sizeof(keyOne)), 0);
+
+    cbkData.targetNumType = numType;
+    cbkData.targetNum = randNumOne;
+    cbkData.targetKeyType = keyType;
+    memcpy(cbkData.targetKey, keyOne, sizeof(cbkData.targetKey));
+
+    // enumerate through the DB to find the target number and key
+    ASSERT_TRUE(persistEnumKnownDevs(persistEnumF, (void *)&cbkData, &keyType, &numType));
+    ASSERT_TRUE(cbkData.keyFound);
+    ASSERT_TRUE(cbkData.numFound);
+    ASSERT_EQ(memcmp(&cbkData.addrFound, getDevOneAddr(), sizeof(struct bt_addr)), 0);
+}
 }  // namespace

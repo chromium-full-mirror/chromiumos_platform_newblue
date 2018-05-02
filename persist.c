@@ -966,10 +966,11 @@ done:
  * PARAMS:   enumF - callback to call
  *           cbkData - data to pass to said callback
  *           wantedKeyType - if not null, only call callback for devices for which we have a key of this type
+ *           wantedNumType - if not null, only call callback for devices for which we have a number of this type
  * RETURN:   true if enumeration finished by itself, false if by request of callback
  * NOTES:    NONE
  */
-bool persistEnumKnownDevs(persistKnownDevEnumeratorF enumF, void *cbkData, const uint8_t *wantedKeyType)
+bool persistEnumKnownDevs(persistKnownDevEnumeratorF enumF, void *cbkData, const uint8_t *wantedKeyType, const uint8_t *wantedNumType)
 {
     struct persistProp *t;
     bool ret = true;
@@ -984,10 +985,11 @@ bool persistEnumKnownDevs(persistKnownDevEnumeratorF enumF, void *cbkData, const
 
         /* iterate over all devices in the "known devices" list */
         for (dev = arr->head; dev; dev = dev->next) {
-            struct persistProp *devItem, *dAddr = NULL, *dKeys = NULL;
+            struct persistProp *devItem, *dAddr = NULL, *dKeys = NULL, *dNums = NULL;
             struct persistArrayInRam *subArr = (struct persistArrayInRam*)(dev + 1);
-            uint32_t nameLen = 0, haveKeys = 0, devCls = 0;
+            uint32_t nameLen = 0, haveKeys = 0, devCls = 0, haveNums = 0;
             const uint8_t *wantedKey = NULL;
+            uint64_t *wantedNum = NULL;
             uint64_t lastSeen = 0;
             const void* name;
 
@@ -1011,6 +1013,8 @@ bool persistEnumKnownDevs(persistKnownDevEnumeratorF enumF, void *cbkData, const
                     devCls = *(uint32_t*)(devItem + 1);
                 else if (devItem->info.name == PERS_NAME_KEYS && devItem->info.type == PERS_TYPE_ARRAY)
                     dKeys = devItem;
+                else if (devItem->info.name == PERS_NAME_NUMBERS && devItem->info.type == PERS_TYPE_ARRAY)
+                    dNums = devItem;
                 else if (devItem->info.name == PERS_NAME_LAST_SEEN && devItem->info.type == PERS_TYPE_UINT && devItem->info.len == sizeof(uint64_t))
                     lastSeen = *(uint64_t*)(devItem + 1);
             }
@@ -1038,8 +1042,45 @@ bool persistEnumKnownDevs(persistKnownDevEnumeratorF enumF, void *cbkData, const
                 }
             }
 
+            /* iterate over all numbers of this device to collect the proper value for haveNums also find the wanted one if asked */
+            if (dNums) {
+                struct persistArrayInRam *numsArr = (struct persistArrayInRam*)(dNums + 1);
+                struct persistArrayInRam *numArr;
+                struct persistProp *numProp;
+
+                for (numProp = numsArr->head; numProp; numProp = numProp->next) {
+                    struct persistProp *inner;
+                    bool nameSeen = false, valSeen = false;
+                    uint8_t lastSeenName = 0;
+                    uint64_t *lastSeenVal = NULL;
+
+                    if (numProp->info.name != PERS_NAME_NUM || numProp->info.type != PERS_TYPE_ARRAY) {
+                        logw("Unexpected item in numbers array of name %u, type %u\n", numProp->info.name, numProp->info.type);
+                        continue;
+                    }
+
+                    numArr = (struct persistArrayInRam*)(numProp + 1);
+                    for (inner = numArr->head; inner; inner = inner->next) {
+                        if (inner->info.name == PERS_NAME_NUM_NAME && inner->info.type == PERS_TYPE_UINT && inner->info.len == sizeof(uint8_t)) {
+                            lastSeenName = *(uint8_t*)(inner + 1);
+                            nameSeen = true;
+                        }
+                        if (inner->info.name == PERS_NAME_NUM_VAL && inner->info.type == PERS_TYPE_UINT && inner->info.len == sizeof(uint64_t)) {
+                            lastSeenVal = (uint64_t*)(inner + 1);
+                            valSeen = true;
+                        }
+                    }
+                    if (nameSeen && valSeen) {
+                        haveNums |= 1UL << lastSeenName;
+                        if (wantedNumType && lastSeenName == *wantedNumType)
+                            wantedNum = lastSeenVal;
+                    }
+                }
+            }
+
             /* call the callback with all this info */
-            if ((!wantedKeyType || wantedKey) && !enumF(cbkData, (const struct bt_addr*)(dAddr + 1), name, nameLen, devCls, haveKeys, wantedKey)) {
+            if (((!wantedKeyType || wantedKey) || (!wantedNumType || wantedNum))
+                && !enumF(cbkData, (const struct bt_addr*)(dAddr + 1), name, nameLen, devCls, haveKeys, wantedKey, haveNums, wantedNum)) {
                 ret = false;
                 break;
             }
