@@ -128,10 +128,9 @@ uint16_t mGattHandleCurTimeCfg = 0;
 uint16_t mGattHandleLocalTimeInfo = 0;
 uint16_t mGattHandleReferenceTimeInfo = 0;
 
-static struct bt_addr mTargetAddr = {
-    .type = BT_ADDR_TYPE_LE_RANDOM,
-    .addr = {0x50, 0x8E, 0xFC, 0x0A, 0x11, 0x11}
-};
+static hci_adv_set_t mAdvSet[3] = {0,};
+
+static struct bt_addr mAddrs[3];
 uniq_t mObserverId = 0;
 
 struct dateTime {
@@ -171,11 +170,18 @@ struct {
     uint8_t dstOffset;  // daylight saving time offset to add
 }__packed mGattLocalTimeInfo;
 
+bool isSameAddr(const struct bt_addr *a, const struct bt_addr *b) {
+    if (!a || !b)
+        return false;
+    return !memcmp(a, b, sizeof(struct bt_addr));
+}
+
 static bool testGattSrvValueReadCbk(gatt_service_t svc, l2c_handle_t who, att_cid_t cid, att_trans_t transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t wantedLen)
 {
-    uint8_t err = ATT_ERROR_NONE;
+    uint8_t err = ATT_ERROR_NONE, i;
     const uint8_t *ptr = NULL;
     uint16_t len = 0;
+    struct bt_addr srvAddr;
 
     if (svc != mSvcTime) {
         logw("Unexpected read in Current Time service\n");
@@ -214,12 +220,25 @@ static bool testGattSrvValueReadCbk(gatt_service_t svc, l2c_handle_t who, att_ci
      * returned intentionally so that the remote GATT client will initiate
      * pairing. */
     gattSrvCbkReply(cid, transId, handle, ATT_ERROR_INSUFFICIENT_AUTH, ptr, len);
+
+    /* In order to verify the re-connection to the target device, we immediately
+     * re-enable the adv set */
+    if (l2cApiGetSelfBtAddr(attSrvCidResolve(cid), &srvAddr)) {
+        for (i = 0; i < sizeof(mAddrs); ++i) {
+            if (isSameAddr(&srvAddr, &mAddrs[i])) {
+                logd("Re-enable adv set %d\n", i);
+                hciAdvSetEnable(mAdvSet[i]);
+            }
+        }
+    }
+
     return true;
 }
 
 static bool testGattSrvValueWriteCbk(gatt_service_t svc, l2c_handle_t who, att_cid_t cid, att_trans_t transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
 {
-    uint8_t err = ATT_ERROR_NONE;
+    uint8_t err = ATT_ERROR_NONE, i;
+    struct bt_addr srvAddr;
 
     logi("testGattSrvValueWriteCbk: cid: "UNIQ_FMT"d, transId: "ATT_TRANS_FMT"d, handle: handle: %d\n", ATT_CID_CONV(cid), ATT_TRANS_CONV(transId), handle);
 
@@ -236,16 +255,40 @@ static bool testGattSrvValueWriteCbk(gatt_service_t svc, l2c_handle_t who, att_c
         return false;
     }
 
+    /* In order to verify the re-connection to the target device, we immediately
+     * re-enable the adv set */
+    if (l2cApiGetSelfBtAddr(attSrvCidResolve(cid), &srvAddr)) {
+        for (i = 0; i < sizeof(mAddrs); ++i) {
+            if (isSameAddr(&srvAddr, &mAddrs[i])) {
+                logd("Re-enable adv set %d\n", i);
+                hciAdvSetEnable(mAdvSet[i]);
+            }
+        }
+    }
+
     return true;
 }
 
 static void testGattSrvIndCbk(gatt_service_t svc, l2c_handle_t who, att_cid_t cid, uint16_t handle, uint8_t evt, uint64_t ref)
 {
+    int i;
+    struct bt_addr srvAddr;
+
     if (svc != mSvcTime) {
         logw("Unexpected notification callback in Current Time service\n");
         return;
     }
 
+    /* In order to verify the re-connection to the target device, we immediately
+     * re-enable the adv set */
+    if (l2cApiGetSelfBtAddr(attSrvCidResolve(cid), &srvAddr)) {
+        for (i = 0; i < sizeof(mAddrs); ++i) {
+            if (isSameAddr(&srvAddr, &mAddrs[i])) {
+                logd("Re-enable adv set %d\n", i);
+                hciAdvSetEnable(mAdvSet[i]);
+            }
+        }
+    }
     logi("time notification sent: cid: "UNIQ_FMT"d, handle: handle: %d\n", ATT_CID_CONV(cid), handle);
 }
 
@@ -350,12 +393,6 @@ out:
     return svc;
 }
 
-bool isSameAddr(const struct bt_addr *a, const struct bt_addr *b) {
-    if (!a || !b)
-        return false;
-    return !memcmp(a, b, sizeof(struct bt_addr));
-}
-
 void pairObserverCallback(void *observerData, const void *pairStateChange, uniq_t observerId) {
     struct smPairStateChange state;
 
@@ -363,23 +400,24 @@ void pairObserverCallback(void *observerData, const void *pairStateChange, uniq_
         return;
 
     state = *(struct smPairStateChange *)pairStateChange;
-    if (!isSameAddr(&state.peerAddr, &mTargetAddr))
+    if (!isSameAddr(&state.peerAddr, &mAddrs[1]))
         return;
 
-    logi("Pairing state with "ADDRFMT" changed to %d with err %d\n", ADDRCONV(mTargetAddr),
+    logi("Pairing state with "ADDRFMT" changed to %d with err %d\n", ADDRCONV(state.peerAddr),
          state.pairState, state.pairErr);
 
     // Unpair with the target device once it's paired
     if (state.pairState == SM_PAIR_STATE_PAIRED) {
         sleep(5);
-        smUnpair(&mTargetAddr);
+        smUnpair(&state.peerAddr);
     }
 }
 
 int main(int argc, char** argv)
 {
     static const uint8_t mac[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
-    hci_adv_set_t advSet[3] = {0,};
+    static const struct bt_addr addr = {
+      .type = BT_ADDR_TYPE_LE_RANDOM, .addr = {0x50, 0x8E, 0xFC, 0x0A, 0x11, 0x11}}; //adv set 0
     sem_t sem;
 
     fprintf(stderr, "NewBlue test\n");
@@ -415,6 +453,17 @@ int main(int argc, char** argv)
 
     if (!smInit(HCI_DISP_CAP_NONE)) {
         loge("Failed to init SM\n");
+        goto cleanup;
+    }
+
+    //initialize addresses for adv sets
+    mAddrs[0] = addr;
+    if (!smGenResolvableAddr(&mAddrs[1])) {
+        loge("Failed to generate resolvable private address for adv set\n");
+        goto cleanup;
+    }
+    if (!smGenNonResolvableAddr(&mAddrs[2])) {
+        loge("Failed to generate non-resolvable private address for adv set\n");
         goto cleanup;
     }
 
@@ -463,14 +512,14 @@ int main(int argc, char** argv)
     else if (argc == 2 && !strcmp(argv[1], "pair")) {
         /*
          * Option: pair
-         * Use:    set up a GATT connection with the device with mTargetAddr and start pairing
+         * Use:    set up a GATT connection with the device with mAddrs[1] and start pairing
          */
 
         bool found = false;
         uniq_t scanId;
         unsigned i, round = 3;
         struct LeDiscDev *leDevices = NULL, *t;
-        struct smPairSecurityRequirements secReqs = {.bond = true, .mitm = false};
+        struct smPairSecurityRequirements secReqs = {.bond = false, .mitm = false};
 
         // register as an observer to pairing state changes
         mObserverId = smRegisterPairObserver(NULL, pairObserverCallback);
@@ -479,7 +528,7 @@ int main(int argc, char** argv)
             goto cleanup;
         }
 
-        logi("Scanning for device "ADDRFMT" ...\n", ADDRCONV(mTargetAddr));
+        logi("Scanning for device "ADDRFMT" ...\n", ADDRCONV(mAddrs[1]));
         for (i = 0; i < round; ++i) {
             scanId = hciDiscoverLeStart(leDiscoveryCbk, &leDevices, true, false);
             if (!scanId) {
@@ -498,7 +547,7 @@ int main(int argc, char** argv)
                 leDevices = leDevices->next;
                 logi("Device %c %02X:%02X:%02X:%02X:%02X:%02X\n", t->randomAddr ? 'R' : 'P',
                      t->mac[5], t->mac[4], t->mac[3], t->mac[2], t->mac[1], t->mac[0]);
-                if ((found = !memcmp(mTargetAddr.addr, t->mac, sizeof(t->mac)))) {
+                if ((found = !memcmp(mAddrs[1].addr, t->mac, sizeof(t->mac)))) {
                     found = true;
                     break;
                 } else {
@@ -509,8 +558,8 @@ int main(int argc, char** argv)
 
             if (found) {
                 logi("Target device found, try to pair with device "ADDRFMT" ...\n",
-                     ADDRCONV(mTargetAddr));
-                smPair(&mTargetAddr, &secReqs);
+                     ADDRCONV(mAddrs[1]));
+                smPair(&mAddrs[1], &secReqs);
                 break;
             }
 
@@ -529,7 +578,7 @@ int main(int argc, char** argv)
 
         unsigned i;
         int8_t txPower = 0;
-        // advSet[0]
+        // mAdvSet[0]
         static const uint8_t data[] = {
             2, HCI_EIR_TYPE_FLAGS, 2, /* flags - general discoverable */
             5, HCI_EIR_TYPE_FULL_NAME, 'N', 'B', 't', '2', /* name - "NBt2" */
@@ -556,13 +605,13 @@ int main(int argc, char** argv)
         gattBuiltinSetAppearance(GAP_APPEAR_GENERIC_WATCH);
 
         //now let's try some multi-adv
-        for (i = 0; i < sizeof(advSet) / sizeof(*advSet); i++) {
+        for (i = 0; i < sizeof(mAdvSet) / sizeof(*mAdvSet); i++) {
             static const uint8_t advData[] = {2, HCI_EIR_TYPE_FLAGS, 2, /* flags - general discoverable */};
             uint8_t scanData[] = {6, HCI_EIR_TYPE_FULL_NAME, 'N', 'B', 't', '1', '0' + i, /* name - "NBt10" and up */};
-            struct bt_addr myRandomMac = {.type = BT_ADDR_TYPE_LE_RANDOM, .addr = {0xDD, 0x00, 0xAA, 0x00, 0xBB, 0xBB + i}};
+            struct bt_addr randAddr;
 
-            advSet[i] = hciAdvSetAllocate();
-            if (!advSet[i]) {
+            mAdvSet[i] = hciAdvSetAllocate();
+            if (!mAdvSet[i]) {
                 loge("Failed to create multi set %u\n", i);
                 break;
             }
@@ -574,47 +623,47 @@ int main(int argc, char** argv)
                 txPower = -10;
 
             if (!hciAdvSetSetAdvParams(
-                    advSet[i], !i ? 0x0020 : 0x0040, 0x0100, HCI_ADV_TYPE_ADV_IND,
+                    mAdvSet[i], 0x0040, 0x0100, HCI_ADV_TYPE_ADV_IND,
                     HCI_ADV_OWN_ADDR_TYPE_RANDOM, NULL,
                     HCI_ADV_CHAN_MAP_USE_CHAN_37 | HCI_ADV_CHAN_MAP_USE_CHAN_38 | HCI_ADV_CHAN_MAP_USE_CHAN_39,
                     HCI_ADV_FILTER_POL_SCAN_ALL_CONNECT_ALL, txPower))
                 loge("Failed to set LE adv set %u params\n", i);
 
-            if (!hciAdvSetConfigureData(advSet[i], false, !i ? data : advData, !i ? sizeof(data) : sizeof(advData)))
+            if (!hciAdvSetConfigureData(mAdvSet[i], false, !i ? data : advData, !i ? sizeof(data) : sizeof(advData)))
                 loge("Failed to set LE adv set %u adv data\n", i);
 
-            if (i && !hciAdvSetConfigureData(advSet[i], true, scanData, sizeof(scanData)))
+            if (i && !hciAdvSetConfigureData(mAdvSet[i], true, scanData, sizeof(scanData)))
                 loge("Failed to set LE adv set %u scan data\n", i);
 
-            if (!hciAdvSetOwnRandomAddr(advSet[i], !i ? &mTargetAddr : &myRandomMac))
+            if (!hciAdvSetOwnRandomAddr(mAdvSet[i], &mAddrs[i]))
                 loge("Failed to set LE adv set %u random addr\n", i);
 
-            if (!hciAdvSetEnable(advSet[i]))
+            if (!hciAdvSetEnable(mAdvSet[i]))
                 loge("Failed to try to enable adv set %u\n", i);
         }
 
         //print tx power for each adv in a set
-        for (i = 0; i < sizeof(advSet) / sizeof(*advSet); i++) {
+        for (i = 0; i < sizeof(mAdvSet) / sizeof(*mAdvSet); i++) {
             int8_t power;
 
-            if (!advSet[i])
+            if (!mAdvSet[i])
                 continue;
-            if (!hciAdvSetGetCurTxPowerLevel(advSet[i], &power))
+            if (!hciAdvSetGetCurTxPowerLevel(mAdvSet[i], &power))
                 loge("Failed to get adv power for set %u\n", i);
             else
-                logi(" adv set %u is at %d dBm\n", i, power);
+                logi(" adv set %u is at %d dBm with addr "ADDRFMT"\n", i, power, ADDRCONV(mAddrs[i]));
         }
 
         logi("waiting...press a key\n");
         getchar();
 
         //disable and free adv sets
-        for (i = 0; i < sizeof(advSet) / sizeof(*advSet); i++) {
-            if (!advSet[i])
+        for (i = 0; i < sizeof(mAdvSet) / sizeof(*mAdvSet); i++) {
+            if (!mAdvSet[i])
                 continue;
-            if (!hciAdvSetDisable(advSet[i]))
+            if (!hciAdvSetDisable(mAdvSet[i]))
                 loge("Failed to disable adv %u\n", i);
-            if (!hciAdvSetFree(advSet[i]))
+            if (!hciAdvSetFree(mAdvSet[i]))
                 loge("Failed to free adv %u\n", i);
         }
 

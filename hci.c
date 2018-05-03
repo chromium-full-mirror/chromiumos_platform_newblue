@@ -3228,7 +3228,7 @@ bool hciAdvSetOwnRandomAddr(hci_adv_set_t handle, const struct bt_addr *ownRando
     else if (set->hwEnabled)
         logw("Set 0x"HCI_ADV_SET_FMT"x is enabled - cannot edit it\n", HCI_ADV_SET_CONV(handle));
     else if (ownRandomAddr->type != BT_ADDR_TYPE_LE_RANDOM)
-        logw("Set 0x"HCI_ADV_SET_FMT"x random address cannot be set - provided addr is nto random\n", HCI_ADV_SET_CONV(handle));
+        logw("Set 0x"HCI_ADV_SET_FMT"x random address cannot be set - provided addr is not random\n", HCI_ADV_SET_CONV(handle));
     else {
 
         set->ownRandomAddr = *ownRandomAddr;

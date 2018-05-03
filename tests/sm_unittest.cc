@@ -9,6 +9,7 @@
 extern "C" {
 #endif
 
+#include "../persist.h"
 #include "../sm.h"
 
 #if defined(__cplusplus)
@@ -19,8 +20,8 @@ namespace {
 
 class SecurityManagerTestSuite: public testing::Test {
   protected:
-    virtual void SetUp() {}
-    virtual void TearDown() {}
+    void SetUp() override {}
+    void TearDown() override {}
 };
 
 /* Bluetooth V4.0+ Volume 6, part C, 1.1 */
@@ -121,6 +122,21 @@ TEST_F(SecurityManagerTestSuite, CorrectnessOfSTKCalcFuncS1Actual) {
 
     for (uint16_t i = 0; i < sizeof(expected); ++i)
         ASSERT_EQ(out[i], expected[i]);
+}
+
+TEST_F(SecurityManagerTestSuite, CorrectnessOfAddressHashActual) {
+    int8_t i;
+    uint8_t irk[HCI_LE_KEY_LEN] = {0xF5, 0x08, 0xF8, 0x09, 0x86, 0xCA, 0x17,
+        0xF2, 0xFF, 0x96, 0x18, 0xBD, 0x5A, 0xF8, 0xAE, 0xE3};
+    uint8_t addr[BT_MAC_LEN] = {0x2B, 0x01, 0xCF, 0xCA, 0x8A, 0x5D};
+    uint32_t rand = 0, hash = 0;
+
+    for (i = BT_MAC_LEN - 1; i > 2; --i)
+        rand = rand << 8 | addr[i];
+    for (i = 2; i >= 0; --i)
+        hash = hash << 8 | addr[i];
+
+    ASSERT_EQ(smAddressHash(rand, irk), hash);
 }
 
 } // namespace

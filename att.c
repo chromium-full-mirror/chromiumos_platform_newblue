@@ -1,3 +1,8 @@
+/*
+ * Copyright 2018 The Chromium OS Authors. All rights reserved.
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file.
+ */
 #include <stdlib.h>
 #include <string.h>
 #include "workQueue.h"
@@ -550,7 +555,7 @@ static bool attCliScheduleErrorCbk(uniq_t trans, l2c_handle_t who, uint16_t hand
     wi->cliErr.err = err;
     wi->cliErr.errOpcode = errOpcode;
     wi->cliErr.isLocalErr = isLocalErr;
-    
+
     if (workQueuePut(mWorkQ, wi))
         return true;
 
@@ -714,7 +719,7 @@ static bool attSrvSchedIndResultCbk(att_range_t rangeRef, uint16_t offst, struct
 static bool attSrvSchedMtuCbk(struct attConn* conn, uint32_t mtu, bool asServer)
 {
     struct attWorkItem *wi;
-    
+
     wi = attWorkItemAlloc(WORK_ATT_MTU_INFO, 0);
     if (!wi)
         return false;
@@ -993,7 +998,7 @@ void attNotifConnClose(l2c_handle_t l2cConn)
         free(conn);
     }
     else
-        logi("ATT: notified of a connection closure for a connection we never knew about");
+        logi("ATT: notified of a connection closure for a connection we never knew about\n");
 
     pthread_mutex_unlock(&mAttLock);
 }
@@ -2376,7 +2381,7 @@ static bool attSrvOpReadContinue(struct attConn *conn, const void *lastReadData,
     wantedHandle = conn->srv.penOp.startHandle;
     opc = conn->srv.penOp.origOpcode;
     conn->srv.penOp.origOpcode = 0;
-    
+
     if (err == ATT_ERROR_NONE) {
         result = sgNewWithCopyData(lastReadData, leastReadLen);
         if (!result)
@@ -2560,7 +2565,7 @@ done:
 
     /* uh oh */
     err = ATT_ERROR_UNLIKELY_ERROR;
-    
+
 error:
     conn->srv.penOp.origOpcode = 0;
     sgFree(results);
@@ -3382,7 +3387,7 @@ static void* attWorker(void *unused)
             }
             sgFree(wi->cliJustData.data);
             break;
-         
+
         case WORK_CLI_FIND_BY_TYPE_VAL_CALL:
             do {
                 uint16_t attrH, grpEndH;

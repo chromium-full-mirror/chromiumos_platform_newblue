@@ -6014,7 +6014,7 @@ out:
 void l2cApiLeSetDefaultSecurityManager(L2capDefaultSecurityManagerCbk cbk)
 {
     /*
-     * Since we actualyl pass the callback pointer in the work items on the work queue,
+     * Since we actually pass the callback pointer in the work items on the work queue,
      * we need to make sure none escape this change func call. To do this we use the
      * ability to "flush" the work queue - wait till all current items finish. We do it
      * twice. Once before changing and once after. The first case makes sure that change

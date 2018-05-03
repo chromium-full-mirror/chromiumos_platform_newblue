@@ -3,6 +3,7 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -194,6 +195,30 @@ struct smDevNode {
     uniq_t                waitTimer;  /* the timer tracking the wait interval of a banned device */
 };
 
+struct smNumEnumCbkData {
+    bool wasFound;           /* output: whether a peer device was found */
+    struct bt_addr peerAddr; /* output: peer device where the random number matched */
+    uint8_t numType;         /* input: the target number type associated with num */
+    uint64_t num;            /* input: the target number */
+};
+
+struct smIrkEnumCbkData {
+    bool wasFound;            /* output: whether a peer device was found */
+    struct bt_addr peerAddr;  /* output: peer device where an existing IRK can resolved the random
+                                 address */
+    uint8_t keyType;          /* input: the target key type */
+    struct bt_addr resolAddr; /* input: the address to be resolved */
+};
+
+/* mask applied to the MSB of a address (addr[5] in this case) for checking the address type */
+#define SM_ADDR_MASK         0xC0
+#define SM_ADDR_PUB_STATIC   0xC0
+#define SM_ADDR_PRI_NONRESOL 0x00
+#define SM_ADDR_PRI_RESOL    0x40
+
+/* address type */
+enum smAddrType {addrTypeUnknown = 0, addrTypePubStatic, addrTypePriNonResol, addrTypePriResol};
+
 /* local settings and state */
 static uint8_t mIoCap;
 static bool mHasOob;                                          /* whether we support OOB data */
@@ -215,9 +240,12 @@ static bool smGenTK(struct smInstance *inst);
 static bool smGenConfVal(struct smPairConf *conf, const struct smInstance *inst, bool check);
 static bool smGenRandNum(uint8_t *out, uint8_t numLen);
 static bool smGenLtk(struct smInstance *inst);
-static bool smGenEdiv(uint16_t *out, const struct smInstance* inst, uint64_t rand, bool check);
+static bool smGenEdiv(uint16_t *out, const struct bt_addr *peerAddr, uint16_t div, uint64_t rand,
+                      bool check);
 static_or_test void smEncrypt(uint8_t* dst, const uint8_t *src, const uint8_t *key);
 static void smNotifyPairObserver(const struct bt_addr *addr, smPairState state, smPairErr err);
+static_or_test uint32_t smAddressHash(uint32_t r, const uint8_t *key);
+static bool smResolveAddr(struct bt_addr *addr, const struct bt_addr *peerAddr);
 
 /* sendQ for packet transmissions */
 static struct sendQ *mSmSendQ;
@@ -595,6 +623,34 @@ static bool smIsEncryptExpected(const struct l2cEncrState *state, const struct s
 }
 
 /*
+ * FUNCTION: smCheckAddrType
+ * USE:      Check the type of the address
+ * PARAMS:   addr - the address
+ * RETURN:   enum smAddrType
+ * NOTES:
+ */
+static enum smAddrType smCheckAddrType(const struct bt_addr *addr)
+{
+    uint8_t msb;
+
+    if (!addr)
+        return addrTypeUnknown;
+
+    msb = addr->addr[5] & SM_ADDR_MASK;
+    switch(msb) {
+    case SM_ADDR_PUB_STATIC:
+        return addrTypePubStatic;
+    case SM_ADDR_PRI_NONRESOL:
+        return addrTypePriNonResol;
+    case SM_ADDR_PRI_RESOL:
+        return addrTypePriResol;
+    default:
+        logw("%s(): Unknown address type 0x%02X\n", __func__, msb);
+        return addrTypeUnknown;
+    }
+}
+
+/*
  * FUNCTION: smTx
  * USE:      Send a packet to the peer
  * PARAMS:   inst - the instance
@@ -641,12 +697,11 @@ tx_err:
  * PARAMS:   err - the output pairing error if there is any
  *           inst - the instance
  *           pairReqResp - the struct
- *           isReq - indicate if we are parsing a pairing request
  * RETURN:   return 0 if all values were read & found valid; SM_ERR_* otherwise
  * NOTES:
  */
 static uint8_t smParsePairReqResp(smPairState *err, struct smInstance *inst,
-                                  const struct smPairReqResp *pairReqResp, bool isReq)
+                                  const struct smPairReqResp *pairReqResp)
 {
     uint8_t tmp, initKeyDistr, rspKeyDistr;
 
@@ -693,7 +748,7 @@ static uint8_t smParsePairReqResp(smPairState *err, struct smInstance *inst,
         if (err)
             *err = SM_PAIR_ERR_ENCR_KEY_SIZE;
         /* the invalid key size in pairing request will be handled when receiving confirm value */
-        if (!isReq)
+        if (!inst->isInitiator)
             return SM_ERR_ENCR_KEY_SZ;
     }
     inst->peerMaxKeySz = tmp;
@@ -964,11 +1019,30 @@ static bool smSendIdInfo(const struct smInstance *inst)
  */
 static bool smSendIdAddrInfo(const struct smInstance *inst)
 {
-    uint16_t i, addrSz;
+    uint16_t i, addrSz, at;
+    enum smAddrType addrType;
     struct smIdentityAddrInfo addr;
+    struct bt_addr selfAddr;
 
-    hciGetLocalAddress(addr.mac);
-    utilSetLE8(&addr.addrType, 0x00); /* 0x00: public address, 0x01: static random address */
+    /* send the random resolvable address used during advertising */
+    l2cApiGetSelfBtAddr(inst->conn, &selfAddr);
+    memcpy(addr.mac, selfAddr.addr, sizeof(addr.mac));
+
+    addrType = smCheckAddrType(&selfAddr);
+    switch (addrType) {
+    case addrTypePubStatic:
+        at = 0x00; /* public address */
+        break;
+    case addrTypePriNonResol:
+    case addrTypePriResol:
+        at = 0x01; /* static random address */
+        break;
+    default:
+        logw("%s(): Failed to send identity address information command due to unknown address "
+             "type \n", __func__);
+        return false;
+    }
+    utilSetLE8(&addr.addrType, at);
 
     if (!smTx(inst, SM_IDENTITY_ADDR_INFO, &addr, sizeof(addr))) {
         logw("%s(): Failed to send identity address information command\n", __func__);
@@ -1051,7 +1125,7 @@ static bool smDistributeKeys(struct smInstance *inst)
 
         if (!smGenRandNum((uint8_t *)&rand, sizeof(rand)) ||
             !persistAddDevNumber(&inst->peerAddr, PERSIST_NUM_TYPE_SM_MY_RANDOM, rand) ||
-            !smGenEdiv(&ediv, inst, rand, false))
+            !smGenEdiv(&ediv, &inst->peerAddr, 0, rand, false))
             goto fail;
 
         if (!smSendMasterId(inst, ediv, rand))
@@ -1113,23 +1187,31 @@ static bool smSendPairFail(const struct smInstance *inst, uint8_t reason)
  *           bonded - indicate whether the existing pairing is bonded; valid if paired
  *           addr - the address of the peer device
  * RETURN:   true if previously paired; false otherwise
- * NOTES:
+ * NOTES:    The address for checking is either the given addr or the address used during the last
+ *           pairing if there is one.
  */
 static bool smIsPaired(bool *mitm, bool *bonded, const struct bt_addr *addr)
 {
     uint8_t key[HCI_LE_KEY_LEN] = {0,};
     uint64_t num;
     bool paired;
+    struct bt_addr prevAddr; /* previous address associated with IRK which can  */
+    const struct bt_addr *a;
 
     if (!addr)
         return false;
 
-    paired = persistGetDevKey(addr, KEY_TYPE_LTK, key) &&
-             persistGetDevKey(addr, KEY_TYPE_MY_LTK, key) &&
-             persistGetDevNumber(addr, PERSIST_NUM_TYPE_SM_EDIV, &num) &&
-             persistGetDevNumber(addr, PERSIST_NUM_TYPE_SM_RANDOM, &num) &&
-             persistGetDevNumber(addr, PERSIST_NUM_TYPE_SM_MY_RANDOM, &num) &&
-             persistGetDevNumber(addr, PERSIST_NUM_TYPE_SM_MITM_PROTECT, &num);
+    if (smResolveAddr(&prevAddr, addr))
+        a = &prevAddr;
+    else
+        a = addr;
+
+    paired = persistGetDevKey(a, KEY_TYPE_LTK, key) &&
+             persistGetDevKey(a, KEY_TYPE_MY_LTK, key) &&
+             persistGetDevNumber(a, PERSIST_NUM_TYPE_SM_EDIV, &num) &&
+             persistGetDevNumber(a, PERSIST_NUM_TYPE_SM_RANDOM, &num) &&
+             persistGetDevNumber(a, PERSIST_NUM_TYPE_SM_MY_RANDOM, &num) &&
+             persistGetDevNumber(a, PERSIST_NUM_TYPE_SM_MITM_PROTECT, &num);
     if (!paired)
         return false;
 
@@ -1138,8 +1220,8 @@ static bool smIsPaired(bool *mitm, bool *bonded, const struct bt_addr *addr)
 
     if (bonded) {
         *bonded = false;
-        if (persistGetDevNumber(addr, PERSIST_NUM_TYPE_SM_BOND, &num) && !!num &&
-            persistGetDevKey(addr, KEY_TYPE_IRK, key)) {
+        if (persistGetDevNumber(a, PERSIST_NUM_TYPE_SM_BOND, &num) && !!num &&
+            persistGetDevKey(a, KEY_TYPE_IRK, key)) {
             *bonded = true;
         }
     }
@@ -1239,7 +1321,7 @@ static void smRx(struct smInstance *inst, sg packet)
         }
 
         inst->isInitiator = false;
-        if ((pairErr = smParsePairReqResp(&err, inst, &pairReqResp, true))) {
+        if ((pairErr = smParsePairReqResp(&err, inst, &pairReqResp))) {
             smSendPairFail(inst, err);
             break;
         }
@@ -1287,7 +1369,7 @@ static void smRx(struct smInstance *inst, sg packet)
             break;
         }
 
-        if ((pairErr = smParsePairReqResp(&err, inst, &pairReqResp, false))) {
+        if ((pairErr = smParsePairReqResp(&err, inst, &pairReqResp))) {
             smSendPairFail(inst, err);
             break;
         }
@@ -1764,10 +1846,17 @@ static void smRx(struct smInstance *inst, sg packet)
             if ((auth & SM_AUTH_REQ_BOND_MASK) != SM_AUTH_REQ_BOND_NO &&
                 (auth & SM_AUTH_REQ_BOND_MASK) != SM_AUTH_REQ_BOND_BOND) {
                 logw("Invalid authReq in security request\n");
+                smSendPairFail(inst, SM_ERR_INVALID_PARAMS);
                 pairErr = SM_PAIR_ERR_INVALID_PARAM;
                 break;
             }
-            inst->peerAuthReq = auth; /* TODO(mcchou): use whether received from the responder */
+
+            /* Use authentication requirements received from the responder to initiate the pairing */
+            inst->isInitiator = true;
+            inst->myAuthReq = auth;
+            inst->myMaxKeySz = SM_MAX_KEY_LEN;
+            inst->myKeyDistr = SM_KEY_DISTR_LTK | SM_KEY_DISTR_CSRK |
+                ((auth & SM_AUTH_REQ_BOND_MASK) == SM_AUTH_REQ_BOND_BOND ? SM_KEY_DISTR_IRK : 0x00);
             smSendPairReq(inst); /* all fields required were set when the instance was allocated */
         } else {
             pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
@@ -1946,11 +2035,12 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
     struct l2cKeyReqState *keyReqState = NULL;
     struct bt_addr peerAddr;
     struct bt_addr myAddr;
+    struct bt_addr resolAddr;
     smPairErr pairErr = SM_PAIR_ERR_UNKNOWN;;
     l2c_handle_t conn;
     sg s;
     uint16_t ediv = 0, myEdiv = 0;
-    uint64_t myRand = 0;
+    uint64_t myRand = 0, myDiv = 0;
     uint8_t key[HCI_LE_KEY_LEN] = {0,};
     uint8_t rawKey[HCI_LE_KEY_LEN] = {0,};
     uint8_t phase = inst->phase;
@@ -2077,23 +2167,29 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
             goto reset;
         }
 
-        /* TODO(mcchou): finish connection re-establishment mechanism using
-         * l2cApiLeSetDefaultSecurityManager and remove the phase check of SM_PHASE_LTK_ENCRYPTED
-         */
-        /* Handle the case where the peer device try to re-establish security after exchanging LTK,
+        /* handle the case where the peer device try to re-establish security after exchanging LTK,
          * by checking if the EDIV and random number in key request state match with the numbers
          * exchanged in previous pairing session. In this case, we are the responder where the peer
          * will use our LTK for security re-establishment.
          */
         if (inst->phase == SM_PHASE_DONE || inst->phase == SM_PHASE_LTK_ENCRYPTED) {
-            logd("Received key request for connection re-establishment\n");
-            if (!persistGetDevNumber(&inst->peerAddr, PERSIST_NUM_TYPE_SM_MY_RANDOM, &myRand)) {
+            logd("Received key request for connection re-establishment, phase %u\n", inst->phase);
+
+            /* if peer address can be resolved, use its previous address to retrieve pairing info */
+            if (!smResolveAddr(&resolAddr, &inst->peerAddr))
+                resolAddr = inst->peerAddr;
+
+            if (!persistGetDevNumber(&resolAddr, PERSIST_NUM_TYPE_SM_MY_RANDOM, &myRand)) {
                 logw("Failed to retrieve random number to verify connection re-establishment\n");
                 goto fail;
-            } else if (!smGenEdiv(&myEdiv, inst, myRand, true) || myEdiv != keyReqState->ediv) {
+            } else if(!persistGetDevNumber(&resolAddr, PERSIST_NUM_TYPE_SM_MY_DIV, &myDiv)) {
+                logw("Failed to retrieve DIV to verify connection re-establishment\n");
+                goto fail;
+            } else if (!smGenEdiv(&myEdiv, &resolAddr, (uint16_t)myDiv, myRand, true) ||
+                       myEdiv != keyReqState->ediv) {
                 logw("Failed to verify EDIV for connection re-establishment\n");
                 goto fail;
-            } else if (!persistGetDevKey(&inst->peerAddr, KEY_TYPE_MY_LTK, key) ||
+            } else if (!persistGetDevKey(&resolAddr, KEY_TYPE_MY_LTK, key) ||
                        !smReadReversedBytes(rawKey, sizeof(rawKey), key, sizeof(key))) {
                 logw("Failed to retrieve LTK for connection re-establishment\n");
                 goto fail;
@@ -2224,6 +2320,104 @@ static uint8_t smFixedChAlloc(void *userData, l2c_handle_t conn, void **instance
 }
 
 /*
+ * FUNCTION: smNumEnumF
+ * USE:      Find the previously-paired peer info in DB by matching the number
+ * PARAMS:   cbkData - the callback data to the caller function to reveal the result of enumeration
+ *           addr - the peer address
+ *           name - device name if known
+ *           nameLen - length of the name
+ *           devCls - the device class
+ *           haveKeys - the bit mask of keys we have
+ *           wantedKey - NULL if unused
+ *           haveNums - the bit mask of numbers we have
+ *           wantedNum - NULL if unused
+ * RETURN:   success
+ * NOTES:
+ */
+static bool smNumEnumF(void *cbkData, const struct bt_addr *addr, const void *name,
+                       uint32_t nameLen, uint32_t devCls, uint32_t haveKeys,
+                       const uint8_t *wantedKey, uint32_t haveNums, const uint64_t *wantedNum)
+{
+    struct smNumEnumCbkData *data = NULL;
+
+    if (!cbkData)
+        return true;
+
+    data = (struct smNumEnumCbkData *)cbkData;
+
+    if (wantedNum) {
+        if (!(haveNums & (1 << data->numType)))
+            return true;
+        else if (*wantedNum != data->num)
+            return true;
+    }
+
+    if (!addr)
+        return true;
+
+    data->peerAddr = *addr;
+    data->wasFound = true;
+
+    return false;
+}
+
+/*
+ * FUNCTION: smReestablishSecurity
+ * USE:      Re-establish the security of a connection with previously-exchanged pairing info if any
+ * PARAMS:   hciConn - HCI connection handle
+ *           randomNum - the random number associated with a set of pairing info
+ *           diversifier - the EDIV associated with a set of pairing info
+ * RETURN:   success
+ * NOTES:
+ */
+static bool smReestablishSecurity(hci_conn_t hciConn, uint64_t randomNum, uint16_t diversifier)
+{
+    struct smNumEnumCbkData enumData;
+    uint8_t numType = PERSIST_NUM_TYPE_SM_MY_RANDOM;
+    uint8_t keyType = KEY_TYPE_LTK;
+    uint8_t myLtk[HCI_LE_KEY_LEN] = {0,};
+    uint8_t rawLtk[HCI_LE_KEY_LEN] = {0,};
+    uint16_t ediv = 0;
+    uint64_t myEdiv = 0, myDiv = 0;
+    bool err = true;
+
+    enumData.numType = numType;
+    enumData.num = randomNum;
+
+    /* enumerate DB to find the peer device with matched randomNum and EDIV */
+    persistEnumKnownDevs(smNumEnumF, (void *)&enumData, NULL, &numType);
+    if (!enumData.wasFound) {
+        logd("Failed to find the peer device with a random number\n");
+        goto out;
+    }
+
+    /* retrieve EDIV and check if EDIVs match */
+    if (!persistGetDevNumber(&enumData.peerAddr, PERSIST_NUM_TYPE_SM_MY_DIV, &myDiv)) {
+        logd("Failed to retrieve DIV for verifying EDIV\n");
+        goto out;
+    } else if (!persistGetDevNumber(&enumData.peerAddr, numType, &myEdiv)) {
+        logd("Failed to retrieve EDIV for verifying EDIV\n");
+        goto out;
+    } else if (!smGenEdiv(&ediv, &enumData.peerAddr, myDiv, randomNum, true) || ediv != myEdiv) {
+        logd("EDIV mismatched for re-establishing security\n");
+        goto out;
+    }
+
+    /* retrieve LTK */
+    if (!persistGetDevKey(&enumData.peerAddr, keyType, myLtk)) {
+        logd("Failed to retrieve LTK for re-establishing security\n");
+        goto out;
+    } else if (!smReadReversedBytes(rawLtk, sizeof(rawLtk), myLtk, sizeof(myLtk))) {
+        goto out;
+    }
+
+    err = false;
+out:
+    hciLeProvideLtk(hciConn, err ? NULL : rawLtk);
+    return !err;
+}
+
+/*
  * FUNCTION: smInit
  * USE:      Init the security manager
  * PARAMS:   NONE
@@ -2277,6 +2471,9 @@ bool smInit(uint8_t ioCapability)
         goto register_fail;
     }
 
+    l2cApiLeSetDefaultSecurityManager(smReestablishSecurity);
+
+    /* if DB was removed before, new CSRK, IRK and DHK are generated automatically on load */
     persistLoad();
 
     logd("%s(): smInit finished correctly\n", __func__);
@@ -2494,7 +2691,17 @@ void smPair(const struct bt_addr *addr, const struct smPairSecurityRequirements 
     inst->myAuthReq = (secReqs->bond ? SM_AUTH_REQ_BOND_BOND : 0x00) |
                       (secReqs->mitm ? SM_AUTH_REQ_MITM_FLAG : 0x00);
     inst->myMaxKeySz = SM_MAX_KEY_LEN;
-    inst->myKeyDistr = SM_KEY_DISTR_LTK | SM_KEY_DISTR_IRK | SM_KEY_DISTR_CSRK;
+    /* TODO(mcchou): change the distribution of IRK if the privacy feature is not supported when
+     * moving to Bluetooth spec v5.0
+     * the current implementation is based on Bluetooth spec v4.0 (see Table 10.2: Requirements
+     * related to privacy feature). it is mandatory for the central role (the initiator of pairing)
+     * to support resolvable address generation, and the distribution of IRK comes along with the
+     * bonding. on the other hand, the remote device may or may not support privacy feature, so it
+     * is optional for the remote device to support resolvable address generation, but it is
+     * mandatory to support resolvable address resolution.
+     */
+    inst->myKeyDistr = (SM_KEY_DISTR_LTK | (secReqs->bond ? SM_KEY_DISTR_IRK : 0x00) |
+                        SM_KEY_DISTR_CSRK);
 
     if (!l2cApiCreateFixedChConnection(L2C_FIXED_CH_NUM_SM, addr, smFixedChState, NULL, inst)) {
         logw("%s(): Error creating a fixed channel l2cap connection\n", __func__);
@@ -2547,6 +2754,174 @@ void smUnpair(const struct bt_addr *addr)
          cancelled ? "cancelled" : "forgotten");
     smNotifyPairObserver(addr, cancelled ? SM_PAIR_STATE_CANCELED : SM_PAIR_STATE_NOT_PAIRED,
                          SM_PAIR_ERR_NONE);
+}
+
+/*
+ * FUNCTION: smGenResolvableAddr
+ * USE:      Generate a resolvable private address based on our IRK
+ * PARAMS:   addr - the output resolvable private address
+ * RETURN:   true if addr is a valid address; false otherwise
+ * NOTES:
+ */
+bool smGenResolvableAddr(struct bt_addr *addr)
+{
+    uint32_t rand, hash; /* only the 24 LSBs of rand and hash will be used */
+    uint8_t irk[HCI_LE_KEY_LEN] = {0,};
+    int8_t i;
+
+    if (!addr)
+        return false;
+
+    do {
+        if (!smGenRandNum((uint8_t *)&rand, sizeof(rand)))
+            return false;
+        rand = (rand & 0x003FFFFF) | (1 << 22); /* set 2 MSBs of the 24 LSBs to be 01 */
+    } while (rand == 0x00400000 || rand == 0x007FFFFF); /* make sure there is at least one bit is
+                                                           0/1 in 22 LSBs of the 24 LSBs */
+
+    if (!persistGetDevKey(NULL, KEY_TYPE_IRK, irk)) {
+        logd("%s(): Failed to retrieve IRK for generating address\n", __func__);
+        return false;
+    }
+
+    hash = smAddressHash(rand, irk);
+
+    addr->type = BT_ADDR_TYPE_LE_RANDOM;
+    for (i = 0; i < 3; ++i, hash >>= 8)
+        addr->addr[i] = hash; /* addr->addr is stored in [0]->[5] : LSO -> MSO order */
+    for (i = 3; i < BT_MAC_LEN; ++i, rand >>= 8)
+        addr->addr[i] = rand;
+
+    return true;
+}
+
+/*
+ * FUNCTION: smGenNonResolvableAddr
+ * USE:      Generate a non-resolvable private address
+ * PARAMS:   addr - the output non-resolvable private address
+ * RETURN:   true if addr is a valid address; false otherwise
+ * NOTES:
+ */
+bool smGenNonResolvableAddr(struct bt_addr *addr)
+{
+    uint8_t i;
+    uint64_t rand, m;
+    uint8_t mac[BT_MAC_LEN] = {0,};
+
+    if (!addr)
+        return false;
+
+    hciGetLocalAddress(mac);
+    for (i = 0; i < BT_MAC_LEN; ++i)
+        m = m << 8 | mac[BT_MAC_LEN - 1 - i];
+
+    do {
+        if (!smGenRandNum((uint8_t *)&rand, sizeof(rand)))
+            return false;
+        rand = rand & 0x00003FFFFFFFFFFF;
+    } while (rand == 0x0000000000000000 || rand == 0x00003FFFFFFFFFFF || rand == m);
+
+    addr->type = BT_ADDR_TYPE_LE_RANDOM;
+    for (i = 0; i < BT_MAC_LEN; ++i, rand >>= 8)
+        addr->addr[i] = rand; /* addr->addr is stored in [0]->[5] : LSO -> MSO order */
+
+    return true;
+}
+
+/*
+ * FUNCTION: smCheckResolvableAddrIrkMatch
+ * USE:      Determine whether a address is resolvable with a IRK
+ * PARAMS:   addr - the address
+ *           irk - the IRK
+ * RETURN:   true if the address is resolvable; false otherwise
+ * NOTES:
+ */
+static bool smCheckResolvableAddrIrkMatch(const struct bt_addr *addr, const uint8_t *irk)
+{
+    int8_t i;
+    uint32_t rand = 0, hash = 0;
+
+    if (!addr || !irk)
+        return false;
+
+    for (i = BT_MAC_LEN - 1; i > 2; --i)
+        rand = rand << 8 | addr->addr[i]; /* addr->addr is stored in [0]->[5] : LSO -> MSO order */
+    for (i = 2; i >= 0; --i)
+        hash = hash << 8 | addr->addr[i];
+
+    return smAddressHash(rand, irk) == hash;
+}
+
+/*
+ * FUNCTION: smIrkEnumF
+ * USE:      Find the previously-paired peer IRK in DB which can resolve the random private address
+ * PARAMS:   cbkData - the callback data to the caller function to reveal the result of enumeration
+ *           addr - the peer address
+ *           name - device name if known
+ *           nameLen - length of the name
+ *           devCls - the device class
+ *           haveKeys - the bit mask of keys we have
+ *           wantedKey - NULL if unused
+ *           haveNums - the bit mask of numbers we have
+ *           wantedNum - NULL if unused
+ * RETURN:   success
+ * NOTES:
+ */
+static bool smIrkEnumF(void *cbkData, const struct bt_addr *addr, const void *name,
+                       uint32_t nameLen, uint32_t devCls, uint32_t haveKeys,
+                       const uint8_t *wantedKey, uint32_t haveNums, const uint64_t *wantedNum)
+{
+    struct smIrkEnumCbkData *data;
+
+    if (!cbkData)
+        return true;
+
+    data = (struct smIrkEnumCbkData *)cbkData;
+    if (wantedKey) {
+        if (!(haveKeys &(1 << data->keyType)))
+            return true;
+        else if (!smCheckResolvableAddrIrkMatch(&data->resolAddr, wantedKey))
+            return true;
+    }
+
+    if (!addr)
+        return true;
+
+    data->peerAddr = *addr;
+    data->wasFound = true;
+
+    return false;
+}
+
+/*
+ * FUNCTION: smResolveAddr
+ * USE:      Try to resolve a address with all the IRK in DB
+ * PARAMS:   addr - the output address associated with the IRK which can resolve peerAddr
+ *           peerAddr - the address to be resolved
+ * RETURN:   true if peerAddr can be resolved with a stored IRK and addr is valid; false otherwise
+ * NOTES:
+ */
+static bool smResolveAddr(struct bt_addr *addr, const struct bt_addr *peerAddr)
+{
+    struct smIrkEnumCbkData enumData;
+    uint8_t keyType = KEY_TYPE_IRK;
+    bool err = true;
+
+    if (!addr || !peerAddr)
+        return false;
+    enumData.keyType = keyType;
+    enumData.resolAddr = *peerAddr;
+
+    /* enumerate DB to find the peer address with IRK which can resolve peerAddr */
+    persistEnumKnownDevs(smIrkEnumF, (void *)&enumData, NULL, &keyType);
+    if (!enumData.wasFound) {
+        logi("No matching IRK\n");
+        goto out;
+    }
+    *addr = enumData.peerAddr;
+    err = false;
+out:
+    return !err;
 }
 
 /*
@@ -2996,28 +3371,27 @@ static bool smGenLtk(struct smInstance *inst)
  * FUNCTION: smGenEdiv
  * USE:      Generate a 16-bit EDIV
  * PARAS:    out - where EDIV is stored
- *           inst - the instance
+ *           peerAddr - the peer adress
+ *           div - if this is a EDIV value check, DIV needs to be a valid number; otherwise a random
+ *                 DIV value is generated and stored.
  *           rand - random number
- *           check - indicate whether this is ediv value check or not. if true, we use previously
- *                   store DIV value to calculate EDIV; otherwise a random DIV value is generated
- *                   and stored.
+ *           check - indicate whether this is an EDIV value check or not. if true, we use
+ *                   previously stored DIV value to calculate EDIV; otherwise a random DIV value
+ *                   is generated and stored.
  * RETURN:   true if EDIV is valid; false otherwise
  * NOTES:    We use Database Lookup approach for key management.
  */
-static bool smGenEdiv(uint16_t *out, const struct smInstance* inst, uint64_t rand, bool check)
+static bool smGenEdiv(uint16_t *out, const struct bt_addr *peerAddr, uint16_t div, uint64_t rand,
+                      bool check)
 {
     uint8_t dhk[SM_BLOCK_LEN] = {0,};
-    uint16_t div = 0, mask = 0, ediv = 0;
+    uint16_t mask = 0, ediv = 0;
     uint64_t tmp = 0;
 
-    if (check) {
-        if (!persistGetDevNumber(&inst->peerAddr, PERSIST_NUM_TYPE_SM_MY_DIV, &tmp))
-            return false;
-        div = tmp;
-    } else {
+    if (!check) {
         /* generate a 16-bit DIV value */
         if (!smGenRandNum((uint8_t *)&div, sizeof(div)) ||
-            !persistAddDevNumber(&inst->peerAddr, PERSIST_NUM_TYPE_SM_MY_DIV, div))
+            !persistAddDevNumber(peerAddr, PERSIST_NUM_TYPE_SM_MY_DIV, div))
             return false;
     }
 
@@ -3039,7 +3413,7 @@ static bool smGenEdiv(uint16_t *out, const struct smInstance* inst, uint64_t ran
  * RETURN:   the 24-bit hash
  * NOTES:    The SM docs call this the ah() function
  */
-static uint32_t smAddressHash(uint32_t r, const uint8_t *key)
+static_or_test uint32_t smAddressHash(uint32_t r, const uint8_t *key)
 {
     uint8_t in[SM_BLOCK_LEN] = {0,}, out[SM_BLOCK_LEN];
 
