@@ -263,7 +263,7 @@ struct attConn {
         uint16_t indOffset;
 
         att_cid_t cid; /* for higher layer */
-        int nextTransId;
+        att_trans_t expectedTransId;
 
         struct attSrvPendingOp penOp;
     } srv;
@@ -312,7 +312,7 @@ struct attWorkItem {
         struct {
             att_range_t          range;
             uint16_t             ofst;
-            int                  transId;
+            att_trans_t          transId;
             uint16_t             byteOfst;
             uint16_t             maxLen;
             uint8_t              reason;
@@ -320,14 +320,14 @@ struct attWorkItem {
         struct {
             att_range_t          range;
             uint16_t             ofst;
-            int                  transId;
+            att_trans_t          transId;
             uint16_t             byteOfst;
             uint16_t             len;
             uint8_t              reason;
             /* data follows */
         } srvWrite;
         struct {
-            int                  transId;
+            att_trans_t          transId;
             bool                 exec;
         } srvExecWrite;
         struct {
@@ -515,18 +515,12 @@ static struct attWorkItem* attWorkItemAlloc(uint8_t type, uint32_t extraSz)
  * FUNCTION: attSrvSchedCbkGetNextTid
  * USE:      Get the transaction ID to use
  * PARAMS:   conn - the per-connection data
- * RETURN:   the transaction ID to use (positive int)
+ * RETURN:   the transaction ID to use
  * NOTES:    call with mAttLock held
  */
-static int attSrvSchedCbkGetNextTid(struct attConn* conn)
+static att_trans_t attSrvSchedCbkGetNextTid(struct attConn* conn)
 {
-    int tid;
-
-    conn->srv.nextTransId++;
-    if (conn->srv.nextTransId < 0)
-        conn->srv.nextTransId = 1;
-
-    return conn->srv.nextTransId;
+    return conn->srv.expectedTransId = uniqGetNext();
 }
 
 /*
@@ -580,19 +574,16 @@ static bool attCliScheduleErrorCbk(uniq_t trans, l2c_handle_t who, uint16_t hand
 static bool attSrvSchedReadCbk(struct attSrvRange *range, struct attSrvVal* val, struct attConn* conn, uint8_t reason, uint16_t byteOfst, uint16_t maxLen)
 {
     struct attWorkItem *wi;
-    int tid;
 
     wi = attWorkItemAlloc(WORK_SRV_READ_CALL, 0);
     if (!wi)
         return false;
 
-    tid = attSrvSchedCbkGetNextTid(conn);
-
     wi->who = conn->conn;
     wi->srv.cid = conn->srv.cid;
     wi->srvRead.range = range->rangeRef;
     wi->srvRead.ofst = val->offset;
-    wi->srvRead.transId = tid;
+    wi->srvRead.transId = attSrvSchedCbkGetNextTid(conn);
     wi->srvRead.byteOfst = byteOfst;
     wi->srvRead.maxLen = maxLen;
     wi->srvRead.reason = reason;
@@ -625,21 +616,18 @@ static bool attSrvSchedWriteCbk(struct attSrvRange *range, struct attSrvVal* val
     bool needFree = false;
     void *iter;
     bool ret;
-    int tid;
-
 
     wi = attWorkItemAlloc(WORK_SRV_WRITE_CALL, len);
     if (!wi)
         return false;
 
-    tid = attSrvSchedCbkGetNextTid(conn);
     sgSerialize(data, 0, len, wi + 1);
 
     wi->who = conn->conn;
     wi->srv.cid = conn->srv.cid;
     wi->srvWrite.range = range->rangeRef;
     wi->srvWrite.ofst = val->offset;
-    wi->srvWrite.transId = tid;
+    wi->srvWrite.transId = attSrvSchedCbkGetNextTid(conn);
     wi->srvWrite.byteOfst = byteOfst;
     wi->srvWrite.len = len;
     wi->srvWrite.reason = reason;
@@ -664,17 +652,14 @@ static bool attSrvSchedWriteCbk(struct attSrvRange *range, struct attSrvVal* val
 static bool attSrvSchedExecCbk(struct attConn* conn, bool exec)
 {
     struct attWorkItem *wi;
-    int tid;
 
     wi = attWorkItemAlloc(WORK_SRV_EXEC_WRITE_CALL, 0);
     if (!wi)
         return false;
 
-    tid = attSrvSchedCbkGetNextTid(conn);
-
     wi->who = conn->conn;
     wi->srv.cid = conn->srv.cid;
-    wi->srvExecWrite.transId = tid;
+    wi->srvExecWrite.transId = attSrvSchedCbkGetNextTid(conn);
     wi->srvExecWrite.exec = exec;
 
     if (workQueuePut(mWorkQ, wi))
@@ -3262,7 +3247,7 @@ void attSrvDataRx(l2c_handle_t from, sg s)
  * RETURN:   unused
  * NOTES:
  */
-void attSrvCbkReply(att_cid_t cid, int transId, uint16_t handle, uint8_t err, const void *data, uint16_t len)
+void attSrvCbkReply(att_cid_t cid, att_trans_t transId, uint16_t handle, uint8_t err, const void *data, uint16_t len)
 {
     struct attConn* conn;
     uint8_t opcode;
@@ -3272,8 +3257,8 @@ void attSrvCbkReply(att_cid_t cid, int transId, uint16_t handle, uint8_t err, co
     conn = attConnFindBySrvCid(cid);
     if (!conn)
         loge("Got callback reply for unknown connection\n");
-    else if (conn->srv.nextTransId != transId)
-        loge("Got callback reply for unknown transcation id %u\n", transId);
+    else if (conn->srv.expectedTransId != transId)
+        loge("Got callback reply for unknown transaction id "ATT_TRANS_FMT"u\n", ATT_TRANS_CONV(transId));
     else {
         switch (conn->srv.penOp.origOpcode) {
         case ATT_OPCODE_FIND_BY_TYPE_VAL_REQ:

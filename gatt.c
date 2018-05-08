@@ -9,6 +9,7 @@
 #include "config.h"
 #include "l2cap.h"
 #include "sendQ.h"
+#include "uniq.h"
 #include "uuid.h"
 #include "util.h"
 #include "gatt.h"
@@ -19,7 +20,7 @@
 
 //TODO: if multiple clients stage writes/try to commit them, we do not arbitrate that. Depending on android's use of this, we may have to
 //This code RELIES on ATT layer having some heavy caching. Without that, this will be woefully inefficient!
-//TODO: it woudl help some if we coudl have notifrefs linked in a list per clicon. we do not expect too many notifrecs, so it is not a necessity. but it woudl be nice
+//TODO: it would help some if we could have notifrefs linked in a list per clicon. we do not expect too many notifrecs, so it is not a necessity. but it would be nice
 
 
 #define GATT_ITEM_TYPE_INCLUDE     1
@@ -76,8 +77,8 @@ struct gattCliTodoItem {
     };
 
     /* this describes why and whom for */
-    int                       clientId;  /* higher level ID - unused by us */
-    int                       connId;    /* higher level ID - unused by us */
+    gatt_client_t             clientId;  /* higher level ID - unused by us */
+    gatt_client_conn_t        connId;    /* higher level ID - unused by us */
     uint8_t                   reqIntent; /* GATT_INTENT_* */
     uint8_t                   reqStep;
     struct uuid               uuidSvc;
@@ -207,7 +208,7 @@ struct gattService {
     att_range_t          attRange;
     uint16_t             numItems;
     uint16_t             maxItems;
-    int                  svcRef;
+    gatt_service_t       svcRef;
 
     gattSrvValueReadCbk  readF;
     gattSrvValueWriteCbk writeF;
@@ -266,7 +267,7 @@ struct gattClient {
     struct gattClient       *next;
     struct gattClient       *prev;
     struct uuid              uuid;
-    int                      clientId; /* used by our callers */
+    gatt_client_t            clientId; /* used by our callers */
 };
 
 struct gattCliCon { /* many-to-many table between gatt clients and gatt client connections */
@@ -275,7 +276,7 @@ struct gattCliCon { /* many-to-many table between gatt clients and gatt client c
     struct gattClient       *cli;
     struct gattConnState    *conn;
     struct gattCliNotifRec  *notifs;
-    int                      connId; /* used by our callers */
+    gatt_client_conn_t       connId; /* used by our callers */
     gattCliConnectResultCbk  connCbk;
 };
 
@@ -288,9 +289,9 @@ struct gattWorkItem {
                 gattSrvValueReadCbk  readF;
                 gattSrvValueWriteCbk writeF;
             };
-            int                      svcRef;
+            gatt_service_t           svcRef;
             att_cid_t                cid;
-            int                      transId;
+            att_trans_t              transId;
             uint16_t                 handle;
             uint16_t                 byteOfst;
             uint16_t                 len;
@@ -301,15 +302,15 @@ struct gattWorkItem {
             uint64_t                 ref;
             l2c_handle_t             who;
             gattSrvIndCbk            indF;
-            int                      svcRef;
+            gatt_service_t           svcRef;
             att_cid_t                cid;
             uint16_t                 handle;
             uint8_t                  evt;
         } srvIndCall;
         struct {
             gattCliConnectResultCbk  cbk;
-            int                      clientId;
-            int                      connId;
+            gatt_client_t            clientId;
+            gatt_client_conn_t       connId;
             struct bt_addr           addr;
             uint8_t                  status;
         } cliConnStateNotif;
@@ -319,8 +320,8 @@ struct gattWorkItem {
         } cliDoNext;
         struct {
             gattCliNotifArrivedCbk   cbk;
-            int                      cli;
-            int                      con;
+            gatt_client_t            cli;
+            gatt_client_conn_t       con;
             struct uuid              svc;
             struct uuid              chr;
             bool                     ind;
@@ -328,8 +329,8 @@ struct gattWorkItem {
         } cliIndCall;
         struct {
             gattCliNotifSubscribeStateCbk  cbk;
-            int                      cli;
-            int                      con;
+            gatt_client_t            cli;
+            gatt_client_conn_t       con;
             struct uuid              svc;
             struct uuid              chr;
             bool                     forSub;
@@ -458,7 +459,7 @@ static struct gattService* gattServiceFindByUuid(const struct uuid *uuid)
  * RETURN:   service struct or NULL if not found
  * NOTES:    call with mGattLock held
  */
-static struct gattService* gattServiceFindBySvcRef(int svcRef)
+static struct gattService* gattServiceFindBySvcRef(gatt_service_t svcRef)
 {
     struct gattService *svc = mSvcs;
 
@@ -475,7 +476,7 @@ static struct gattService* gattServiceFindBySvcRef(int svcRef)
  * RETURN:   client struct-connection or NULL if not found
  * NOTES:    call with mGattLock held
  */
-static struct gattCliCon* gattCliconFindById(int connId)
+static struct gattCliCon* gattCliconFindById(gatt_client_conn_t connId)
 {
     struct gattCliCon *clicon = mCliCons;
 
@@ -491,7 +492,7 @@ static struct gattCliCon* gattCliconFindById(int connId)
  * RETURN:   client struct or NULL if not found
  * NOTES:    call with mGattLock held
  */
-static struct gattClient* gattClientFindById(int clientId)
+static struct gattClient* gattClientFindById(gatt_client_t clientId)
 {
     struct gattClient *cli = mClients;
 
@@ -521,7 +522,7 @@ static struct gattClient* gattClientFindByUuid(const struct uuid *uuid)
 /*
  * FUNCTION: gattServiceFindByRangeRef
  * USE:      Find a gatt service by att range reference
- * PARAMS:   svcRef - the service reference
+ * PARAMS:   rangeRef - the service range reference
  * RETURN:   service struct or NULL if not found
  * NOTES:    call with mGattLock held
  */
@@ -564,7 +565,7 @@ static uint8_t gattAttSrvTxCbk(l2c_handle_t who, sg s)
  * RETURN:   false on immediate failure
  * NOTES:    call with mGattLock held
  */
-static bool gattEnqueueSrvRwCall(uint8_t workType, struct gattService *svc, l2c_handle_t who, att_cid_t cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
+static bool gattEnqueueSrvRwCall(uint8_t workType, struct gattService *svc, l2c_handle_t who, att_cid_t cid, att_trans_t transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
 {
     struct gattWorkItem *wi = (struct gattWorkItem*)calloc(1, sizeof(struct gattWorkItem) + (data ? len : 0));
 
@@ -607,7 +608,7 @@ static bool gattEnqueueSrvRwCall(uint8_t workType, struct gattService *svc, l2c_
  * RETURN:   false on immediate failure
  * NOTES:    call with mGattLock held
  */
-static bool gattEnqueueSrvReadCall(struct gattService *svc, l2c_handle_t who, att_cid_t cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t maxLen)
+static bool gattEnqueueSrvReadCall(struct gattService *svc, l2c_handle_t who, att_cid_t cid, att_trans_t transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t maxLen)
 {
     return gattEnqueueSrvRwCall(GATT_WORK_SRV_READ_CALL, svc, who, cid, transId, handle, byteOfst, reason, maxLen, NULL);
 }
@@ -627,7 +628,7 @@ static bool gattEnqueueSrvReadCall(struct gattService *svc, l2c_handle_t who, at
  * RETURN:   false on immediate failure
  * NOTES:    call with mGattLock held
  */
-static bool gattEnqueueSrvWriteCall(struct gattService *svc, l2c_handle_t who, att_cid_t cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
+static bool gattEnqueueSrvWriteCall(struct gattService *svc, l2c_handle_t who, att_cid_t cid, att_trans_t transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
 {
     return gattEnqueueSrvRwCall(GATT_WORK_SRV_WRITE_CALL, svc, who, cid, transId, handle, byteOfst, reason, len, data);
 }
@@ -847,7 +848,7 @@ static void gattAttSrvIndCbk(l2c_handle_t to, att_cid_t cid, att_range_t rangeRe
  * RETURN:   false on immediate failure
  * NOTES:    when read completes, a call to attSrvCbkReply() should be made
  */
-static bool gattAttSvrReadCbk(l2c_handle_t who, att_cid_t cid, att_range_t rangeRef, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t maxLen)
+static bool gattAttSvrReadCbk(l2c_handle_t who, att_cid_t cid, att_range_t rangeRef, uint16_t ofst, att_trans_t transId, uint16_t byteOfst, uint8_t reason, uint16_t maxLen)
 {
     uint8_t err = ATT_ERROR_NONE;
     struct gattService *svc;
@@ -970,7 +971,7 @@ out:
  * RETURN:   false on immediate failure
  * NOTES:    when write completes, a call to attSrvCbkReply() should be made
  */
-static bool gattAttSvrWriteCbk(l2c_handle_t who, att_cid_t cid, att_range_t rangeRef, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
+static bool gattAttSvrWriteCbk(l2c_handle_t who, att_cid_t cid, att_range_t rangeRef, uint16_t ofst, att_trans_t transId, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
 {
     /* attributes GATT creates internally for the user {service headers, includes, characteristic headers} are not writeable. All write pass to user */
     uint8_t err = ATT_ERROR_NONE;
@@ -1004,7 +1005,7 @@ out:
  * RETURN:   NONE
  * NOTES:
  */
-static bool gattAttExecWriteCbk(l2c_handle_t who, att_cid_t cid, int transId, bool exec)
+static bool gattAttExecWriteCbk(l2c_handle_t who, att_cid_t cid, att_trans_t transId, bool exec)
 {
     //TODO
     return false;
@@ -1216,7 +1217,7 @@ static void gattWorkQueueFreeItem(void *item)
  * RETURN:   unused
  * NOTES:
  */
-void gattSrvCbkReply(att_cid_t cid, int transId, uint16_t handle, uint8_t err, const void *data, uint16_t len)
+void gattSrvCbkReply(att_cid_t cid, att_trans_t transId, uint16_t handle, uint8_t err, const void *data, uint16_t len)
 {
     attSrvCbkReply(cid, transId, handle, err, data, len);
 }
@@ -2532,10 +2533,10 @@ void gattProfileDeinit(void)
  * RETURN:   service reference or 0 on error
  * NOTES:
  */
-int gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles, gattSrvValueReadCbk readF, gattSrvValueWriteCbk writeF, gattSrvIndCbk indF)
+gatt_service_t gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles, gattSrvValueReadCbk readF, gattSrvValueWriteCbk writeF, gattSrvIndCbk indF)
 {
     struct gattService *svc;
-    int svcRef = 0;
+    gatt_service_t svcRef = 0;
 
     if (numHandles < GATT_HDR_HANDLES) {
         loge("Service with %u handles is impossible (%u min)\n", numHandles, GATT_HDR_HANDLES);
@@ -2552,12 +2553,7 @@ int gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles
         goto out;
 
     /* get a handle */
-    svc->svcRef = mSvcs ? mSvcs->svcRef : 1;
-    while (gattServiceFindBySvcRef(svc->svcRef)) {
-        svc->svcRef++;
-        if (svc->svcRef <= 0)
-            svc->svcRef = 1;
-    }
+    svc->svcRef = uniqGetNext();
 
     /* grab a range */
     svc->attRange = attSrvHandleRangeReserve(numHandles);
@@ -2785,7 +2781,7 @@ static void gattServiceDelete(struct gattService *svc)
  * RETURN:   success
  * NOTES:
  */
-bool gattServiceDestroy(int svcRef)
+bool gattServiceDestroy(gatt_service_t svcRef)
 {
     struct gattService *svc;
 
@@ -2816,7 +2812,7 @@ bool gattServiceDestroy(int svcRef)
  * RETURN:   success
  * NOTES:
  */
-bool gattServiceStart(int svcRef, bool supportLE, bool supportEDR)
+bool gattServiceStart(gatt_service_t svcRef, bool supportLE, bool supportEDR)
 {
     struct gattService *svc;
     bool ret = false;
@@ -2837,7 +2833,7 @@ bool gattServiceStart(int svcRef, bool supportLE, bool supportEDR)
  * RETURN:   success
  * NOTES:
  */
-bool gattServiceStop(int svcRef)
+bool gattServiceStop(gatt_service_t svcRef)
 {
     struct gattService *svc;
     bool ret = false;
@@ -2860,7 +2856,7 @@ bool gattServiceStop(int svcRef)
  * RETURN:   true if service exists and is running
  * NOTES:
  */
-bool gattServiceIsRunning(int svcRef)
+bool gattServiceIsRunning(gatt_service_t svcRef)
 {
     struct gattService *svc;
     bool ret = false;
@@ -2882,7 +2878,7 @@ bool gattServiceIsRunning(int svcRef)
  * RETURN:   true if service exists and UUID was gotten
  * NOTES:
  */
-bool gattServiceGetUuid(int svcRef, struct uuid *dst)
+bool gattServiceGetUuid(gatt_service_t svcRef, struct uuid *dst)
 {
     struct gattService *svc;
     bool ret = false;
@@ -2930,7 +2926,7 @@ uint16_t gattServiceGetHandleBaseByUuid(const struct uuid *uuid)
  * RETURN:   handle value or 0 on error
  * NOTES:
  */
-uint16_t gattServiceGetHandleBaseBySvc(int svcRef)
+uint16_t gattServiceGetHandleBaseBySvc(gatt_service_t svcRef)
 {
     struct gattService *svc;
     uint16_t handle = 0;
@@ -2951,13 +2947,13 @@ uint16_t gattServiceGetHandleBaseBySvc(int svcRef)
  * USE:      Find the svcRef of a service by handle
  * PARAMS:   handle - the handle
  *           firstOnly - if set only search by start of range, else serach by anything IN range
- * RETURN:   srvcRef or negative number on error
+ * RETURN:   srvcRef or 0 on error
  * NOTES:
  */
-int gattServiceFindByHandle(uint16_t handle, bool firstOnly)
+gatt_service_t gattServiceFindByHandle(uint16_t handle, bool firstOnly)
 {
     struct gattService *svc;
-    int ret = -1;
+    gatt_service_t ret = 0;
 
     pthread_mutex_lock(&mGattLock);
     svc = mSvcs;
@@ -3008,7 +3004,7 @@ static uint16_t gattServiceItemAppend(struct gattService *svc, struct gattItem *
  * RETURN:   handle or 0 on error
  * NOTES:
  */
-uint16_t gattServiceAddIncludedService(int svcRef, const struct uuid *uuid)
+uint16_t gattServiceAddIncludedService(gatt_service_t svcRef, const struct uuid *uuid)
 {
     struct gattService *svc, *included;
     struct gattItem *gi;
@@ -3017,7 +3013,7 @@ uint16_t gattServiceAddIncludedService(int svcRef, const struct uuid *uuid)
     pthread_mutex_lock(&mGattLock);
     svc = gattServiceFindBySvcRef(svcRef);
     if (!svc) {
-        loge("Failed to find service %d\n", svcRef);
+        loge("Failed to find service "GATTHANDLEFMT"\n", GATTHANDLECNV(svcRef));
         goto out;
     }
     included = gattServiceFindByUuid(uuid);
@@ -3056,7 +3052,7 @@ out:
  * RETURN:   handle of the value attribute (not of the descriptor attribute which is first) or 0 on error
  * NOTES:
  */
-uint16_t gattServiceAddChar(int svcRef, const struct uuid *uuid, uint8_t props, uint32_t perms)
+uint16_t gattServiceAddChar(gatt_service_t svcRef, const struct uuid *uuid, uint8_t props, uint32_t perms)
 {
     struct gattItem *giDecl, *giVal;
     struct gattService *svc;
@@ -3065,7 +3061,7 @@ uint16_t gattServiceAddChar(int svcRef, const struct uuid *uuid, uint8_t props, 
     pthread_mutex_lock(&mGattLock);
     svc = gattServiceFindBySvcRef(svcRef);
     if (!svc) {
-        loge("Failed to find service %d\n", svcRef);
+        loge("Failed to find service "GATTHANDLEFMT"\n", GATTHANDLECNV(svcRef));
         goto out;
     }
     if (svc->numItems + 1 >= svc->maxItems - GATT_HDR_HANDLES) {
@@ -3110,7 +3106,7 @@ out:
  * RETURN:   handle or 0 on error
  * NOTES:
  */
-uint16_t gattServiceAddCharDescr(int svcRef, const struct uuid *uuid, uint32_t perms)
+uint16_t gattServiceAddCharDescr(gatt_service_t svcRef, const struct uuid *uuid, uint32_t perms)
 {
     struct gattService *svc;
     struct gattItem *gi;
@@ -3119,7 +3115,7 @@ uint16_t gattServiceAddCharDescr(int svcRef, const struct uuid *uuid, uint32_t p
     pthread_mutex_lock(&mGattLock);
     svc = gattServiceFindBySvcRef(svcRef);
     if (!svc) {
-        loge("Failed to find service %d\n", svcRef);
+        loge("Failed to find service "GATTHANDLEFMT"\n", GATTHANDLECNV(svcRef));
         goto out;
     }
     if (svc->numItems >= svc->maxItems - GATT_HDR_HANDLES) {
@@ -3155,7 +3151,7 @@ out:
  * RETURN:   false on immediate failure
  * NOTES:
  */
-bool gattServiceSendInd(int svcRef, att_cid_t cid, uint16_t handle, const void *buf, uint16_t len, bool withConfirm, uint64_t ref)
+bool gattServiceSendInd(gatt_service_t svcRef, att_cid_t cid, uint16_t handle, const void *buf, uint16_t len, bool withConfirm, uint64_t ref)
 {
     uint8_t ret = L2C_TX_ERROR;
     struct gattService *svc;
@@ -3165,7 +3161,7 @@ bool gattServiceSendInd(int svcRef, att_cid_t cid, uint16_t handle, const void *
     pthread_mutex_lock(&mGattLock);
     svc = gattServiceFindBySvcRef(svcRef);
     if (!svc) {
-        loge("Failed to find service %d\n", svcRef);
+        loge("Failed to find service "GATTHANDLEFMT"\n", GATTHANDLECNV(svcRef));
         goto out;
     }
 
@@ -3343,7 +3339,7 @@ static void gattCliTodoEnqItem(struct gattConnState *conn, struct gattCliTodoIte
  * RETURN:   NONE
  * NOTES:    Call with mGattLock held
  */
-static void gattCliTodoEnqItemWithData(struct gattConnState *conn, int clientId, int connId, struct gattCliTodoItem *todo, uint8_t intent, uint8_t step,
+static void gattCliTodoEnqItemWithData(struct gattConnState *conn, gatt_client_t clientId, gatt_client_conn_t connId, struct gattCliTodoItem *todo, uint8_t intent, uint8_t step,
                                const struct uuid *uuidSvc, const struct uuid *uuidChr, const struct uuid *uuidDsc, bool inFront)
 {
     todo->next = NULL;
@@ -3487,7 +3483,7 @@ static void gattClientConnClose(struct gattCliCon *clicon, uint8_t status)
  * RETURN:   client_id value or 0 on failure
  * NOTES:
  */
-int gattClientCreate(const struct uuid *uuid)
+gatt_client_t gattClientCreate(const struct uuid *uuid)
 {
     struct gattClient *cli;
     int ret = 0;
@@ -3496,17 +3492,12 @@ int gattClientCreate(const struct uuid *uuid)
 
     cli = gattClientFindByUuid(uuid);
     if (cli)
-        logw("Refusing to create duplciate gatt client with UUID "UUIDFMT" (current is client %d)\n", UUIDCONV(*uuid), cli->clientId);
+        logw("Refusing to create duplciate gatt client with UUID "UUIDFMT" (current is client "GATTHANDLEFMT")\n", UUIDCONV(*uuid), GATTHANDLECNV(cli->clientId));
     else {
         cli = (struct gattClient*)calloc(1, sizeof(struct gattClient));
         if (cli) {
 
-           cli->clientId = mClients ? mClients->clientId : 1;
-           while (gattClientFindById(cli->clientId)) {
-               cli->clientId++;
-               if (cli->clientId <= 0)
-                   cli->clientId = 1;
-           }
+           cli->clientId = uniqGetNext();
 
            memcpy(&cli->uuid, uuid, sizeof(struct uuid));
            cli->next = mClients;
@@ -3529,7 +3520,7 @@ int gattClientCreate(const struct uuid *uuid)
  * RETURN:   client_id value or 0 on failure
  * NOTES:
  */
-void gattClientDestroy(int clientId)
+void gattClientDestroy(gatt_client_t clientId)
 {
     struct gattCliCon *cliCon;
     struct gattClient *cli;
@@ -3538,7 +3529,7 @@ void gattClientDestroy(int clientId)
 
     cli = gattClientFindById(clientId);
     if (!cli)
-        logw("Attempting to destroy a nonexistent GATT client %d\n", clientId);
+        logw("Attempting to destroy a nonexistent GATT client "GATTHANDLEFMT"\n", GATTHANDLECNV(clientId));
     else {
 
         /* schedule a force-close of all its connections */
@@ -3599,7 +3590,7 @@ bool gattClientInvalidateCache(const struct bt_addr *whomTo)
  *           not move while the lock is held by you, you can customize the item safely after this
  *           func gives it to you
  */
-static struct gattCliTodoItem* gattCliTodoMakeFindByGroupType(int conn, uint16_t type, const struct uuid *svc, const struct uuid *charOrIncSvc, const struct uuid *descr,
+static struct gattCliTodoItem* gattCliTodoMakeFindByGroupType(gatt_client_conn_t conn, uint16_t type, const struct uuid *svc, const struct uuid *charOrIncSvc, const struct uuid *descr,
                                                               uint8_t intent,  uint8_t step, uint16_t firstHandle, uint16_t lastHandle)
 {
     struct gattCliTodoItem *todo;
@@ -3632,7 +3623,7 @@ static struct gattCliTodoItem* gattCliTodoMakeFindByGroupType(int conn, uint16_t
  * RETURN:   GATT_CLI_STATUS_*
  * NOTES:
  */
-uint8_t gattClientEnumServices(int conn, const struct uuid *searchForThis, gattCliSvcEnumCbk cbk)
+uint8_t gattClientEnumServices(gatt_client_conn_t conn, const struct uuid *searchForThis, gattCliSvcEnumCbk cbk)
 {
     struct gattCliTodoItem *todo;
 
@@ -3655,7 +3646,7 @@ uint8_t gattClientEnumServices(int conn, const struct uuid *searchForThis, gattC
  * RETURN:   GATT_CLI_STATUS_*
  * NOTES:
  */
-uint8_t gattClientEnumIncludedServices(int conn, const struct uuid *inThisService, const struct uuid *prev, gattCliEnumIncludedSvcsCbk cbk)
+uint8_t gattClientEnumIncludedServices(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *prev, gattCliEnumIncludedSvcsCbk cbk)
 {
     struct gattCliTodoItem *todo;
 
@@ -3678,7 +3669,7 @@ uint8_t gattClientEnumIncludedServices(int conn, const struct uuid *inThisServic
  * RETURN:   GATT_CLI_STATUS_*
  * NOTES:
  */
-uint8_t gattClientEnumCharacteristics(int conn, const struct uuid *inThisService, const struct uuid *prev, gattCliEnumCharacteristicsCbk cbk)
+uint8_t gattClientEnumCharacteristics(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *prev, gattCliEnumCharacteristicsCbk cbk)
 {
     struct gattCliTodoItem *todo;
 
@@ -3702,7 +3693,7 @@ uint8_t gattClientEnumCharacteristics(int conn, const struct uuid *inThisService
  * RETURN:   GATT_CLI_STATUS_*
  * NOTES:
  */
-uint8_t gattClientEnumCharDescriptors(int conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *prev, gattCliEnumCharDescrsCbk cbk)
+uint8_t gattClientEnumCharDescriptors(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *prev, gattCliEnumCharDescrsCbk cbk)
 {
     struct gattCliTodoItem *todo;
 
@@ -3768,7 +3759,7 @@ static bool gattClientVerifyWriteType(uint8_t writeType)
  * RETURN:   GATT_CLI_STATUS_*
  * NOTES:
  */
-uint8_t gattClientCharRead(int conn, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t authReq, gattCliCharReadCbk cbk)
+uint8_t gattClientCharRead(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t authReq, gattCliCharReadCbk cbk)
 {
     struct gattCliTodoItem *todo;
 
@@ -3799,7 +3790,7 @@ uint8_t gattClientCharRead(int conn, const struct uuid *inThisService, const str
  * RETURN:   GATT_CLI_STATUS_*
  * NOTES:
  */
-uint8_t gattClientCharWrite(int conn, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t authReq, uint8_t writeType, uint16_t ofst, sg data, gattCliCharWriteCbk cbk)
+uint8_t gattClientCharWrite(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t authReq, uint8_t writeType, uint16_t ofst, sg data, gattCliCharWriteCbk cbk)
 {
     struct gattCliTodoItem *todo;
 
@@ -3832,7 +3823,7 @@ uint8_t gattClientCharWrite(int conn, const struct uuid *inThisService, const st
  * RETURN:   GATT_CLI_STATUS_*
  * NOTES:
  */
-uint8_t gattClientCharDescrRead(int conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t authReq, gattCliCharDescrReadCbk cbk)
+uint8_t gattClientCharDescrRead(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t authReq, gattCliCharDescrReadCbk cbk)
 {
     struct gattCliTodoItem *todo;
 
@@ -3864,7 +3855,7 @@ uint8_t gattClientCharDescrRead(int conn, const struct uuid *inThisService, cons
  * RETURN:   GATT_CLI_STATUS_*
  * NOTES:
  */
-uint8_t gattClientCharDescrWrite(int conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t authReq, uint8_t writeType, uint16_t ofst, sg data, gattCliCharDescrWriteCbk cbk)
+uint8_t gattClientCharDescrWrite(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t authReq, uint8_t writeType, uint16_t ofst, sg data, gattCliCharDescrWriteCbk cbk)
 {
     struct gattCliTodoItem *todo;
 
@@ -3894,7 +3885,7 @@ uint8_t gattClientCharDescrWrite(int conn, const struct uuid *inThisService, con
  * RETURN:   GATT_CLI_STATUS_*
  * NOTES:
  */
-uint8_t gattClientStagedWritesExecute(int conn, bool execute, gattCliStagedWriteExecuteCb cbk)
+uint8_t gattClientStagedWritesExecute(gatt_client_conn_t conn, bool execute, gattCliStagedWriteExecuteCb cbk)
 {
     uint8_t ret = GATT_CLI_STATUS_ERR;
     struct gattCliTodoItem *todo;
@@ -3932,7 +3923,7 @@ out:
  * RETURN:   GATT_CLI_STATUS_*
  * NOTES:
  */
-uint8_t gattClientNotifsSubscribe(int conn, const struct uuid *inThisService, const struct uuid *thisChar, bool reliable, gattCliNotifSubscribeStateCbk stateCbk, gattCliNotifArrivedCbk arrivedCbk)
+uint8_t gattClientNotifsSubscribe(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *thisChar, bool reliable, gattCliNotifSubscribeStateCbk stateCbk, gattCliNotifArrivedCbk arrivedCbk)
 {
     uint8_t sta = GATT_CLI_STATUS_ERR;
     struct gattCliNotifRec *nr;
@@ -4044,7 +4035,7 @@ out:
  * RETURN:   GATT_CLI_STATUS_*
  * NOTES:
  */
-uint8_t gattClientNotifsUnsubscribe(int conn, const struct uuid *inThisService, const struct uuid *thisChar)
+uint8_t gattClientNotifsUnsubscribe(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *thisChar)
 {
     gattCliNotifSubscribeStateCbk stateCbk = NULL;
     uint8_t sta = GATT_CLI_STATUS_ERR;

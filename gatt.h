@@ -7,7 +7,16 @@
 #include "att.h"
 #include "sg.h"
 
-/* sadly android interface stop sus from using uniq_t for handles here */
+
+
+typedef uniq_t gatt_service_t;
+typedef uniq_t gatt_client_t;
+typedef uniq_t gatt_client_conn_t;
+
+
+#define GATTHANDLEFMT    UNIQ_FMT"x"
+#define GATTHANDLECNV(x) UNIQ_CONV(x)
+
 
 #define GATT_PSM                     0x001F
 #define GATT_FIXEDCH                 0x0004
@@ -60,33 +69,33 @@ bool gattProfileInit(void);
 void gattProfileDeinit(void);
 
 /* replies to callbacks */
-void gattSrvCbkReply(att_cid_t cid, int transId, uint16_t handle, uint8_t err, const void *data, uint16_t len); /* err is ATT_ERROR_* */
+void gattSrvCbkReply(att_cid_t cid, att_trans_t transId, uint16_t handle, uint8_t err, const void *data, uint16_t len); /* err is ATT_ERROR_* */
 
 /* callbacks */
-typedef bool (*gattSrvValueReadCbk)(int svc, l2c_handle_t who, att_cid_t cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len);
-typedef bool (*gattSrvValueWriteCbk)(int svc, l2c_handle_t who, att_cid_t cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data);
-typedef void (*gattSrvIndCbk)(int svc, l2c_handle_t who, att_cid_t cid, uint16_t handle, uint8_t evt, uint64_t ref); /* GATT_SRV_EVT_* */
+typedef bool (*gattSrvValueReadCbk)(gatt_service_t svc, l2c_handle_t who, att_cid_t cid, att_trans_t transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len);
+typedef bool (*gattSrvValueWriteCbk)(gatt_service_t svc, l2c_handle_t who, att_cid_t cid, att_trans_t transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data);
+typedef void (*gattSrvIndCbk)(gatt_service_t svc, l2c_handle_t who, att_cid_t cid, uint16_t handle, uint8_t evt, uint64_t ref); /* GATT_SRV_EVT_* */
 
 /* service lifecycle */
-int gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles, gattSrvValueReadCbk readF, gattSrvValueWriteCbk writeF, gattSrvIndCbk indF);
-bool gattServiceDestroy(int svc);
+gatt_service_t gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles, gattSrvValueReadCbk readF, gattSrvValueWriteCbk writeF, gattSrvIndCbk indF);
+bool gattServiceDestroy(gatt_service_t svc);
 uint16_t gattServiceGetHandleBaseByUuid(const struct uuid *uuid); /* or 0 on error */
-uint16_t gattServiceGetHandleBaseBySvc(int svc); /* or 0 on error */
-int gattServiceFindByHandle(uint16_t handle, bool firstOnly); /* negative on error */
+uint16_t gattServiceGetHandleBaseBySvc(gatt_service_t svc); /* or 0 on error */
+gatt_service_t gattServiceFindByHandle(uint16_t handle, bool firstOnly); /* 0 on error */
 
 /* service control */
-bool gattServiceStart(int svc, bool supportLE, bool supportEDR);
-bool gattServiceStop(int svc);
-bool gattServiceIsRunning(int svc);
-bool gattServiceGetUuid(int svc, struct uuid *uuid);
+bool gattServiceStart(gatt_service_t svc, bool supportLE, bool supportEDR);
+bool gattServiceStop(gatt_service_t svc);
+bool gattServiceIsRunning(gatt_service_t svc);
+bool gattServiceGetUuid(gatt_service_t svc, struct uuid *uuid);
 
 /* service construction (order of calls matters and is important). All return handle value or 0 on error */
-uint16_t gattServiceAddIncludedService(int svc, const struct uuid *uuid);
-uint16_t gattServiceAddChar(int svc, const struct uuid *uuid, uint8_t props, uint32_t perms);
-uint16_t gattServiceAddCharDescr(int svc, const struct uuid *uuid, uint32_t perms);
+uint16_t gattServiceAddIncludedService(gatt_service_t svc, const struct uuid *uuid);
+uint16_t gattServiceAddChar(gatt_service_t svc, const struct uuid *uuid, uint8_t props, uint32_t perms);
+uint16_t gattServiceAddCharDescr(gatt_service_t svc, const struct uuid *uuid, uint32_t perms);
 
 /* TX path */
-bool gattServiceSendInd(int svc, att_cid_t cid, uint16_t handle, const void *data, uint16_t len, bool withConfirm, uint64_t ref);
+bool gattServiceSendInd(gatt_service_t svc, att_cid_t cid, uint16_t handle, const void *data, uint16_t len, bool withConfirm, uint64_t ref);
 
 
 
@@ -108,49 +117,51 @@ bool gattServiceSendInd(int svc, att_cid_t cid, uint16_t handle, const void *dat
 #define GATT_CLI_AUTH_REQ_SIGNED_MITM    4
 
 /* various callbacks */
-typedef void (*gattCliConnectResultCbk)(int cli, int conn, const struct bt_addr *to, uint8_t status);
-typedef void (*gattCliSvcEnumCbk)(int cli, int con, const struct uuid *uuid, bool primary, uint16_t firstHandle, uint16_t numHandles, uint8_t status); /* uuid passed as set to null after final result */
-typedef void (*gattCliEnumIncludedSvcsCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *uuid, uint16_t firstHandle, uint16_t numHandles, uint8_t status);
-typedef void (*gattCliEnumCharacteristicsCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *uuid, uint16_t firstHandle, uint16_t numHandles, uint8_t status);
-typedef void (*gattCliEnumCharDescrsCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *uuid, uint16_t firstHandle, uint16_t numHandles, uint8_t status);
-typedef void (*gattCliCharReadCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t status, sg data);
-typedef void (*gattCliCharWriteCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t status);
-typedef void (*gattCliCharDescrReadCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t status, sg data);
-typedef void (*gattCliCharDescrWriteCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t status);
-typedef void (*gattCliStagedWriteExecuteCb)(int cli, int con, bool success);
-typedef void (*gattCliNotifSubscribeStateCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *thisChar, bool forSubscribe, uint8_t status);
-typedef void (*gattCliNotifArrivedCbk)(int cli, int con, const struct uuid *inThisService, const struct uuid *thisChar, bool reliable, sg data);
+typedef void (*gattCliConnectResultCbk)(gatt_client_t cli, gatt_client_conn_t conn, const struct bt_addr *to, uint8_t status);
+typedef void (*gattCliSvcEnumCbk)(gatt_client_t cli, gatt_client_conn_t conn, const struct uuid *uuid, bool primary, uint16_t firstHandle, uint16_t numHandles, uint8_t status); /* uuid passed as set to null after final result */
+typedef void (*gattCliEnumIncludedSvcsCbk)(gatt_client_t cli, gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *uuid, uint16_t firstHandle, uint16_t numHandles, uint8_t status);
+typedef void (*gattCliEnumCharacteristicsCbk)(gatt_client_t cli, gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *uuid, uint16_t firstHandle, uint16_t numHandles, uint8_t status);
+typedef void (*gattCliEnumCharDescrsCbk)(gatt_client_t cli, gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *uuid, uint16_t firstHandle, uint16_t numHandles, uint8_t status);
+typedef void (*gattCliCharReadCbk)(gatt_client_t cli, gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t status, sg data);
+typedef void (*gattCliCharWriteCbk)(gatt_client_t cli, gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t status);
+typedef void (*gattCliCharDescrReadCbk)(gatt_client_t cli, gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t status, sg data);
+typedef void (*gattCliCharDescrWriteCbk)(gatt_client_t cli, gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t status);
+typedef void (*gattCliStagedWriteExecuteCb)(gatt_client_t cli, gatt_client_conn_t conn, bool success);
+typedef void (*gattCliNotifSubscribeStateCbk)(gatt_client_t cli, gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *thisChar, bool forSubscribe, uint8_t status);
+typedef void (*gattCliNotifArrivedCbk)(gatt_client_t cli, gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *thisChar, bool reliable, sg data);
 
 
 /* client lifecycle */
-int gattClientCreate(const struct uuid *uuid);
-void gattClientDestroy(int cli);
+gatt_client_t gattClientCreate(const struct uuid *uuid);
+void gattClientDestroy(gatt_client_t cli);
 
 /* connection lifecycle */
-uint8_t gattClientConnect(int cli, const struct bt_addr *to, gattCliConnectResultCbk resultCbk);
-uint8_t gattClientDisconnect(int conn); /* calls the gattCliConnectResultCbk passed to gattClientConnect() with GATT_CLI_OTHER_SIDE_DISC */
+gatt_client_conn_t gattClientConnect(gatt_client_t cli, const struct bt_addr *to, gattCliConnectResultCbk resultCbk);
+uint8_t gattClientDisconnect(gatt_client_conn_t conn); /* -> GATT_CLI_*, calls the gattCliConnectResultCbk passed to gattClientConnect() with GATT_CLI_OTHER_SIDE_DISC */
 
 /* cache maintenance */
 bool gattClientInvalidateCache(const struct bt_addr *whomTo); //true if process started
 
+/* all of the following return GATT_CLI_* */
+
 /* service search */
-uint8_t gattClientEnumServices(int conn, const struct uuid *searchForThis, gattCliSvcEnumCbk cbk); /* searchForThis can be null to enumerate all services without filtering for that uuid. if another enumeration is ongoing, yours will wait till that one is done */
+uint8_t gattClientEnumServices(gatt_client_conn_t conn, const struct uuid *searchForThis, gattCliSvcEnumCbk cbk); /* searchForThis can be null to enumerate all services without filtering for that uuid. if another enumeration is ongoing, yours will wait till that one is done */
 
 /* various enumerations. Each returns "next" item given "current" item. "current" is passed as NULL to get first */
-uint8_t gattClientEnumIncludedServices(int conn, const struct uuid *inThisService, const struct uuid *prev, gattCliEnumIncludedSvcsCbk cbk); 
-uint8_t gattClientEnumCharacteristics(int conn, const struct uuid *inThisService, const struct uuid *prev, gattCliEnumCharacteristicsCbk cbk);
-uint8_t gattClientEnumCharDescriptors(int conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *prev, gattCliEnumCharDescrsCbk cbk);
+uint8_t gattClientEnumIncludedServices(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *prev, gattCliEnumIncludedSvcsCbk cbk); 
+uint8_t gattClientEnumCharacteristics(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *prev, gattCliEnumCharacteristicsCbk cbk);
+uint8_t gattClientEnumCharDescriptors(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *prev, gattCliEnumCharDescrsCbk cbk);
 
 /* reads/writes (writes MUST fit into MTU minus whatever, or they will be truncated) */
-uint8_t gattClientCharRead(int conn, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t authReq, gattCliCharReadCbk cbk);
-uint8_t gattClientCharWrite(int conn, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t authReq, uint8_t writeType, uint16_t ofst, sg data, gattCliCharWriteCbk cbk);
-uint8_t gattClientCharDescrRead(int conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t authReq, gattCliCharDescrReadCbk cbk);
-uint8_t gattClientCharDescrWrite(int conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t authReq, uint8_t writeType, uint16_t ofst, sg data, gattCliCharDescrWriteCbk cbk);
-uint8_t gattClientStagedWritesExecute(int conn, bool execute, gattCliStagedWriteExecuteCb cbk); //if not execute then drop them all
+uint8_t gattClientCharRead(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t authReq, gattCliCharReadCbk cbk);
+uint8_t gattClientCharWrite(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t authReq, uint8_t writeType, uint16_t ofst, sg data, gattCliCharWriteCbk cbk);
+uint8_t gattClientCharDescrRead(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t authReq, gattCliCharDescrReadCbk cbk);
+uint8_t gattClientCharDescrWrite(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t authReq, uint8_t writeType, uint16_t ofst, sg data, gattCliCharDescrWriteCbk cbk);
+uint8_t gattClientStagedWritesExecute(gatt_client_conn_t conn, bool execute, gattCliStagedWriteExecuteCb cbk); //if not execute then drop them all
 
 /* notification subscription/unsubscription */
-uint8_t gattClientNotifsSubscribe(int conn, const struct uuid *inThisService, const struct uuid *thisChar, bool reliable, gattCliNotifSubscribeStateCbk stateCbk, gattCliNotifArrivedCbk arrivedCbk);
-uint8_t gattClientNotifsUnsubscribe(int conn, const struct uuid *inThisService, const struct uuid *thisChar);
+uint8_t gattClientNotifsSubscribe(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *thisChar, bool reliable, gattCliNotifSubscribeStateCbk stateCbk, gattCliNotifArrivedCbk arrivedCbk);
+uint8_t gattClientNotifsUnsubscribe(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *thisChar);
 
 
 

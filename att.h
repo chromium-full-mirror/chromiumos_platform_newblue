@@ -9,9 +9,14 @@
 
 typedef uniq_t att_range_t;
 typedef uniq_t att_cid_t;
+typedef uniq_t att_trans_t;
 
 #define ATT_CID_FMT      UNIQ_FMT
 #define ATT_CID_CONV(x)  UNIQ_CONV(x)
+
+#define ATT_TRANS_FMT      UNIQ_FMT
+#define ATT_TRANS_CONV(x)  UNIQ_CONV(x)
+
 
 /* we WILL negotiate, but only this much is ever guaranteed */
 #define ATT_MTU_MIN_EDR                48
@@ -103,9 +108,9 @@ bool attEncrAuthUpdate(l2c_handle_t who, bool encr, bool mitmSafe);
 /* att server api */
 
 /* these callbacks call attSrvCbkReply() on completion of actual work */
-typedef bool (*attSrvValueReadCbk)(l2c_handle_t who, att_cid_t cid, att_range_t range, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t maxLen);
-typedef bool (*attSrvValueWriteCbk)(l2c_handle_t who, att_cid_t cid, att_range_t range, uint16_t ofst, int transId, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data);
-typedef bool (*attSrvValueExecWriteCbk)(l2c_handle_t who, att_cid_t cid, int transId, bool exec);
+typedef bool (*attSrvValueReadCbk)(l2c_handle_t who, att_cid_t cid, att_range_t range, uint16_t ofst, att_trans_t transId, uint16_t byteOfst, uint8_t reason, uint16_t maxLen);
+typedef bool (*attSrvValueWriteCbk)(l2c_handle_t who, att_cid_t cid, att_range_t range, uint16_t ofst, att_trans_t transId, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data);
+typedef bool (*attSrvValueExecWriteCbk)(l2c_handle_t who, att_cid_t cid, att_trans_t transId, bool exec);
 
 typedef uint8_t (*attSrvTxCbk)(l2c_handle_t to, sg s); /* -> ATT_TX_RET_* */
 
@@ -129,7 +134,7 @@ uint8_t attSrvValueNotifyChanged(att_range_t rangeRef, uint16_t offset, att_cid_
 void attSrvDataRx(l2c_handle_t from, sg s);
 
 
-void attSrvCbkReply(att_cid_t cid, int transId, uint16_t handle, uint8_t err, const void *data, uint16_t len); /* err is ATT_ERROR_* */
+void attSrvCbkReply(att_cid_t cid, att_trans_t transId, uint16_t handle, uint8_t err, const void *data, uint16_t len); /* err is ATT_ERROR_* */
 
 
 /* att client api */

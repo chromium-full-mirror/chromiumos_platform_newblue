@@ -117,8 +117,8 @@ void logData(char* dst, const void *buf, uint8_t len)
         sprintf(dst + strlen(dst), " %02X", data[i]);
 }
 
-static int mSvcTime = 0;
-static int mConnTime = 0;
+static gatt_service_t mSvcTime = 0;
+static att_cid_t mConnTime = 0;
 static bool stopTimeService = false;
 
 uint16_t mGattHandleCurTime = 0;
@@ -163,7 +163,7 @@ struct {
     uint8_t dstOffset;  // daylight saving time offset to add
 }__packed mGattLocalTimeInfo;
 
-static bool testGattSrvValueReadCbk(int svc, l2c_handle_t who, att_cid_t cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t wantedLen)
+static bool testGattSrvValueReadCbk(gatt_service_t svc, l2c_handle_t who, att_cid_t cid, att_trans_t transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t wantedLen)
 {
     uint8_t err = ATT_ERROR_NONE;
     const uint8_t *ptr = NULL;
@@ -187,7 +187,7 @@ static bool testGattSrvValueReadCbk(int svc, l2c_handle_t who, att_cid_t cid, in
         ptr = (const uint8_t *)&mGattHandleReferenceTimeInfo;
         len = sizeof(mGattHandleReferenceTimeInfo);
     } else {
-        logw("Unexpected read from handle %u of svc %u from conn "HANDLEFMT"d\n", handle, svc, HANDLECNV(who));
+        logw("Unexpected read from handle %u of svc "GATTHANDLEFMT" from conn "HANDLEFMT"d\n", handle, GATTHANDLECNV(svc), HANDLECNV(who));
         return false;
     }
 
@@ -200,7 +200,7 @@ static bool testGattSrvValueReadCbk(int svc, l2c_handle_t who, att_cid_t cid, in
     if (len > wantedLen)
         len = wantedLen;
 
-    logi("testGattSrvValueReadCbk: cid: "UNIQ_FMT"d, transId: %d, handle: handle: %d\n", ATT_CID_CONV(cid), transId, handle);
+    logi("testGattSrvValueReadCbk: cid: "UNIQ_FMT"d, transId: "ATT_TRANS_FMT"d, handle: handle: %d\n", ATT_CID_CONV(cid), ATT_TRANS_CONV(transId), handle);
 
     /* In order to verify the pairing process, ATT_ERROR_INSUFFICIENT_AUTH is
      * returned intentionally so that the remote GATT client will initiate
@@ -209,11 +209,11 @@ static bool testGattSrvValueReadCbk(int svc, l2c_handle_t who, att_cid_t cid, in
     return true;
 }
 
-static bool testGattSrvValueWriteCbk(int svc, l2c_handle_t who, att_cid_t cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
+static bool testGattSrvValueWriteCbk(gatt_service_t svc, l2c_handle_t who, att_cid_t cid, att_trans_t transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
 {
     uint8_t err = ATT_ERROR_NONE;
 
-    logi("testGattSrvValueWriteCbk: cid: "UNIQ_FMT"d, transId: %d, handle: handle: %d\n", ATT_CID_CONV(cid), transId, handle);
+    logi("testGattSrvValueWriteCbk: cid: "UNIQ_FMT"d, transId: "ATT_TRANS_FMT"d, handle: handle: %d\n", ATT_CID_CONV(cid), ATT_TRANS_CONV(transId), handle);
 
     if (handle == mGattHandleCurTimeCfg) {
         mGattCurTimeCfg.cCC = *(const uint8_t *)data;
@@ -231,7 +231,7 @@ static bool testGattSrvValueWriteCbk(int svc, l2c_handle_t who, att_cid_t cid, i
     return true;
 }
 
-static void testGattSrvIndCbk(int svc, l2c_handle_t who, att_cid_t cid, uint16_t handle, uint8_t evt, uint64_t ref)
+static void testGattSrvIndCbk(gatt_service_t svc, l2c_handle_t who, att_cid_t cid, uint16_t handle, uint8_t evt, uint64_t ref)
 {
     if (svc != mSvcTime) {
         logw("Unexpected notification callback in Current Time service\n");
@@ -428,10 +428,10 @@ int main(int argc, char** argv)
         loge("Failed to init SM");
 
     mSvcTime = gattSetup();
-    logi("gattSetup: svc=%d\n", mSvcTime);
+    logi("gattSetup: svc="GATTHANDLEFMT"\n", GATTHANDLECNV(mSvcTime));
     if (!gattServiceStart(mSvcTime, true, true))
-        loge("Failed to start service: %d\n", mSvcTime);
-    logd("Current time service created as svc %u at handle 0x%04X\n", mSvcTime, gattServiceGetHandleBaseBySvc(mSvcTime));
+        loge("Failed to start service: "GATTHANDLEFMT"\n", mSvcTime);
+    logd("Current time service created as svc "GATTHANDLEFMT" at handle 0x%04X\n", GATTHANDLECNV(mSvcTime), gattServiceGetHandleBaseBySvc(mSvcTime));
 
     testGattInitTime();
 

@@ -11,8 +11,8 @@
 
 
 /* services */
-static int mSvcGatt = 0;
-static int mSvcGap = 0;
+static gatt_service_t mSvcGatt = 0;
+static gatt_service_t mSvcGap = 0;
 
 /* handles */
 static uint16_t mSvcGapDevName;
@@ -51,7 +51,7 @@ static struct {
  * RETURN:   NONE
  * NOTES:    call gattSrvCbkReply() with results. returning false will send ATT_ERROR_UNLIKELY_ERROR to the client
  */
-static bool gattBuiltinReadF(int svc, l2c_handle_t who, att_cid_t cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t wantedLen)
+static bool gattBuiltinReadF(gatt_service_t svc, l2c_handle_t who, att_cid_t cid, att_trans_t transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t wantedLen)
 {
     uint8_t err = ATT_ERROR_NONE;
     const uint8_t *ptr = NULL;
@@ -72,7 +72,7 @@ static bool gattBuiltinReadF(int svc, l2c_handle_t who, att_cid_t cid, int trans
         ptr = (const uint8_t*)&mGapPrefConnParams;
         len = sizeof(mGapPrefConnParams);
     } else {
-        logw("Unexpected read from handle %u of svc %u from conn "HANDLEFMT"\n", handle, svc, HANDLECNV(who));
+        logw("Unexpected read from handle %u of svc "GATTHANDLEFMT" from conn "HANDLEFMT"\n", handle, GATTHANDLECNV(svc), HANDLECNV(who));
         return false;
     }
 
@@ -104,10 +104,10 @@ static bool gattBuiltinReadF(int svc, l2c_handle_t who, att_cid_t cid, int trans
  * RETURN:   NONE
  * NOTES:    this callback is unused here
  */
-static bool gattBuiltinWriteF(int svc, l2c_handle_t who, att_cid_t cid, int transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
+static bool gattBuiltinWriteF(gatt_service_t svc, l2c_handle_t who, att_cid_t cid, att_trans_t transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
 {
     /* in reality we can never get here since GATT & ATT enforce for us the read-only-ness of other handles */
-    logw("Unexpected write to handle %u of svc %u from conn "HANDLEFMT"\n", handle, svc, HANDLECNV(who));
+    logw("Unexpected write to handle %u of svc "GATTHANDLEFMT" from conn "HANDLEFMT"\n", handle, GATTHANDLECNV(svc), HANDLECNV(who));
     return false;
 }
 
@@ -123,9 +123,9 @@ static bool gattBuiltinWriteF(int svc, l2c_handle_t who, att_cid_t cid, int tran
  * RETURN:   NONE
  * NOTES:    this callback is unused here
  */
-static void gattBuiltinIndF(int svc, l2c_handle_t who, att_cid_t cid, uint16_t handle, uint8_t evt, uint64_t ref) /* GATT_SRV_EVT_* */
+static void gattBuiltinIndF(gatt_service_t svc, l2c_handle_t who, att_cid_t cid, uint16_t handle, uint8_t evt, uint64_t ref) /* GATT_SRV_EVT_* */
 {
-    logw("Unexpected ind notification for %u of svc %u from conn "HANDLEFMT"\n", handle, svc, HANDLECNV(who));
+    logw("Unexpected ind notification for %u of svc "GATTHANDLEFMT" from conn "HANDLEFMT"\n", handle, GATTHANDLECNV(svc), HANDLECNV(who));
     return;
 }
 
@@ -190,8 +190,8 @@ bool gattBuiltinInit(void)
         goto out_gatt_stop;
     }
 
-    logd("GATT.GATT created as svc %u at handle 0x%04X\n", mSvcGatt, gattServiceGetHandleBaseBySvc(mSvcGatt));
-    logd("GATT.GAP created as svc %u at handle 0x%04X\n", mSvcGap, gattServiceGetHandleBaseBySvc(mSvcGap));
+    logd("GATT.GATT created as svc "GATTHANDLEFMT" at handle 0x%04X\n", GATTHANDLECNV(mSvcGatt), gattServiceGetHandleBaseBySvc(mSvcGatt));
+    logd("GATT.GAP created as svc "GATTHANDLEFMT" at handle 0x%04X\n", GATTHANDLECNV(mSvcGap), gattServiceGetHandleBaseBySvc(mSvcGap));
     return true;
 
 out_gatt_stop:
