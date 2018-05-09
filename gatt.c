@@ -213,6 +213,7 @@ struct gattService {
     gattSrvValueReadCbk  readF;
     gattSrvValueWriteCbk writeF;
     gattSrvIndCbk        indF;
+    gattSrvDisconnectCbk discF;
 
     struct gattItem     *itemsHead;
     struct gattItem     *itemsTail;
@@ -308,6 +309,11 @@ struct gattWorkItem {
             uint8_t                  evt;
         } srvIndCall;
         struct {
+            l2c_handle_t             who;
+            gattSrvDisconnectCbk     discF;
+            gatt_service_t           svcRef;
+        } srvDiscCall;
+        struct {
             gattCliConnectResultCbk  cbk;
             gatt_client_t            clientId;
             gatt_client_conn_t       connId;
@@ -342,10 +348,11 @@ struct gattWorkItem {
 #define GATT_WORK_SRV_READ_CALL          0
 #define GATT_WORK_SRV_WRITE_CALL         1
 #define GATT_WORK_SRV_IND_CALL           2
-#define GATT_WORK_CLI_CONN_STATE_NOTIF   3
-#define GATT_WORK_CLI_DO_NEXT            4 /* run the next todo item, if none inflight currently */
-#define GATT_WORK_CLI_IND_CALL           5
-#define GATT_WORK_CLI_SUB_UNSUB_CALL     6
+#define GATT_WORK_SRV_DISC_CALL          3
+#define GATT_WORK_CLI_CONN_STATE_NOTIF   4
+#define GATT_WORK_CLI_DO_NEXT            5 /* run the next todo item, if none inflight currently */
+#define GATT_WORK_CLI_IND_CALL           6
+#define GATT_WORK_CLI_SUB_UNSUB_CALL     7
 
 
 /* our state */
@@ -658,6 +665,32 @@ static bool gattEnqueueSrvIndCall(struct gattService *svc, l2c_handle_t who, att
         wi->srvIndCall.evt = evt;
         wi->srvIndCall.ref = ref;
         wi->srvIndCall.indF = svc->indF;
+
+        if (workQueuePut(mWorkQ, wi))
+            return true;
+
+        free(wi);
+    }
+    return false;
+}
+
+/*
+ * FUNCTION: gattEnqueueSrvDiscCall
+ * USE:      Enqueue a work item to make a call to the higher layer for a result of a disconnection
+ * PARAMS:   svc - the relevant service
+ *           who - whom the connection is to
+ * RETURN:   false on immediate failure
+ * NOTES:    call with mGattLock held
+ */
+static bool gattEnqueueSrvDiscCall(struct gattService *svc, l2c_handle_t who)
+{
+    struct gattWorkItem *wi = (struct gattWorkItem*)calloc(1, sizeof(struct gattWorkItem));
+
+    if (wi) {
+        wi->type = GATT_WORK_SRV_DISC_CALL;
+        wi->srvDiscCall.who = who;
+        wi->srvDiscCall.svcRef = svc->svcRef;
+        wi->srvDiscCall.discF = svc->discF;
 
         if (workQueuePut(mWorkQ, wi))
             return true;
@@ -1030,7 +1063,28 @@ static void gattAttMtuCbk(l2c_handle_t who, uint32_t mtu)
     else if (state->mtu > mtu)
         loge("MTU decrease not allowed\n");
     else
-       state->mtu = mtu;
+        state->mtu = mtu;
+    pthread_mutex_unlock(&mGattLock);
+}
+
+/*
+ * FUNCTION: gettNotifyServersOfConnClose
+ * USE:      Tell all GATT servers that a connection closed
+ * PARAMS:   who - the l2c conn handle for the connection
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void gettNotifyServersOfConnClose(l2c_handle_t who)
+{
+    struct gattService *svc;
+
+    pthread_mutex_lock(&mGattLock);
+    for (svc = mSvcs; svc; svc = svc->next) {
+        if (!svc->online)
+            continue;
+        if (!gattEnqueueSrvDiscCall(svc, who))
+            loge("cannot notify server of connection closure\n");
+    }
     pthread_mutex_unlock(&mGattLock);
 }
 
@@ -1099,6 +1153,7 @@ static void gattConnEvt(void *userData, void *instance, uint8_t evt, const void 
         break;
 
     case L2C_STATE_CLOSED:
+        gettNotifyServersOfConnClose(state->conn);
         attNotifConnClose(state->conn);
         pthread_mutex_lock(&mGattLock);
         sendQueueDelPackets(mSendQ, state->conn);
@@ -1309,6 +1364,9 @@ static void* gattWorker(void *param)
             break;
         case GATT_WORK_SRV_IND_CALL:
             wi->srvIndCall.indF(wi->srvIndCall.svcRef, wi->srvIndCall.who, wi->srvIndCall.cid, wi->srvIndCall.handle, wi->srvIndCall.evt, wi->srvIndCall.ref);
+            break;
+        case GATT_WORK_SRV_DISC_CALL:
+            wi->srvDiscCall.discF(wi->srvDiscCall.svcRef, wi->srvDiscCall.who);
             break;
         case GATT_WORK_CLI_CONN_STATE_NOTIF:
             wi->cliConnStateNotif.cbk(wi->cliConnStateNotif.clientId, wi->cliConnStateNotif.connId, &wi->cliConnStateNotif.addr, wi->cliConnStateNotif.status);
@@ -2530,10 +2588,11 @@ void gattProfileDeinit(void)
  *           readF - read callback for the values
  *           writeF - write callback for the values
  *           indF - callback to be notified of confirmations of indications
+ *           discF - callback to be notified of disconnects
  * RETURN:   service reference or 0 on error
  * NOTES:
  */
-gatt_service_t gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles, gattSrvValueReadCbk readF, gattSrvValueWriteCbk writeF, gattSrvIndCbk indF)
+gatt_service_t gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles, gattSrvValueReadCbk readF, gattSrvValueWriteCbk writeF, gattSrvIndCbk indF, gattSrvDisconnectCbk discF)
 {
     struct gattService *svc;
     gatt_service_t svcRef = 0;
@@ -2566,6 +2625,7 @@ gatt_service_t gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t
     svc->readF = readF;
     svc->writeF = writeF;
     svc->indF = indF;
+    svc->discF = discF;
 
     svc->maxItems = numHandles;
     svc->primary = primary;

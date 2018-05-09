@@ -75,9 +75,10 @@ void gattSrvCbkReply(att_cid_t cid, att_trans_t transId, uint16_t handle, uint8_
 typedef bool (*gattSrvValueReadCbk)(gatt_service_t svc, l2c_handle_t who, att_cid_t cid, att_trans_t transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len);
 typedef bool (*gattSrvValueWriteCbk)(gatt_service_t svc, l2c_handle_t who, att_cid_t cid, att_trans_t transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data);
 typedef void (*gattSrvIndCbk)(gatt_service_t svc, l2c_handle_t who, att_cid_t cid, uint16_t handle, uint8_t evt, uint64_t ref); /* GATT_SRV_EVT_* */
+typedef void (*gattSrvDisconnectCbk)(gatt_service_t svc, l2c_handle_t who);
 
 /* service lifecycle */
-gatt_service_t gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles, gattSrvValueReadCbk readF, gattSrvValueWriteCbk writeF, gattSrvIndCbk indF);
+gatt_service_t gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles, gattSrvValueReadCbk readF, gattSrvValueWriteCbk writeF, gattSrvIndCbk indF, gattSrvDisconnectCbk discF);
 bool gattServiceDestroy(gatt_service_t svc);
 uint16_t gattServiceGetHandleBaseByUuid(const struct uuid *uuid); /* or 0 on error */
 uint16_t gattServiceGetHandleBaseBySvc(gatt_service_t svc); /* or 0 on error */
