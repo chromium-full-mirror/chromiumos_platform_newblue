@@ -2,7 +2,16 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-CFLAGS = -Wall -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -g  -I. -DEXECUTABLE
+# Hardcode these for minnie.
+# TODO: make this configurable for all boards
+prefix = /usr
+exec_prefix = $(prefix)
+bindir = $(exec_prefix)/bin
+libdir = $(exec_prefix)/lib
+includedir = $(prefix)/include
+
+INSTALL = /usr/bin/install
+CFLAGS = -Wall -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -g  -I. -DEXECUTABLE -fPIC
 CPPFLAGS = -Wall -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -g  -I. -DEXECUTABLE -D_UNITTEST_ -DPREF_PATH=\"/tmp/bt.newblue.prefs\"
 
 TEST := new_blue_test
@@ -31,15 +40,34 @@ OBJ =                       \
 OBJ_TEST =                  \
     test.o
 
+LIBNEWBLUE = libnewblue.so
+
 .PHONY: install clean
 
 $(TEST): $(OBJ) $(OBJ_TEST) usb_vendor_plugin hci_vendor_plugin
 	$(CC) $(CFLAGS) -o $@ -g $(OBJ) $(OBJ_TEST) -ldl -lpthread -lrt
 
+$(LIBNEWBLUE): $(OBJ)
+	$(CC) -shared -o $@ -pthread $(OBJ)
+
 OBJ_UNITTEST = \
 	tests/unittest.o \
 	tests/sm_unittest.o \
 	tests/persist_unittest.o
+
+HEADERS = \
+	att.h \
+	bt.h \
+	gatt.h \
+	gatt-builtin.h \
+	hci.h \
+	l2cap.h \
+	persist.h \
+	sg.h \
+	sm.h \
+	timer.h \
+	types.h \
+	uniq.h
 
 new_blue_unittest: $(OBJ_UNITTEST) $(OBJ)
 	$(CXX) $(CPPFLAGS) -o $@ $^ -lgtest -ldl -lpthread
@@ -61,5 +89,11 @@ hci_vendor_plugin:
 hci_vendor_plugin_clean:
 	$(MAKE) -C hci_plugin clean
 
-install: $(TEST)
-	$(INSTALL) -t /usr/bin -m644 $^
+install: $(TEST) $(LIBNEWBLUE)
+	$(INSTALL) --mode 755 -d $(DESTDIR)$(bindir)
+	$(INSTALL) --mode 755 -t $(DESTDIR)$(bindir) $(TEST)
+	$(INSTALL) --mode 755 -d $(DESTDIR)$(includedir)/newblue
+	$(INSTALL) --mode 644 -t $(DESTDIR)$(includedir)/newblue $(HEADERS)
+	$(INSTALL) --mode 755 -d $(DESTDIR)$(libdir)
+	$(INSTALL) --mode 755 -t $(DESTDIR)$(libdir) $(LIBNEWBLUE)
+	$(MAKE) libdir=$(libdir) -C hci_plugin install
