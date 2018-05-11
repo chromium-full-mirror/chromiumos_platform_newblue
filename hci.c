@@ -4441,11 +4441,13 @@ static bool hciHandleConnAclLeUp(uint8_t status, uint16_t id, bool isMaster, con
         c->le.timeout = timeout;
         c->le.mca = mca;
 
-        pthread_mutex_lock(&mAdvSetsLock);
-        advSetDetermined = mHciAdvSetHandleAndBlameNewConn(c);
-        pthread_mutex_unlock(&mAdvSetsLock);
+        if (!isMaster) {
+            pthread_mutex_lock(&mAdvSetsLock);
+            advSetDetermined = mHciAdvSetHandleAndBlameNewConn(c);
+            pthread_mutex_unlock(&mAdvSetsLock);
+        }
 
-        if (!advSetDetermined)
+        if (!isMaster && !advSetDetermined)
             c->state = CONN_STATE_ADV_SET_BLAMING;
         else {
             c->state = CONN_STATE_CFG;
