@@ -247,6 +247,11 @@ static void testGattSrvIndCbk(gatt_service_t svc, l2c_handle_t who, att_cid_t ci
     logi("time notification sent: cid: "UNIQ_FMT"d, handle: handle: %d\n", ATT_CID_CONV(cid), handle);
 }
 
+static void testGattSrvDiscCbk(gatt_service_t svc, l2c_handle_t who)
+{
+    //unused
+}
+
 static void testGattInitTime() {
     mGattCurTime.exactTime256.dayDateTime.dateTime.year = 2017;
     mGattCurTime.exactTime256.dayDateTime.dateTime.month = 5;
@@ -302,7 +307,7 @@ static int gattSetup(void)
     int svc;
 
     uuidFromUuid16(&uuid, 0x1805); //"current time" service
-    svc = gattServiceCreate(&uuid, true, 8, testGattSrvValueReadCbk, testGattSrvValueWriteCbk, testGattSrvIndCbk);
+    svc = gattServiceCreate(&uuid, true, 8, testGattSrvValueReadCbk, testGattSrvValueWriteCbk, testGattSrvIndCbk, testGattSrvDiscCbk);
     if (!svc) {
         loge("failed to alloc svc\n");
         goto out;
