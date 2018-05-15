@@ -48,7 +48,7 @@ $(TEST): $(OBJ) $(OBJ_TEST) usb_vendor_plugin hci_vendor_plugin
 	$(CC) $(CFLAGS) -o $@ -g $(OBJ) $(OBJ_TEST) -ldl -lpthread -lrt
 
 $(LIBNEWBLUE): $(OBJ)
-	$(CC) -shared -o $@ -pthread $(OBJ)
+	$(CC) -shared -o $@ -ldl -pthread $(OBJ)
 
 OBJ_UNITTEST = \
 	tests/unittest.o \

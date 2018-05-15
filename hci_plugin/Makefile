@@ -14,7 +14,7 @@ libbt-vendor-splitter.so: $(SRCS)
 libbt-vendor-hci0.so: $(SRCS)
 	$(CC) -fPIC -shared -o $@ -pthread $(SRCS) $(CFLAGS) -DFILEPATH="\"/dev/hci_le\""
 
-$(LIBBTVENDOR): libbt-vendor-splitter.so
+$(LIBBTVENDOR): libbt-vendor-hci0.so
 	cp $< $@
 
 install: $(LIBBTVENDOR)
