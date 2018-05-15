@@ -77,18 +77,19 @@ class PersistTestSuite: public testing::Test {
     void SetUp() override {
         int addrOne[BT_MAC_LEN] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
         int addrTwo[BT_MAC_LEN] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
-        uint32_t nameOneLen = devOneName.size() + 1;
-        uint32_t nameTwoLen = devTwoName.size() + 1;
+        uint32_t nameOneLen;
+        uint32_t nameTwoLen;
 
         persistLoad();
 
         devOneName = "Name of DevOne";
         devTwoName = "Name of DevTwo";
+        nameOneLen = devOneName.size() + 1;
+        nameTwoLen = devTwoName.size() + 1;
         devOneAddr.type = BT_ADDR_TYPE_LE_RANDOM;
         memcpy(devOneAddr.addr, addrOne, sizeof(devOneAddr.addr));
         devTwoAddr.type = BT_ADDR_TYPE_LE_RANDOM;
         memcpy(devTwoAddr.addr, addrTwo, sizeof(devTwoAddr.addr));
-
 
         persistAddKnownDev(&devOneAddr, devOneName.c_str(), &nameOneLen, true, NULL);
         persistAddKnownDev(&devTwoAddr, devTwoName.c_str(), &nameTwoLen, true, NULL);
