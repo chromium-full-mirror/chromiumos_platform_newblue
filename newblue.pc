@@ -1,0 +1,4 @@
+Name: newblue
+Description: NewBlue Bluetooth stack library.
+Version: 0.1
+Libs: -lnewblue -ldl -lpthread -lrt
