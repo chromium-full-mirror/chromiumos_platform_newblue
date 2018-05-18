@@ -1459,6 +1459,11 @@ static void* hciCmdSendWorker(void *unused)
 
     while (1) {
 
+        vendorTxDoneWithEvts();
+        ret = workQueueGet(mCmdsSendWork, (void**)&w);
+        if (ret)
+            break;
+
         clock_gettime(CLOCK_REALTIME, &ts);
         ts.tv_sec += BT_COMMAND_TIMEOUT;
         if (r_sem_timedwait(&mCmdSendSem, &ts)) {
@@ -1466,10 +1471,6 @@ static void* hciCmdSendWorker(void *unused)
             mt_analize_death();
             abort();
         }
-        vendorTxDoneWithEvts();
-        ret = workQueueGet(mCmdsSendWork, (void**)&w);
-        if (ret)
-            break;
 
         /*
          * This lock makes sure adding a handler for an event and sending the
