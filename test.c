@@ -542,10 +542,10 @@ int main(int argc, char** argv)
         };
 
         mSvcTime = gattSetup();
-        logi("gattSetup: svc=%d\n", mSvcTime);
+        logi("gattSetup: svc="GATTHANDLEFMT"\n", GATTHANDLECNV(mSvcTime));
         if (!gattServiceStart(mSvcTime, true, true))
-            loge("Failed to start service: %d\n", mSvcTime);
-        logd("Current time service created as svc %u at handle 0x%04X\n", mSvcTime, gattServiceGetHandleBaseBySvc(mSvcTime));
+            loge("Failed to start service: "GATTHANDLEFMT"\n", GATTHANDLECNV(mSvcTime));
+        logd("Current time service created as svc "GATTHANDLEFMT" at handle 0x%04X\n", GATTHANDLECNV(mSvcTime), gattServiceGetHandleBaseBySvc(mSvcTime));
 
         testGattInitTime();
 
