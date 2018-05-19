@@ -329,6 +329,8 @@ static sem_t mCmdSendSem;
 static struct workQueue* mCmdsSendWork;
 static pthread_t mCmdsSendThread;
 static uint8_t mStackState = STACK_STATE_DOWN;
+static hciReadyForUpCbk mReadyForUpCbk;
+static void *mReadyForUpData;
 
 static struct workQueue* mCallbackWork;
 static pthread_t mCallbackThread;
@@ -858,8 +860,11 @@ static void hciRxEvt(sg packet)
 
     if (addCredit) {
         sem_post(&mCmdSendSem);
-        if (mStackState == STACK_STATE_DOWN)
+        if (mStackState == STACK_STATE_DOWN) {
             mStackState = STACK_STATE_READY_FOR_UP;
+            if (mReadyForUpCbk)
+                mReadyForUpCbk(mReadyForUpData);
+        }
     }
 
     if (!handled)
@@ -1512,10 +1517,12 @@ success:
  * FUNCTION: hciUp
  * USE:      Bring up HCI (comms to bt chip)
  * PARAMS:   addr - the BT addr
+ *           cbk - callback when stack is ready for up
+ *           cbkData - data to be passed to cbk
  * RETURN:   true on success, false else
  * NOTES:    may take a while
  */
-bool hciUp(const uint8_t *addr)
+bool hciUp(const uint8_t *addr, hciReadyForUpCbk cbk, void *cbkData)
 {
     int ret;
 
@@ -1560,6 +1567,9 @@ bool hciUp(const uint8_t *addr)
         loge("Failed(%d) to create hci cmd send worker\n", ret);
         goto out_cmd_worker;
     }
+
+    mReadyForUpCbk = cbk;
+    mReadyForUpData = cbkData;
 
     sem_init(&mAclPacketsLe, 0, 0);
     sem_init(&mAclPacketsEdr, 0, 0);

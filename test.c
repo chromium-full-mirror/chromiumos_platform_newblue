@@ -96,6 +96,10 @@ static void leDiscoveryCbk(void *cbkData, const struct bt_addr *addr, int8_t rss
     }
 }
 
+static void readyForUpCbk() {
+  logi("callback stack is ready for up\n");
+}
+
 #define DEVICE_CLASS_SERVICE_RENDERING		0x040000	//PRINTER, SPEAKER
 #define DEVICE_CLASS_SERVICE_AUDIO		0x200000	//SPEAKER, MIC, HEADSET
 #define DEVICE_CLASS_SERVICE_INFORMATION	0x800000	//WEB-server, WAP-server
@@ -394,7 +398,7 @@ int main(int argc, char** argv)
 
     persistLoad();
     timersInit();
-    if (!hciUp(mac)) {
+    if (!hciUp(mac, readyForUpCbk, NULL)) {
         loge("HCI up fail\n");
         return -1;
     }

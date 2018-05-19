@@ -161,8 +161,10 @@ typedef void (*hciDeviceDiscoveredLeCbk)(void *cbkData, const struct bt_addr *ad
 
 typedef void (*hciOpDoneCbk)(void *cbkData, uint8_t status /* 0 = good */);
 
+typedef void (*hciReadyForUpCbk)(void *cbkData);
+
 /* bring chip communications up or down (also query)*/
-bool hciUp(const uint8_t *addr);
+bool hciUp(const uint8_t *addr, hciReadyForUpCbk cbk, void *cbkData);
 void hciDown(void);
 
 /* test if stack is up or needs bringup */
