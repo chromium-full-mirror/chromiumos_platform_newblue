@@ -1,6 +1,12 @@
+/*
+ * Copyright 2018 The Chromium OS Authors. All rights reserved.
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file.
+ */
 #ifndef _GATT_BUILTIN_H_
 #define _GATT_BUILTIN_H_
 
+#include "export.h"
 #include "types.h"
 
 
@@ -59,13 +65,15 @@
 #define GAP_APPEAR_OSA_LOCATION_AND_NAVIGATION_POD            5188    /* Outdoor Sports Activity subtype */
 
 
-bool gattBuiltinInit(void);
-void gattBuiltinDeinit(void);
+bool gattBuiltinInit(void) NEWBLUE_EXPORT;
+void gattBuiltinDeinit(void) NEWBLUE_EXPORT;
 
 /* these are safe even while not inited! this is by design */
-void gattBuiltinSetDevName(const char *name);
-void gattBuiltinSetPreferredConnParamsWhenSlave(uint16_t minInt, uint16_t maxInt, uint16_t lat, uint16_t to); //TODO: these can be advertised too. we shodul make sure they match
-void gattBuiltinSetAppearance(uint16_t appearance); /* GAP_APPEAR_* */
+void gattBuiltinSetDevName(const char *name) NEWBLUE_EXPORT;
+//TODO: these can be advertised too. we shodul make sure they match
+void gattBuiltinSetPreferredConnParamsWhenSlave(uint16_t minInt, uint16_t maxInt, uint16_t lat,
+    uint16_t to) NEWBLUE_EXPORT;
+void gattBuiltinSetAppearance(uint16_t appearance) NEWBLUE_EXPORT; /* GAP_APPEAR_* */
 
 
 

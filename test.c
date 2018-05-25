@@ -10,8 +10,6 @@
 
 #include "gatt-builtin.h"
 #include "vendorLib.h"
-#include "persist.h"
-#include "timer.h"
 #include "l2cap.h"
 #include "aapi.h"
 #include "util.h"
@@ -396,8 +394,6 @@ int main(int argc, char** argv)
     vendorLogEnable(true);
 #endif
 
-    persistLoad();
-    timersInit();
     if (!hciUp(mac, readyForUpCbk, NULL)) {
         loge("HCI up fail\n");
         return -1;
@@ -641,8 +637,6 @@ cleanup:
     attDeinit();
     l2cDeinit();
     hciDown();
-    timersDeinit();
-    persistStore();
 
     logi("done\n");
 

@@ -1,11 +1,17 @@
+/*
+ * Copyright 2018 The Chromium OS Authors. All rights reserved.
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file.
+ */
 #ifndef _ATT_H_
 #define _ATT_H_
 
-#include "types.h"
+#include "export.h"
 #include "l2cap.h"
-#include "uniq.h"
-#include "uuid.h"
 #include "sm.h"
+#include "types.h"
+#include "uuid.h"
+#include "uniq.h"
 
 typedef uniq_t att_range_t;
 typedef uniq_t att_cid_t;
@@ -98,8 +104,8 @@ typedef uniq_t att_trans_t;
 /* att common api */
 typedef void (*attMtuCbk)(l2c_handle_t to, uint32_t mtu);
 
-bool attInit(void);
-void attDeinit(void);
+bool attInit(void) NEWBLUE_EXPORT;
+void attDeinit(void) NEWBLUE_EXPORT;
 bool attSync(void); /* verifies all pending att work before now is finished. Use this after deleting things to make sure all refs to them are gone */
 void attSetMtu(l2c_handle_t to, uint32_t mtu); /* EDR uses this since L2C negotiates MTU */
 void attNotifConnClose(l2c_handle_t conn); /* allows server to no longer try to notify it */

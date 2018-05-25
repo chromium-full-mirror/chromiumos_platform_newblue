@@ -6,9 +6,10 @@
 #ifndef _SM_H_
 #define _SM_H_
 
-#include "types.h"
+#include "export.h"
 #include "hci.h"
 #include "sg.h"
+#include "types.h"
 
 #define L2C_FIXED_CH_NUM_SM    6
 
@@ -172,40 +173,39 @@ struct smPairSecurityRequirements {
 /* HELPER FUNCTIONS */
 
 /* call this to perform CMAC calculation */
-void smSignatureCalc(sg m, const uint8_t *key, uint8_t *sig);
+void smSignatureCalc(sg m, const uint8_t *key, uint8_t *sig) NEWBLUE_EXPORT;
 
 
 /* ONE TIME SM INIT/DEINIT */
 
 /* call this to perform on-time init of SM */
-bool smInit(uint8_t ioCapability);
+bool smInit(uint8_t ioCapability) NEWBLUE_EXPORT;
 /* call this to perform on-time deinit of SM */
-void smDeinit(void);
+void smDeinit(void) NEWBLUE_EXPORT;
 
 
 /* HIGHER LAYER INTERFACE API */
 
 /* call this to register as an observer of the pairing state changes with peer devices */
-uniq_t smRegisterPairObserver(void *observerData, smPairStateChangeCbk cbk);
+uniq_t smRegisterPairObserver(void *observerData, smPairStateChangeCbk cbk) NEWBLUE_EXPORT;
 /* call this to unregister as an observer of the pairing state changes with peer devices*/
-void smUnregisterPairObserver(uniq_t observerId);
+void smUnregisterPairObserver(uniq_t observerId) NEWBLUE_EXPORT;
 /* call this to pair with a remote LE device, the state of pairing will notify via
  * smPairStateChangeCbk
  */
-void smPair(const struct bt_addr *addr, const struct smPairSecurityRequirements *secReqs);
+void smPair(const struct bt_addr *addr,
+    const struct smPairSecurityRequirements *secReqs) NEWBLUE_EXPORT;
 /* call this to cancel/unpair with a remote LE device, the state of pairing will notify via
  * smPairStateChangeCbk
  */
-void smUnpair(const struct bt_addr *addr);
+void smUnpair(const struct bt_addr *addr) NEWBLUE_EXPORT;
 
 
 /* EXPOSED ONLY FOR UNITTEST PURPOSE */
 
-#ifdef _UNITTEST_
-void smEncrypt(uint8_t* dst, const uint8_t *src, const uint8_t *key);
-void smCalcConfVal(uint8_t* out, const uint8_t *k, const uint8_t *r, uint64_t pres, uint64_t preq,
-                   bool iat, uint64_t ia, bool rat, uint64_t ra);
-void smCalcKey(uint8_t *out, const uint8_t *k, const uint8_t *r1, const uint8_t *r2);
-#endif
+void smEncryptForTest(uint8_t* dst, const uint8_t *src, const uint8_t *key);
+void smCalcConfValForTest(uint8_t* out, const uint8_t *k, const uint8_t *r, uint64_t pres,
+     uint64_t preq, bool iat, uint64_t ia, bool rat, uint64_t ra);
+void smCalcKeyForTest(uint8_t *out, const uint8_t *k, const uint8_t *r1, const uint8_t *r2);
 
 #endif /* _SM_H_ */

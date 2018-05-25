@@ -1,11 +1,17 @@
+/*
+ * Copyright 2018 The Chromium OS Authors. All rights reserved.
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file.
+ */
 #ifndef _GATT_H_
 #define _GATT_H_
 
+#include "att.h"
+#include "export.h"
+#include "sg.h"
 #include "types.h"
 #include "uuid.h"
 #include "uniq.h"
-#include "att.h"
-#include "sg.h"
 
 
 
@@ -64,11 +70,12 @@ typedef uniq_t gatt_client_conn_t;
 /* ==== GATT SERVER CODE (AKA PERIPHERAL MODE) ==== */
 
 /* profile init/deinit */
-bool gattProfileInit(void);
-void gattProfileDeinit(void);
+bool gattProfileInit(void) NEWBLUE_EXPORT;
+void gattProfileDeinit(void) NEWBLUE_EXPORT;
 
 /* replies to callbacks */
-void gattSrvCbkReply(att_cid_t cid, att_trans_t transId, uint16_t handle, uint8_t err, const void *data, uint16_t len); /* err is ATT_ERROR_* */
+void gattSrvCbkReply(att_cid_t cid, att_trans_t transId, uint16_t handle, uint8_t err,
+    const void *data, uint16_t len) NEWBLUE_EXPORT; /* err is ATT_ERROR_* */
 
 /* callbacks */
 typedef bool (*gattSrvValueReadCbk)(gatt_service_t svc, l2c_handle_t who, att_cid_t cid, att_trans_t transId, uint16_t handle, uint16_t byteOfst, uint8_t reason, uint16_t len);
@@ -77,25 +84,32 @@ typedef void (*gattSrvIndCbk)(gatt_service_t svc, l2c_handle_t who, att_cid_t ci
 typedef void (*gattSrvDisconnectCbk)(gatt_service_t svc, l2c_handle_t who);
 
 /* service lifecycle */
-gatt_service_t gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles, gattSrvValueReadCbk readF, gattSrvValueWriteCbk writeF, gattSrvIndCbk indF, gattSrvDisconnectCbk discF);
-bool gattServiceDestroy(gatt_service_t svc);
-uint16_t gattServiceGetHandleBaseByUuid(const struct uuid *uuid); /* or 0 on error */
-uint16_t gattServiceGetHandleBaseBySvc(gatt_service_t svc); /* or 0 on error */
-gatt_service_t gattServiceFindByHandle(uint16_t handle, bool firstOnly); /* 0 on error */
+gatt_service_t gattServiceCreate(const struct uuid *uuid, bool primary, uint16_t numHandles,
+    gattSrvValueReadCbk readF, gattSrvValueWriteCbk writeF, gattSrvIndCbk indF,
+    gattSrvDisconnectCbk discF) NEWBLUE_EXPORT;
+bool gattServiceDestroy(gatt_service_t svc) NEWBLUE_EXPORT;
+uint16_t gattServiceGetHandleBaseByUuid(const struct uuid *uuid) NEWBLUE_EXPORT; /* or 0 on error */
+uint16_t gattServiceGetHandleBaseBySvc(gatt_service_t svc) NEWBLUE_EXPORT; /* or 0 on error */
+gatt_service_t gattServiceFindByHandle(uint16_t handle, bool firstOnly) NEWBLUE_EXPORT; /* 0 on error */
 
 /* service control */
-bool gattServiceStart(gatt_service_t svc, bool supportLE, bool supportEDR);
-bool gattServiceStop(gatt_service_t svc);
-bool gattServiceIsRunning(gatt_service_t svc);
-bool gattServiceGetUuid(gatt_service_t svc, struct uuid *uuid);
+bool gattServiceStart(gatt_service_t svc, bool supportLE, bool supportEDR) NEWBLUE_EXPORT;
+bool gattServiceStop(gatt_service_t svc) NEWBLUE_EXPORT;
+bool gattServiceIsRunning(gatt_service_t svc) NEWBLUE_EXPORT;
+bool gattServiceGetUuid(gatt_service_t svc, struct uuid *uuid) NEWBLUE_EXPORT;
 
-/* service construction (order of calls matters and is important). All return handle value or 0 on error */
-uint16_t gattServiceAddIncludedService(gatt_service_t svc, const struct uuid *uuid);
-uint16_t gattServiceAddChar(gatt_service_t svc, const struct uuid *uuid, uint8_t props, uint32_t perms);
-uint16_t gattServiceAddCharDescr(gatt_service_t svc, const struct uuid *uuid, uint32_t perms);
+/* service construction (order of calls matters and is important). All return handle value or 0 on
+ * error
+ */
+uint16_t gattServiceAddIncludedService(gatt_service_t svc, const struct uuid *uuid) NEWBLUE_EXPORT;
+uint16_t gattServiceAddChar(gatt_service_t svc, const struct uuid *uuid, uint8_t props,
+    uint32_t perms) NEWBLUE_EXPORT;
+uint16_t gattServiceAddCharDescr(gatt_service_t svc, const struct uuid *uuid,
+    uint32_t perms) NEWBLUE_EXPORT;
 
 /* TX path */
-bool gattServiceSendInd(gatt_service_t svc, att_cid_t cid, uint16_t handle, const void *data, uint16_t len, bool withConfirm, uint64_t ref);
+bool gattServiceSendInd(gatt_service_t svc, att_cid_t cid, uint16_t handle, const void *data,
+    uint16_t len, bool withConfirm, uint64_t ref) NEWBLUE_EXPORT;
 
 
 
@@ -145,7 +159,7 @@ bool gattClientInvalidateCache(const struct bt_addr *whomTo); //true if process 
 uint8_t gattClientEnumServices(gatt_client_conn_t conn, const struct uuid *searchForThis, gattCliSvcEnumCbk cbk); /* searchForThis can be null to enumerate all services without filtering for that uuid. if another enumeration is ongoing, yours will wait till that one is done */
 
 /* various enumerations. Each returns "next" item given "current" item. "current" is passed as NULL to get first */
-uint8_t gattClientEnumIncludedServices(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *prev, gattCliEnumIncludedSvcsCbk cbk); 
+uint8_t gattClientEnumIncludedServices(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *prev, gattCliEnumIncludedSvcsCbk cbk);
 uint8_t gattClientEnumCharacteristics(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *prev, gattCliEnumCharacteristicsCbk cbk);
 uint8_t gattClientEnumCharDescriptors(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *prev, gattCliEnumCharDescrsCbk cbk);
 

@@ -27,8 +27,8 @@ typedef uniq_t acl_handle_t; /* a 0-valued handle is invalid and indicates error
 /* ONE_TIME L2CAP INIT */
 
 /* call this to perform one-time init of l2cap */
-int l2cInit(void);
-void l2cDeinit(void);
+int l2cInit(void) NEWBLUE_EXPORT;
+void l2cDeinit(void) NEWBLUE_EXPORT;
 
 
 #define L2C_TX_ACCEPTED      0 /* data will be sent if connection remains - done */

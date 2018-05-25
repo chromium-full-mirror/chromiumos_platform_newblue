@@ -3494,6 +3494,7 @@ static void gattClientConnClose(struct gattClientConnection *clicon, uint8_t sta
 gatt_client_conn_t gattClientConnect(const struct bt_addr *to, gattCliConnectResultCbk resultCbk)
 {
     //TODO
+    return 0;
 }
 
 /*
@@ -3508,6 +3509,7 @@ uint8_t gattClientDisconnect(gatt_client_conn_t conn)
     //TODO
 
     //can call gattClientConnClose(cliCon, false /* do not notify client -> no need they're about to go away awnyways */);
+    return GATT_CLI_STATUS_OK;
 }
 
 /*

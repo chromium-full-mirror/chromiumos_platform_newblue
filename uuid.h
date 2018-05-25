@@ -1,6 +1,12 @@
+/*
+ * Copyright 2018 The Chromium OS Authors. All rights reserved.
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file.
+ */
 #ifndef _UUID_H_
 #define _UUID_H_
 
+#include "export.h"
 #include "types.h"
 
 #define BT_UUID_BASE                  {0x800000805F9B34FBULL, 0x0000000000001000ULL}
@@ -17,17 +23,17 @@ struct uuid {
 
 
 
-void uuidFromUuid16(struct uuid *dst, uint16_t uuid16);
-bool uuidToUuid16(uint16_t *dst, const struct uuid *uuid128);
-void uuidFromUuid32(struct uuid *dst, uint32_t uuid32);
-bool uuidToUuid32(uint32_t *dst, const struct uuid *uuid128);
-bool uuidCmp(const struct uuid *a, const struct uuid *b);
-void uuidWriteLE(void *dst, const struct uuid *src);
-void uuidReadLE(struct uuid *dst, const void *src);
-void uuidWriteBE(void *dst, const struct uuid *src);
-void uuidReadBE(struct uuid *dst, const void *src);
-bool uuidIsZero(const struct uuid *uuid);
-void uuidZero(struct uuid *dst);
+void uuidFromUuid16(struct uuid *dst, uint16_t uuid16) NEWBLUE_EXPORT;
+bool uuidToUuid16(uint16_t *dst, const struct uuid *uuid128) NEWBLUE_EXPORT;
+void uuidFromUuid32(struct uuid *dst, uint32_t uuid32) NEWBLUE_EXPORT;
+bool uuidToUuid32(uint32_t *dst, const struct uuid *uuid128) NEWBLUE_EXPORT;
+bool uuidCmp(const struct uuid *a, const struct uuid *b) NEWBLUE_EXPORT;
+void uuidWriteLE(void *dst, const struct uuid *src) NEWBLUE_EXPORT;
+void uuidReadLE(struct uuid *dst, const void *src) NEWBLUE_EXPORT;
+void uuidWriteBE(void *dst, const struct uuid *src) NEWBLUE_EXPORT;
+void uuidReadBE(struct uuid *dst, const void *src) NEWBLUE_EXPORT;
+bool uuidIsZero(const struct uuid *uuid) NEWBLUE_EXPORT;
+void uuidZero(struct uuid *dst) NEWBLUE_EXPORT;
 
 
 #endif

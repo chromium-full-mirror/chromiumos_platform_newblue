@@ -23,6 +23,8 @@
 #include <sys/cdefs.h>
 #include <sys/types.h>
 
+#include "export.h"
+
 /** Struct types */
 
 
@@ -356,7 +358,7 @@ typedef struct {
  *      will use this symbol name to get address of the object through the
  *      dlsym call.
  */
-extern const bt_vendor_interface_t BLUETOOTH_VENDOR_LIB_INTERFACE;
+extern const bt_vendor_interface_t BLUETOOTH_VENDOR_LIB_INTERFACE NEWBLUE_EXPORT;
 
 #endif /* BT_VENDOR_LIB_H */
 

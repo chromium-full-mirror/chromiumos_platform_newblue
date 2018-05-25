@@ -6,10 +6,11 @@
 #ifndef _HCI_H_
 #define _HCI_H_
 
+#include "bt.h"
+#include "export.h"
+#include "sg.h"
 #include "types.h"
 #include "uniq.h"
-#include "bt.h"
-#include "sg.h"
 
 #define HCI_CONN_ID_MASK	0x0FFF
 
@@ -164,11 +165,11 @@ typedef void (*hciOpDoneCbk)(void *cbkData, uint8_t status /* 0 = good */);
 typedef void (*hciReadyForUpCbk)(void *cbkData);
 
 /* bring chip communications up or down (also query)*/
-bool hciUp(const uint8_t *addr, hciReadyForUpCbk cbk, void *cbkData);
-void hciDown(void);
+bool hciUp(const uint8_t *addr, hciReadyForUpCbk cbk, void *cbkData) NEWBLUE_EXPORT;
+void hciDown(void) NEWBLUE_EXPORT;
 
 /* test if stack is up or needs bringup */
-bool hciIsUp(void);
+bool hciIsUp(void) NEWBLUE_EXPORT;
 
 /* info api */
 bool hciInfoSharedBuffers(void); //true if EDR & LE share buffers
@@ -176,8 +177,9 @@ bool hciInfoAclBufSizeLe(uint16_t *bufSz, uint16_t *bufNum); //false if no LE su
 void hciGetLocalAddress(uint8_t *addr);
 
 /* misc api. False on error, true if expect callback */
-uniq_t hciDiscoverLeStart(hciDeviceDiscoveredLeCbk cbk, void *cbkData, bool active, bool useRandomAddr);
-bool hciDiscoverLeStop(uniq_t handle);
+uniq_t hciDiscoverLeStart(hciDeviceDiscoveredLeCbk cbk, void *cbkData, bool active,
+    bool useRandomAddr) NEWBLUE_EXPORT;
+bool hciDiscoverLeStop(uniq_t handle) NEWBLUE_EXPORT;
 
 #define HCI_TX_SEND_OK          0
 #define HCI_TX_SEND_NO_CREDITS  1
@@ -210,19 +212,22 @@ bool hciLeProvideLtk(hci_conn_t aclConn, const uint8_t *key);
 void hciInquiryUpdatePersistDeviceDb(const struct bt_addr *addr, const uint32_t *devClsP, const void *eir, uint8_t eirLen);
 
 /* advertising As many sets as you can can be created. Only a certain number may be on at once (hw dependent) */
-bool hciAdvIsPowerLevelSettingSupported(void);
-uint32_t hciAdvGetMaxAdvSetsSupported(void);
-hci_adv_set_t hciAdvSetAllocate(void);
-bool hciAdvSetFree(hci_adv_set_t set);
+bool hciAdvIsPowerLevelSettingSupported(void) NEWBLUE_EXPORT;
+uint32_t hciAdvGetMaxAdvSetsSupported(void) NEWBLUE_EXPORT;
+hci_adv_set_t hciAdvSetAllocate(void) NEWBLUE_EXPORT;
+bool hciAdvSetFree(hci_adv_set_t set) NEWBLUE_EXPORT;
 /* local copies are made for data */
-bool hciAdvSetConfigureData(hci_adv_set_t set, bool scanRsp, const uint8_t *data, uint32_t len);
-bool hciAdvSetSetAdvParams(hci_adv_set_t set, uint16_t advIntervalMin, uint16_t advIntervalMax, uint8_t advType, uint8_t ownAddressType, struct bt_addr *directAddr, uint8_t advChannelMap, uint8_t advFilterPolicy, int8_t advDesiredTxPowerLevel);
-bool hciAdvSetOwnRandomAddr(hci_adv_set_t set, const struct bt_addr *ownRandomAddr);
-bool hciAdvSetEnable(hci_adv_set_t set);
-bool hciAdvSetDisable(hci_adv_set_t set);
+bool hciAdvSetConfigureData(hci_adv_set_t set, bool scanRsp, const uint8_t *data,
+    uint32_t len) NEWBLUE_EXPORT;
+bool hciAdvSetSetAdvParams(hci_adv_set_t set, uint16_t advIntervalMin, uint16_t advIntervalMax,
+    uint8_t advType, uint8_t ownAddressType, struct bt_addr *directAddr, uint8_t advChannelMap,
+    uint8_t advFilterPolicy, int8_t advDesiredTxPowerLevel) NEWBLUE_EXPORT;
+bool hciAdvSetOwnRandomAddr(hci_adv_set_t set, const struct bt_addr *ownRandomAddr) NEWBLUE_EXPORT;
+bool hciAdvSetEnable(hci_adv_set_t set) NEWBLUE_EXPORT;
+bool hciAdvSetDisable(hci_adv_set_t set) NEWBLUE_EXPORT;
 
-bool hciAdvSetGetCurTxPowerLevel(hci_adv_set_t set, int8_t *advTxPowerLevelP);
-bool hciAdvSetGetCurAdvAddr(hci_adv_set_t set, struct bt_addr *ownAddr);
+bool hciAdvSetGetCurTxPowerLevel(hci_adv_set_t set, int8_t *advTxPowerLevelP) NEWBLUE_EXPORT;
+bool hciAdvSetGetCurAdvAddr(hci_adv_set_t set, struct bt_addr *ownAddr) NEWBLUE_EXPORT;
 
 
 #endif

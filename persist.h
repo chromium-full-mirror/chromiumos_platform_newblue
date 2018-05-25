@@ -6,10 +6,8 @@
 #ifndef _PERSIST_H_
 #define _PERSIST_H_
 
-
-
-#include "types.h"
 #include "bt.h"
+#include "types.h"
 
 
 //key types are also bits in "haveKeys" for enumeration
