@@ -402,7 +402,6 @@ static attCliFindInfoCbk mCliFindInfoCbk;
 static attCliFindByTypeValCbk mCliFindByTypeValCbk;
 
 static struct attConn *mConns;
-static bool mInTeardown;
 static struct workQueue *mWorkQ;
 static pthread_t mWorker;
 static unsigned mNumUsers = 0; /* of ATT itself */
@@ -543,7 +542,6 @@ static att_trans_t attSrvSchedCbkGetNextTid(struct attConn* conn)
 static bool attCliScheduleErrorCbk(uniq_t trans, l2c_handle_t who, uint16_t handle, uint8_t err, uint8_t errOpcode, bool isLocalErr)
 {
     struct attWorkItem *wi;
-    int tid;
 
     wi = attWorkItemAlloc(WORK_CLI_ERR_CALL, 0);
     if (!wi)
@@ -617,10 +615,6 @@ static bool attSrvSchedWriteCbk(struct attSrvRange *range, struct attSrvVal* val
 {
     uint16_t len = sgLength(data);
     struct attWorkItem *wi;
-    const void *dataPtr = NULL;
-    bool needFree = false;
-    void *iter;
-    bool ret;
 
     wi = attWorkItemAlloc(WORK_SRV_WRITE_CALL, len);
     if (!wi)
@@ -785,7 +779,6 @@ static bool attConnListAddIfNew(l2c_handle_t l2cConn)
 {
     struct attConn *conn;
     struct bt_addr peer;
-    uint32_t i;
 
     /* check for existence & alloc as needed */
     if (attConnFindByL2cConn(l2cConn))
@@ -882,7 +875,6 @@ void attSrvDeinit(void)
     struct attSrvRange *range;
     struct attSrvVal *val;
     struct attConn *conn;
-    uint32_t i;
 
     pthread_mutex_lock(&mAttLock);
     for (conn = mConns; conn; conn = conn->next) {
@@ -972,9 +964,7 @@ static void attSrvRangeDelete(struct attSrvRange *range)
 void attNotifConnClose(l2c_handle_t l2cConn)
 {
     struct attSrvRange *range, *t;
-    struct attSrvVal *val;
     struct attConn *conn;
-    uint32_t i;
 
     pthread_mutex_lock(&mAttLock);
     for (range = mRangesHead; range;) {
@@ -1543,7 +1533,6 @@ static uint8_t attSrvSendPacketNotif(struct attSrvRange *range, struct attSrvVal
     struct attPduHandleValueInd *indH = (struct attPduHandleValueInd*)(hdr + 1);
     uint8_t hdrLen = sizeof(*hdr);
     uint32_t mtu;
-    uint8_t ret;
 
     if (notify) {
         utilSetLE8(&hdr->opcode, ATT_OPCODE_HANDLE_VALUE_NOTIF);
@@ -1672,7 +1661,6 @@ uint8_t attSrvValueNotifyChanged(att_range_t rangeRef, uint16_t offset, att_cid_
     struct attSrvRange *range;
     struct attSrvVal *val;
     struct attConn *conn;
-    uint32_t i;
 
     pthread_mutex_lock(&mAttLock);
     conn = attConnFindBySrvCid(cid);
@@ -1878,7 +1866,6 @@ static bool attSrvOpFindInfo(l2c_handle_t to, uint32_t mtu, uint16_t startHandle
 
             if (allUuidsSmall && uuidToUuid16(&uuid16, &val->type)) {
                 struct attPduFindInfoData16 result;
-                uint16_t uuid;
 
                 utilSetLE16(&result.handle, handle);
                 utilSetLE16(&result.uuid16, uuid16);
@@ -2312,8 +2299,6 @@ done:
 static bool attSrvOpReadByTypeStart(l2c_handle_t to, uint32_t mtu, uint16_t startHandle, uint16_t endHandle, const struct uuid *uuid, bool grpType)
 {
     const uint8_t reqOpcode = grpType ? ATT_OPCODE_READ_BY_GRP_TYPE_REQ : ATT_OPCODE_READ_BY_TYPE_REQ;
-    const uint8_t rspOpcode = grpType ? ATT_OPCODE_READ_BY_GRP_TYPE_RSP : ATT_OPCODE_READ_BY_TYPE_RSP;
-    const uint8_t readReason = grpType ? ATT_READ_FOR_READ_BY_GRP_TYPE : ATT_READ_FOR_READ_BY_TYPE;
     struct attConn *conn = attConnFindByL2cConn(to);
     uint8_t err = ATT_ERROR_INSUFFICIENT_RSRCS;
     sg results = NULL;
@@ -2627,8 +2612,6 @@ static bool attSrvOpReadMultStart(l2c_handle_t to, uint32_t mtu, sg handles)
  */
 static bool attSrvWriteContinue(struct attConn *conn, const void *lastWriteData, uint16_t leastWriteLen, uint8_t lastWriteRet)
 {
-    uint8_t err = ATT_ERROR_UNLIKELY_ERROR;
-
     if (conn->srv.penOp.origOpcode != ATT_OPCODE_WRITE_REQ && conn->srv.penOp.origOpcode != ATT_OPCODE_SIGNED_WRITE_CMD &&
          conn->srv.penOp.origOpcode != ATT_OPCODE_WRITE_REQ && conn->srv.penOp.origOpcode != ATT_OPCODE_PREPARE_WRITE_REQ)
         return false;
@@ -2769,9 +2752,6 @@ out:
  */
 static bool attSrvOpExecuteWriteContinue(struct attConn *conn, uint8_t execResult, uint16_t errorHandle)
 {
-    uint8_t err = ATT_ERROR_UNLIKELY_ERROR;
-
-
     if (conn->srv.penOp.origOpcode != ATT_OPCODE_EXECUTE_WRITE_REQ)
         return false;
 
@@ -3255,7 +3235,6 @@ void attSrvDataRx(l2c_handle_t from, sg s)
 void attSrvCbkReply(att_cid_t cid, att_trans_t transId, uint16_t handle, uint8_t err, const void *data, uint16_t len)
 {
     struct attConn* conn;
-    uint8_t opcode;
     bool ret = false;
 
     pthread_mutex_lock(&mAttLock);
@@ -3587,7 +3566,6 @@ void attDeinit(void)
 bool attCliRequestMtu(l2c_handle_t to, uint32_t mtu)
 {
     struct attPduMtu mtuExch;
-    bool ret;
 
     utilSetLE16(&mtuExch.mtu, mtu);
     return attSendPacket(to, ATT_OPCODE_MTU_EXCH_REQ, &mtuExch, sizeof(mtuExch), NULL);

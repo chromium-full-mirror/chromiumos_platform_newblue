@@ -45,11 +45,6 @@ struct EdrDiscDev {
     char               name[249];
 };
 
-
-
-static uint8_t gStatus = 0;
-
-
 static void testHciScoRxCbk(hci_conn_t aclConn, const void *data, uint8_t len, uint8_t lossAmount)
 {
    static const char *lossAmtStr[] = {"none", "some", "unknown", "all"};
@@ -328,7 +323,6 @@ static void testIndCb() {
 }
 
 static void *testGattSetTime(void *data) {
-    uint8_t seconds;
     uint8_t TICK = 5;
 
     while (!stopTimeService) {
@@ -608,7 +602,6 @@ int main(int argc, char** argv)
         for (i = 0; i < sizeof(mAdvSet) / sizeof(*mAdvSet); i++) {
             static const uint8_t advData[] = {2, HCI_EIR_TYPE_FLAGS, 2, /* flags - general discoverable */};
             uint8_t scanData[] = {6, HCI_EIR_TYPE_FULL_NAME, 'N', 'B', 't', '1', '0' + i, /* name - "NBt10" and up */};
-            struct bt_addr randAddr;
 
             mAdvSet[i] = hciAdvSetAllocate();
             if (!mAdvSet[i]) {

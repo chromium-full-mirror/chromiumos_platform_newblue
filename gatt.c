@@ -803,7 +803,6 @@ static bool gattEnqueueCliSubUnsubCall(struct gattClientConnection *clicon, stru
  */
 static void gattAttSrvIndCbk(l2c_handle_t to, att_cid_t cid, att_range_t rangeRef, uint16_t offset, uint8_t evt, uint64_t ref)
 {
-    uint8_t err = ATT_ERROR_NONE;
     struct gattService *svc;
 
     pthread_mutex_lock(&mGattLock);
@@ -1288,8 +1287,6 @@ static void gattWorkItemFree(struct gattWorkItem *wi)
  */
 static void* gattWorker(void *param)
 {
-    struct gattClientConnection *clicon;
-    struct gattConnState *conn;
     struct gattWorkItem *wi;
     int status;
 
@@ -1702,8 +1699,7 @@ static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem 
     struct gattIncludeDefHdr inclDef;
     struct gattCharDefHdr charDef;
     struct uuid uuid;
-    uint16_t uuid16, inclStartH, inclEndH;
-    uint8_t aByte;
+    uint16_t inclStartH, inclEndH;
 
     switch (todo->reqIntent) {
     case GATT_INTENT_INTERNAL:
@@ -1986,7 +1982,6 @@ static bool gattAttCliFindInfoCbk(uniq_t trans, l2c_handle_t to, uint16_t handle
 static bool gattAttCliFindByTypeValCbk(uniq_t trans, l2c_handle_t to, uint16_t handle, uint16_t grpEndHandle, bool haveMore)
 {
     static const uint8_t expectedWorkTypes[] = {GATT_CLI_TODO_FIND_BY_TYPE_VAL};
-    struct gattCliTodoItem *todo;
     struct gattConnState *conn;
 
     pthread_mutex_lock(&mGattLock);
@@ -2177,7 +2172,7 @@ static bool gattCliStepSucceeded(struct gattConnState *conn, struct gattCliTodoI
 static bool gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *handleP, const uint16_t *endGrpHandleP, sg data, bool haveMore)
 {
     static const uint8_t expectedWorkTypes[] = {GATT_CLI_TODO_READ_BY_TYPE, GATT_CLI_TODO_READ, GATT_CLI_TODO_READ_BLOB, GATT_CLI_TODO_READ_BY_GRP_TYPE};
-    struct uuid uuid, *finalStepUuidP = NULL;
+    struct uuid *finalStepUuidP = NULL;
     struct gattConnState *conn;
     bool killTodoItem = false;
     bool ret = false;
@@ -3891,7 +3886,6 @@ uint8_t gattClientNotifsSubscribe(gatt_client_conn_t conn, const struct uuid *in
     uint8_t sta = GATT_CLI_STATUS_ERR;
     struct gattCliNotifRec *nr;
     struct gattCliNotif *notif;
-    uint32_t *relevantReftCtP;
     bool callStateCbk = false;
 
     pthread_mutex_lock(&mGattLock);

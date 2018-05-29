@@ -36,7 +36,6 @@ struct enumCbkData {
 bool persistEnumF(void *cbkData, const struct bt_addr *addr, const void *name,
                        uint32_t nameLen, uint32_t devCls, uint32_t haveKeys,
                        const uint8_t *wantedKey, uint32_t haveNums, const uint64_t *wantedNum) {
-    uint64_t targetNum = 0;
     struct enumCbkData *data = NULL;
     if (!cbkData)
         return true;
@@ -96,6 +95,8 @@ class PersistTestSuite: public testing::Test {
         persistAddKnownDev(&devTwoAddr, devTwoName.c_str(), &nameTwoLen, true, NULL);
     }
     void TearDown() override {
+        persistDelKnownDev(&devOneAddr);
+        persistDelKnownDev(&devTwoAddr);
         unlink(pref_path);
     }
 
@@ -145,7 +146,6 @@ TEST_F(PersistTestSuite, LocalDiscoveryGetSet) {
 TEST_F(PersistTestSuite, DeviceGetAddDel) {
     char name[HCI_DEV_NAME_LEN];
     uint32_t nameLen = 0;
-    uint32_t devCls = 0;
 
     ASSERT_TRUE(persistGetKnownDev(getDevOneAddr(), name, &nameLen, NULL));
     ASSERT_EQ(strncmp(name, getDevOneName().c_str(), nameLen), 0);
@@ -229,7 +229,9 @@ TEST_F(PersistTestSuite, EnumerateDevicesForTargetNum) {
     uint64_t randNumTwo = 87654321;
     uint64_t num = 0;
     uint8_t numType = PERSIST_NUM_TYPE_SM_RANDOM;
-    struct enumCbkData cbkData = {.keyFound = false, .numFound = false};
+    struct enumCbkData cbkData;
+    cbkData.keyFound = false;
+    cbkData.numFound = false;
 
     // set a number for device one
     ASSERT_FALSE(persistGetDevNumber(getDevOneAddr(), numType, &num));
@@ -260,7 +262,9 @@ TEST_F(PersistTestSuite, EnumerateDevicesForKey) {
                                       0x63, 0x88, 0x27, 0x4E, 0xC6, 0x70, 0x2E, 0xE0,};
     uint8_t key[HCI_LE_KEY_LEN] = {0,};
     uint8_t keyType = KEY_TYPE_IRK;
-    struct enumCbkData cbkData = {.keyFound = false, .numFound = false};
+    struct enumCbkData cbkData;
+    cbkData.keyFound = false;
+    cbkData.numFound = false;
 
     // set the IRK for device one
     ASSERT_FALSE(persistGetDevKey(getDevOneAddr(), keyType, key));
@@ -297,7 +301,9 @@ TEST_F(PersistTestSuite, EnumerateDevicesForNumAndKey) {
     uint8_t key[HCI_LE_KEY_LEN] = {0,};
     uint8_t keyType = KEY_TYPE_IRK;
 
-    struct enumCbkData cbkData = {.keyFound = false, .numFound = false};
+    struct enumCbkData cbkData;
+    cbkData.keyFound = false;
+    cbkData.numFound = false;
 
     // set a number for device one
     ASSERT_FALSE(persistGetDevNumber(getDevOneAddr(), numType, &num));

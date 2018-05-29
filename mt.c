@@ -1,3 +1,8 @@
+/*
+ * Copyright 2018 The Chromium OS Authors. All rights reserved.
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file.
+ */
 #undef MT_DEBUG
 #include <sys/syscall.h>
 #include <sys/types.h>
@@ -77,7 +82,6 @@ int r_sem_timedwait(sem_t* sem, const struct timespec *abs_timeout)
 
 bool r_write(int fd, const void *data, size_t count)
 {
-    size_t countOriginal = count;
     const uint8_t *buf = (const uint8_t*)data;
     int ret;
 
@@ -99,7 +103,6 @@ bool r_write(int fd, const void *data, size_t count)
 
 bool r_read(int fd, void *data, size_t count)
 {
-    size_t countOriginal = count;
     uint8_t *buf = (uint8_t*)data;
     int ret;
 
@@ -423,7 +426,6 @@ int mt_pthread_mutex_init(const char *file, int line, const char *name, pthread_
     unsigned tid = syscall(SYS_gettid);
     struct mtID id = {0,};
     struct mtObject *mm;
-    uint64_t tm;
     int ret;
 
     pthread_mutex_lock(&mLock);
@@ -442,7 +444,6 @@ int mt_pthread_mutex_destroy(const char *file, int line, const char *name, pthre
     unsigned tid = syscall(SYS_gettid);
     struct mtID id = {0,};
     struct mtObject *mm;
-    uint64_t tm;
     int ret;
 
     pthread_mutex_lock(&mLock);
@@ -581,7 +582,6 @@ int mt_pthread_create(const char *file, int line, const char *name, pthread_t *t
 
 int mt_pthread_setname_np(const char *file, int line, const char *name, pthread_t thread, const char *threadName)
 {
-    struct mtThreadData *td;
     unsigned tid = syscall(SYS_gettid);
     struct mtID id = {0,};
     struct mtObject *mm;

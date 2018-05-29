@@ -482,19 +482,6 @@ static bool persistGenRandomBytes(uint8_t *out, uint8_t len)
 }
 
 /*
- * FUNCTION: persistGenRand
- * USE:      Generate a random 64-bit number
- * PARAMS:   out - where the random number is be stored
- * RETURN:   success with the valid output
- * NOTES:
- */
-static bool persistGenRand(uint64_t *out) {
-    if (!out)
-        return false;
-    return persistGenRandomBytes((uint8_t *)out, sizeof(*out));
-}
-
-/*
  * FUNCTION: persistAddKey
  * USE:      Add a key of the given type and add it to the given list (and optionally generate it)
  * PARAMS:   headP - list head stored here
@@ -692,7 +679,7 @@ void persistStore(void)
     utilSetBE32(&hdr.magic, PERSIST_MAGIC);
     utilSetBE32(&hdr.version, PERSIST_VERSION_CUR);
 
-    fd = open(PREF_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0700);
+    fd = open(pref_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
     if (fd == -1) {
         loge("Preferences not opened: %d\n", errno);
         goto fail;
@@ -755,7 +742,6 @@ static bool persistPropListLoad(struct persistProp **headP, struct persistProp *
  */
 void persistLoad(void)
 {
-    const struct persistProp *t;
     struct persistFileHdr hdr;
     uint64_t fileLen;
     int fd;
@@ -1367,7 +1353,7 @@ out:
 static bool persistDelDevPropsByName(const struct bt_addr *addr, uint32_t name)
 {
     struct persistArrayInRam *propsArr;
-    struct persistProp *dev, *props, *k;
+    struct persistProp *props, *k;
     bool ret = true;
 
     pthread_mutex_lock(&mLock);

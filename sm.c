@@ -897,7 +897,6 @@ static bool smSendPairResp(const struct smInstance *inst)
  */
 static bool smSendPairConf(const struct smInstance *inst)
 {
-    uint16_t i, confSz;
     struct smPairConf conf;
 
     smWriteReversedBytes(conf.confirmVal, sizeof(conf.confirmVal), inst->myConfVal.confirmVal,
@@ -919,7 +918,6 @@ static bool smSendPairConf(const struct smInstance *inst)
  */
 static bool smSendPairRand(const struct smInstance *inst)
 {
-    uint16_t i, randSz;
     struct smPairRand rand;
 
     smWriteReversedBytes(rand.rand, sizeof(rand.rand), inst->myRandNum.rand,
@@ -941,7 +939,6 @@ static bool smSendPairRand(const struct smInstance *inst)
  */
 static bool smSendEncryptInfo(const struct smInstance *inst)
 {
-    uint16_t i, keySz;
     uint8_t key[HCI_LE_KEY_LEN] = {0,};
     struct smKey ltk;
 
@@ -988,7 +985,6 @@ static bool smSendMasterId(const struct smInstance *inst, uint16_t ediv, uint64_
  */
 static bool smSendIdInfo(const struct smInstance *inst)
 {
-    uint16_t i, keySz;
     uint8_t key[HCI_LE_KEY_LEN] = {0,};
     struct smKey irk;
 
@@ -1013,7 +1009,7 @@ static bool smSendIdInfo(const struct smInstance *inst)
  */
 static bool smSendIdAddrInfo(const struct smInstance *inst)
 {
-    uint16_t i, addrSz, at;
+    uint16_t at;
     enum smAddrType addrType;
     struct smIdentityAddrInfo addr;
     struct bt_addr selfAddr;
@@ -1054,7 +1050,6 @@ static bool smSendIdAddrInfo(const struct smInstance *inst)
  */
 static bool smSendSignInfo(const struct smInstance *inst)
 {
-    uint16_t i, keySz;
     uint8_t key[HCI_LE_KEY_LEN] = {0,};
     struct smKey csrk;
 
@@ -1161,7 +1156,6 @@ fail:
 static bool smSendPairFail(const struct smInstance *inst, uint8_t reason)
 {
     struct smPairFailed fail;
-    smPairState pairState = SM_PAIR_ERR_UNKNOWN;
 
     /* delete keys and numbers associated with the peer device */
     persistDelDevKeys(&inst->peerAddr);
@@ -1274,11 +1268,9 @@ static void smRx(struct smInstance *inst, sg packet)
     struct smIdentityAddrInfo addrInfo;
     struct smAuthReq authReq;
     smPairErr pairErr = SM_PAIR_ERR_UNKNOWN;
-    uint8_t typ, addrType, err, auth;
+    uint8_t typ, err, auth;
     uint64_t rand, ediv;
-    uint8_t mac[BT_MAC_LEN] = {0,};
     uint8_t stk[HCI_LE_KEY_LEN] = {0,};
-    uint8_t ltk[HCI_LE_KEY_LEN] = {0,};
 
     if (!sgSerializeCutFront(packet, &hdr, sizeof(hdr))) {
         logw("Incoming SM packet header extraction failed\n");
@@ -2033,7 +2025,7 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
     smPairErr pairErr = SM_PAIR_ERR_UNKNOWN;;
     l2c_handle_t conn;
     sg s;
-    uint16_t ediv = 0, myEdiv = 0;
+    uint16_t myEdiv = 0;
     uint64_t myRand = 0, myDiv = 0;
     uint8_t key[HCI_LE_KEY_LEN] = {0,};
     uint8_t rawKey[HCI_LE_KEY_LEN] = {0,};
@@ -2269,7 +2261,6 @@ static uint8_t smFixedChAlloc(void *userData, l2c_handle_t conn, void **instance
     struct smInstance *inst;
     struct bt_addr peerAddr;
     struct bt_addr myAddr;
-    struct smPairSecurityRequirements secReqs;
 
     if (!l2cApiGetBtAddr(conn, &peerAddr)) {
         loge("Failed to get peer address\n");
@@ -2420,9 +2411,6 @@ out:
  */
 bool smInit(uint8_t ioCapability)
 {
-    uint8_t key[HCI_LE_KEY_LEN] = {0,};
-    uint64_t num = 0;
-
     static const struct l2cServiceFixedChDescriptor descr = {
         .serviceFixedChAlloc = smFixedChAlloc,
         .serviceFixedChStateCbk = smFixedChState,
@@ -2556,7 +2544,6 @@ void smUnregisterPairObserver(uniq_t observerId)
 static void smNotifyPairObserver(const struct bt_addr *addr, smPairState state, smPairErr err)
 {
     struct smNotifWork *work;
-    bool notifyNotPaired = false;
 
     switch(state) {
     case SM_PAIR_STATE_NOT_PAIRED:
@@ -3168,7 +3155,6 @@ static bool smPrepPreqPrsp(
 static bool smPrepInitRspAddr(uint64_t *a, uint8_t *at, const struct bt_addr *addr)
 {
     int i;
-    uint8_t type;
 
     if (!addr)
         return false;
@@ -3269,7 +3255,6 @@ static bool smGenConfVal(struct smPairConf *conf, const struct smInstance *inst,
 {
     uint64_t pReqCmd = 0, pRspCmd = 0, ia = 0, ra = 0;
     uint8_t iat = 0, rat = 0;
-    int i;
 
     if (!inst) {
         logw("%s(): Invalid instance\n", __func__);
@@ -3379,8 +3364,7 @@ static bool smGenEdiv(uint16_t *out, const struct bt_addr *peerAddr, uint16_t di
                       bool check)
 {
     uint8_t dhk[SM_BLOCK_LEN] = {0,};
-    uint16_t mask = 0, ediv = 0;
-    uint64_t tmp = 0;
+    uint16_t mask = 0;
 
     if (!check) {
         /* generate a 16-bit DIV value */

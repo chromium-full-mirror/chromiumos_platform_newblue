@@ -365,7 +365,6 @@ static uint16_t mAclBufNumLe = 0;
 static bool mBtJointBuffers = true; /* use EDR buffers for LE */
 static sem_t mAclPacketsLe;
 static sem_t mAclPacketsEdr;
-static uint8_t mInquiryState = 0;
 static uint8_t mLocalAddr[BT_MAC_LEN];
 static uint16_t mMaxAdvSets;
 static bool mCanSetAdvTxPower;
@@ -622,7 +621,6 @@ static void hciCbkChipHwUp(void *cbkData, bool fw, bool up)
 static bool hciRxAclForRunningConn(struct hciAclConn* conn, uint16_t hdr, sg packet)
 {
     uint16_t pb = hdr & ACL_HDR_MASK_PB;
-    uint16_t bc = hdr & ACL_HDR_MASK_BC;
 
     if (pb == ACL_HDR_PB_FIRST_NONAUTO || pb == ACL_HDR_PB_COMPLETE) {
         logw("Invalid acl.pb flag from chp: 0x%04X. Dropped\n", pb);
@@ -888,7 +886,6 @@ static void hciRxEvt(sg packet)
 static void hciRx(void *cbkData, uint8_t typ, sg packet)
 {
     struct hciAclHdr hdrAcl;
-    struct hciScoHdr hdrSco;
     struct hciEvtHdr hdrEvt;
     uint32_t datalen = sgLength(packet);
     uint32_t len;
@@ -1739,8 +1736,6 @@ out_ret:
 static bool hciCmdSubmitSimpleCbk(const struct hciEvtHdr *evt, uint32_t evtSz, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
 {
     struct hciSimpleCbkData *cbkd = (struct hciSimpleCbkData*)cbkData;
-    struct hciEvtCmdComplete *cmpl = (struct hciEvtCmdComplete*)(evt + 1);
-    struct hciEvtCmdStatus *stat = (struct hciEvtCmdStatus*)(evt + 1);
     const char* name = cbkd->complete ? "complete" : "status";
     uint8_t paramLen;
     uint8_t evtHdrLen;
@@ -2600,9 +2595,7 @@ static bool hciAdvSetEnableDisableMethodAndroidVendorCmds(struct hciAdvSet *set,
  */
 static void hciAdvSetHandleAndBlameNewConnMethodAndroidVendorCmdsTimeCbk(uniq_t timer,  uint64_t aclConnHandle)
 {
-    hci_adv_set_t blamedSet = 0;
     struct hciAclConn* conn;
-    struct hciAdvSet *t;
 
     //if we got here and conn is still in "wait" state, bad things
 
@@ -2628,8 +2621,6 @@ static void hciAdvSetHandleAndBlameNewConnMethodAndroidVendorCmdsTimeCbk(uniq_t 
  */
 static bool hciAdvSetHandleAndBlameNewConnMethodAndroidVendorCmds(struct hciAclConn *conn)
 {
-    struct hciAdvSet *t;
-
     conn->le.advSet = 0;
 
     /*
@@ -2752,7 +2743,6 @@ static bool hciAdvSetHandleAndBlameNewConnMethodBT4(struct hciAclConn *conn)
 static bool hciBtStackUp(void)
 {
     int ret = 0;
-    uint8_t inqMode = HCI_INQ_MODE_STD;
 
     /* sanity and start */
     {
@@ -4234,16 +4224,9 @@ static void hciHandleConnAclDown(uint16_t cid, uint8_t reason)
 static bool hciConnCfgCbk(const struct hciEvtHdr *evt, uint32_t evtSz, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
 {
     struct hciEvtLeMeta *leMetaEvt = (struct hciEvtLeMeta*)(evt + 1);
-    struct hciEvtReadRemoteSupportedFeaturesComplete *rrsf = (struct hciEvtReadRemoteSupportedFeaturesComplete*)(evt + 1);
     struct hciEvtLeReadRemoteFeaturesComplete *rrf = (struct hciEvtLeReadRemoteFeaturesComplete*)(leMetaEvt + 1);
-    struct hciEvtReadRemoteExtFeturesComplete *rref = (struct hciEvtReadRemoteExtFeturesComplete*)(evt + 1);
-    struct hciEvtReadRemoteVersionComplete *rrv = (struct hciEvtReadRemoteVersionComplete*)(evt + 1);
-    struct hciEvtCmdComplete *cmpl = (struct hciEvtCmdComplete*)(evt + 1);
-    struct hciEvtCmdStatus *stat = (struct hciEvtCmdStatus*)(evt + 1);
-    struct hciCmplWriteAutoFlushTimeout *waft = (struct hciCmplWriteAutoFlushTimeout*)(cmpl + 1);
     uint16_t step = ((uint32_t)(uintptr_t)cbkData) >> 16;
     uint16_t aux = (uint16_t)(uintptr_t)cbkData;
-    uint8_t evtType = utilGetLE8(&evt->code);
     struct hciAclConn *c = NULL;
     uint8_t sta = 0xff;
     uint16_t cid;
@@ -4294,11 +4277,7 @@ static void hciConnCfg(struct hciAclConn *c, uint32_t step, uint32_t aux)
 {
     struct hciEvtWaitDescr ewd[2] = {{.cbk = hciConnCfgCbk, .persistent = false}, {.cbk = hciConnCfgCbk, .persistent = false}};
     void *userData = (void*)(uintptr_t)((step << 16) | aux);
-    struct hciReadRemoteSupportedFeatures rrsf;
-    struct hciReadRemoteExtendedFeatures rref;
     struct hciLeReadRemoteUsedFeatures rrf;
-    struct hciWriteAutoFlushTimeout waft;
-    struct hciReadRemoteVersionInfo rrv;
     bool success = true;
 
     if (c->state != CONN_STATE_CFG) {

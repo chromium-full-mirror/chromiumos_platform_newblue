@@ -1,3 +1,8 @@
+/*
+ * Copyright 2018 The Chromium OS Authors. All rights reserved.
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file.
+ */
 #include <termios.h>
 #include <stdlib.h>
 #include <string.h>
@@ -272,8 +277,6 @@ static void* vendorWorker(void *pipeFdP)
     while (1) {
         struct pollfd pollfds[CH_MAX + 1] = {{0,},};
         int numfds = 0, exitPipeIdx;
-        int firstFd = -1;
-        int secondFd = -1;
 
         /* add our pipe for signaling a shutdown */
         pollfds[numfds].fd = pipeFd;
@@ -313,7 +316,7 @@ static void* vendorWorker(void *pipeFdP)
         }
 
         for(i = 0; i < numfds; i++) {
-            uint8_t buf[5], extraSz = 0, hdrSz = 0;
+            uint8_t buf[5], hdrSz = 0;
             uint32_t sz, packetOffset = 0;
             uint8_t *packet;
 

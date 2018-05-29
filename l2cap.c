@@ -555,7 +555,6 @@ static uint8_t l2cDataSendOnAclLink(struct l2cAclConn *aclConn, const void *hdr,
 static bool mChipJointBuffers;
 static uint16_t mChipBufLenEdr;
 static uint16_t mChipBufLenLe;
-static uint16_t mChipBufNumEdr;
 static uint16_t mChipBufNumLe;
 
 static pthread_t mSvcWorker;
@@ -1204,7 +1203,6 @@ static struct l2cConn* l2cNewConnStruct(uint8_t state, uniq_t acl, uint16_t loca
  */
 static void l2cHandleConnReq(struct l2cAclConn *aclConn, uint8_t ident, psm_t psm, uint16_t remCh)
 {
-    bool invalidPsm = false;
     struct l2cPsmSvc *svc = NULL;
     struct l2cConn *conn = NULL;
     uint16_t localCh = 0;
@@ -2643,13 +2641,12 @@ static uint8_t l2cAdvUserTx(struct l2cConn *conn, sg data) /* -> L2C_TX_* */
  */
 static sg l2cAdvTxWrapNextPacket(struct l2cConn *conn)
 {
-    uint16_t len, control = 0, fcs = 0, hdrSz = sizeof(struct l2cFrmHdr) + sizeof(uint16_t);
+    uint16_t control = 0, fcs = 0, hdrSz = sizeof(struct l2cFrmHdr) + sizeof(uint16_t);
     struct l2cAdvFrag *frag = conn->advTxFrags + conn->advTxSendPos;
     uint8_t buf[sizeof(struct l2cFrmHdr) + sizeof(uint16_t)];
     struct l2cFrmHdr *hdr = (struct l2cFrmHdr*)buf;
     uint16_t *ctrlP = (uint16_t*)(hdr + 1);
     sg packet = frag->data;
-    bool needLen = false;
 
     if (!packet)
         return NULL;
@@ -2691,8 +2688,6 @@ static sg l2cAdvTxWrapNextPacket(struct l2cConn *conn)
  */
 static void l2cAdvTxUnWrapNextPacket(struct l2cConn *conn, sg packet)
 {
-    struct l2cAdvFrag *frag = conn->advTxFrags + conn->advTxSendPos;
-
     if (conn->fcs)
         sgTruncBack(packet, sizeof(uint16_t));
 
@@ -2742,7 +2737,6 @@ static bool l2cAdvMayTxLocked(void)
 {
     struct l2cConn *orig, *conn;
     struct l2cAclConn *aclConn;
-    uint8_t sendResult;
     bool ret = false, isFrmS = false;
     sg packet;
 
@@ -2949,7 +2943,6 @@ static bool l2cAdvRxReass(struct l2cConn *conn)
 {
     struct l2cAdvFrag *frag = conn->advRxFrags + conn->advRxFirstMissing;
     uint8_t buf[sizeof(uint16_t)];
-    bool ret = false;
 
     if (!frag->data)
         return false;
@@ -3122,7 +3115,6 @@ static bool l2cHandleCompleteDataFrameRx(struct l2cAclConn *aclConn, struct l2cF
             uint16_t ctrl, fcsGot, fcsCalc, reqSeq;
 
             if (cur->fcs) {
-                void *iter;
                 if (sgLength(payload) < 2 || sizeof(fcsGot) != sgSerialize(payload, sgLength(payload) - sizeof(fcsGot), sizeof(fcsGot), &fcsGot)) {
                     logd("FCS on and cannot read FCS\n");
                     goto badFrame;
@@ -3821,8 +3813,7 @@ void l2cWorkFreeService(void *workItem)
  */
 int l2cInit(void)
 {
-    int i, ret;
-
+    int ret;
 
     mNextPsm = 0x1001;
 
@@ -4829,7 +4820,6 @@ static void l2cTryMakeSendProgress(bool forLeBuffers)
     uint8_t ret;
     sg *qBufP;
     hci_conn_t sendConn;
-    uint16_t wantSendLen, actualSendLen;
     bool sendFirst;
     sg sendSg, remainSg;
     bool hadData = true;
@@ -5138,7 +5128,6 @@ uint8_t l2cApiDataTx(l2c_handle_t handle, sg data)
 uint8_t l2cApiConnectionlessDataTx(const struct bt_addr *addr, psm_t psm, sg data)
 {
     struct l2cAclConn* aclConn;
-    hci_conn_t aclConnID = 0;
     bool ret;
 
     if (!l2cPsmValid(psm)) {
