@@ -7,11 +7,13 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <regex.h>
 
 #include "newblue-macros.h"
 #include "gatt-builtin.h"
 #include "vendorLib.h"
 #include "l2cap.h"
+#include "timer.h"
 #include "aapi.h"
 #include "util.h"
 #include "uuid.h"
@@ -124,10 +126,16 @@ uint16_t mGattHandleCurTimeCfg = 0;
 uint16_t mGattHandleLocalTimeInfo = 0;
 uint16_t mGattHandleReferenceTimeInfo = 0;
 
+static uniq_t terminateTimerId = 0;
+static bool terminate = false;
+
 static hci_adv_set_t mAdvSet[3] = {0,};
 
 static struct bt_addr mAddrs[3];
-uniq_t mObserverId = 0;
+static struct bt_addr mInputDevAddr;
+uniq_t mPairStateObserverId = 0;
+uniq_t mPasskeyDisplayObserverId = 0;
+uniq_t mPasskeyRequestObserverId = 0;
 
 struct dateTime {
     uint16_t year;    // used in LE service with little endian.
@@ -388,15 +396,13 @@ out:
     return svc;
 }
 
-void pairObserverCallback(void *observerData, const void *pairStateChange, uniq_t observerId) {
+void pairStateObserverCallback(void *observerData, const void *pairStateChange, uniq_t observerId) {
     struct smPairStateChange state;
 
-    if (observerId != mObserverId || !pairStateChange)
+    if (observerId != mPairStateObserverId || !pairStateChange)
         return;
 
     state = *(struct smPairStateChange *)pairStateChange;
-    if (!isSameAddr(&state.peerAddr, &mAddrs[1]))
-        return;
 
     logi("Pairing state with "ADDRFMT" changed to %d with err %d\n", ADDRCONV(state.peerAddr),
          state.pairState, state.pairErr);
@@ -406,6 +412,49 @@ void pairObserverCallback(void *observerData, const void *pairStateChange, uniq_
         sleep(5);
         smUnpair(&state.peerAddr);
     }
+}
+
+void passkeyDisplayObserverCallback(void *observerData,
+                                    const struct smPasskeyDisplay *passkeyDisplay,
+                                    uniq_t observerId) {
+
+    if (observerId != mPasskeyDisplayObserverId || !passkeyDisplay)
+        return;
+
+    if (passkeyDisplay->valid)
+        logi("Please enter %06d with the keyboard with "ADDRFMT"\n", passkeyDisplay->passkey,
+             ADDRCONV(passkeyDisplay->peerAddr));
+    else
+        logi("The passkey section expired with the keyboard with "ADDRFMT"\n",
+             ADDRCONV(passkeyDisplay->peerAddr));
+}
+
+void passkeyRequestObserverCallback(void *observerData,
+                                    const struct smPasskeyRequest *passkeyRequest,
+                                    uniq_t observerId) {
+    uint32_t passkey = 0;
+
+    if (observerId != mPasskeyRequestObserverId || !passkeyRequest)
+        return;
+
+    if (terminateTimerId) {
+        timerCancel(terminateTimerId);
+        terminateTimerId = 0;
+    }
+
+    if (passkeyRequest->valid) {
+        logi("Please enter the passkey with the keyboard to pair with "ADDRFMT":\n",
+             ADDRCONV(passkeyRequest->peerAddr));
+        if (scanf("%u", &passkey) != 1)
+            return;
+        smProvidePasskey(&passkeyRequest->peerAddr, true, passkey);
+    } else {
+        logi("The passkey section expired with the keyboard with "ADDRFMT"\n",
+             ADDRCONV(passkeyRequest->peerAddr));
+    }
+
+    sleep(3);
+    terminate = true;
 }
 
 static void gattSvcFoundCbk(gatt_client_conn_t conn, const struct uuid *uuid, bool primary, uint16_t firstHandle, uint16_t numHandles, uint8_t status)
@@ -462,11 +511,17 @@ static bool eirNameMatch(const uint8_t *data, uint32_t len, const char *name)
     return false;
 }
 
+static void terminateCbk(uniq_t which,  uint64_t cbkData) {
+    if (which != terminateTimerId)
+        return;
+    terminate = true;
+}
+
 int main(int argc, char** argv)
 {
     static const uint8_t mac[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
     static const struct bt_addr addr = {
-      .type = BT_ADDR_TYPE_LE_RANDOM, .addr = {0x50, 0x8E, 0xFC, 0x0A, 0x11, 0x11}}; //adv set 0
+      .type = BT_ADDR_TYPE_LE_RANDOM, .addr = {0xFF, 0x8E, 0xFC, 0x0A, 0x11, 0xFF}}; //adv set 0
     sem_t sem;
 
     fprintf(stderr, "NewBlue test\n");
@@ -500,10 +555,12 @@ int main(int argc, char** argv)
     if (!gattBuiltinInit())
         loge("Failed to init GATT services\n");
 
-    if (!smInit(HCI_DISP_CAP_NONE)) {
+    if (!smInit(HCI_DISP_CAP_KBD_DISP)) {
         loge("Failed to init SM\n");
         goto cleanup;
     }
+
+    timersInit();
 
     //initialize addresses for adv sets
     mAddrs[0] = addr;
@@ -581,26 +638,51 @@ int main(int argc, char** argv)
         } else
             loge("Failed to do LE discovery\n");
     }
-    else if (argc == 2 && !strcmp(argv[1], "pair")) {
+    else if ((argc == 2 && !strcmp(argv[1], "pair")) || (argc == 3 && !strcmp(argv[1], "pair"))) {
         /*
          * Option: pair
-         * Use:    set up a GATT connection with the device with mAddrs[1] and start pairing
+         * Use:    set up a GATT connection with the device with mAddrs[0] or the provided address
+         *         and start pairing
          */
 
         bool found = false;
         uniq_t scanId;
         unsigned i, round = 3;
         struct LeDiscDev *leDevices = NULL, *t;
-        struct smPairSecurityRequirements secReqs = {.bond = false, .mitm = false};
+        struct smPairSecurityRequirements secReqs = {.bond = true, .mitm = true};
+        regex_t regex;
+
+        if (argc == 3) {
+            if (regcomp(&regex, "^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$", REG_EXTENDED) != 0 ||
+                regexec(&regex, argv[2], 0, NULL, 0) != 0) {
+                loge("Invalid mac address provided\n");
+                goto cleanup;
+            }
+            regfree(&regex);
+
+            sscanf(argv[2], "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", &mInputDevAddr.addr[5],
+                   &mInputDevAddr.addr[4], &mInputDevAddr.addr[3], &mInputDevAddr.addr[2],
+                   &mInputDevAddr.addr[1], &mInputDevAddr.addr[0]);
+            mInputDevAddr.type = BT_ADDR_TYPE_LE_RANDOM;
+        }
+
+        // register as an observer to respond to passkey display
+        mPasskeyDisplayObserverId =
+            smRegisterPasskeyDisplayObserver(NULL, passkeyDisplayObserverCallback);
+        if (!mPasskeyDisplayObserverId) {
+            loge("Failed to register as an observer to passkey display\n");
+            goto cleanup;
+        }
 
         // register as an observer to pairing state changes
-        mObserverId = smRegisterPairObserver(NULL, pairObserverCallback);
-        if (!mObserverId) {
+        mPairStateObserverId = smRegisterPairStateObserver(NULL, pairStateObserverCallback);
+        if (!mPairStateObserverId) {
             loge("Failed to register as an observer to pairing state changes\n");
             goto cleanup;
         }
 
-        logi("Scanning for device "ADDRFMT" ...\n", ADDRCONV(mAddrs[1]));
+        logi("Scanning for device "ADDRFMT" ...\n",
+             ADDRCONV(argc == 3 ? mInputDevAddr : mAddrs[0]));
         for (i = 0; i < round; ++i) {
             scanId = hciDiscoverLeStart(leDiscoveryCbk, &leDevices, true, false);
             if (!scanId) {
@@ -619,7 +701,8 @@ int main(int argc, char** argv)
                 leDevices = leDevices->next;
                 logi("Device %c %02X:%02X:%02X:%02X:%02X:%02X\n", t->randomAddr ? 'R' : 'P',
                      t->mac[5], t->mac[4], t->mac[3], t->mac[2], t->mac[1], t->mac[0]);
-                if ((found = !memcmp(mAddrs[1].addr, t->mac, sizeof(t->mac)))) {
+                if ((found = !memcmp((argc == 3 ? mInputDevAddr.addr : mAddrs[0].addr), t->mac,
+                                     sizeof(t->mac)))) {
                     found = true;
                     break;
                 } else {
@@ -630,8 +713,8 @@ int main(int argc, char** argv)
 
             if (found) {
                 logi("Target device found, try to pair with device "ADDRFMT" ...\n",
-                     ADDRCONV(mAddrs[1]));
-                smPair(&mAddrs[1], &secReqs);
+                     ADDRCONV(argc == 3 ? mInputDevAddr : mAddrs[0]));
+                smPair((argc == 3 ? &mInputDevAddr : &mAddrs[0]), &secReqs);
                 break;
             }
 
@@ -645,7 +728,8 @@ int main(int argc, char** argv)
     else if (argc == 1) {
         /*
          * Option: none
-         * Use:    set up GATT server with Current Time Service and start 3 advertisements
+         * Use:    set up GATT server with Current Time Service and start 3 advertisements and wait
+         *         for either pairing or connection request
          */
 
         unsigned i;
@@ -675,6 +759,14 @@ int main(int argc, char** argv)
         gattBuiltinSetDevName("SuperLongDeviceNameThatWillProbablyNotFitIntoASinglePacketEver");
         gattBuiltinSetPreferredConnParamsWhenSlave(20, 30, 40, 400);
         gattBuiltinSetAppearance(GAP_APPEAR_GENERIC_WATCH);
+
+        // register as an observer to respond to passkey display
+        mPasskeyRequestObserverId =
+            smRegisterPasskeyRequestObserver(NULL, passkeyRequestObserverCallback);
+        if (!mPasskeyRequestObserverId) {
+            loge("Failed to register as an observer to passkey request\n");
+            goto cleanup;
+        }
 
         //now let's try some multi-adv
         for (i = 0; i < sizeof(mAdvSet) / sizeof(*mAdvSet); i++) {
@@ -725,6 +817,17 @@ int main(int argc, char** argv)
                 logi(" adv set %u is at %d dBm with addr "ADDRFMT"\n", i, power, ADDRCONV(mAddrs[i]));
         }
 
+        //if there is no passkey request callback, the timer will be fired after 20 seconds
+        terminateTimerId = timerSet(20000 /* 20 secs */, terminateCbk, 0);
+        if (!terminateTimerId) {
+            logw("Failed to set timer for termination");
+            terminate = true;
+        }
+
+        //wait for either timer with terminateTimerId to fire or the passkey request callback
+        while (!terminate)
+           sleep(1);
+
         logi("waiting...press a key\n");
         getchar();
 
@@ -751,6 +854,7 @@ int main(int argc, char** argv)
 
 cleanup:
     logi("bringing down\n");
+    timersDeinit();
     smDeinit();
     gattBuiltinDeinit();
     gattProfileDeinit();

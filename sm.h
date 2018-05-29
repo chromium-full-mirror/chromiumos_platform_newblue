@@ -148,21 +148,48 @@
  */
 #define SM_PAIR_ERR_UNKNOWN                20
 
+typedef uint8_t SmPairState;
+typedef uint8_t SmPairErr;
+
 /* SM calls this to notify an observer about the pairing state change event.
  * observers need to cast pairStateChange to struct smPairStateChange, and there is no ownership
  * transition.
  */
 typedef void (*smPairStateChangeCbk)(void *observerData, const void *pairStateChange,
-                                     uniq_t observerId);
-
-typedef uint8_t smPairState;
-typedef uint8_t smPairErr;
-
+    uniq_t observerId);
 struct smPairStateChange {
-    smPairState pairState;
-    smPairErr pairErr;
+    SmPairState pairState;
+    SmPairErr pairErr;
     struct bt_addr peerAddr;
 };
+
+struct smPasskeyDisplay {
+    bool valid;              /* this indicate whether a passkey display is valid or not. if true,
+                                the passkey value should be displayed; if false, the passkey
+                                session is done or canceled */
+    uint32_t passkey;        /* when Passkey Entry pairing is selected, this is the passkey we
+                                generate for display. an observer is responsible of display the
+                                value with range 000,000 to 999,999 without eliminating zeros or
+                                propagate this value to the host of display */
+    struct bt_addr peerAddr; /* the peer device to display to */
+};
+/* SM calls this to notify an observer about the passkey generated for Passkey Entry pairing for
+ * display purpose. there is no ownership transition of struct smPasskeyDisplay.
+ */
+typedef void (*smPasskeyDisplayCbk)(void *observerData,
+    const struct smPasskeyDisplay *passkeyDisplay, uniq_t observerId);
+
+struct smPasskeyRequest {
+    bool valid;              /* this indicate whether a passkey request is valid or not. if true,
+                                the passkey request should be displayed; if false, the passkey
+                                request is done or canceled */
+    struct bt_addr peerAddr; /* the peer device which displays the passkey */
+};
+/* SM calls this to notify an observer about the passkey request for input purpose. there is no
+ * ownership transition of struct smPasskeyRequest.
+ */
+typedef void (*smPasskeyRequestCbk)(void *observerData,
+    const struct smPasskeyRequest *passkeyRequest, uniq_t observerId);
 
 struct smPairSecurityRequirements {
     bool bond; /* indicate whether the bonding should be performed with a peer device */
@@ -187,9 +214,27 @@ void smDeinit(void) NEWBLUE_EXPORT;
 /* HIGHER LAYER INTERFACE API */
 
 /* call this to register as an observer of the pairing state changes with peer devices */
-uniq_t smRegisterPairObserver(void *observerData, smPairStateChangeCbk cbk) NEWBLUE_EXPORT;
-/* call this to unregister as an observer of the pairing state changes with peer devices*/
-void smUnregisterPairObserver(uniq_t observerId) NEWBLUE_EXPORT;
+uniq_t smRegisterPairStateObserver(void *observerData, smPairStateChangeCbk cbk) NEWBLUE_EXPORT;
+/* call this to unregister as an observer of the pairing state changes with peer devices */
+void smUnregisterPairStateObserver(uniq_t observerId) NEWBLUE_EXPORT;
+
+/* call this to register as the observer of the pairing passkey display. there can be only one
+ * observer/handler registered.
+ */
+uniq_t smRegisterPasskeyDisplayObserver(void *observerData, smPasskeyDisplayCbk cbk)
+    NEWBLUE_EXPORT;
+/* call this to unregister as the observer of the pairing passkey display */
+void smUnregisterPasskeyDisplayObserver(uniq_t observerId) NEWBLUE_EXPORT;
+
+/* call this to register as the observer of the pairing passkey request. there can be only one
+ * observer who is responsible for providing the passkey by calling smProvidePasskey once the input
+ * of passkey is done.
+ */
+uniq_t smRegisterPasskeyRequestObserver(void *observerData, smPasskeyRequestCbk cbk)
+    NEWBLUE_EXPORT;
+/* call this to unregister as the observer of the pairing passkey request */
+void smUnregisterPasskeyRequestObserver(uniq_t observerId) NEWBLUE_EXPORT;
+
 /* call this to pair with a remote LE device, the state of pairing will notify via
  * smPairStateChangeCbk
  */
@@ -203,6 +248,8 @@ void smUnpair(const struct bt_addr *addr) NEWBLUE_EXPORT;
 bool smGenResolvableAddr(struct bt_addr *addr) NEWBLUE_EXPORT;
 /* call this to generate a non-resolvable private address for advertising */
 bool smGenNonResolvableAddr(struct bt_addr *addr) NEWBLUE_EXPORT;
+/* call this to respond to the passkey request from addr */
+void smProvidePasskey(const struct bt_addr *addr, bool provided, uint32_t passkey) NEWBLUE_EXPORT;
 
 
 /* ONLY FOR UNITTEST PURPOSE */

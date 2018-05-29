@@ -52,6 +52,7 @@ libnewblue_HEADERS = att.h \
                      newblue-macros.h \
                      sg.h \
                      sm.h \
+                     timer.h \
                      types.h \
                      uniq.h \
                      uuid.h
