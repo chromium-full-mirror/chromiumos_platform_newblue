@@ -36,7 +36,7 @@ TEST_F(SecurityManagerTestSuite, CorrectnessOfSecFuncESample) {
 
     uint8_t out[16] = {0x00};
 
-    smEncrypt(out, plainText, key);
+    smEncryptForTest(out, plainText, key);
 
     for (uint16_t i = 0; i < sizeof(encryptedData); ++i)
         ASSERT_EQ(out[i], encryptedData[i]);
@@ -60,7 +60,7 @@ TEST_F(SecurityManagerTestSuite, CorrectnessOfConfValCalcFuncC1Sample) {
 
     uint8_t out[16] = {0x00};
 
-    smCalcConfVal(out, k, r, pres, preq, iat, ia, rat, ra);
+    smCalcConfValForTest(out, k, r, pres, preq, iat, ia, rat, ra);
 
     for (uint16_t i = 0; i < sizeof(expected); ++i)
         ASSERT_EQ(out[i], expected[i]);
@@ -83,7 +83,7 @@ TEST_F(SecurityManagerTestSuite, CorrectnessOfConfValCalcFuncC1Actual) {
 
     uint8_t out[16] = {0x00};
 
-    smCalcConfVal(out, k, r, pres, preq, iat, ia, rat, ra);
+    smCalcConfValForTest(out, k, r, pres, preq, iat, ia, rat, ra);
 
     for (uint16_t i = 0; i < sizeof(expected); ++i)
         ASSERT_EQ(out[i], expected[i]);
@@ -101,7 +101,7 @@ TEST_F(SecurityManagerTestSuite, CorrectnessOfSTKCalcFuncS1Sample) {
                             0x5b, 0x42, 0x16, 0xae, 0x79, 0x6d, 0xa0, 0x62,};
     uint8_t out[16] = {0x00};
 
-    smCalcKey(out, k, r1, r2);
+    smCalcKeyForTest(out, k, r1, r2);
 
     for (uint16_t i = 0; i < sizeof(expected); ++i)
         ASSERT_EQ(out[i], expected[i]);
@@ -118,7 +118,7 @@ TEST_F(SecurityManagerTestSuite, CorrectnessOfSTKCalcFuncS1Actual) {
                             0x92, 0x15, 0x9B, 0x48, 0x0E, 0xEA, 0xF6, 0x77,};
     uint8_t out[16] = {0x00};
 
-    smCalcKey(out, k, r1, r2);
+    smCalcKeyForTest(out, k, r1, r2);
 
     for (uint16_t i = 0; i < sizeof(expected); ++i)
         ASSERT_EQ(out[i], expected[i]);
@@ -136,7 +136,7 @@ TEST_F(SecurityManagerTestSuite, CorrectnessOfAddressHashActual) {
     for (i = 2; i >= 0; --i)
         hash = hash << 8 | addr[i];
 
-    ASSERT_EQ(smAddressHash(rand, irk), hash);
+    ASSERT_EQ(smAddressHashForTest(rand, irk), hash);
 }
 
 } // namespace

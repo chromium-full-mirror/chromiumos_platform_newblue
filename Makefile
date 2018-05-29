@@ -1,99 +1,77 @@
-# Copyright 2017 The Chromium OS Authors. All rights reserved.
+# Copyright 2018 The Chromium OS Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
+# libchrome is not used in Newblue. Disable this to avoid warnings from
+# common.mk.
+BASE_VER=0
+include common.mk
 
-# Hardcode these for minnie.
-# TODO: make this configurable for all boards
-prefix = /usr
-exec_prefix = $(prefix)
-bindir = $(exec_prefix)/bin
-libdir = $(exec_prefix)/lib
-includedir = $(prefix)/include
+OUT ?= $(CURDIR)/build-opt-local
 
-INSTALL = /usr/bin/install
-CFLAGS = -Wall -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -g  -I. -DEXECUTABLE -fPIC
-CPPFLAGS = -Wall -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -g  -I. -DEXECUTABLE -D_UNITTEST_ -DPREF_PATH=\"/tmp/bt.newblue.prefs\"
+libdir ?= /usr/lib
+includedir ?= /usr/include
 
-TEST := new_blue_test
+INSTALL ?= install
 
-# for pthread_setname_np
-CFLAGS += -D_GNU_SOURCE
+CPPFLAGS += -I. -DEXECUTABLE -D_GNU_SOURCE
+CFLAGS += -Wno-unused-function
+LDLIBS += -lpthread
 
-OBJ =                       \
-    att.o                   \
-    gatt.o                  \
-    hci.o                   \
-    l2cap.o                 \
-    mt.o                    \
-    multiNotif.o            \
-    persist.o               \
-    sendQ.o                 \
-    sg.o                    \
-    sm.o                    \
-    timer.o                 \
-    uniq.o                  \
-    vendorLib.o             \
-    uuid.o                  \
-    gatt-builtin.o          \
-    workQueue.o
+.PHONY: install install_files test
 
-OBJ_TEST =                  \
-    test.o
+common_OBJS = att.o \
+              gatt.o \
+              gatt-builtin.o \
+              hci.o \
+              l2cap.o \
+              mt.o \
+              multiNotif.o \
+              persist.o \
+              sendQ.o \
+              sg.o \
+              sm.o \
+              timer.o \
+              uniq.o \
+              uuid.o \
+              vendorLib.o \
+              workQueue.o
 
-LIBNEWBLUE = libnewblue.so
+# Newblue Library - libnewblue.so
+libnewblue_LIBS = -ldl -lrt
+libnewblue_OBJS = $(common_OBJS) \
+                  config.o
+libnewblue_DEPS = CC_LIBRARY(hci_plugin/libbt-vendor.so)
+# Headers exposed
+libnewblue_HEADERS = att.h \
+                     bt.h \
+                     gatt.h \
+                     gatt-builtin.h \
+                     hci.h \
+                     l2cap.h \
+                     sm.h \
+                     uniq.h
 
-.PHONY: install clean
+CC_LIBRARY(libnewblue.so): $(libnewblue_OBJS) $(libnewblue_DEPS)
+CC_LIBRARY(libnewblue.so): LDLIBS += $(libnewblue_LIBS)
+clean: CLEAN(libnewblue.so)
+all: CC_LIBRARY(libnewblue.so)
 
-$(TEST): $(OBJ) $(OBJ_TEST) usb_vendor_plugin hci_vendor_plugin
-	$(CC) $(CFLAGS) -o $@ -g $(OBJ) $(OBJ_TEST) -ldl -lpthread -lrt
+# Newblue Library for Unit Testing - libnewblue_for_unittest.pie.a
+libnewblue_for_unittest_OBJS = $(common_OBJS) \
+                               config_for_unittest.o
+CC_STATIC_LIBRARY(libnewblue_for_unittest.pie.a): $(libnewblue_for_unittest_OBJS)
+clean: CLEAN(libnewblue_for_unittest.pie.a)
+test: CC_STATIC_LIBRARY(libnewblue_for_unittest.pie.a)
 
-$(LIBNEWBLUE): $(OBJ)
-	$(CC) -shared -o $@ -ldl -pthread $(OBJ)
+# Newblue Library Manual Test Program - new_blue_test
+libnewblue_test_DEPS = CC_LIBRARY(libnewblue.so) $(libnewblue_DEPS)
+CC_BINARY(new_blue_test): test.o $(libnewblue_test_DEPS)
+CC_BINARY(new_blue_test): LDLIBS += $(libnewblue_LIBS)
+clean: CLEAN(new_blue_test)
+all: CC_BINARY(new_blue_test)
 
-OBJ_UNITTEST = \
-	tests/unittest.o \
-	tests/sm_unittest.o \
-	tests/persist_unittest.o
-
-HEADERS = \
-	att.h \
-	bt.h \
-	gatt.h \
-	gatt-builtin.h \
-	hci.h \
-	l2cap.h \
-	persist.h \
-	sg.h \
-	sm.h \
-	timer.h \
-	types.h \
-	uniq.h
-
-new_blue_unittest: $(OBJ_UNITTEST) $(OBJ)
-	$(CXX) $(CPPFLAGS) -o $@ $^ -lgtest -ldl -lpthread
-
-clean: usb_vendor_plugin_clean hci_vendor_plugin_clean
-	@rm -f $(OBJ) $(OBJ_TEST) $(TEST) new_blue_unittest $(OBJ_UNITTEST)
-
-all: $(TEST) usb_vendor_plugin hci_vendor_plugin new_blue_unittest
-
-usb_vendor_plugin:
-	$(MAKE) -C usb-hci
-
-usb_vendor_plugin_clean:
-	$(MAKE) -C usb-hci clean
-
-hci_vendor_plugin:
-	$(MAKE) -C hci_plugin CC=$(CC)
-
-hci_vendor_plugin_clean:
-	$(MAKE) -C hci_plugin clean
-
-install: $(TEST) $(LIBNEWBLUE)
-	$(INSTALL) --mode 755 -d $(DESTDIR)$(bindir)
-	$(INSTALL) --mode 755 -t $(DESTDIR)$(bindir) $(TEST)
-	$(INSTALL) --mode 755 -d $(DESTDIR)$(includedir)/newblue
-	$(INSTALL) --mode 644 -t $(DESTDIR)$(includedir)/newblue $(HEADERS)
-	$(INSTALL) --mode 755 -d $(DESTDIR)$(libdir)
-	$(INSTALL) --mode 755 -t $(DESTDIR)$(libdir) $(LIBNEWBLUE)
-	$(MAKE) libdir=$(libdir) -C hci_plugin install
+install_files: all
+	$(INSTALL) -D $(OUT)/libnewblue.so $(DESTDIR)$(libdir)/libnewblue.so
+	$(INSTALL) -t $(DESTDIR)$(includedir)/newblue -D $(libnewblue_HEADERS)
+	$(INSTALL) -D $(OUT)/hci_plugin/libbt-vendor.so $(DESTDIR)$(libdir)/libbt-vendor.so
+install: install_files

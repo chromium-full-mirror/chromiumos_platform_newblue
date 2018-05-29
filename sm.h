@@ -205,12 +205,12 @@ bool smGenResolvableAddr(struct bt_addr *addr) NEWBLUE_EXPORT;
 bool smGenNonResolvableAddr(struct bt_addr *addr) NEWBLUE_EXPORT;
 
 
-/* EXPOSED ONLY FOR UNITTEST PURPOSE */
+/* ONLY FOR UNITTEST PURPOSE */
 
-void smEncrypt(uint8_t* dst, const uint8_t *src, const uint8_t *key);
-void smCalcConfVal(uint8_t* out, const uint8_t *k, const uint8_t *r, uint64_t pres, uint64_t preq,
-                   bool iat, uint64_t ia, bool rat, uint64_t ra);
-void smCalcKey(uint8_t *out, const uint8_t *k, const uint8_t *r1, const uint8_t *r2);
-uint32_t smAddressHash(uint32_t r, const uint8_t *key);
+void smEncryptForTest(uint8_t* dst, const uint8_t *src, const uint8_t *key);
+void smCalcConfValForTest(uint8_t* out, const uint8_t *k, const uint8_t *r, uint64_t pres,
+    uint64_t preq, bool iat, uint64_t ia, bool rat, uint64_t ra);
+void smCalcKeyForTest(uint8_t *out, const uint8_t *k, const uint8_t *r1, const uint8_t *r2);
+uint32_t smAddressHashForTest(uint32_t r, const uint8_t *key);
 
 #endif /* _SM_H_ */

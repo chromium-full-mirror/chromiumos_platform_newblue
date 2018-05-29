@@ -717,7 +717,7 @@ void persistStore(void)
 fail:
     close(fd);
     pthread_mutex_unlock(&mLock);
-    unlink(PREF_PATH); /* better no file than bad file */
+    unlink(pref_path); /* better no file than bad file */
 }
 
 /*
@@ -766,7 +766,7 @@ void persistLoad(void)
     mPropsHead = NULL;
     mPropsTail = NULL;
 
-    fd = open(PREF_PATH, O_RDONLY);
+    fd = open(pref_path, O_RDONLY);
     if (fd == -1) {
         logi("Preferences not found\n");
         goto out;

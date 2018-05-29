@@ -11,6 +11,7 @@
 extern "C" {
 #endif
 
+#include "../config.h"
 #include "../hci.h"
 #include "../persist.h"
 
@@ -95,7 +96,7 @@ class PersistTestSuite: public testing::Test {
         persistAddKnownDev(&devTwoAddr, devTwoName.c_str(), &nameTwoLen, true, NULL);
     }
     void TearDown() override {
-        unlink(PREF_PATH);
+        unlink(pref_path);
     }
 
   private:

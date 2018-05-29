@@ -24,12 +24,6 @@
 
 #include "sm.h"
 
-#ifdef _UNITTEST_
-#define static_or_test
-#else
-#define static_or_test static
-#endif
-
 /* definition of structs and macros based on Bluetooth spec v4.0 */
 /* packet types */
 #define SM_PAIRING_REQ                  0x01 /* struct smPairReqResp */
@@ -242,9 +236,9 @@ static bool smGenRandNum(uint8_t *out, uint8_t numLen);
 static bool smGenLtk(struct smInstance *inst);
 static bool smGenEdiv(uint16_t *out, const struct bt_addr *peerAddr, uint16_t div, uint64_t rand,
                       bool check);
-static_or_test void smEncrypt(uint8_t* dst, const uint8_t *src, const uint8_t *key);
+static void smEncrypt(uint8_t* dst, const uint8_t *src, const uint8_t *key);
 static void smNotifyPairObserver(const struct bt_addr *addr, smPairState state, smPairErr err);
-static_or_test uint32_t smAddressHash(uint32_t r, const uint8_t *key);
+static uint32_t smAddressHash(uint32_t r, const uint8_t *key);
 static bool smResolveAddr(struct bt_addr *addr, const struct bt_addr *peerAddr);
 
 /* sendQ for packet transmissions */
@@ -3024,7 +3018,7 @@ void smSignatureCalc(sg m, const uint8_t *key, uint8_t *sig)
  * RETURN:   NONE
  * NOTES:    The SM docs call this the s1() function
  */
-static_or_test void smCalcKey(uint8_t *out, const uint8_t *k, const uint8_t *r1, const uint8_t *r2)
+static void smCalcKey(uint8_t *out, const uint8_t *k, const uint8_t *r1, const uint8_t *r2)
 {
     uint8_t t[SM_BLOCK_LEN];
     uint8_t i;
@@ -3051,7 +3045,7 @@ static_or_test void smCalcKey(uint8_t *out, const uint8_t *k, const uint8_t *r1,
  * RETURN:   NONE
  * NOTES:    The SM docs call this the c1() function
  */
-static_or_test void smCalcConfVal(uint8_t* out, const uint8_t *k, const uint8_t *r, uint64_t pres,
+static void smCalcConfVal(uint8_t* out, const uint8_t *k, const uint8_t *r, uint64_t pres,
                                   uint64_t preq, bool iat, uint64_t ia, bool rat, uint64_t ra)
 {
     uint8_t p1[SM_BLOCK_LEN];
@@ -3413,7 +3407,7 @@ static bool smGenEdiv(uint16_t *out, const struct bt_addr *peerAddr, uint16_t di
  * RETURN:   the 24-bit hash
  * NOTES:    The SM docs call this the ah() function
  */
-static_or_test uint32_t smAddressHash(uint32_t r, const uint8_t *key)
+static uint32_t smAddressHash(uint32_t r, const uint8_t *key)
 {
     uint8_t in[SM_BLOCK_LEN] = {0,}, out[SM_BLOCK_LEN];
 
@@ -3549,7 +3543,7 @@ static void smEncryptExpandKey(uint8_t *expanded, const uint8_t *key)
  * RETURN:   NONE
  * NOTES:    The SM docs call this the e() function
  */
-static_or_test void smEncrypt(uint8_t* dst, const uint8_t *src, const uint8_t *key)
+static void smEncrypt(uint8_t* dst, const uint8_t *src, const uint8_t *key)
 {
     uint8_t expandedKey[176];
     uint8_t state[SM_BLOCK_LEN];
@@ -3578,4 +3572,67 @@ static_or_test void smEncrypt(uint8_t* dst, const uint8_t *src, const uint8_t *k
     for(i = 0; i < 4; i++)
         for(j = 0; j < 4; j++)
             *dst++ = state[i + 4 * j];
+}
+
+/*
+ * FUNCTION: smEncryptForTest
+ * USE:      Perform an AES-128 encryption
+ * PARAMS:   dst - place to store result (SM_ENCRYPT_DATA_LEN bytes)
+ *           src - the plain text (SM_ENCRYPT_DATA_LEN bytes)
+ *           key - the key (SM_ENCRYPT_DATA_LEN bytes)
+ * RETURN:   NONE
+ * NOTES:    The SM docs call this the e() function
+ */
+void smEncryptForTest(uint8_t* dst, const uint8_t *src, const uint8_t *key)
+{
+    smEncrypt(dst, src, key);
+}
+
+/*
+ * FUNCTION: smCalcConfValForTest
+ * USE:      Perform the calculation of the confirmation value
+ * PARAMS:   out - store the result here
+ *           k - the k value as per spec
+ *           r - the r value as per spec
+ *           pres - the pres value as per spec, only bottom 56 bit used
+ *           preq - the pres value as per spec, only bottom 56 bit used
+ *           iat - the iat value as per spec
+ *           ia - the ia value as per spec, only bottom 48 bits used
+ *           rat - the rat value as per spec
+ *           ra - the ra value as per spec, only bottom 48 bits used
+ * RETURN:   NONE
+ * NOTES:    The SM docs call this the c1() function
+ */
+void smCalcConfValForTest(uint8_t* out, const uint8_t *k, const uint8_t *r, uint64_t pres,
+                            uint64_t preq, bool iat, uint64_t ia, bool rat, uint64_t ra)
+{
+    smCalcConfVal(out, k, r, pres, preq, iat, ia, rat, ra);
+}
+
+/*
+ * FUNCTION: smCalcKeyForTest
+ * USE:      Perform the calculation of a key
+ * PARAMS:   out - store the result here
+ *           k - the k value as per spec
+ *           p1 - the p1 value as per spec
+ *           p2 - the p2 calue as per spec
+ * RETURN:   NONE
+ * NOTES:    The SM docs call this the s1() function
+ */
+void smCalcKeyForTest(uint8_t *out, const uint8_t *k, const uint8_t *r1, const uint8_t *r2)
+{
+    smCalcKey(out, k, r1, r2);
+}
+
+/*
+ * FUNCTION: smAddressHashForTest
+ * USE:      Perform 24bit->24bit hash for address resolution
+ * PARAMS:   r - the 24 bits to hash
+ *           key - the key
+ * RETURN:   the 24-bit hash
+ * NOTES:    The SM docs call this the ah() function
+ */
+uint32_t smAddressHashForTest(uint32_t r, const uint8_t *key)
+{
+    return smAddressHash(r, key);
 }

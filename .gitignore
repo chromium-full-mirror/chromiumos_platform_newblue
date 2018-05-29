@@ -1,3 +1,9 @@
 *.o
 *.so
+*.o.depends
+*.pic.*
+*.pie.*
+*.setup.test
+*.status.test
+*.cleanup.test
 *~

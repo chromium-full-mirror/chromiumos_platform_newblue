@@ -40,13 +40,7 @@
 /*
  * Where to store stack config/state
  */
-#ifndef PREF_PATH
-#ifdef ANDROID
-#define PREF_PATH                           "/data/data/com.android.bluetooth/bt.newblue.prefs"
-#else
-#define PREF_PATH                           "bt.newblue.prefs"
-#endif
-#endif
+extern const char pref_path[];
 
 /*
  * AAPI will try to queue this much per socket before shutting off flow
