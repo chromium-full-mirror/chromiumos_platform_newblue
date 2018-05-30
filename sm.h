@@ -200,9 +200,9 @@ void smPair(const struct bt_addr *addr,
  */
 void smUnpair(const struct bt_addr *addr) NEWBLUE_EXPORT;
 /* call this to generate a resolvable private address for advertising */
-bool smGenResolvableAddr(struct bt_addr *addr);
+bool smGenResolvableAddr(struct bt_addr *addr) NEWBLUE_EXPORT;
 /* call this to generate a non-resolvable private address for advertising */
-bool smGenNonResolvableAddr(struct bt_addr *addr);
+bool smGenNonResolvableAddr(struct bt_addr *addr) NEWBLUE_EXPORT;
 
 
 /* EXPOSED ONLY FOR UNITTEST PURPOSE */

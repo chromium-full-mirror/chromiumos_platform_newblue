@@ -125,7 +125,7 @@ typedef void (*attSrvIndResultCbk)(l2c_handle_t to, att_cid_t cid, att_range_t r
 void attSrvInit(attSrvTxCbk txF, attMtuCbk srvMtuF, attSrvIndResultCbk indF, attSrvValueExecWriteCbk execF, attSrvValueReadCbk readF, attSrvValueWriteCbk writeF);
 void attSrvDeinit(void);
 
-l2c_handle_t attSrvCidResolve(att_cid_t cid); //or 0 on failure
+l2c_handle_t attSrvCidResolve(att_cid_t cid) NEWBLUE_EXPORT; //or 0 on failure
 
 att_range_t attSrvHandleRangeReserve(uint16_t len); /* -> 0 on failure */
 void attSrvHandleRangeRelease(att_range_t rangeRef);

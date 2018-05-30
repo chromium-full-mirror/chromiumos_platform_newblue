@@ -128,7 +128,7 @@ bool l2cApiUpdateConnectionParams(l2c_handle_t handle, uint16_t intMin, uint16_t
 bool l2cApiGetBtAddr(l2c_handle_t handle, struct bt_addr *addrP);
 
 /* external code can use this to get own bt addr used to make the connection */
-bool l2cApiGetSelfBtAddr(l2c_handle_t handle, struct bt_addr *addrP);
+bool l2cApiGetSelfBtAddr(l2c_handle_t handle, struct bt_addr *addrP) NEWBLUE_EXPORT;
 
 /* external code can use this to get L2CAP's ACL handle */
 acl_handle_t l2cApiGetAclHandle(l2c_handle_t handle);
