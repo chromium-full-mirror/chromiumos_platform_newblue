@@ -16,6 +16,8 @@
 
 #define OUR_MTU  0xEFFF /* no reason to limit it pointlessly */
 
+#define L2C_MAX_SAFE_MTU 0x7FFF /* some buggy devices think MTU is signed. This is safe */
+
 typedef uint16_t psm_t;
 typedef uniq_t l2c_handle_t; /* a 0-valued handle is invalid and indicates error */
 typedef uniq_t acl_handle_t; /* a 0-valued handle is invalid and indicates error */

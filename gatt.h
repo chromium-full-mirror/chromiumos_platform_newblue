@@ -131,7 +131,7 @@ bool gattServiceSendInd(gatt_service_t svc, att_cid_t cid, uint16_t handle, cons
 #define GATT_CLI_AUTH_REQ_SIGNED_MITM    4
 
 /* various callbacks */
-typedef void (*gattCliConnectResultCbk)(gatt_client_conn_t conn, const struct bt_addr *to, uint8_t status);
+typedef void (*gattCliConnectResultCbk)(gatt_client_conn_t conn, uint8_t status);
 typedef void (*gattCliSvcEnumCbk)(gatt_client_conn_t conn, const struct uuid *uuid, bool primary, uint16_t firstHandle, uint16_t numHandles, uint8_t status); /* uuid passed as set to null after final result */
 typedef void (*gattCliEnumIncludedSvcsCbk)(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *uuid, uint16_t firstHandle, uint16_t numHandles, uint8_t status);
 typedef void (*gattCliEnumCharacteristicsCbk)(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *uuid, uint16_t firstHandle, uint16_t numHandles, uint8_t status);
@@ -147,32 +147,32 @@ typedef void (*gattCliNotifArrivedCbk)(gatt_client_conn_t conn, const struct uui
 
 
 /* connection lifecycle */
-gatt_client_conn_t gattClientConnect(const struct bt_addr *to, gattCliConnectResultCbk resultCbk);
-uint8_t gattClientDisconnect(gatt_client_conn_t conn); /* -> GATT_CLI_*, calls the gattCliConnectResultCbk passed to gattClientConnect() with GATT_CLI_OTHER_SIDE_DISC */
+gatt_client_conn_t gattClientConnect(const struct bt_addr *to, gattCliConnectResultCbk resultCbk) NEWBLUE_EXPORT;
+uint8_t gattClientDisconnect(gatt_client_conn_t conn) NEWBLUE_EXPORT; /* -> GATT_CLI_*, calls the gattCliConnectResultCbk passed to gattClientConnect() with GATT_CLI_OTHER_SIDE_DISC */
 
 /* cache maintenance */
-bool gattClientInvalidateCache(const struct bt_addr *whomTo); //true if process started
+bool gattClientInvalidateCache(const struct bt_addr *whomTo) NEWBLUE_EXPORT; //true if process started
 
 /* all of the following return GATT_CLI_* */
 
 /* service search */
-uint8_t gattClientEnumServices(gatt_client_conn_t conn, const struct uuid *searchForThis, gattCliSvcEnumCbk cbk); /* searchForThis can be null to enumerate all services without filtering for that uuid. if another enumeration is ongoing, yours will wait till that one is done */
+uint8_t gattClientEnumServices(gatt_client_conn_t conn, const struct uuid *searchForThis, gattCliSvcEnumCbk cbk) NEWBLUE_EXPORT; /* searchForThis can be null to enumerate all services without filtering for that uuid. if another enumeration is ongoing, yours will wait till that one is done */
 
 /* various enumerations. Each returns "next" item given "current" item. "current" is passed as NULL to get first */
-uint8_t gattClientEnumIncludedServices(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *prev, gattCliEnumIncludedSvcsCbk cbk);
-uint8_t gattClientEnumCharacteristics(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *prev, gattCliEnumCharacteristicsCbk cbk);
-uint8_t gattClientEnumCharDescriptors(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *prev, gattCliEnumCharDescrsCbk cbk);
+uint8_t gattClientEnumIncludedServices(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *prev, gattCliEnumIncludedSvcsCbk cbk) NEWBLUE_EXPORT;
+uint8_t gattClientEnumCharacteristics(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *prev, gattCliEnumCharacteristicsCbk cbk) NEWBLUE_EXPORT;
+uint8_t gattClientEnumCharDescriptors(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *prev, gattCliEnumCharDescrsCbk cbk) NEWBLUE_EXPORT;
 
 /* reads/writes (writes MUST fit into MTU minus whatever, or they will be truncated) */
-uint8_t gattClientCharRead(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t authReq, gattCliCharReadCbk cbk);
-uint8_t gattClientCharWrite(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t authReq, uint8_t writeType, uint16_t ofst, sg data, gattCliCharWriteCbk cbk);
-uint8_t gattClientCharDescrRead(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t authReq, gattCliCharDescrReadCbk cbk);
-uint8_t gattClientCharDescrWrite(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t authReq, uint8_t writeType, uint16_t ofst, sg data, gattCliCharDescrWriteCbk cbk);
-uint8_t gattClientStagedWritesExecute(gatt_client_conn_t conn, bool execute, gattCliStagedWriteExecuteCb cbk); //if not execute then drop them all
+uint8_t gattClientCharRead(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t authReq, gattCliCharReadCbk cbk) NEWBLUE_EXPORT;
+uint8_t gattClientCharWrite(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t authReq, uint8_t writeType, uint16_t ofst, sg data, gattCliCharWriteCbk cbk) NEWBLUE_EXPORT;
+uint8_t gattClientCharDescrRead(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t authReq, gattCliCharDescrReadCbk cbk) NEWBLUE_EXPORT;
+uint8_t gattClientCharDescrWrite(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t authReq, uint8_t writeType, uint16_t ofst, sg data, gattCliCharDescrWriteCbk cbk) NEWBLUE_EXPORT;
+uint8_t gattClientStagedWritesExecute(gatt_client_conn_t conn, bool execute, gattCliStagedWriteExecuteCb cbk) NEWBLUE_EXPORT; //if not execute then drop them all
 
 /* notification subscription/unsubscription */
-uint8_t gattClientNotifsSubscribe(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *thisChar, bool reliable, gattCliNotifSubscribeStateCbk stateCbk, gattCliNotifArrivedCbk arrivedCbk);
-uint8_t gattClientNotifsUnsubscribe(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *thisChar);
+uint8_t gattClientNotifsSubscribe(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *thisChar, bool reliable, gattCliNotifSubscribeStateCbk stateCbk, gattCliNotifArrivedCbk arrivedCbk) NEWBLUE_EXPORT;
+uint8_t gattClientNotifsUnsubscribe(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *thisChar) NEWBLUE_EXPORT;
 
 
 

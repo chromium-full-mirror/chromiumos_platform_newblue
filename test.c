@@ -408,6 +408,60 @@ void pairObserverCallback(void *observerData, const void *pairStateChange, uniq_
     }
 }
 
+static void gattSvcFoundCbk(gatt_client_conn_t conn, const struct uuid *uuid, bool primary, uint16_t firstHandle, uint16_t numHandles, uint8_t status)
+{
+    if (status != GATT_CLI_STATUS_OK) {
+        logi("enum status %u\n", status);
+        return;
+    }
+
+    if (!uuid) {
+        logi("enumeration ends\n");
+        return;
+    }
+
+    logi("Found %s service "UUIDFMT" with handles 0x%04x+0x%04x\n", primary ? "primary" : "secondary", UUIDCONV(*uuid), firstHandle, numHandles);
+}
+
+static void gattConnectedCbk(gatt_client_conn_t conn, uint8_t status)
+{
+    logi("Connect status: %u\n", status);
+
+    if (status != GATT_CLI_STATUS_OK)
+        return;
+
+    logi("service enum = %u\n", gattClientEnumServices(conn, NULL, gattSvcFoundCbk));
+}
+
+static bool eirNameMatch(const uint8_t *data, uint32_t len, const char *name)
+{
+    while (len) {
+
+
+        logi("    len is %u\n", len);
+
+
+        uint8_t typ, pieceLen = *data++;
+        len--;
+
+
+        logi("    len is %u pieceLen is %u\n", len, pieceLen);
+
+        if (len < pieceLen || !pieceLen)
+            break;
+        typ = *data++;
+        len--;
+        pieceLen--;
+        logi("  adv chunk type 0x%x with %u bytes payload\n", typ, pieceLen);
+        if ((typ == 8 || typ == 9) && pieceLen == strlen(name) && !memcmp(data, name, pieceLen))
+            return true;
+        len -= pieceLen;
+        data += pieceLen;
+    }
+
+    return false;
+}
+
 int main(int argc, char** argv)
 {
     static const uint8_t mac[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
@@ -462,7 +516,7 @@ int main(int argc, char** argv)
         goto cleanup;
     }
 
-    if (argc == 2 && !strcmp(argv[1], "scan")) {
+    if (argc == 2 && (!strcmp(argv[1], "scan") || !strcmp(argv[1], "scanconnect"))) {
         /*
          * Option: scan
          * Use:    start LE scanning for a while and terminate
@@ -470,11 +524,13 @@ int main(int argc, char** argv)
 
         uniq_t h;
         struct LeDiscDev *leDevices = NULL, *t;
+        bool foundDev = false, wantConnect = !strcmp(argv[1], "scanconnect");
+        struct bt_addr connTo;
 
-        logi("Trying some LE discovery...\n");
+        logi("Trying some LE discovery%s...\n", wantConnect ? " and connection" : "");
         h = hciDiscoverLeStart(leDiscoveryCbk, &leDevices, true, false);
         if (h) {
-            sleep(20);
+            sleep(wantConnect ? 5 : 20);
             fprintf(stderr, "\n");
             logi("discovery stop = %s\n", hciDiscoverLeStop(h) ? "OK" : "FAIL");
 
@@ -498,7 +554,28 @@ int main(int argc, char** argv)
                     logData(str, t->rspData, t->rspLen);
                     logi("\tRSP %s\n", str);
                 }
+
+                if (wantConnect) {   //is this the one we shoudl connect to???
+
+                    static const char *connNameMatch = "Pixel 4 XXL";
+
+                    if (eirNameMatch(t->advData, t->advLen, connNameMatch) || (t->haveRsp && eirNameMatch(t->rspData, t->rspLen, connNameMatch))) {
+                      foundDev = true;
+                      memcpy(connTo.addr, t->mac, BT_MAC_LEN);
+                      connTo.type = t->randomAddr ? BT_ADDR_TYPE_LE_RANDOM : BT_ADDR_TYPE_LE_PUBLIC;
+                    }
+                }
+
                 free(t);
+            }
+
+            if (foundDev) {
+                logi("Found device to connect to: "ADDRFMT"\n", ADDRCONV(connTo));
+
+                gatt_client_conn_t con = gattClientConnect(&connTo, gattConnectedCbk);
+                logi("Gatt connection handle: "UNIQ_FMT"x\n", UNIQ_CONV(con));
+                if(con)
+                    sleep(10);	//give gatt time before bring-down
             }
 
         } else

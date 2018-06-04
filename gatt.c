@@ -157,17 +157,21 @@ struct gattCliTodoItem {
 #define GATT_INTENT_STEP_FINAL           4 /* this step was the actual thing we expected to do. Action will depend on intent */
 
 
-
 #define CACHE_DESCR_VAL_LEN              2
+
+#define GATT_CONN_STATE_CONNECTING       0  /* only if initiating */
+#define GATT_CONN_STATE_RUNNING          1
 
 struct gattConnState {
     struct gattConnState     *next;
     struct gattConnState     *prev;
+    uniq_t                    gattConnId;
 
     struct gattCliNotif      *cliNotifs; /* things we as a client are subscribed to */
     struct bt_addr            addr;
     l2c_handle_t              conn;
     uint32_t                  mtu;
+    uint8_t                   state;
     bool                      encr;
 
     struct gattCliTodoItem   *todoListH;
@@ -264,7 +268,7 @@ struct gattCliNotifRec { /* used to keep track of all notifications that a clien
 struct gattClientConnection {
     struct gattClientConnection  *next;
     struct gattClientConnection  *prev;
-    struct gattConnState         *conn;
+    uniq_t                        gattConnId;
     struct gattCliNotifRec       *notifs;
     gatt_client_conn_t            connId; /* used by our callers */
     gattCliConnectResultCbk       connCbk;
@@ -305,7 +309,6 @@ struct gattWorkItem {
         struct {
             gattCliConnectResultCbk  cbk;
             gatt_client_conn_t       connId;
-            struct bt_addr           addr;
             uint8_t                  status;
         } cliConnStateNotif;
         struct {
@@ -347,9 +350,9 @@ static struct workQueue* mWorkQ;
 static pthread_t mWorker;
 
 static pthread_mutex_t mGattLock = PTHREAD_MUTEX_INITIALIZER;
-static struct gattConnState *mConns = NULL;
+static struct gattConnState *mConns = NULL; /* one per L2C conn (max one per peer) */
 static struct gattService *mSvcs = NULL;
-static struct gattClientConnection *mClientConns = NULL;
+static struct gattClientConnection *mClientConns = NULL; /* one per client's idea of a connection */
 
 
 /* fwd decls */
@@ -387,6 +390,22 @@ static struct gattConnState* gattConnFindByAddr(const struct bt_addr *addr)
     struct gattConnState *state;
 
     for (state = mConns; state && memcmp(addr, &state->addr, sizeof(struct bt_addr)); state = state->next);
+
+    return state;
+}
+
+/*
+ * FUNCTION: gattConnFindById
+ * USE:      find a per-connection structure for a given gatt connection id
+ * PARAMS:   gattConnId - the connection id
+ * RETURN:   connection structure or NULL if not found
+ * NOTES:    call with mGattLock held
+ */
+static struct gattConnState* gattConnFindById(uniq_t gattConnId)
+{
+    struct gattConnState *state;
+
+    for (state = mConns; state && state->gattConnId != gattConnId; state = state->next);
 
     return state;
 }
@@ -669,7 +688,6 @@ static bool gattEnqueueCliConnStatusCall(struct gattClientConnection *clicon, ui
         wi->cliConnStateNotif.cbk = clicon->connCbk;
         wi->cliConnStateNotif.connId = clicon->connId;
         wi->cliConnStateNotif.status = status;
-        memcpy(&wi->cliConnStateNotif.addr, &clicon->conn->addr, sizeof(struct bt_addr));
 
         if (workQueuePut(mWorkQ, wi))
             return true;
@@ -1037,6 +1055,26 @@ static void gettNotifyServersOfConnClose(l2c_handle_t who)
 }
 
 /*
+ * FUNCTION: gattNotifyAllClientsOfConn
+ * USE:      Tell all those waiting for a connection open/close that it now is
+ * PARAMS:   inst - per-connection instance state (struct gattConnState)
+ *           state - the state to notify with
+ * RETURN:   NONE
+ * NOTES:    call with mGattLock held
+ */
+static void gattNotifyAllClientsOfConn(struct gattConnState *inst, uint8_t state)
+{
+    struct gattClientConnection *clicon;
+
+    for (clicon = mClientConns; clicon; clicon = clicon->next) {
+        if (clicon->gattConnId != inst->gattConnId)
+            continue;
+        logd("telling client with gatt conn "GATTHANDLEFMT" about connection open status %u\n", GATTHANDLECNV(clicon->connId), state);
+        gattEnqueueCliConnStatusCall(clicon, state);
+    }
+}
+
+/*
  * FUNCTION: gattConnEvt
  * USE:      L2C calls this with events about connections
  * PARAMS:   userData - unused
@@ -1061,8 +1099,26 @@ static void gattConnEvt(void *userData, void *instance, uint8_t evt, const void 
             break;
         }
         conn = *(l2c_handle_t*)data;
-        if (state->conn != conn) /* when we support outbound connections, this code will need to evolve */
-            loge("Handle change!!!\n");
+        pthread_mutex_lock(&mGattLock);
+        if (state->state == GATT_CONN_STATE_CONNECTING) { //outbound conenction success
+
+            state->conn = conn;
+            logd("GATT outbound connection to "ADDRFMT" success: "HANDLEFMT"\n", ADDRCONV(state->addr), HANDLECNV(conn));
+            state->state = GATT_CONN_STATE_RUNNING;
+            if (BT_ADDR_IS_LE(state->addr)) { //try to negotiate mtu if LE
+                logd("Requesting gatt MTU negotiation\n");
+                if (attCliRequestMtu(conn, L2C_MAX_SAFE_MTU))
+                    logw("Failed to request MTU change - ATT may be slow\n");
+                else
+                    logd("Requested gatt MTU negotiation\n");
+            }
+            gattNotifyAllClientsOfConn(state, GATT_CLI_STATUS_OK);
+        }
+        else if (state->state != GATT_CONN_STATE_RUNNING)
+            loge("GATT L2C connection state 'opened' while in state %u\n", state->state);
+        else if (state->conn != conn)
+            loge("GATT L2C conn handle change is unexpected for inbound connections!!!\n");
+        pthread_mutex_unlock(&mGattLock);
         break;
 
     case L2C_STATE_MTU:
@@ -1105,6 +1161,7 @@ static void gattConnEvt(void *userData, void *instance, uint8_t evt, const void 
         gettNotifyServersOfConnClose(state->conn);
         attNotifConnClose(state->conn);
         pthread_mutex_lock(&mGattLock);
+        gattNotifyAllClientsOfConn(state, GATT_CLI_STATUS_OTHER_SIDE_DISC);
         sendQueueDelPackets(mSendQ, state->conn);
         gattConnStructDelete(state);
         pthread_mutex_unlock(&mGattLock);
@@ -1116,15 +1173,16 @@ static void gattConnEvt(void *userData, void *instance, uint8_t evt, const void 
 }
 
 /*
- * FUNCTION: gattStateAlloc
+ * FUNCTION: gattStateAllocLocked
  * USE:      Allocate a GATT state for an L2C link
- * PARAMS:   conn - the connection handle
+ * PARAMS:   conn - the connection handle (0 if none yet)
  *           instanceP - we store per-connection instance here
  *           addr - the peer's address
+ *           initialState - state to leave the connection in
  * RETURN:   SVC_ALLOC_*
- * NOTES:
+ * NOTES:    call with mGattLock held
  */
-static uint8_t gattStateAlloc(l2c_handle_t conn, void **instanceP, const struct bt_addr *addr)
+static uint8_t gattStateAllocLocked(l2c_handle_t conn, void **instanceP, const struct bt_addr *addr, uint8_t initialState)
 {
     struct gattConnState *state = (struct gattConnState*)calloc(1, sizeof(struct gattConnState));
 
@@ -1132,19 +1190,40 @@ static uint8_t gattStateAlloc(l2c_handle_t conn, void **instanceP, const struct 
         return SVC_ALLOC_FAIL_OTHER;
 
     state->conn = conn;
+    state->state = initialState;
+    state->gattConnId = uniqGetNext();
     state->mtu = BT_ADDR_IS_LE(*addr) ? ATT_MTU_MIN_LE : ATT_MTU_MIN_EDR;
     memcpy(&state->addr, addr, sizeof(struct bt_addr));
     /* any other init here */
 
-    pthread_mutex_lock(&mGattLock);
     state->next = mConns;
     if (mConns)
         mConns->prev = state;
     mConns = state;
-    pthread_mutex_unlock(&mGattLock);
 
     *instanceP = state;
     return SVC_ALLOC_SUCCESS;
+}
+
+/*
+ * FUNCTION: gattStateAlloc
+ * USE:      Allocate a GATT state for an L2C link
+ * PARAMS:   conn - the connection handle (0 if none yet)
+ *           instanceP - we store per-connection instance here
+ *           addr - the peer's address
+ *           initialState - state to leave the connection in
+ * RETURN:   SVC_ALLOC_*
+ * NOTES:    just a version of gattStateAllocLocked that takes the lock as needed
+ */
+static uint8_t gattStateAlloc(l2c_handle_t conn, void **instanceP, const struct bt_addr *addr, uint8_t initialState)
+{
+    uint8_t ret;
+
+    pthread_mutex_lock(&mGattLock);
+    ret = gattStateAllocLocked(conn, instanceP, addr, initialState);
+    pthread_mutex_unlock(&mGattLock);
+
+    return ret;
 }
 
 /*
@@ -1154,7 +1233,8 @@ static uint8_t gattStateAlloc(l2c_handle_t conn, void **instanceP, const struct 
  *           handle - the connection handle
  *           instanceP - we store per-connection instance here
  * RETURN:   SVC_ALLOC_*
- * NOTES:
+ * NOTES:    if allocate is called, we are being connected to. in that case go right to
+ *           GATT_CONN_STATE_RUNNING state
  */
 static uint8_t gattPsmSvcAlloc(void *userData, l2c_handle_t handle, void **instanceP)
 {
@@ -1168,7 +1248,7 @@ static uint8_t gattPsmSvcAlloc(void *userData, l2c_handle_t handle, void **insta
     if (BT_ADDR_IS_LE(peer))
         return SVC_ALLOC_FAIL_OTHER;
 
-    return gattStateAlloc(handle, instanceP, &peer);
+    return gattStateAlloc(handle, instanceP, &peer, GATT_CONN_STATE_RUNNING);
 }
 
 /*
@@ -1178,7 +1258,8 @@ static uint8_t gattPsmSvcAlloc(void *userData, l2c_handle_t handle, void **insta
  *           handle - the connection handle
  *           instanceP - we store per-connection instance here
  * RETURN:   SVC_ALLOC_*
- * NOTES:
+ * NOTES:    if allocate is called, we are being connected to. in that case go right to
+ *           GATT_CONN_STATE_RUNNING state
  */
 static uint8_t gattFixedChSvcAlloc(void *userData, l2c_handle_t handle, void **instanceP)
 {
@@ -1192,8 +1273,106 @@ static uint8_t gattFixedChSvcAlloc(void *userData, l2c_handle_t handle, void **i
     if (BT_ADDR_IS_EDR(peer))
         return SVC_ALLOC_FAIL_OTHER;
 
-    return gattStateAlloc(handle, instanceP, &peer);
+    return gattStateAlloc(handle, instanceP, &peer, GATT_CONN_STATE_RUNNING);
 }
+
+/*
+ * FUNCTION: gattConnectionCreateOrLocate
+ * USE:      Make a new gatt L2C connection or find an existing one
+ * PARAMS:   to - whom to connect to
+ * RETURN:   connection struct or NULL
+ * NOTES:    call with mGattLock held
+ */
+static struct gattConnState* gattConnectionCreateOrLocate(const struct bt_addr *to)
+{
+    struct gattConnState *gattConn;
+    bool connTrying;
+
+    gattConn = gattConnFindByAddr(to);
+    if (!gattConn) {
+
+        if (gattStateAllocLocked(0, (void**)&gattConn, to, GATT_CONN_STATE_CONNECTING) != SVC_ALLOC_SUCCESS)
+            logw("Failed to allocate a gatt connection instance for an outbound GATT connection to "ADDRFMT"\n", ADDRCONV(*to));
+        else {
+
+            if (BT_ADDR_IS_EDR(*to))
+                connTrying = l2cApiCreatePsmConnection(GATT_PSM, to, L2C_MAX_SAFE_MTU, gattConnEvt, NULL, gattConn);
+            else
+                connTrying = l2cApiCreateFixedChConnection(GATT_FIXEDCH, to, gattConnEvt, NULL, gattConn);
+
+            if (!connTrying) {
+                logw("Failed to attempt to establish an outbound GATT connection to "ADDRFMT"\n", ADDRCONV(*to));
+                gattConnStructDelete(gattConn);
+                gattConn = NULL;
+            }
+        }
+    }
+
+    return gattConn;
+}
+
+/*
+ * FUNCTION: gattClientConnect
+ * USE:      Make a new gatt client connection
+ * PARAMS:   to - whom to connect to
+ *           resultCbk - will be called with results
+ * RETURN:   connection id or 0 on failure
+ * NOTES:
+ */
+gatt_client_conn_t gattClientConnect(const struct bt_addr *to, gattCliConnectResultCbk resultCbk)
+{
+    struct gattClientConnection *clicon;
+    struct gattConnState *inst;
+    gatt_client_conn_t ret = 0;
+
+
+    clicon = calloc(1, sizeof(struct gattClientConnection));
+    if (!clicon) {
+        loge("Out of memory allocating a client connection for GATT\n");
+        return 0;
+    }
+
+    pthread_mutex_lock(&mGattLock);
+
+    inst = gattConnectionCreateOrLocate(to);
+    if (!inst) {
+        logw("Failed to create an outbound GATT connection. Client connection process will end\n");
+        goto out;
+    }
+
+    clicon->next = mClientConns;
+    if (mClientConns)
+        mClientConns->prev = clicon;
+    mClientConns = clicon;
+
+    clicon->gattConnId = inst->gattConnId;
+    clicon->connId = uniqGetNext();
+    clicon->connCbk = resultCbk;
+
+    //success!
+    ret = clicon->connId;
+    pthread_mutex_unlock(&mGattLock);
+    return ret;
+
+out:
+    pthread_mutex_unlock(&mGattLock);
+    free(clicon);
+    return 0;
+}
+
+/*
+ * FUNCTION: gattClientDisconnect
+ * USE:      Disconnect an actual gatt connection
+ * PARAMS:   conn - the connection
+ * RETURN:   GATT_CLI_STATUS_*
+ * NOTES:
+ */
+uint8_t gattClientDisconnect(gatt_client_conn_t conn)
+{
+    //TODO: can call gattClientConnClose(cliCon, false /* do not notify client -> no need they're about to go away awnyways */);
+    return GATT_CLI_STATUS_OK;
+}
+
 
 /*
  * FUNCTION: gattWorkQueueFreeItem
@@ -1316,7 +1495,7 @@ static void* gattWorker(void *param)
             wi->srvDiscCall.discF(wi->srvDiscCall.svcRef, wi->srvDiscCall.who);
             break;
         case GATT_WORK_CLI_CONN_STATE_NOTIF:
-            wi->cliConnStateNotif.cbk(wi->cliConnStateNotif.connId, &wi->cliConnStateNotif.addr, wi->cliConnStateNotif.status);
+            wi->cliConnStateNotif.cbk(wi->cliConnStateNotif.connId, wi->cliConnStateNotif.status);
             break;
         case GATT_WORK_CLI_DO_NEXT:
             gattCliTodoNext(wi->cliDoNext.conn, wi->cliDoNext.todo);
@@ -1525,7 +1704,11 @@ static bool gattCliNotifSubUnsubIssueWriteIfNeededNewTodo(struct gattConnState *
  */
 static void gattCliNotifRecDelete(struct gattClientConnection *clicon, struct gattCliNotifRec *nr)
 {
+    struct gattConnState* conn = gattConnFindById(clicon->gattConnId);
     struct gattCliNotif *notif = nr->notif;
+
+    if (!conn)
+        return;
 
     /* adjust refcount */
     if (nr->wantInd)
@@ -1545,8 +1728,8 @@ static void gattCliNotifRecDelete(struct gattClientConnection *clicon, struct ga
 
     /* see if notif itself needs deletion */
     if (!notif->refCtInd && !notif->refCtNotif) {
-        if (clicon->conn->cliNotifs == notif)
-            clicon->conn->cliNotifs = notif->next;
+        if (conn->cliNotifs == notif)
+            conn->cliNotifs = notif->next;
         else
             notif->prev->next = notif->next;
         if (notif->next)
@@ -1629,7 +1812,7 @@ static bool gattCliNotifSubUnsubDone(struct gattConnState *conn, struct gattCliT
 
         /* now tell everyone who needs to know */
         for (clicon = mClientConns; clicon; clicon = clicon->next) {
-            if (clicon->conn != conn) /* we only care about this connection */
+            if (clicon->gattConnId != conn->gattConnId) /* we only care about this connection */
                 continue;
             for (nr = clicon->notifs; nr; ) {
                 if (nr->notif != notif) {
@@ -2402,7 +2585,7 @@ static void gattAttCliIndNotif(l2c_handle_t to, bool needsAck, uint16_t handle, 
             /* find all clients who are subscribed and notify them */
             for (clicon = mClientConns; clicon; clicon = clicon->next) {
                 /* skip all clients not connected to this connection */
-                if (clicon->conn != conn)
+                if (clicon->gattConnId != conn->gattConnId)
                     continue;
 
                 /* skip all clients who are not subscribed to this notif */
@@ -2444,7 +2627,7 @@ bool gattProfileInit(void)
     static const struct l2cServicePsmDescriptor gattPsm = {
         .serviceInstanceAlloc = gattPsmSvcAlloc,
         .serviceInstanceStateCbk = gattConnEvt,
-        .mtu = 0xFFFF,
+        .mtu = L2C_MAX_SAFE_MTU,
     };
     static const struct l2cServiceFixedChDescriptor gattFixedCh = {
         .serviceFixedChAlloc = gattFixedChSvcAlloc,
@@ -3385,10 +3568,11 @@ static bool gattCliTodoEnqWriteReq(struct gattClientConnection *clicon, uint16_t
                                    uint8_t step, const struct uuid *uuidSvc, const struct uuid *uuidChr, const struct uuid *uuidDsc)
 {
     struct gattCliTodoItem *todo = (struct gattCliTodoItem*)calloc(1, sizeof(struct gattCliTodoItem));
+    struct gattConnState *conn = gattConnFindById(clicon->gattConnId);
     sg s;
 
-    if (!todo)
-        goto fail_todo;
+    if (!todo || !conn)
+        goto fail_todo_or_conn;
 
     s = sgNewWithCopyData(data, len);
     if (!s)
@@ -3398,13 +3582,13 @@ static bool gattCliTodoEnqWriteReq(struct gattClientConnection *clicon, uint16_t
     todo->write.handle = handle;
     todo->write.data = s;
 
-    gattCliTodoEnqItemWithData(clicon->conn, clicon->connId, todo, intent, step, uuidSvc, uuidChr, uuidDsc, false);
+    gattCliTodoEnqItemWithData(conn, clicon->connId, todo, intent, step, uuidSvc, uuidChr, uuidDsc, false);
     return true;
 
 
 fail_s:
     free(todo);
-fail_todo:
+fail_todo_or_conn:
     return false;
 }
 
@@ -3418,12 +3602,13 @@ fail_todo:
  */
 static void gattClientNotifUnsubscribe(struct gattClientConnection *clicon, struct gattCliNotifRec *nr)
 {
+    struct gattConnState *conn = gattConnFindById(clicon->gattConnId);
     struct gattCliNotif *notif = nr->notif;
 
     gattCliNotifRecDelete(clicon, nr);
 
     /* if needed, do [another] char descr write */
-    if (!gattCliNotifSubUnsubIssueWriteIfNeededNewTodo(clicon->conn, notif)) {
+    if (!conn || !gattCliNotifSubUnsubIssueWriteIfNeededNewTodo(conn, notif)) {
         loge("Unnotif write enqueue failed\n");
     }
 }
@@ -3438,34 +3623,37 @@ static void gattClientNotifUnsubscribe(struct gattClientConnection *clicon, stru
  */
 static void gattClientConnClose(struct gattClientConnection *clicon, uint8_t status)
 {
+    struct gattConnState* conn = gattConnFindById(clicon->gattConnId);
     struct gattCliTodoItem *tC, *tN, *tP = NULL;
 
     /* notify client if needed */
-    if (status != GATT_CLI_STATUS_OK && !gattEnqueueCliConnStatusCall(clicon, GATT_CLI_STATUS_OK))
+    if (status != GATT_CLI_STATUS_OK && !gattEnqueueCliConnStatusCall(clicon, status))
         logw("Failed to notify client about connection closure. Pity.\n");
 
     /* enumerate all notifications this client had and unsubscribe from them. */
     while (clicon->notifs)
         gattClientNotifUnsubscribe(clicon, clicon->notifs);
 
-    /*
-     * Remove all todo list items that are in client's name. If one is
-     * inflight, it will gracefully fail when it fails to find a client
-     * on completion, so we need not do much for that case. In reality
-     * this is all an optimization. We could leave all these items here
-     * and let them all fail safely. But since it is easy to get rid of
-     * them, we do.
-     */
-    for (tC = clicon->conn->todoListH; tC; tC = tN) {
-        tN = tC->next;
-        if (tC->connId == clicon->connId) {
-            if (tC == clicon->conn->todoListH)
-                clicon->conn->todoListH = tN;
-            if (tC == clicon->conn->todoListT)
-                clicon->conn->todoListT = tP;
-            free(tC);
-        } else
-            tP = tC;
+    if (conn) {
+        /*
+         * Remove all todo list items that are in client's name. If one is
+         * inflight, it will gracefully fail when it fails to find a client
+         * on completion, so we need not do much for that case. In reality
+         * this is all an optimization. We could leave all these items here
+         * and let them all fail safely. But since it is easy to get rid of
+         * them, we do.
+         */
+        for (tC = conn->todoListH; tC; tC = tN) {
+            tN = tC->next;
+            if (tC->connId == clicon->connId) {
+                if (tC == conn->todoListH)
+                    conn->todoListH = tN;
+                if (tC == conn->todoListT)
+                    conn->todoListT = tP;
+                free(tC);
+            } else
+                tP = tC;
+        }
     }
 
     /* destroy the structure(s) */
@@ -3476,36 +3664,6 @@ static void gattClientConnClose(struct gattClientConnection *clicon, uint8_t sta
     else
         mClientConns = clicon->next;
     free(clicon);
-}
-
-
-/*
- * FUNCTION: gattClientConnect
- * USE:      Make a new gatt connection
- * PARAMS:   to - whom to connect to
- *           resultCbk - will be called with results
- * RETURN:   connection id or 0 on failure
- * NOTES:
- */
-gatt_client_conn_t gattClientConnect(const struct bt_addr *to, gattCliConnectResultCbk resultCbk)
-{
-    //TODO
-    return 0;
-}
-
-/*
- * FUNCTION: gattClientDisconnect
- * USE:      Disconnect an actual gatt connection
- * PARAMS:   conn - the connection
- * RETURN:   GATT_CLI_STATUS_*
- * NOTES:
- */
-uint8_t gattClientDisconnect(gatt_client_conn_t conn)
-{
-    //TODO
-
-    //can call gattClientConnClose(cliCon, false /* do not notify client -> no need they're about to go away awnyways */);
-    return GATT_CLI_STATUS_OK;
 }
 
 /*
@@ -3534,7 +3692,7 @@ bool gattClientInvalidateCache(const struct bt_addr *whomTo)
 /*
  * FUNCTION: gattCliTodoMakeFindByGroupType
  * USE:      Enqueue a read-by-group-type (uuid16) todo item
- * PARAMS:   conn - the connection id
+ * PARAMS:   connId - the connection id
  *           type - the type of attribute to read
  *           svc - in what service (or NULL)
  *           charOrIncSvc - what characteristic/incl service (or NULL)
@@ -3548,14 +3706,19 @@ bool gattClientInvalidateCache(const struct bt_addr *whomTo)
  *           not move while the lock is held by you, you can customize the item safely after this
  *           func gives it to you
  */
-static struct gattCliTodoItem* gattCliTodoMakeFindByGroupType(gatt_client_conn_t conn, uint16_t type, const struct uuid *svc, const struct uuid *charOrIncSvc, const struct uuid *descr,
+static struct gattCliTodoItem* gattCliTodoMakeFindByGroupType(gatt_client_conn_t connId, uint16_t type, const struct uuid *svc, const struct uuid *charOrIncSvc, const struct uuid *descr,
                                                               uint8_t intent,  uint8_t step, uint16_t firstHandle, uint16_t lastHandle)
 {
     struct gattClientConnection *clicon;
     struct gattCliTodoItem *todo;
+    struct gattConnState *conn;
 
-    clicon = gattClientConnFindById(conn);
+    clicon = gattClientConnFindById(connId);
     if (!clicon)
+        return NULL;
+
+    conn = gattConnFindById(clicon->gattConnId);
+    if (!conn)
         return NULL;
 
     todo = calloc(1, sizeof(struct gattCliTodoItem));
@@ -3567,7 +3730,7 @@ static struct gattCliTodoItem* gattCliTodoMakeFindByGroupType(gatt_client_conn_t
     todo->read.endHandle = lastHandle;
     uuidFromUuid16(&todo->read.type, type);
 
-    gattCliTodoEnqItemWithData(clicon->conn, clicon->connId, todo, intent, step, svc, charOrIncSvc, descr, false);
+    gattCliTodoEnqItemWithData(conn, connId, todo, intent, step, svc, charOrIncSvc, descr, false);
 
     return todo;
 }
@@ -3837,21 +4000,26 @@ uint8_t gattClientCharDescrWrite(gatt_client_conn_t conn, const struct uuid *inT
 /*
  * FUNCTION: gattClientStagedWritesExecute
  * USE:      Execute or abandon previously staged writes
- * PARAMS:   conn - the connection id
+ * PARAMS:   connId - the connection id
  *           execute - true to commit them, false to abandon
  *           cbk - the callback to call with results
  * RETURN:   GATT_CLI_STATUS_*
  * NOTES:
  */
-uint8_t gattClientStagedWritesExecute(gatt_client_conn_t conn, bool execute, gattCliStagedWriteExecuteCb cbk)
+uint8_t gattClientStagedWritesExecute(gatt_client_conn_t connId, bool execute, gattCliStagedWriteExecuteCb cbk)
 {
     struct gattClientConnection *clicon;
     uint8_t ret = GATT_CLI_STATUS_ERR;
     struct gattCliTodoItem *todo;
+    struct gattConnState *conn;
 
     pthread_mutex_lock(&mGattLock);
-    clicon = gattClientConnFindById(conn);
+    clicon = gattClientConnFindById(connId);
     if (!clicon)
+        goto out;
+
+    conn = gattConnFindById(clicon->gattConnId);
+    if (!conn)
         goto out;
 
     todo = calloc(1, sizeof(struct gattCliTodoItem));
@@ -3862,7 +4030,7 @@ uint8_t gattClientStagedWritesExecute(gatt_client_conn_t conn, bool execute, gat
     todo->exec.commit = execute;
     todo->intentData.executeCbk = cbk;
 
-    gattCliTodoEnqItemWithData(clicon->conn, clicon->connId, todo, GATT_INTENT_EXECUTE, GATT_INTENT_STEP_FINAL, NULL, NULL, NULL, false);
+    gattCliTodoEnqItemWithData(conn, connId, todo, GATT_INTENT_EXECUTE, GATT_INTENT_STEP_FINAL, NULL, NULL, NULL, false);
 
 out:
     pthread_mutex_unlock(&mGattLock);
@@ -3872,7 +4040,7 @@ out:
 /*
  * FUNCTION: gattClientNotifsSubscribe
  * USE:      Subscribe to a notification or indication
- * PARAMS:   conn - the connection id
+ * PARAMS:   connId - the connection id
  *           inThisService - in what service?
  *           thisChar - what characteristic?
  *           reliable - use reliable delivery?
@@ -3881,19 +4049,26 @@ out:
  * RETURN:   GATT_CLI_STATUS_*
  * NOTES:
  */
-uint8_t gattClientNotifsSubscribe(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *thisChar, bool reliable, gattCliNotifSubscribeStateCbk stateCbk, gattCliNotifArrivedCbk arrivedCbk)
+uint8_t gattClientNotifsSubscribe(gatt_client_conn_t connId, const struct uuid *inThisService, const struct uuid *thisChar, bool reliable, gattCliNotifSubscribeStateCbk stateCbk, gattCliNotifArrivedCbk arrivedCbk)
 {
     struct gattClientConnection *clicon;
     uint8_t sta = GATT_CLI_STATUS_ERR;
     struct gattCliNotifRec *nr;
     struct gattCliNotif *notif;
+    struct gattConnState *conn;
     bool callStateCbk = false;
 
     pthread_mutex_lock(&mGattLock);
-    clicon = gattClientConnFindById(conn);
+    clicon = gattClientConnFindById(connId);
     if (!clicon)
-        logw("No connection for subscribe\n");
+        logw("No client connection for subscribe\n");
     else {
+
+        conn = gattConnFindById(clicon->gattConnId);
+        if (!conn) {
+           logw("No gatt for subscribe\n");
+           goto out;
+        }
 
         /* find the notif record, if one exists */
         for (nr = clicon->notifs; nr && (!uuidCmp(inThisService, &nr->notif->svc) || !uuidCmp(thisChar, &nr->notif->chr)); nr = nr->next);
@@ -3913,7 +4088,7 @@ uint8_t gattClientNotifsSubscribe(gatt_client_conn_t conn, const struct uuid *in
         nr->arrivedCbk = arrivedCbk;
 
         /* find the notif structure, if it exists */
-        for (notif = clicon->conn->cliNotifs; notif && (!uuidCmp(inThisService, &notif->svc) || !uuidCmp(thisChar, &notif->chr)); notif = notif->next);
+        for (notif = conn->cliNotifs; notif && (!uuidCmp(inThisService, &notif->svc) || !uuidCmp(thisChar, &notif->chr)); notif = notif->next);
 
         if (!notif) {
 
@@ -3928,7 +4103,7 @@ uint8_t gattClientNotifsSubscribe(gatt_client_conn_t conn, const struct uuid *in
             memcpy(&notif->chr, thisChar, sizeof(struct uuid));
             sta = GATT_CLI_STATUS_OK;
 
-            if (!gattCliTodoMakeFindByGroupType(conn, GATT_UUID_SVC_PRIMARY, inThisService, thisChar, NULL, GATT_INTENT_NOTIF_SUB_UNSUB, GATT_INTENT_STEP_FIND_SVC, 0x0001, 0xffff)) {
+            if (!gattCliTodoMakeFindByGroupType(connId, GATT_UUID_SVC_PRIMARY, inThisService, thisChar, NULL, GATT_INTENT_NOTIF_SUB_UNSUB, GATT_INTENT_STEP_FIND_SVC, 0x0001, 0xffff)) {
                 sta = GATT_CLI_STATUS_ERR;
                 loge("Notif todo allocation failed\n");
                 free(nr);
@@ -3951,7 +4126,7 @@ uint8_t gattClientNotifsSubscribe(gatt_client_conn_t conn, const struct uuid *in
             }
 
             /* if needed, do [another] char descr write */
-            if (!gattCliNotifSubUnsubIssueWriteIfNeededNewTodo(clicon->conn, notif)) {
+            if (!gattCliNotifSubUnsubIssueWriteIfNeededNewTodo(conn, notif)) {
                 sta = GATT_CLI_STATUS_ERR;
                 loge("Notif write enqueue failed\n");
                 free(nr);
@@ -3976,7 +4151,7 @@ out:
     pthread_mutex_unlock(&mGattLock);
 
     if (callStateCbk)
-        stateCbk(conn, inThisService, thisChar, true, sta);
+        stateCbk(connId, inThisService, thisChar, true, sta);
 
     return sta;
 }
