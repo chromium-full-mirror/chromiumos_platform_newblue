@@ -2310,6 +2310,38 @@ static bool hciInquiryEvtCbk(const struct hciEvtHdr *evt, uint32_t evtSz, void *
 }
 
 /*
+ * FUNCTION: hciLeParamChangeRequestEventCbk
+ * USE:      Called with remote's requests for parameter changes
+ * PARAMS:   evt - the event
+ *           evtSz - event size
+ *           cbkData - callback data
+ *           evtWaitStateID - event wait state ID (unused)
+ *           forCmdID - event commadn ID (unused)
+ * RETURN:   false on error
+ * NOTES:    we deny all such requests. Remote devices have no business telling us what to do and how to live our life. We do what we want!
+ */
+static bool hciLeParamChangeRequestEventCbk(const struct hciEvtHdr *evt, uint32_t evtSz, void *cbkData, uniq_t evtWaitStateID, uniq_t forCmdID)
+{
+    const struct hciEvtLeMeta *meta = (const struct hciEvtLeMeta*)(evt + 1);
+    const struct hciEvtLeRemoteConnParamRequest *req = (const struct hciEvtLeRemoteConnParamRequest*)(meta + 1);
+    struct hciLeRemoteConnParamRequestNegativeReply repl = {.reason = HCI_ERR_Unsupported_Feature_Or_Parameter_Value,};
+
+    if (evtSz != sizeof(struct hciEvtHdr) + sizeof(struct hciEvtLeMeta) + sizeof(struct hciEvtLeRemoteConnParamRequest)) {
+        logw("Invalid event size %u\n", evtSz);
+        return false;
+    }
+
+    utilSetLE16(&repl.conn, utilGetLE16(&req->conn));
+
+    if (!hciCmdSubmitSimpleWithCompleteWithDoneCbk(HCI_OGF_LE, HCI_CMD_LE_Remote_Conn_Param_Request_Negative_Reply, &repl, sizeof(repl), hciCmdStatusCbk, NULL)) {
+        logi("Failed to request connection param change denial\n");
+        return false;
+    }
+
+    return true;
+}
+
+/*
  * FUNCTION: hciResetEvtCbk
  * USE:      Called when a reset complete event arrives. Tears down any existing state and sets the in-reset state.
  * PARAMS:   evt - the event (unused)
@@ -2984,6 +3016,22 @@ static bool hciBtStackUp(void)
         if (!hciSetManyEventPersistentHandlers(connEvtTypes, connEvtExtras, hciConnEvtCbk, NULL)) {
             ret = -2;
             loge("Failed to enqueue connection state handlers\n");
+            goto out;
+        }
+    }
+
+    /* set handlers for some LE things (like refusing remote connection parameter changes) */
+    if (mBtVer >= HCI_VERSION_4_1) {
+        struct hciEvtWaitDescr ewd = {
+            .cbk = hciLeParamChangeRequestEventCbk,
+            .evtType = HCI_EVT_LE_Meta,
+            .extra = HCI_EVTLE_Remote_Connection_Parameter_Request,
+            .persistent = true,
+        };
+
+        if (!hciEvtWaitEnqueue(&ewd, 0)) {
+            ret = -2;
+            loge("Failed to enqueue LE connection param change request handler\n");
             goto out;
         }
     }

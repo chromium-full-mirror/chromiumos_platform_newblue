@@ -3421,7 +3421,7 @@ struct hciEvtLeConnectionComplete {
     uint8_t peerMac[6];
     uint16_t connInterval; /* in units of 1.25 ms 6..0x0C80 */
     uint16_t connLatency; /* 0..0x01f3 */
-    uint16_t supervisionTimeout; /* inunit sof 10ms, 0xA..0x0C80 */
+    uint16_t supervisionTimeout; /* in units of 10ms, 0xA..0x0C80 */
     uint8_t masterClockAccuracy; /* HCI_MCA_* */
 } __packed;
 
@@ -3445,7 +3445,7 @@ struct hciEvtLeConnectionUpdateComplete {
     uint16_t conn;
     uint16_t connInterval; /* in units of 1.25 ms 6..0x0C80 */
     uint16_t connLatency; /* 0..0x01f3 */
-    uint16_t supervisionTimeout; /* inunit sof 10ms, 0xA..0x0C80 */
+    uint16_t supervisionTimeout; /* in units of 10ms, 0xA..0x0C80 */
 } __packed;
 
 #define HCI_EVTLE_Read_Remote_Used_Features_Complete             0x04
@@ -3465,13 +3465,13 @@ struct hciEvtLeLtkRequest {
 
 /* ==== BT 4.1 ==== */
 
-#define HCI_EVTLE_Read_Remote_Connection_Parameter_Request       0x06
-struct hciEvtLeReadRemoteConnParamRequest {
+#define HCI_EVTLE_Remote_Connection_Parameter_Request            0x06
+struct hciEvtLeRemoteConnParamRequest {
     uint16_t conn;
     uint16_t connIntervalMin; /* in units of 1.25 ms 6..0x0C80 */
     uint16_t connIntervalMax; /* in units of 1.25 ms 6..0x0C80 */
     uint16_t connLatency; /* 0..0x01f3 */
-    uint16_t supervisionTimeout; /* inunit sof 10ms, 0xA..0x0C80 */
+    uint16_t supervisionTimeout; /* iin units of 10ms, 0xA..0x0C80 */
 } __packed;
 
 #define HCI_EVT_Triggered_Clock_Capture                          0x4E
