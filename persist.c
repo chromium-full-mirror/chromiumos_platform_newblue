@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <time.h>
+#include "newblue-macros.h"
 #include "persist.h"
 #include "config.h"
 #include "util.h"

@@ -6,8 +6,8 @@
 #ifndef _GATT_H_
 #define _GATT_H_
 
+#include "newblue-macros.h"
 #include "att.h"
-#include "export.h"
 #include "sg.h"
 #include "types.h"
 #include "uuid.h"

@@ -5,6 +5,7 @@
  */
 #include <stdlib.h>
 #include <string.h>
+#include "newblue-macros.h"
 #include "workQueue.h"
 #include "persist.h"
 #include "config.h"

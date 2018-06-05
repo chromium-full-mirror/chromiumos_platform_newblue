@@ -1,3 +1,8 @@
+/*
+ * Copyright 2018 The Chromium OS Authors. All rights reserved.
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file.
+ */
 #ifndef _UTIL_H_
 #define _UTIL_H_
 
@@ -31,11 +36,6 @@ static void utilSetLE16(void *buf, uint16_t val);
 static void utilSetLE24(void *buf, uint32_t val);
 static void utilSetLE32(void *buf, uint32_t val);
 static void utilSetLE64(void *buf, uint64_t val);
-
-
-#ifndef __packed
-# define __packed __attribute__ ((__packed__))
-#endif
 
 
 /* internal use only */

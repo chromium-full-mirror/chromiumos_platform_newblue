@@ -1,6 +1,12 @@
+/*
+ * Copyright 2018 The Chromium OS Authors. All rights reserved.
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file.
+ */
 #ifndef _HCI_INT_H_
 #define _HCI_INT_H_
 
+#include "newblue-macros.h"
 #include "util.h"
 #include "hci.h"
 

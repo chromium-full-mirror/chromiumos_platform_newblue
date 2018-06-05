@@ -17,6 +17,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
+#include "newblue-macros.h"
 #include "workQueue.h"
 #include "vendorLib.h"
 #include "hci_int.h"

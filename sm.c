@@ -8,6 +8,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "newblue-macros.h"
 #include "bt.h"
 #include "config.h"
 #include "l2cap.h"

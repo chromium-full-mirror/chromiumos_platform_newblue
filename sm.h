@@ -6,7 +6,7 @@
 #ifndef _SM_H_
 #define _SM_H_
 
-#include "export.h"
+#include "newblue-macros.h"
 #include "hci.h"
 #include "sg.h"
 #include "types.h"
