@@ -2983,6 +2983,8 @@ void attSrvDataRx(l2c_handle_t from, sg s)
                 utilSetLE16(&mtuExch.mtu, mtu); /* we unconditionally accept */
                 ret = attSendPacket(from, ATT_OPCODE_MTU_EXCH_RSP, &mtuExch, sizeof(mtuExch), NULL);
             }
+            else
+                ret = true;
             if (conn)
                 attSrvSchedMtuCbk(conn, mtu, opcode == ATT_OPCODE_MTU_EXCH_REQ);
         }
@@ -3032,8 +3034,10 @@ void attSrvDataRx(l2c_handle_t from, sg s)
             wi->who = from;
             wi->cli.trans = trans;
             wi->cliJustData.data = s;
-            if (workQueuePut(mWorkQ, wi))
+            if (workQueuePut(mWorkQ, wi)) {
                 s = NULL;
+                ret = true;
+            }
             else {
                 free(wi);
                 loge("Failed to enqueue work item\n");
