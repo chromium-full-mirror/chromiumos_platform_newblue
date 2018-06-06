@@ -6,8 +6,8 @@
 #ifndef _HCI_H_
 #define _HCI_H_
 
+#include "newblue-macros.h"
 #include "bt.h"
-#include "export.h"
 #include "sg.h"
 #include "types.h"
 #include "uniq.h"

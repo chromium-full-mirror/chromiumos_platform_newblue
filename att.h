@@ -6,7 +6,7 @@
 #ifndef _ATT_H_
 #define _ATT_H_
 
-#include "export.h"
+#include "newblue-macros.h"
 #include "l2cap.h"
 #include "sm.h"
 #include "types.h"

@@ -48,8 +48,13 @@ libnewblue_HEADERS = att.h \
                      gatt-builtin.h \
                      hci.h \
                      l2cap.h \
+                     multiNotif.h \
+                     newblue-macros.h \
+                     sg.h \
                      sm.h \
-                     uniq.h
+                     types.h \
+                     uniq.h \
+                     uuid.h
 
 CC_LIBRARY(libnewblue.so): $(libnewblue_OBJS) $(libnewblue_DEPS)
 CC_LIBRARY(libnewblue.so): LDLIBS += $(libnewblue_LIBS)

@@ -10,6 +10,7 @@
 #include <string.h>
 #include <errno.h>
 #include <sched.h>
+#include "newblue-macros.h"
 #include "multiNotif.h"
 #include "workQueue.h"
 #include "config.h"

@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <string.h>
 
+#include "newblue-macros.h"
 #include "gatt-builtin.h"
 #include "vendorLib.h"
 #include "l2cap.h"

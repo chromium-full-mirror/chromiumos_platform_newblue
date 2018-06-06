@@ -6,7 +6,7 @@
 #ifndef _UUID_H_
 #define _UUID_H_
 
-#include "export.h"
+#include "newblue-macros.h"
 #include "types.h"
 
 #define BT_UUID_BASE                  {0x800000805F9B34FBULL, 0x0000000000001000ULL}

@@ -6,7 +6,7 @@
 #ifndef _GATT_BUILTIN_H_
 #define _GATT_BUILTIN_H_
 
-#include "export.h"
+#include "newblue-macros.h"
 #include "types.h"
 
 
