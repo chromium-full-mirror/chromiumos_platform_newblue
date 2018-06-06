@@ -12,4 +12,12 @@
 # define __packed __attribute__ ((__packed__))
 #endif
 
+#ifdef  __cplusplus
+# define NEWBLUE_BEGIN_DECLS  extern "C" {
+# define NEWBLUE_END_DECLS    }
+#else
+# define NEWBLUE_BEGIN_DECLS
+# define NEWBLUE_END_DECLS
+#endif
+
 #endif

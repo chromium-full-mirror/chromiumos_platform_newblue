@@ -9,6 +9,7 @@
 #include "newblue-macros.h"
 #include "types.h"
 
+NEWBLUE_BEGIN_DECLS
 
 /*
  * This file provides GATT profiles for GATT & GAP as required by the spec. It should be inited after
@@ -75,6 +76,7 @@ void gattBuiltinSetPreferredConnParamsWhenSlave(uint16_t minInt, uint16_t maxInt
     uint16_t to) NEWBLUE_EXPORT;
 void gattBuiltinSetAppearance(uint16_t appearance) NEWBLUE_EXPORT; /* GAP_APPEAR_* */
 
+NEWBLUE_END_DECLS
 
 
 

@@ -13,6 +13,8 @@
 #include "uuid.h"
 #include "uniq.h"
 
+NEWBLUE_BEGIN_DECLS
+
 typedef uniq_t att_range_t;
 typedef uniq_t att_cid_t;
 typedef uniq_t att_trans_t;
@@ -176,5 +178,7 @@ bool attCliSendIndicationAck(l2c_handle_t to);
 
 /* completely stateless helpers */
 bool attReadUuid(struct uuid *dst, sg s); //read uuid-16 or uuid-128 from an sg assuming it is the only thing in there
+
+NEWBLUE_END_DECLS
 
 #endif

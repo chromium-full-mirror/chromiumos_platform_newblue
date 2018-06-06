@@ -11,6 +11,8 @@
 #include "sg.h"
 #include "types.h"
 
+NEWBLUE_BEGIN_DECLS
+
 #define L2C_FIXED_CH_NUM_SM    6
 
 #define SM_BLOCK_LEN      16
@@ -259,5 +261,7 @@ void smCalcConfValForTest(uint8_t* out, const uint8_t *k, const uint8_t *r, uint
     uint64_t preq, bool iat, uint64_t ia, bool rat, uint64_t ra);
 void smCalcKeyForTest(uint8_t *out, const uint8_t *k, const uint8_t *r1, const uint8_t *r2);
 uint32_t smAddressHashForTest(uint32_t r, const uint8_t *key);
+
+NEWBLUE_END_DECLS
 
 #endif /* _SM_H_ */

@@ -12,6 +12,8 @@
 #include "types.h"
 #include "uniq.h"
 
+NEWBLUE_BEGIN_DECLS
+
 #define HCI_CONN_ID_MASK	0x0FFF
 
 #define HCI_PKT_TYP_CMD         0x01
@@ -229,6 +231,7 @@ bool hciAdvSetDisable(hci_adv_set_t set) NEWBLUE_EXPORT;
 bool hciAdvSetGetCurTxPowerLevel(hci_adv_set_t set, int8_t *advTxPowerLevelP) NEWBLUE_EXPORT;
 bool hciAdvSetGetCurAdvAddr(hci_adv_set_t set, struct bt_addr *ownAddr) NEWBLUE_EXPORT;
 
+NEWBLUE_END_DECLS
 
 #endif
 

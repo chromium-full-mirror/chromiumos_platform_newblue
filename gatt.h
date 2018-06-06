@@ -14,6 +14,7 @@
 #include "uniq.h"
 
 
+NEWBLUE_BEGIN_DECLS
 
 typedef uniq_t gatt_service_t;
 typedef uniq_t gatt_client_conn_t;
@@ -174,6 +175,7 @@ uint8_t gattClientStagedWritesExecute(gatt_client_conn_t conn, bool execute, gat
 uint8_t gattClientNotifsSubscribe(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *thisChar, bool reliable, gattCliNotifSubscribeStateCbk stateCbk, gattCliNotifArrivedCbk arrivedCbk) NEWBLUE_EXPORT;
 uint8_t gattClientNotifsUnsubscribe(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *thisChar) NEWBLUE_EXPORT;
 
+NEWBLUE_END_DECLS
 
 
 

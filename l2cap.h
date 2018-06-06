@@ -6,6 +6,7 @@
 #ifndef _L2CAP_H_
 #define _L2CAP_H_
 
+#include "newblue-macros.h"
 #include "multiNotif.h"
 #include "types.h"
 #include "uniq.h"
@@ -13,6 +14,7 @@
 #include "bt.h"
 #include "sg.h"
 
+NEWBLUE_BEGIN_DECLS
 
 #define OUR_MTU  0xEFFF /* no reason to limit it pointlessly */
 
@@ -193,6 +195,8 @@ void l2cAclLinkEncrChange(hci_conn_t aclConn, bool isEncrypted, bool isMitmSafe)
 bool l2cAclLeLtkRequest(hci_conn_t aclConn, uint64_t rand, uint16_t ediv);
 /* lower layer calls this when connection encryption key refreshed. called with FALSE if encr failed to resume with a new key since BT cannot really go from encrypted to not */
 void l2cAclLinkEncrKeyRefresh(hci_conn_t aclConn, bool isEncrypted, bool isMitmSafe);
+
+NEWBLUE_END_DECLS
 
 #endif
 
