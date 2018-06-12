@@ -46,7 +46,6 @@ struct gattCharDefHdr {
 
 /* we can have one transaction outstanding per connection. This list serializes them */
 struct gattCliTodoItem {
-
     struct gattCliTodoItem   *next;
     uint8_t                   type; /* GATT_CLI_TODO_* */
 
@@ -432,7 +431,7 @@ static void gattConnStructDelete(struct gattConnState *state)
         free(tC);
     }
 
-    if (state->todoCurr)
+    if (state->todoCurr && !state->inFinalStep)
         free(state->todoCurr);
 
     if (state->next)
@@ -1451,9 +1450,9 @@ static void gattTodoItemFree(struct gattCliTodoItem *todo)
  */
 static void gattWorkItemFree(struct gattWorkItem *wi)
 {
-    if (wi->type == GATT_WORK_CLI_DO_NEXT)
+    if (wi->type == GATT_WORK_CLI_DO_NEXT && wi->cliDoNext.todo)
         gattTodoItemFree(wi->cliDoNext.todo);
-    else if (wi->type == GATT_WORK_CLI_IND_CALL)
+    else if (wi->type == GATT_WORK_CLI_IND_CALL && wi->cliIndCall.data)
         sgFree(wi->cliIndCall.data);
     free(wi);
 }
@@ -1499,9 +1498,11 @@ static void* gattWorker(void *param)
             break;
         case GATT_WORK_CLI_DO_NEXT:
             gattCliTodoNext(wi->cliDoNext.conn, wi->cliDoNext.todo);
+            wi->cliDoNext.todo = NULL; // do not auto-free it
             break;
         case GATT_WORK_CLI_IND_CALL:
             wi->cliIndCall.cbk(wi->cliIndCall.conn, &wi->cliIndCall.svc, &wi->cliIndCall.chr, wi->cliIndCall.ind, wi->cliIndCall.data);
+            wi->cliIndCall.data = NULL; // do not auto-free it
             break;
         case GATT_WORK_CLI_SUB_UNSUB_CALL:
             wi->cliSubUnsubCall.cbk(wi->cliSubUnsubCall.conn, &wi->cliSubUnsubCall.svc, &wi->cliSubUnsubCall.chr, wi->cliSubUnsubCall.forSub, wi->cliSubUnsubCall.stat);
@@ -1549,7 +1550,6 @@ static struct gattConnState* gattAttCbkCheckState(uniq_t trans, l2c_handle_t to,
 
     return NULL;
 }
-
 
 /*
  * FUNCTION: gattCliFinalStepSvcIncludeFound
@@ -1689,7 +1689,7 @@ static bool gattCliNotifSubUnsubIssueWriteIfNeededNewTodo(struct gattConnState *
     if (gattCliNotifSubUnsubIssueWriteIfNeeded(notif, todo))
         gattCliTodoEnqItem(conn, todo, false);
     else
-        free(todo);
+        gattTodoItemFree(todo);
 
     return true;
 }
@@ -2123,7 +2123,7 @@ static bool gattAttCliFindInfoCbk(uniq_t trans, l2c_handle_t to, uint16_t handle
             pthread_mutex_lock(&mGattLock);
             conn = gattConnFindByL2cConn(to);
             if (conn)
-                conn->inFinalStep = true;
+                conn->inFinalStep = false;
             else {
                 gattTodoItemFree(todo);
                 logd("Connection went away while processing final step\n");
@@ -2432,7 +2432,7 @@ static bool gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *han
             pthread_mutex_lock(&mGattLock);
             conn = gattConnFindByL2cConn(to);
             if (conn)
-                conn->inFinalStep = true;
+                conn->inFinalStep = false;
             else {
                 gattTodoItemFree(todo);
                 logd("Connection went away while processing final step\n");
@@ -2501,7 +2501,7 @@ static void gattAttCliWriteCbk(uniq_t trans, l2c_handle_t to)
             pthread_mutex_lock(&mGattLock);
             conn = gattConnFindByL2cConn(to);
             if (conn)
-                conn->inFinalStep = true;
+                conn->inFinalStep = false;
             else {
                 gattTodoItemFree(todo);
                 logd("Connection went away while processing final step\n");
@@ -3472,8 +3472,7 @@ static void gattCliTodoNext(l2c_handle_t conn, struct gattCliTodoItem *now)
         logd("ToDo item we just did no longer has a connection. Oops\n");
     else if (connState->todoCurr != now)
         loge("Inconsistent idea of what the current todo item is!\n");
-
-    if (!trans) { /* a transaction is NOT ongoing */
+    else if (!trans) { /* a transaction is NOT ongoing */
         gattTodoItemFree(now);
         if (connState) {
             connState->todoCurr = NULL;
@@ -3528,6 +3527,7 @@ static void gattCliTodoEnqItem(struct gattConnState *conn, struct gattCliTodoIte
 static void gattCliTodoEnqItemWithData(struct gattConnState *conn, gatt_client_conn_t connId, struct gattCliTodoItem *todo, uint8_t intent, uint8_t step,
                                const struct uuid *uuidSvc, const struct uuid *uuidChr, const struct uuid *uuidDsc, bool inFront)
 {
+    todo->reqStep = step;
     todo->next = NULL;
     todo->connId = connId;
     todo->reqIntent = intent;
@@ -3587,7 +3587,7 @@ static bool gattCliTodoEnqWriteReq(struct gattClientConnection *clicon, uint16_t
 
 
 fail_s:
-    free(todo);
+    free(todo); //correct since this is not a complete write todo and freeing it using gattTodoItemFree() would be bad as it will try to free a NULL sg
 fail_todo_or_conn:
     return false;
 }
