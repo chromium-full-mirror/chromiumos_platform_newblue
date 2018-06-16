@@ -48,6 +48,7 @@ struct gattCharDefHdr {
 struct gattCliTodoItem {
     struct gattCliTodoItem   *next;
     uint8_t                   type; /* GATT_CLI_TODO_* */
+    bool                      enqueued; /* for error checking */
 
     /* this describes what to do (per-type data) */
     union {
@@ -724,6 +725,7 @@ static bool gattEnqueueCliDoNextTodoItem(struct gattConnState *conn)
         wi->type = GATT_WORK_CLI_DO_NEXT;
         wi->cliDoNext.conn = conn->conn;
         wi->cliDoNext.todo = now;
+        now->enqueued = false;
 
         if (workQueuePut(mWorkQ, wi)) {
             conn->todoListH = conn->todoListH->next;
@@ -1876,14 +1878,16 @@ static bool gattCliNotifSubUnsubDone(struct gattConnState *conn, struct gattCliT
  *           haveMore - is there more in this same reply packet?
  *           killTodoItem - set to true to destroy the todo list item. false (or leave as is) to keep it (only makes sense if you re-enqueued it). only used if func itself returns false or haveMore is false
  * RETURN:   true to allow further calls here false to stop (in cases of multiple replies in a radio packet). ignored if haveMore is false
- * NOTES:
+ * NOTES:    handle, endGrpHandle, uu, etc will be NULL in case of error returned.
  */
 static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem *todo, const uint16_t *handle, const uint16_t *endGrpHandle, const struct uuid *uu, sg data, bool haveMore, bool *killTodoItem)
 {
     struct gattIncludeDefHdr inclDef;
     struct gattCharDefHdr charDef;
-    struct uuid uuid;
     uint16_t inclStartH, inclEndH;
+    struct uuid uuid;
+
+    logd("Final step for intent %u\n", todo->reqIntent);
 
     switch (todo->reqIntent) {
     case GATT_INTENT_INTERNAL:
@@ -1896,19 +1900,26 @@ static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem 
         return false;
 
     case GATT_INTENT_ENUM_SVCS: /* we get a call for each found service. callbacks are ok here (we are in ATT's thread and hold no locks) */
-        if (!attReadUuid(&uuid, data)) {
-            sgFree(data);
-            logw("Service definition is not a uuid\n");
-            *killTodoItem = true;
-            return false;
-        }
-        sgFree(data);
+        if (handle) { //no handle == error == end of enum
 
-        if (uuidIsZero(&todo->uuidSvc) || uuidCmp(&todo->uuidSvc, &uuid))
-            todo->intentData.enumSvcsCbk(todo->connId, &uuid, true /*we always find a primary here. Is that wrong? */, *handle, *endGrpHandle - *handle + 1, GATT_CLI_STATUS_OK);
+            if (!attReadUuid(&uuid, data)) {
+                sgFree(data);
+                logw("Service definition is not a uuid\n");
+                *killTodoItem = true;
+                return false;
+            }
+            sgFree(data);
+
+            if (uuidIsZero(&todo->uuidSvc) || uuidCmp(&todo->uuidSvc, &uuid))
+                todo->intentData.enumSvcsCbk(todo->connId, &uuid, true /*we always find a primary here. Is that wrong? */, *handle, *endGrpHandle - *handle + 1, GATT_CLI_STATUS_OK);
+        }
+        else if (haveMore) {
+            loge("Cannot have more data expected after an error!\n");
+            haveMore = false;
+        }
 
         if (!haveMore) {
-            if (*endGrpHandle == 0xffff) { //the rare case when we're done here
+            if (!endGrpHandle || *endGrpHandle == 0xffff) { //the rare case when we're done here
                 todo->intentData.enumSvcsCbk(todo->connId, NULL, true, 0, 0, GATT_CLI_STATUS_OK);
                 *killTodoItem = true;
             } else {
@@ -1917,6 +1928,7 @@ static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem 
                 gattCliTodoEnqItem(conn, todo, false);
                 pthread_mutex_unlock(&mGattLock);
             }
+            return false;
         }
         return true;
  /*
@@ -1982,46 +1994,59 @@ static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem 
         break;
 
     case GATT_INTENT_ENUM_CHARS:
-        if (!sgSerializeCutFront(data, &charDef, sizeof(charDef))) {
-            sgFree(data);
-            logw("Invalid char def\n");
-            *killTodoItem = true;
-            return false;
-        }
-        if (!attReadUuid(&uuid, data)) {
-            sgFree(data);
-            logw("Char definition does not end in a uuid\n");
-            *killTodoItem = true;
-            return false;
-        }
-        sgFree(data);
+        if (data) { //no data == error == end of enum
 
-        if (uuidIsZero(&todo->uuidChr)) { //case 3
-            todo->intentData.enumCharsCbk(todo->connId, &todo->uuidSvc, &uuid, *handle, *endGrpHandle - *handle + 1, GATT_CLI_STATUS_OK);
-            *killTodoItem = true;
-            return false;
-        } else { //cases 2 and 1
-            if (uuidCmp(&todo->uuidChr, &uuid)) //case 2
-                uuidZero(&todo->uuidChr);
-
-            /* go on searching */
-            if (!haveMore) {
-                if (*endGrpHandle == todo->read.endHandle) { //the rare case when we're done here
-                    todo->intentData.enumCharsCbk(todo->connId, &todo->uuidSvc, NULL, 0, 0, GATT_CLI_STATUS_OK);
-                    *killTodoItem = true;
-                } else {
-                    todo->read.handle = *endGrpHandle + 1;
-                    pthread_mutex_lock(&mGattLock);
-                    gattCliTodoEnqItem(conn, todo, false);
-                    pthread_mutex_unlock(&mGattLock);
-                }
+            if (!sgSerializeCutFront(data, &charDef, sizeof(charDef))) {
+                sgFree(data);
+                logw("Invalid char def\n");
+                *killTodoItem = true;
+                return false;
             }
+            if (!attReadUuid(&uuid, data)) {
+                sgFree(data);
+                logw("Char definition does not end in a uuid\n");
+                *killTodoItem = true;
+                return false;
+            }
+            sgFree(data);
+
+            logd("Found char with props 0x%02x @ 0x%04x: "UUIDFMT"\n", utilGetLE8(&charDef.charProps), utilGetLE16(&charDef.valHandle), UUIDCONV(uuid));
+            logd("todo->uuidChr is "UUIDFMT"\n", UUIDCONV(todo->uuidChr));
+
+            if (uuidIsZero(&todo->uuidChr)) { //case 3
+                logd("case 3 handle=%p endGrpHandle=%p\n", handle, endGrpHandle);
+                todo->intentData.enumCharsCbk(todo->connId, &todo->uuidSvc, &uuid, *handle, utilGetLE16(&charDef.valHandle), GATT_CLI_STATUS_OK);
+                *killTodoItem = true;
+                return false;
+            }
+            //cases 2 and 1
+            if (uuidCmp(&todo->uuidChr, &uuid)) { //case 2
+                uuidZero(&todo->uuidChr);
+                logd("found starting char, looking for next\n");
+            }
+        }
+        else if (haveMore) {
+            loge("Cannot have more data expected after an error!\n");
+            haveMore = false;
+        }
+
+        if (!haveMore) {
+            if (!handle || *handle == todo->read.endHandle) { //the rare case when we're done here
+                todo->intentData.enumCharsCbk(todo->connId, &todo->uuidSvc, NULL, 0, 0, GATT_CLI_STATUS_OK);
+                *killTodoItem = true;
+            } else {
+                todo->read.handle = *handle + 1;
+                pthread_mutex_lock(&mGattLock);
+                gattCliTodoEnqItem(conn, todo, false);
+                pthread_mutex_unlock(&mGattLock);
+            }
+            return false;
         }
         return true;
 
     case GATT_INTENT_ENUM_CHAR_DESCRS:
         if (uuidIsZero(&todo->uuidDsc)) { //case 3
-            todo->intentData.enumCharDscrsCbk(todo->connId, &todo->uuidSvc, &todo->uuidChr, uu, *handle, *endGrpHandle - *handle + 1, GATT_CLI_STATUS_OK);
+            todo->intentData.enumCharDscrsCbk(todo->connId, &todo->uuidSvc, &todo->uuidChr, uu, *handle, GATT_CLI_STATUS_OK);
             *killTodoItem = true;
             return false;
         } else { //cases 2 and 1
@@ -2030,11 +2055,11 @@ static bool gattCliFinalStep(struct gattConnState *conn, struct gattCliTodoItem 
 
             /* go on searching */
             if (!haveMore) {
-                if (*endGrpHandle == todo->read.endHandle) { //the rare case when we're done here
-                    todo->intentData.enumCharDscrsCbk(todo->connId, &todo->uuidSvc, &todo->uuidChr, NULL, 0, 0, GATT_CLI_STATUS_OK);
+                if (*handle == todo->read.endHandle) { //the rare case when we're done here
+                    todo->intentData.enumCharDscrsCbk(todo->connId, &todo->uuidSvc, &todo->uuidChr, NULL, 0, GATT_CLI_STATUS_OK);
                     *killTodoItem = true;
                 } else {
-                    todo->find.startHandle = *endGrpHandle + 1;
+                    todo->find.startHandle = *handle + 1;
                     pthread_mutex_lock(&mGattLock);
                     gattCliTodoEnqItem(conn, todo, false);
                     pthread_mutex_unlock(&mGattLock);
@@ -2209,6 +2234,8 @@ static bool gattCliStepFailed(struct gattConnState *conn, struct gattCliTodoItem
  */
 static bool gattCliStepSucceeded(struct gattConnState *conn, struct gattCliTodoItem *todo, uint16_t handle, uint16_t endGrpHandle, uint8_t charProps, uint16_t valHandle)
 {
+    logd("Step %u succeeded\n", todo->reqStep);
+
     if (todo->reqStep == GATT_INTENT_STEP_FIND_SVC) { //we found the wanted service. let's see what's next
         switch (todo->reqIntent) {
         case GATT_INTENT_ENUM_INCL_SVCS:
@@ -2219,6 +2246,7 @@ static bool gattCliStepSucceeded(struct gattConnState *conn, struct gattCliTodoI
 
         case GATT_INTENT_ENUM_CHARS:
             todo->reqStep = GATT_INTENT_STEP_FINAL;
+            todo->type = GATT_CLI_TODO_READ_BY_TYPE;
             uuidFromUuid16(&todo->read.type, GATT_UUID_CHARACTERISTIC);
             break;
 
@@ -2229,6 +2257,7 @@ static bool gattCliStepSucceeded(struct gattConnState *conn, struct gattCliTodoI
         case GATT_INTENT_WRITE_DESCR:
         case GATT_INTENT_NOTIF_SUB_UNSUB:
             todo->reqStep = GATT_INTENT_STEP_FIND_CHAR;
+            todo->type = GATT_CLI_TODO_READ_BY_TYPE;
             uuidFromUuid16(&todo->read.type, GATT_UUID_CHARACTERISTIC);
             break;
         }
@@ -2367,6 +2396,8 @@ static bool gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *han
         struct gattCliTodoItem *todo = conn->todoCurr;
         struct gattCharDefHdr charDefHdr;
         struct uuid uuid;
+
+        logd("Step %u for request with intent %u\n", todo->reqStep, todo->reqIntent);
 
         switch (todo->reqStep) {
         case GATT_INTENT_STEP_FIND_SVC: /* we're looking for a service - so let's look */
@@ -2544,11 +2575,47 @@ static void gattAttCliError(uniq_t trans, l2c_handle_t to, const uint16_t *handl
     static const uint8_t expectedWorkTypes[] = {GATT_CLI_TODO_FIND_INFO, GATT_CLI_TODO_FIND_BY_TYPE_VAL, GATT_CLI_TODO_READ_BY_TYPE, GATT_CLI_TODO_READ, GATT_CLI_TODO_READ_BLOB,
                                                 GATT_CLI_TODO_READ_BY_GRP_TYPE, GATT_CLI_TODO_WRITE, GATT_CLI_TODO_PREPARE_WRITE, GATT_CLI_TOTO_WRITE_EXEC};
     struct gattConnState *conn;
+    bool killTodoItem = false;
+    bool ret = false;
+
+    logd("att signalled error on handle 0x%04x of type 0x%02x from opcode 0x%02x\n", handleP ? *handleP : -1, errP ? *errP : -1, errOpcodeP ? *errOpcodeP : -1);
 
     pthread_mutex_lock(&mGattLock);
     conn = gattAttCbkCheckState(trans, to, expectedWorkTypes, sizeof(expectedWorkTypes), "Error");
     if (conn) {
-        //todo
+        struct gattCliTodoItem *todo = conn->todoCurr;
+
+        logd("att error was for a todo with reqStep %u and reqIntent %u\n", todo->reqStep, todo->reqIntent);
+        switch (todo->reqStep) {
+        case GATT_INTENT_STEP_FINAL:
+            conn->inFinalStep = true;
+            pthread_mutex_unlock(&mGattLock);
+            ret = gattCliFinalStep(conn, todo, NULL, NULL, NULL, NULL, false, &killTodoItem);
+            pthread_mutex_lock(&mGattLock);
+            conn = gattConnFindByL2cConn(to);
+            if (conn)
+                conn->inFinalStep = false;
+            else {
+                gattTodoItemFree(todo);
+                logd("Connection went away while processing final step\n");
+            }
+            break;
+
+        default:
+            killTodoItem = true;
+            logw("Unexpected step %u in WriteCbk. Dropping\n", todo->reqStep);
+            break;
+        }
+
+        if (conn) {
+            if (!ret) { /* aka "if for whatever reasons we expect no more callbacks for this todo item" */
+                conn->todoCurr = NULL;
+                if (killTodoItem)
+                    gattTodoItemFree(todo);
+                gattEnqueueCliDoNextTodoItem(conn);
+            } else if (killTodoItem)
+                logw("Cannot kill todo item if we expect more callbacks on it!\n");
+        }
     }
     pthread_mutex_unlock(&mGattLock);
 }
@@ -3390,6 +3457,7 @@ static void gattCliTodoNext(l2c_handle_t conn, struct gattCliTodoItem *now)
     uniq_t trans = 0;
 
     /* actually start it */
+    logd("Current gatt cli todo command being sent: %u\n", now->type);
     switch (now->type) {
     case GATT_CLI_TODO_FIND_INFO:
         trans = attCliFindInformation(conn, now->find.startHandle, now->find.endHandle);
@@ -3493,6 +3561,13 @@ static void gattCliTodoNext(l2c_handle_t conn, struct gattCliTodoItem *now)
  */
 static void gattCliTodoEnqItem(struct gattConnState *conn, struct gattCliTodoItem *todo, bool inFront)
 {
+    if (todo->enqueued) {
+        loge("Cannot enqueue an item that is already in the list!\n");
+        return;
+    }
+
+    todo->enqueued = true;
+
     if (conn->todoListH) { /* have items in list already? */
         if (inFront) {
             todo->next = conn->todoListH;

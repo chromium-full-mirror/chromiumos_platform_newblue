@@ -134,8 +134,8 @@ bool gattServiceSendInd(gatt_service_t svc, att_cid_t cid, uint16_t handle, cons
 typedef void (*gattCliConnectResultCbk)(gatt_client_conn_t conn, uint8_t status);
 typedef void (*gattCliSvcEnumCbk)(gatt_client_conn_t conn, const struct uuid *uuid, bool primary, uint16_t firstHandle, uint16_t numHandles, uint8_t status); /* uuid passed as set to null after final result */
 typedef void (*gattCliEnumIncludedSvcsCbk)(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *uuid, uint16_t firstHandle, uint16_t numHandles, uint8_t status);
-typedef void (*gattCliEnumCharacteristicsCbk)(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *uuid, uint16_t firstHandle, uint16_t numHandles, uint8_t status);
-typedef void (*gattCliEnumCharDescrsCbk)(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *uuid, uint16_t firstHandle, uint16_t numHandles, uint8_t status);
+typedef void (*gattCliEnumCharacteristicsCbk)(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *uuid, uint16_t charHandle, uint16_t valHandle, uint8_t status);
+typedef void (*gattCliEnumCharDescrsCbk)(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *uuid, uint16_t handle, uint8_t status);
 typedef void (*gattCliCharReadCbk)(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t status, sg data);
 typedef void (*gattCliCharWriteCbk)(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *thisChar, uint8_t status);
 typedef void (*gattCliCharDescrReadCbk)(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *inThisChar, const struct uuid *thisDescr, uint8_t status, sg data);

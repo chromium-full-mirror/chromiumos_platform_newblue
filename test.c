@@ -46,6 +46,14 @@ struct EdrDiscDev {
     char               name[249];
 };
 
+struct UuidList {
+    struct UuidList* next;
+    struct uuid uu;
+};
+
+static sem_t mGattTestSem;
+static struct UuidList *mGattUuids = NULL;
+
 static void testHciScoRxCbk(hci_conn_t aclConn, const void *data, uint8_t len, uint8_t lossAmount)
 {
    static const char *lossAmtStr[] = {"none", "some", "unknown", "all"};
@@ -410,6 +418,8 @@ void pairObserverCallback(void *observerData, const void *pairStateChange, uniq_
 
 static void gattSvcFoundCbk(gatt_client_conn_t conn, const struct uuid *uuid, bool primary, uint16_t firstHandle, uint16_t numHandles, uint8_t status)
 {
+    struct UuidList *t;
+
     if (status != GATT_CLI_STATUS_OK) {
         logi("enum status %u\n", status);
         return;
@@ -417,10 +427,36 @@ static void gattSvcFoundCbk(gatt_client_conn_t conn, const struct uuid *uuid, bo
 
     if (!uuid) {
         logi("enumeration ends\n");
+        sem_post(&mGattTestSem);
         return;
     }
 
     logi("Found %s service "UUIDFMT" with handles 0x%04x+0x%04x\n", primary ? "primary" : "secondary", UUIDCONV(*uuid), firstHandle, numHandles);
+
+    t = calloc(sizeof(struct UuidList), 1);
+    t->uu = *uuid;
+    t->next = mGattUuids;
+    mGattUuids = t;
+}
+
+static void gattEnumCharacteristicsCbk(gatt_client_conn_t conn, const struct uuid *inThisService, const struct uuid *uuid, uint16_t charHandle, uint16_t valHandle, uint8_t status)
+{
+    logi("in gattEnumCharacteristicsCbk\n");
+
+    if (status != GATT_CLI_STATUS_OK || !uuid) {
+        logi("enumeration ends\n");
+        if (mGattUuids)
+            free(mGattUuids);
+        mGattUuids = NULL;
+    }
+    else {
+        logi("    Found char with handles 0x%04x (value at 0x%04x) with uuid "UUIDFMT"\n", charHandle, valHandle, UUIDCONV(*uuid));
+        if (!mGattUuids)
+            mGattUuids = calloc(sizeof(struct UuidList), 1);
+        mGattUuids->uu = *uuid;
+    }
+
+    sem_post(&mGattTestSem);
 }
 
 static void gattConnectedCbk(gatt_client_conn_t conn, uint8_t status)
@@ -430,8 +466,11 @@ static void gattConnectedCbk(gatt_client_conn_t conn, uint8_t status)
     if (status != GATT_CLI_STATUS_OK)
         return;
 
+    //list services
+    mGattUuids = NULL;
     logi("service enum = %u\n", gattClientEnumServices(conn, NULL, gattSvcFoundCbk));
 }
+
 
 static bool eirNameMatch(const uint8_t *data, uint32_t len, const char *name)
 {
@@ -471,6 +510,11 @@ int main(int argc, char** argv)
 
     fprintf(stderr, "NewBlue test\n");
     logi("LOG UP\n");
+
+    if (sem_init(&mGattTestSem, 0, 0)) {
+        loge("sem init failed\n");
+        return -1;
+    }
 
     if (sem_init(&sem, 0, 0)) {
         loge("sem init failed\n");
@@ -574,8 +618,35 @@ int main(int argc, char** argv)
 
                 gatt_client_conn_t con = gattClientConnect(&connTo, gattConnectedCbk);
                 logi("Gatt connection handle: "UNIQ_FMT"x\n", UNIQ_CONV(con));
-                if(con)
-                    sleep(10);	//give gatt time before bring-down
+                if(con) {
+                    //enum will start and we'll drive it from here
+
+                    struct UuidList *uuids, *t;
+
+                    sem_wait(&mGattTestSem);
+                    logi("Service enum ends...\n");
+
+                    //list characteristics of each service
+                    uuids = mGattUuids;
+                    while (uuids) {
+                        t = uuids;
+                        uuids = uuids->next;
+
+                        mGattUuids = NULL;
+
+                        do {
+                            logi("Enumerating characteristics in service "UUIDFMT" starting from:\n", UUIDCONV(t->uu));
+                            if (!mGattUuids)
+                                logi("  the beginning\n");
+                            else
+                                logi("  char with UUID "UUIDFMT"\n", UUIDCONV(mGattUuids->uu));
+                            logi("  ret = %u\n", gattClientEnumCharacteristics(con, &t->uu, mGattUuids ? &mGattUuids->uu : NULL, gattEnumCharacteristicsCbk));
+                            sem_wait(&mGattTestSem);
+                        } while (mGattUuids);
+
+                        free(t);
+                    }
+                }
             }
 
         } else

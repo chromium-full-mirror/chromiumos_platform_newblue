@@ -2953,6 +2953,8 @@ void attSrvDataRx(l2c_handle_t from, sg s)
     pthread_mutex_lock(&mAttLock);
     attConnListAddIfNew(from);
 
+    logd("ATT opcode RXed: 0x%02x\n", opcode);
+
     switch (opcode) {
     case ATT_OPCODE_ERROR:
         if (!sgSerializeCutFront(s, &errRsp, sizeof(errRsp)))
@@ -2963,6 +2965,8 @@ void attSrvDataRx(l2c_handle_t from, sg s)
             logw("Got reply from no transaction in progress\n");
         else if (!attCliScheduleErrorCbk(trans, from, utilGetLE16(&errRsp.handle), utilGetLE16(&errRsp.err), utilGetLE16(&errRsp.reqOpcode), false))
             loge("Failed to schedule an error callback\n");
+        else
+            ret = true;
         break;
 
     case ATT_OPCODE_MTU_EXCH_REQ:
