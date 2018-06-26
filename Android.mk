@@ -19,6 +19,7 @@ COMMON_SRC_FILES :=     \
     att.c               \
     gatt.c              \
     gatt-builtin.c      \
+    btleHid.c           \
     a2dp.c              \
 
 COMMON_CFLAGS += -Wno-unused-parameter -DANDROID #-DTEST_DEBUG -DSG_DEBUG -DRFC_DEBUG -DMT_DEBUG -DSDP_DBG -DA2DP_DBG

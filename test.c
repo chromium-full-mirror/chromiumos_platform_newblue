@@ -12,6 +12,7 @@
 #include "newblue-macros.h"
 #include "gatt-builtin.h"
 #include "vendorLib.h"
+#include "btleHid.h"
 #include "l2cap.h"
 #include "timer.h"
 #include "aapi.h"
@@ -55,6 +56,7 @@ struct HandleList {
 
 static sem_t mGattTestSem;
 static struct HandleList *mGattItems = NULL;
+static ble_hid_conn_t mHidConn = 0;
 
 static void testHciScoRxCbk(hci_conn_t aclConn, const void *data, uint8_t len, uint8_t lossAmount)
 {
@@ -539,7 +541,7 @@ static void gattEnumInclSvcsCbk(gatt_client_conn_t conn, const struct uuid *uuid
         logi("    Found incl svc with handles 0x%04x - 0x%04x) with uuid "UUIDFMT"\n", firstHandle, lastHandle, UUIDCONV(*uuid));
 }
 
-static void gattConnectedCbk(gatt_client_conn_t conn, uint8_t status)
+static void gattConnectedCbkGattEnum(gatt_client_conn_t conn, uint8_t status)
 {
     logi("Connect status: %u\n", status);
 
@@ -551,6 +553,33 @@ static void gattConnectedCbk(gatt_client_conn_t conn, uint8_t status)
     logi("service enum = %u\n", gattClientEnumServices(conn, true, gattSvcFoundCbk));
 }
 
+static void gattConnectedCbkHidTest(gatt_client_conn_t conn, uint8_t status)
+{
+    logi("GATT for HID connect status: %u\n", status);
+
+    if (status == GATT_CLI_STATUS_OK)
+        mHidConn = btleHidAttach(conn);
+
+    //either way unblock main thread
+    sem_post(&mGattTestSem);
+}
+
+
+static void btleHidConnStateCbk(ble_hid_conn_t hidId, uint8_t state)
+{
+    logi("HID state: %u\n", state);
+
+    //if terminal state, unblock main thread
+    if (state == BTLE_HID_CONN_STATE_UP || state == BTLE_HID_CONN_STATE_TEARDOWN)
+        sem_post(&mGattTestSem);
+}
+
+static void btleHidReportRxCbk(ble_hid_conn_t hidId, int32_t reportId, sg data, bool byRequest)
+{
+    logi("HID report ID %d RXed, %u bytes%s\n", reportId, sgLength(data), byRequest ? " by request" : "");
+
+    sgFree(data);
+}
 
 static bool eirNameMatch(const uint8_t *data, uint32_t len, const char *name)
 {
@@ -805,21 +834,22 @@ int main(int argc, char** argv)
         goto cleanup;
     }
 
-    if (argc == 2 && (!strcmp(argv[1], "scan") || !strcmp(argv[1], "scanconnect"))) {
+    if (argc == 2 && (!strcmp(argv[1], "scan") || !strcmp(argv[1], "scanconnect") || !strcmp(argv[1], "hidtest"))) {
         /*
-         * Option: scan
-         * Use:    start LE scanning for a while and terminate
+         * Option: scan, scanconnect, hidtest
+         * Use:    start LE scanning for a while and terminate. in case of scanconnect, connect and enumerate GATT things, for "hidtest", try the hid test
          */
 
-        uniq_t h;
+        bool foundDev = false, wantConnect = !strcmp(argv[1], "scanconnect"), doHidTest = !strcmp(argv[1], "hidtest");
         struct LeDiscDev *leDevices = NULL, *t;
-        bool foundDev = false, wantConnect = !strcmp(argv[1], "scanconnect");
+        gatt_client_conn_t con = 0;
         struct bt_addr connTo;
+        uniq_t h;
 
-        logi("Trying some LE discovery%s...\n", wantConnect ? " and connection" : "");
+        logi("Trying some LE discovery%s...\n", (wantConnect || doHidTest) ? " and connection" : "");
         h = hciDiscoverLeStart(leDiscoveryCbk, &leDevices, true, false);
         if (h) {
-            sleep(wantConnect ? 5 : 20);
+            sleep((wantConnect || doHidTest) ? 5 : 20);
             fprintf(stderr, "\n");
             logi("discovery stop = %s\n", hciDiscoverLeStop(h) ? "OK" : "FAIL");
 
@@ -846,26 +876,50 @@ int main(int argc, char** argv)
                     interpAvdData(t->rspData, t->rspLen);
                 }
 
-                if (wantConnect) {   //is this the one we shoudl connect to???
+                if (wantConnect || doHidTest) {   //is this the one we shoudl connect to???
 
-                    static const char *connNameMatch = "Pixel 4 XXL";
+                    static const char *connNameMatch = "PC120A";
 
                     if (eirNameMatch(t->advData, t->advLen, connNameMatch) || (t->haveRsp && eirNameMatch(t->rspData, t->rspLen, connNameMatch))) {
                       foundDev = true;
                       memcpy(connTo.addr, t->mac, BT_MAC_LEN);
                       connTo.type = t->randomAddr ? BT_ADDR_TYPE_LE_RANDOM : BT_ADDR_TYPE_LE_PUBLIC;
+                      logi("Found device to connect to: "ADDRFMT"\n", ADDRCONV(connTo));
                     }
                 }
-
                 free(t);
             }
 
-            if (foundDev) {
-                logi("Found device to connect to: "ADDRFMT"\n", ADDRCONV(connTo));
+            if (!foundDev)
+                logi("Desired device not found. Sorry\n");
+            else if (doHidTest) {
 
-                gatt_client_conn_t con = gattClientConnect(&connTo, gattConnectedCbk);
-                logi("Gatt connection handle: "UNIQ_FMT"x\n", UNIQ_CONV(con));
-                if(con) {
+                btleHidInit(btleHidConnStateCbk, btleHidReportRxCbk);
+
+                con = gattClientConnect(&connTo, gattConnectedCbkHidTest);
+                if (!con)
+                    logw("Failed to try to form a GATT connection!\n");
+                else {
+                    logi("Gatt connection handle: "UNIQ_FMT"x\n", UNIQ_CONV(con));
+
+                    sem_wait(&mGattTestSem);
+                    if (mHidConn) { //connection in progress - wait some more
+                        sem_wait(&mGattTestSem);
+                        logi("HID connected. press a key to exit\n");
+                        getchar();
+                        btleHidDetachFromGatt(con);
+                        gattClientDisconnect(con);
+                    }
+                }
+            }
+            else if (wantConnect) {
+
+                con = gattClientConnect(&connTo, gattConnectedCbkGattEnum);
+                if (!con)
+                    logw("Failed to try to form a GATT connection!\n");
+                else {
+                    logi("Gatt connection handle: "UNIQ_FMT"x\n", UNIQ_CONV(con));
+
                     //enum will start and we'll drive it from here
 
                     struct HandleList *items, *t, *n, *e;
