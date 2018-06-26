@@ -116,26 +116,29 @@ struct smAuthReq {
 #define SM_PHASE_START                  0  /* nothing happened yet. */
 #define SM_PHASE_SEC_REQ_SENT           1  /* we sent security req. waiting for pair req. */
 #define SM_PHASE_REQ_SENT               2  /* we sent pair req. waiting for pair resp. */
-#define SM_PHASE_REQ_RESP               3  /* the peer has sent us a pair request, we replied. waiting for Mconfim. OR we sent req and got resp */
-#define SM_PHASE_CONF_SENT              4  /* we sent Mconfirm. waiting for Sconfirm. */
-#define SM_PHASE_CONF_RESP              5  /* the peer has sent us Mconfirm, we replied with Sconfirm. waiting for Mrand. OR we sent Mconfirm and got Sconfim. */
-#define SM_PHASE_RAND_SENT              6  /* we sent Mrand. waiting for Srand. */
-#define SM_PHASE_RAND_RESP              7  /* the peer has sent us Mrand, we replied with Srand. OR we sent Mrand and got Srand. */
-#define SM_PHASE_STK_SENT               8  /* the controller asked us for LTK, we replied with STK. OR we started encryption with STK. */
-#define SM_PHASE_STK_ENCRYPTED          9  /* we received encryption changed event with STK sent previously */
-#define SM_PHASE_ENCRYPT_INFO_SENT      10 /* we sent our LTK via encryption information */
-#define SM_PHASE_ENCRYPT_INFO_RECEIVED  11 /* we received peer's LTK via encryption information*/
-#define SM_PHASE_MASTER_ID_SENT         12 /* we sent our EDIV and Rand via master identification */
-#define SM_PHASE_MASTER_ID_RECEIVED     13 /* we received peer's EDIV and Rand via master identification */
-#define SM_PHASE_ID_INFO_SENT           14 /* we sent our IRK via identity information */
-#define SM_PHASE_ID_INFO_RECEIVED       15 /* we received peer's IRK via identity information */
-#define SM_PHASE_ID_ADDR_INFO_SENT      16 /* we sent our public address via identity address information */
-#define SM_PHASE_ID_ADDR_INFO_RECEIVED  17 /* we received peer's address via identity address information */
-#define SM_PHASE_SIGN_INFO_SENT         18 /* we sent our CSRK via signing information */
-#define SM_PHASE_SIGN_INFO_RECEIVED     19 /* we received peer's CSRK via signing information */
-#define SM_PHASE_DONE                   20 /* pairing is done. OR the peer was paired previously. */
-#define SM_PHASE_LTK_SENT               21 /* the controller asked us for LTK, we replied with LTK. OR we started encryption with LTK. */
-#define SM_PHASE_LTK_ENCRYPTED          22 /* pairing is done and we received encryption changed event with LTK sent previously */
+#define SM_PHASE_REQ_RESP               3  /* the peer has sent us a pair request, we replied. waiting for Mconfirm. OR we sent req and got resp */
+#define SM_PHASE_MCONF_SENT             4  /* we sent Mconfirm. waiting for Sconfirm */
+#define SM_PHASE_MCONF_RECEIVED         5  /* the peer has sent us Mconfirm */
+#define SM_PHASE_SCONF_READY            6  /* Sconfirm is generated and ready to be sent, Sconfirm can be generated before or after receiving Mconfirm */
+#define SM_PHASE_SCONF_SENT             7  /* we replied with Sconfirm. waiting for Mrand.*/
+#define SM_PHASE_SCONF_RECEIVED         8  /* we Sconfirm */
+#define SM_PHASE_RAND_SENT              9  /* we sent Mrand. waiting for Srand. */
+#define SM_PHASE_RAND_RESP              10 /* the peer has sent us Mrand, we replied with Srand. OR we sent Mrand and got Srand. */
+#define SM_PHASE_STK_SENT               11 /* the controller asked us for LTK, we replied with STK. OR we started encryption with STK. */
+#define SM_PHASE_STK_ENCRYPTED          12 /* we received encryption changed event with STK sent previously */
+#define SM_PHASE_ENCRYPT_INFO_SENT      13 /* we sent our LTK via encryption information */
+#define SM_PHASE_ENCRYPT_INFO_RECEIVED  14 /* we received peer's LTK via encryption information*/
+#define SM_PHASE_MASTER_ID_SENT         15 /* we sent our EDIV and Rand via master identification */
+#define SM_PHASE_MASTER_ID_RECEIVED     16 /* we received peer's EDIV and Rand via master identification */
+#define SM_PHASE_ID_INFO_SENT           17 /* we sent our IRK via identity information */
+#define SM_PHASE_ID_INFO_RECEIVED       18 /* we received peer's IRK via identity information */
+#define SM_PHASE_ID_ADDR_INFO_SENT      19 /* we sent our public address via identity address information */
+#define SM_PHASE_ID_ADDR_INFO_RECEIVED  20 /* we received peer's address via identity address information */
+#define SM_PHASE_SIGN_INFO_SENT         21 /* we sent our CSRK via signing information */
+#define SM_PHASE_SIGN_INFO_RECEIVED     22 /* we received peer's CSRK via signing information */
+#define SM_PHASE_DONE                   23 /* pairing is done. OR the peer was paired previously. */
+#define SM_PHASE_LTK_SENT               24 /* the controller asked us for LTK, we replied with LTK. OR we started encryption with LTK. */
+#define SM_PHASE_LTK_ENCRYPTED          25 /* pairing is done and we received encryption changed event with LTK sent previously */
 
 #define SM_WAIT_INTVL_FACTOR            2     /* the wait interval grows exponentially with base 2 */
 #define SM_DEF_WAIT_INTVL               0     /* 0 sec in msec - default wait interval */
@@ -147,6 +150,8 @@ struct smAuthReq {
 #define SM_AUTH_MITM_PROTECT            1 /* Authenticated MITM protection */
 
 #define SM_WORK_NOTIFY_PAIR_STATE_CHG   0 /* work type of notifying upper layer about the pairing state change */
+#define SM_WORK_NOTIFY_PASSKEY_DISPLAY  1 /* work type of notifying upper layer about the passkey display */
+#define SM_WORK_NOTIFY_PASSKEY_REQUEST  2 /* work type of notifying upper layer about the passkey request */
 
 struct smInstance {
     struct smInstance*    prev;
@@ -155,26 +160,28 @@ struct smInstance {
     struct bt_addr        peerAddr;
     struct bt_addr        myAddr;
     l2c_handle_t          conn;
-    bool                  isInitiator; /* whether we are the initiator */
+    bool                  isInitiator;     /* whether we are the initiator */
 
     uint8_t               phase;
-    uniq_t                stallTimer;  /* the timer tracking whether a pairing session is stalled */
+    uniq_t                stallTimer;      /* the timer tracking whether a pairing session is stalled */
 
-    uint8_t               alg;         /* the SM_ALG_* selected */
+    uint8_t               alg;             /* the SM_ALG_* selected */
     struct smKey          tk;
     struct smKey          stk;
-    bool                  isMitmSafe;  /* the security property decided when the pairing algorithm is chosen */
+    bool                  isMitmSafe;      /* the security property decided when the pairing algorithm is chosen */
 
     uint8_t               peerIoCap;
     bool                  peerHasOob;
     uint8_t               peerAuthReq;
     uint8_t               peerMaxKeySz;
+    uint8_t               peerKeyDistrReq; /* the key distribution in pairing request */
     uint8_t               peerKeyDistr;
     struct smPairRand     peerRandNum;
     struct smPairConf     peerConfVal;
 
     uint8_t               myAuthReq;
     uint8_t               myMaxKeySz;
+    uint8_t               myKeyDistrReq;   /* the key distribution in pairing request */
     uint8_t               myKeyDistr;
     struct smPairRand     myRandNum;
     struct smPairConf     myConfVal;
@@ -206,28 +213,44 @@ struct smIrkEnumCbkData {
 };
 
 /* mask applied to the MSB of a address (addr[5] in this case) for checking the address type */
-#define SM_ADDR_MASK         0xC0
-#define SM_ADDR_PUB_STATIC   0xC0
-#define SM_ADDR_PRI_NONRESOL 0x00
-#define SM_ADDR_PRI_RESOL    0x40
+#define SM_RAND_ADDR_MASK         0xC0
+#define SM_RAND_ADDR_STATIC       0xC0
+#define SM_RAND_ADDR_PRI_NONRESOL 0x00
+#define SM_RAND_ADDR_PRI_RESOL    0x40
 
 /* address type */
-enum smAddrType {addrTypeUnknown = 0, addrTypePubStatic, addrTypePriNonResol, addrTypePriResol};
+enum smAddrType {addrTypeUnknown, addrTypePubStatic, addrTypeRandStatic, addrTypeRandPriNonResol,
+    addrTypeRandPriResol};
+
+struct smPasskeyDisplayObserver {
+    uniq_t id;
+    smPasskeyDisplayCbk cbk;
+    void *data; /* observer data */
+};
+
+struct smPasskeyRequestObserver {
+    uniq_t id;
+    smPasskeyRequestCbk cbk;
+    void *data; /* observer data */
+};
 
 /* local settings and state */
 static uint8_t mIoCap;
-static bool mHasOob;                                          /* whether we support OOB data */
+static bool mHasOob;                                                    /* whether we support OOB data */
 
-static pthread_mutex_t mInstLock = PTHREAD_MUTEX_INITIALIZER; /* lock for the active instance list */
-static struct smInstance *mActInstList = NULL;                /* the active instances */
+static pthread_mutex_t mInstLock = PTHREAD_MUTEX_INITIALIZER;           /* lock for the active instance list */
+static struct smInstance *mActInstList = NULL;                          /* the active instances */
 
-static pthread_mutex_t mDevLock = PTHREAD_MUTEX_INITIALIZER;  /* lock for the banned device list */
-static struct smDevNode *mBannedDevList = NULL;               /* the device banned on pairing */
+static pthread_mutex_t mDevLock = PTHREAD_MUTEX_INITIALIZER;            /* lock for the banned device list */
+static struct smDevNode *mBannedDevList = NULL;                         /* the device banned on pairing */
 
-static struct multiNotifList *mPairObservers = NULL;          /* the observers of pairing state changes */
+static struct multiNotifList *mPairStateObservers = NULL;               /* the observers of pairing state changes */
+static pthread_mutex_t mObvrLock = PTHREAD_MUTEX_INITIALIZER;           /* lock for the smObservers */
+static struct smPasskeyDisplayObserver *mPasskeyDisplayObserver = NULL; /* the observer of pairing passkey display */
+static struct smPasskeyRequestObserver *mPasskeyRequestObserver = NULL; /* the observer of pairing passkey request */
 
-static pthread_t mNotifWorker;                                /* the worker thread for notifying applications */
-static struct workQueue *mNotifWork = NULL;                   /* the work queue of notification works */
+static pthread_t mNotifWorker;                                          /* the worker thread for notifying applications */
+static struct workQueue *mNotifWork = NULL;                             /* the work queue of notification works */
 
 /* fwd decls */
 static bool smGenSTK(struct smInstance *inst);
@@ -238,7 +261,10 @@ static bool smGenLtk(struct smInstance *inst);
 static bool smGenEdiv(uint16_t *out, const struct bt_addr *peerAddr, uint16_t div, uint64_t rand,
                       bool check);
 static void smEncrypt(uint8_t* dst, const uint8_t *src, const uint8_t *key);
-static void smNotifyPairObserver(const struct bt_addr *addr, smPairState state, smPairErr err);
+static void smNotifyPairStateObserver(const struct bt_addr *addr, SmPairState state, SmPairErr err);
+static void smNotifyPasskeyDisplayObserver(const struct bt_addr *addr, bool valid,
+                                           uint32_t passkey);
+static void smNotifyPasskeyRequestObserver(const struct bt_addr *addr, bool valid);
 static uint32_t smAddressHash(uint32_t r, const uint8_t *key);
 static bool smResolveAddr(struct bt_addr *addr, const struct bt_addr *peerAddr);
 
@@ -266,22 +292,32 @@ struct smNotifWork {
     union {
         struct {
             struct bt_addr addr;
-            smPairState state;
-            smPairErr err;
+            SmPairState state;
+            SmPairErr err;
         } pairStateChg;
+        struct {
+            struct bt_addr addr;
+            bool valid;
+            uint32_t passkey;
+        } passkeyDisp;
+        struct {
+            struct bt_addr addr;
+            bool valid;
+        } passkeyReq;
     };
 };
 
 /*
  * FUNCTION: smNotifWorkFree
- * USE:      Clean up SM notification work item in mNotifWork
- * PARAMS:   workItem - a work item
+ * USE:      Clean up a SM notification work in mNotifWork
+ * PARAMS:   work - a work item
  * RETURN:
  * NOTES:
  */
-static void smNotifWorkFree(void *workItem)
+static void smNotifWorkFree(void *work)
 {
-    free(workItem);
+    struct smNotifWork *w = (struct smNotifWork *)work;
+    free(w);
 }
 
 /*
@@ -295,6 +331,8 @@ static void* smNotifWorker(void *unused)
 {
     struct smNotifWork *work;
     struct smPairStateChange pairStateChg;
+    struct smPasskeyDisplay passkeyDisp;
+    struct smPasskeyRequest passkeyReq;
     int status;
 
     pthread_setname_np(pthread_self(), "bt_sm_worker");
@@ -308,7 +346,28 @@ static void* smNotifWorker(void *unused)
             pairStateChg.peerAddr = work->pairStateChg.addr;
             pairStateChg.pairState = work->pairStateChg.state;
             pairStateChg.pairErr = work->pairStateChg.err;
-            multiNotifNotify(mPairObservers, &pairStateChg);
+            multiNotifNotify(mPairStateObservers, &pairStateChg);
+            break;
+        case SM_WORK_NOTIFY_PASSKEY_DISPLAY:
+            passkeyDisp.peerAddr = work->passkeyDisp.addr;
+            passkeyDisp.valid = work->passkeyDisp.valid;
+            passkeyDisp.passkey = work->passkeyDisp.passkey;
+            pthread_mutex_lock(&mObvrLock);
+            if (mPasskeyDisplayObserver) {
+                mPasskeyDisplayObserver->cbk(
+                    mPasskeyDisplayObserver->data, &passkeyDisp, mPasskeyDisplayObserver->id);
+            }
+            pthread_mutex_unlock(&mObvrLock);
+            break;
+        case SM_WORK_NOTIFY_PASSKEY_REQUEST:
+            passkeyReq.peerAddr = work->passkeyReq.addr;
+            passkeyReq.valid = work->passkeyReq.valid;
+            pthread_mutex_lock(&mObvrLock);
+            if (mPasskeyRequestObserver) {
+                mPasskeyRequestObserver->cbk(
+                    mPasskeyRequestObserver->data, &passkeyReq, mPasskeyRequestObserver->id);
+            }
+            pthread_mutex_unlock(&mObvrLock);
             break;
         default:
             logd("Unknown SM work type %d\n", work->type);
@@ -472,11 +531,11 @@ static struct smDevNode* smBannedDevAdd(const struct bt_addr *addr)
         mBannedDevList->prev = n;
     }
     mBannedDevList = n;
-    logd("%s(): Add device "MACFMT" to the banned list\n", __func__, MACCONV(addr->addr));
+    logd("%s(): Add device "ADDRFMT" to the banned list\n", __func__, ADDRCONV(*addr));
     return n;
 
 fail:
-    logw("%s(): Failed to add device "MACFMT" to the banned list\n", __func__, MACCONV(addr->addr));
+    logw("%s(): Failed to add device "ADDRFMT" to the banned list\n", __func__, ADDRCONV(*addr));
     smBannedDevFree(n);
     return NULL;
 }
@@ -537,8 +596,8 @@ static void smBanDeviceForTime(const struct bt_addr *addr)
                 SM_MAX_WAIT_INTVL : n->waitInvl * SM_WAIT_INTVL_FACTOR;
 
         n->waitTimer = timerSet(n->waitInvl, smWaitTimerCb, n->devId);
-        logd("%s(): Update device "MACFMT" and start wait timer with "FMT64"u secs\n", __func__,
-             MACCONV(n->addr.addr), CNV64(n->waitInvl / 1000));
+        logd("%s(): Update device "ADDRFMT" and start wait timer with "FMT64"u secs\n", __func__,
+             ADDRCONV(n->addr), CNV64(n->waitInvl / 1000));
     }
 
     pthread_mutex_unlock(&mDevLock);
@@ -618,29 +677,37 @@ static bool smIsEncryptExpected(const struct l2cEncrState *state, const struct s
 }
 
 /*
- * FUNCTION: smCheckAddrType
+ * FUNCTION: smGetLeAddrType
  * USE:      Check the type of the address
  * PARAMS:   addr - the address
  * RETURN:   enum smAddrType
  * NOTES:
  */
-static enum smAddrType smCheckAddrType(const struct bt_addr *addr)
+static enum smAddrType smGetLeAddrType(const struct bt_addr *addr)
 {
     uint8_t msb;
 
     if (!addr)
         return addrTypeUnknown;
 
-    msb = addr->addr[5] & SM_ADDR_MASK;
-    switch(msb) {
-    case SM_ADDR_PUB_STATIC:
+    switch (addr->type) {
+    case BT_ADDR_TYPE_LE_PUBLIC:
         return addrTypePubStatic;
-    case SM_ADDR_PRI_NONRESOL:
-        return addrTypePriNonResol;
-    case SM_ADDR_PRI_RESOL:
-        return addrTypePriResol;
+    case BT_ADDR_TYPE_LE_RANDOM:
+        msb = addr->addr[5] & SM_RAND_ADDR_MASK;
+        switch(msb) {
+        case SM_RAND_ADDR_STATIC:
+            return addrTypeRandStatic;
+        case SM_RAND_ADDR_PRI_NONRESOL:
+            return addrTypeRandPriNonResol;
+        case SM_RAND_ADDR_PRI_RESOL:
+            return addrTypeRandPriResol;
+        default:
+            logw("%s(): Unknown LE random address type 0x%02X\n", __func__, msb);
+            return addrTypeUnknown;
+        }
     default:
-        logw("%s(): Unknown address type 0x%02X\n", __func__, msb);
+        logw("%s(): Unexpected address type %02X\n", addr->type);
         return addrTypeUnknown;
     }
 }
@@ -695,7 +762,7 @@ tx_err:
  * RETURN:   return 0 if all values were read & found valid; SM_ERR_* otherwise
  * NOTES:
  */
-static uint8_t smParsePairReqResp(smPairState *err, struct smInstance *inst,
+static uint8_t smParsePairReqResp(SmPairState *err, struct smInstance *inst,
                                   const struct smPairReqResp *pairReqResp)
 {
     uint8_t tmp, initKeyDistr, rspKeyDistr;
@@ -752,12 +819,11 @@ static uint8_t smParsePairReqResp(smPairState *err, struct smInstance *inst,
     rspKeyDistr  = utilGetLE8(&pairReqResp->responderKeyDistr);
 
     if (inst->isInitiator) { /* must be a response. accept as many as given */
-        /* TODO(mcchou): do not send any keys we did not already commit to send inst->myKeyDistr &= initKeyDistr; */
-        inst->myKeyDistr = initKeyDistr;
-        inst->peerKeyDistr = rspKeyDistr;
+        inst->myKeyDistr = inst->myKeyDistrReq & initKeyDistr;
+        inst->peerKeyDistr = inst->peerKeyDistrReq & rspKeyDistr;
     } else { /* must be a request - agree to send all keys they want, accept whatever was given */
-        inst->myKeyDistr = rspKeyDistr;
-        inst->peerKeyDistr = initKeyDistr;
+        inst->myKeyDistr = inst->myKeyDistrReq = rspKeyDistr;
+        inst->peerKeyDistr = inst->peerKeyDistrReq = initKeyDistr;
     }
 
     return 0;
@@ -1019,20 +1085,22 @@ static bool smSendIdAddrInfo(const struct smInstance *inst)
     l2cApiGetSelfBtAddr(inst->conn, &selfAddr);
     memcpy(addr.mac, selfAddr.addr, sizeof(addr.mac));
 
-    addrType = smCheckAddrType(&selfAddr);
+    addrType = smGetLeAddrType(&selfAddr);
     switch (addrType) {
     case addrTypePubStatic:
-        at = 0x00; /* public address */
+    case addrTypeRandStatic:
+        at = 0x00; /* static address */
         break;
-    case addrTypePriNonResol:
-    case addrTypePriResol:
-        at = 0x01; /* static random address */
+    case addrTypeRandPriNonResol:
+    case addrTypeRandPriResol:
+        at = 0x01; /* random private address */
         break;
     default:
-        logw("%s(): Failed to send identity address information command due to unknown address "
-             "type \n", __func__);
+        logw("%s(): Failed to send identity address information command, address type %02X\n",
+             __func__, addrType);
         return false;
     }
+
     utilSetLE8(&addr.addrType, at);
 
     if (!smTx(inst, SM_IDENTITY_ADDR_INFO, &addr, sizeof(addr))) {
@@ -1093,7 +1161,7 @@ static void smTransitPhase(struct smInstance *inst, uint8_t phase) {
     inst->phase = phase;
 
     if (inst->phase == SM_PHASE_DONE)
-        smNotifyPairObserver(&inst->peerAddr, SM_PAIR_STATE_PAIRED, SM_PAIR_ERR_NONE);
+        smNotifyPairStateObserver(&inst->peerAddr, SM_PAIR_STATE_PAIRED, SM_PAIR_ERR_NONE);
 }
 
 /*
@@ -1245,6 +1313,7 @@ static bool smLtkEncrypt(struct smInstance *inst)
         return false;
     } else {
         logi("Encrypt using LTK\n");
+        smTransitPhase(inst, SM_PHASE_LTK_SENT);
     }
     return true;
 }
@@ -1268,10 +1337,10 @@ static void smRx(struct smInstance *inst, sg packet)
     struct smMasterInfo masterInfo;
     struct smIdentityAddrInfo addrInfo;
     struct smAuthReq authReq;
-    smPairErr pairErr = SM_PAIR_ERR_UNKNOWN;
-    uint8_t typ, err, auth;
-    uint64_t rand, ediv;
+    SmPairErr pairErr = SM_PAIR_ERR_UNKNOWN;
+    uint8_t typ, err, auth, prevPhase;
     uint8_t stk[HCI_LE_KEY_LEN] = {0,};
+    uint64_t rand, ediv;
 
     if (!sgSerializeCutFront(packet, &hdr, sizeof(hdr))) {
         logw("Incoming SM packet header extraction failed\n");
@@ -1326,9 +1395,7 @@ static void smRx(struct smInstance *inst, sg packet)
             inst->myAuthReq &= ~SM_AUTH_REQ_MITM_FLAG;
         inst->myMaxKeySz = SM_MAX_KEY_LEN;
 
-        if (!smGenRandNum(inst->myRandNum.rand, sizeof(inst->myRandNum.rand)) ||
-            !smGenTK(inst) ||
-            !smGenConfVal(&inst->myConfVal, inst, false))
+        if (!smGenRandNum(inst->myRandNum.rand, sizeof(inst->myRandNum.rand)))
             break;
 
         if (!smSendPairResp(inst)) {
@@ -1337,6 +1404,14 @@ static void smRx(struct smInstance *inst, sg packet)
         }
         smTransitPhase(inst, SM_PHASE_REQ_RESP);
 
+        if (!smGenTK(inst))
+            break;
+
+        /* for Just Work pairing, there is no authentication steps, so generate Sconfirm */
+        if (inst->alg == SM_ALG_JUST_WORK) {
+            smGenConfVal(&inst->myConfVal, inst, false);
+            smTransitPhase(inst, SM_PHASE_SCONF_READY);
+        }
         goto done;
 
     case SM_PAIRING_RSP:
@@ -1378,7 +1453,7 @@ static void smRx(struct smInstance *inst, sg packet)
             pairErr = SM_PAIR_ERR_SEND_SM_CMD;
             break;
         }
-        smTransitPhase(inst, SM_PHASE_CONF_SENT);
+        smTransitPhase(inst, SM_PHASE_MCONF_SENT);
 
         goto done;
 
@@ -1394,37 +1469,44 @@ static void smRx(struct smInstance *inst, sg packet)
             pairErr = SM_PAIR_ERR_INVALID_PARAM;
             break;
         }
-        if ((inst->isInitiator && inst->phase != SM_PHASE_CONF_SENT) ||
-            (!inst->isInitiator && inst->phase != SM_PHASE_REQ_RESP)) {
+        if ((inst->isInitiator && inst->phase != SM_PHASE_MCONF_SENT) ||
+            (!inst->isInitiator && inst->phase != SM_PHASE_REQ_RESP &&
+             inst->phase != SM_PHASE_SCONF_READY)) {
             pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
             break;
         }
-
-        if (!inst->isInitiator &&
-            (inst->peerMaxKeySz < SM_MIN_KEY_LEN || inst->peerMaxKeySz > SM_MAX_KEY_LEN)) {
-            smSendPairFail(inst, SM_ERR_ENCR_KEY_SZ);
-            pairErr = SM_PAIR_ERR_ENCR_KEY_SIZE;
-            break;
-        }
+        prevPhase = inst->phase;
 
         if (!smReadReversedBytes(inst->peerConfVal.confirmVal, sizeof(inst->peerConfVal.confirmVal),
                                  pairConf.confirmVal, sizeof(pairConf.confirmVal)))
             break;
 
         if (inst->isInitiator) {
+            /* once received conf value from responder, the passkey display is done */
+            if (inst->alg == SM_ALG_PASS_KEY)
+                smNotifyPasskeyDisplayObserver(&inst->peerAddr, false, 0);
+            smTransitPhase(inst, SM_PHASE_SCONF_RECEIVED);
             if (!smSendPairRand(inst)) {
                 pairErr = SM_PAIR_ERR_SEND_SM_CMD;
                 break;
             }
             smTransitPhase(inst, SM_PHASE_RAND_SENT);
         } else {
-            if (!smSendPairConf(inst)) {
-                pairErr = SM_PAIR_ERR_SEND_SM_CMD;
+            smTransitPhase(inst, SM_PHASE_MCONF_RECEIVED);
+            if (inst->peerMaxKeySz < SM_MIN_KEY_LEN || inst->peerMaxKeySz > SM_MAX_KEY_LEN) {
+                smSendPairFail(inst, SM_ERR_ENCR_KEY_SZ);
+                pairErr = SM_PAIR_ERR_ENCR_KEY_SIZE;
                 break;
             }
-            smTransitPhase(inst, SM_PHASE_CONF_RESP);
+            /* if the passkey is already provided before receiving Mconfirm, we send Sconfirm */
+            if (prevPhase == SM_PHASE_SCONF_READY) {
+                if (!smSendPairConf(inst)) {
+                    pairErr = SM_PAIR_ERR_SEND_SM_CMD;
+                    break;
+                }
+                smTransitPhase(inst, SM_PHASE_SCONF_SENT);
+            }
         }
-
         goto done;
 
     case SM_PAIRING_RAND:
@@ -1440,7 +1522,7 @@ static void smRx(struct smInstance *inst, sg packet)
             break;
         }
         if ((inst->isInitiator && inst->phase != SM_PHASE_RAND_SENT) ||
-            (!inst->isInitiator && inst->phase != SM_PHASE_CONF_RESP))
+            (!inst->isInitiator && inst->phase != SM_PHASE_SCONF_SENT))
             break;
 
         if (!smReadReversedBytes(inst->peerRandNum.rand, sizeof(inst->peerRandNum.rand),
@@ -1822,7 +1904,8 @@ static void smRx(struct smInstance *inst, sg packet)
             break;
         }
 
-        if ((inst->phase == SM_PHASE_DONE || inst->phase == SM_PHASE_LTK_ENCRYPTED) && inst->isInitiator) {
+        if ((inst->phase == SM_PHASE_DONE || inst->phase == SM_PHASE_LTK_ENCRYPTED) &&
+            inst->isInitiator) {
             inst->isInitiator = true; /* for re-establishment, we are the initiator for sure */
             if (!smLtkEncrypt(inst)) {
                 pairErr = SM_PAIR_ERR_ENCR_CONN;
@@ -1838,12 +1921,16 @@ static void smRx(struct smInstance *inst, sg packet)
                 break;
             }
 
-            /* Use authentication requirements received from the responder to initiate the pairing */
+            /* Use authentication requirements received from the responder to initiate the
+             * pairing */
             inst->isInitiator = true;
             inst->myAuthReq = auth;
             inst->myMaxKeySz = SM_MAX_KEY_LEN;
-            inst->myKeyDistr = SM_KEY_DISTR_LTK | SM_KEY_DISTR_CSRK |
+            inst->myKeyDistrReq = SM_KEY_DISTR_LTK | SM_KEY_DISTR_CSRK |
                 ((auth & SM_AUTH_REQ_BOND_MASK) == SM_AUTH_REQ_BOND_BOND ? SM_KEY_DISTR_IRK : 0x00);
+            inst->myKeyDistr = inst->myKeyDistrReq;
+            inst->peerKeyDistrReq = inst->myKeyDistrReq;
+            inst->peerKeyDistr = inst->myKeyDistrReq;
             smSendPairReq(inst); /* all fields required were set when the instance was allocated */
         } else {
             pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
@@ -1861,7 +1948,7 @@ static void smRx(struct smInstance *inst, sg packet)
 
     logd("Got packet type 0x%02X in phase %u when we are the %s\n", typ, inst->phase,
          inst->isInitiator ? "initiator" : "responder");
-    smNotifyPairObserver(&inst->peerAddr, SM_PAIR_STATE_FAILED, pairErr);
+    smNotifyPairStateObserver(&inst->peerAddr, SM_PAIR_STATE_FAILED, pairErr);
     smTransitPhase(inst, SM_PHASE_START);
 done:
     sgFree(packet);
@@ -1932,6 +2019,19 @@ static void smStallTimerCb(uniq_t timerId, uint64_t conn)
         return;
     }
 
+    if (inst->alg == SM_ALG_PASS_KEY) {
+        /* as an initiator, if we never send/receive conf value to/from responder, the passkey
+         * display becomes invalid */
+        if (inst->isInitiator && (inst->phase == SM_PHASE_REQ_RESP ||
+                                  inst->phase == SM_PHASE_MCONF_SENT))
+            smNotifyPasskeyDisplayObserver(&inst->peerAddr, false, 0);
+        /* as a responder, if we never receive passkey from user, the passkey request becomes
+         * invalid */
+        if (!inst->isInitiator && (inst->phase == SM_PHASE_REQ_RESP ||
+                                   inst->phase == SM_PHASE_MCONF_RECEIVED))
+            smNotifyPasskeyRequestObserver(&inst->peerAddr, false);
+    }
+
     inst->stallTimer = 0;
     logd("%s(): Pairing with device "MACFMT" is stalled\n", __func__,
          MACCONV(inst->peerAddr.addr));
@@ -1941,7 +2041,7 @@ static void smStallTimerCb(uniq_t timerId, uint64_t conn)
     pthread_mutex_unlock(&mInstLock);
 
     l2cApiDisconnect(conn);
-    smNotifyPairObserver(&inst->peerAddr, SM_PAIR_STATE_FAILED, SM_PAIR_ERR_STALLED);
+    smNotifyPairStateObserver(&inst->peerAddr, SM_PAIR_STATE_FAILED, SM_PAIR_ERR_STALLED);
 }
 
 /*
@@ -2023,7 +2123,7 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
     struct bt_addr peerAddr;
     struct bt_addr myAddr;
     struct bt_addr resolAddr;
-    smPairErr pairErr = SM_PAIR_ERR_UNKNOWN;;
+    SmPairErr pairErr = SM_PAIR_ERR_UNKNOWN;;
     l2c_handle_t conn;
     sg s;
     uint16_t myEdiv = 0;
@@ -2244,7 +2344,7 @@ reset:
 fail:
     logd("Got l2cap event 0x%02X in phase %u when we are the %s\n", evt, phase,
          inst->isInitiator ? "initiator" : "responder");
-    smNotifyPairObserver(&inst->peerAddr, SM_PAIR_STATE_FAILED, pairErr);
+    smNotifyPairStateObserver(&inst->peerAddr, SM_PAIR_STATE_FAILED, pairErr);
 }
 
 /*
@@ -2432,10 +2532,10 @@ bool smInit(uint8_t ioCapability)
         return false;
     }
 
-    mPairObservers = multiNotifCreate();
-    if (!mPairObservers) {
-       logw("%s(): Error creating pairing observer list\n", __func__);
-       goto notif_fail;
+    mPairStateObservers = multiNotifCreate();
+    if (!mPairStateObservers) {
+       logw("%s(): Error creating pairing state observer list\n", __func__);
+       goto pair_state_notif_fail;
     }
 
     mNotifWork = workQueueAlloc(SM_NUM_OUTSTANDING_NOTIFY);
@@ -2470,9 +2570,9 @@ thread_fail:
     workQueueFree(mNotifWork, smNotifWorkFree);
     mNotifWork = NULL;
 work_fail:
-    multiNotifDestroy(mPairObservers);
-    mPairObservers = NULL;
-notif_fail:
+    multiNotifDestroy(mPairStateObservers);
+    mPairStateObservers = NULL;
+pair_state_notif_fail:
     sendQueueFree(mSmSendQ);
     mSmSendQ = NULL;
     return false;
@@ -2495,18 +2595,29 @@ void smDeinit(void)
         workQueueFree(mNotifWork, smNotifWorkFree);
     }
 
-    if (mPairObservers)
-        multiNotifDestroy(mPairObservers);
+    if (mPasskeyDisplayObserver) {
+        free(mPasskeyDisplayObserver);
+        mPasskeyDisplayObserver = NULL;
+    }
+
+    if (mPasskeyRequestObserver) {
+        free(mPasskeyRequestObserver);
+        mPasskeyRequestObserver = NULL;
+    }
+
+    if (mPairStateObservers)
+        multiNotifDestroy(mPairStateObservers);
 
     if (mSmSendQ)
         sendQueueFree(mSmSendQ);
 
     smBannedDevFreeAll();
     persistStore();
+    logd("%s(): smDeinit finished correctly\n", __func__);
 }
 
 /*
- * FUNCTION: smRegisterPairObserver
+ * FUNCTION: smRegisterPairStateObserver
  * USE:      Register as an observer if interested in receiving notifications about pairing state
  *           changes with remote LE devices
  * PARAMS:   observerData - observer's own data passed when the callback is invoked
@@ -2514,35 +2625,35 @@ void smDeinit(void)
  * RETURN:   a none-zero unique observer ID in success case; 0 otherwise
  * NOTES:
  */
-uniq_t smRegisterPairObserver(void *observerData, smPairStateChangeCbk cbk)
+uniq_t smRegisterPairStateObserver(void *observerData, smPairStateChangeCbk cbk)
 {
     if (!cbk)
         return 0;
-    return multiNotifRegister(mPairObservers, cbk, observerData);
+    return multiNotifRegister(mPairStateObservers, cbk, observerData);
 }
 
 /*
- * FUNCTION: smUnregisterPairObserver
+ * FUNCTION: smUnregisterPairStateObserver
  * USE:      Unregister as an observer if no longer interested in receiving notifications about
  *           pairing state changes with remote LE devices
  * PARAMS:   observerId - an unique observer ID
  * RETURN:   NONE
  * NOTES:
  */
-void smUnregisterPairObserver(uniq_t observerId)
+void smUnregisterPairStateObserver(uniq_t observerId)
 {
-    multiNotifUnregister(mPairObservers, observerId);
+    multiNotifUnregister(mPairStateObservers, observerId);
 }
 
 /*
- * FUNCTION: smNotifyPairObserver
+ * FUNCTION: smNotifyPairStateObserver
  * USE:      Notify the observers about the state change of a device
- * PARAMS:   addr - the address of a device
+ * PARAMS:   addr - the address of the peer device
  *           state - the new pairing state
  * RETURN:   NONE
  * NOTES:
  */
-static void smNotifyPairObserver(const struct bt_addr *addr, smPairState state, smPairErr err)
+static void smNotifyPairStateObserver(const struct bt_addr *addr, SmPairState state, SmPairErr err)
 {
     struct smNotifWork *work;
 
@@ -2606,7 +2717,170 @@ static void smNotifyPairObserver(const struct bt_addr *addr, smPairState state, 
     work->pairStateChg.err = err;
 
     if (!workQueuePut(mNotifWork, work)) {
+        loge("Failed to enqueue SM work for passkey display\n");
+        free(work);
+    }
+}
+
+/*
+ * FUNCTION: smRegisterPasskeyDisplayObserver
+ * USE:      Register as the observer if interested in receiving notifications about the passkey
+ *           used during the pairing with remote LE devices.
+ * PARAMS:   observerData - observer's own data passed when the callback is invoked
+ *           cbk - the callback invoked if there is a passkey to be displayed
+ * RETURN:   a none-zero unique observer ID in success case; 0 otherwise
+ * NOTES:    there can be one observer of passkey display at a time
+ */
+uniq_t smRegisterPasskeyDisplayObserver(void *observerData, smPasskeyDisplayCbk cbk)
+{
+    uniq_t ret = 0;
+    pthread_mutex_lock(&mObvrLock);
+    if (!cbk || mPasskeyDisplayObserver)
+        goto out;
+
+    mPasskeyDisplayObserver = (struct smPasskeyDisplayObserver *)
+        calloc(1, sizeof(struct smPasskeyDisplayObserver));
+    if (!mPasskeyDisplayObserver)
+        goto out;
+    mPasskeyDisplayObserver->id = ret = uniqGetNext();
+    mPasskeyDisplayObserver->cbk = cbk;
+    mPasskeyDisplayObserver->data = observerData;
+out:
+    pthread_mutex_unlock(&mObvrLock);
+    return ret;
+}
+
+/*
+ * FUNCTION: smUnregisterPasskeyDisplayObserver
+ * USE:      Unregister as an observer if no longer interested in receiving notifications about
+ *           the passkey display
+ * PARAMS:   observerId - an unique observer ID
+ * RETURN:   NONE
+ * NOTES:
+ */
+void smUnregisterPasskeyDisplayObserver(uniq_t observerId)
+{
+    pthread_mutex_lock(&mObvrLock);
+    if (!mPasskeyDisplayObserver || observerId != mPasskeyDisplayObserver->id) {
+        pthread_mutex_unlock(&mObvrLock);
+        return;
+    }
+    free(mPasskeyDisplayObserver);
+    mPasskeyDisplayObserver = NULL;
+    pthread_mutex_unlock(&mObvrLock);
+}
+
+/*
+ * FUNCTION: smNotifyPasskeyDisplayObserver
+ * USE:      Notify the observer about the passkey display
+ * PARAMS:   addr - the address of the peer device
+ *           valid - a switch to notify on starting or stopping the passkey display
+ *           valid - indicate whether a passkey is valid; if true, the passkey is new and
+ *           should be displayed; if false, the passkey value is not valid, since the passkey is
+ *           either done with display or expired
+ *           passkey - the passkey, if display is true, then passkey is a valid number; false
+ *                     otherwise
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void smNotifyPasskeyDisplayObserver(const struct bt_addr *addr, bool valid, uint32_t passkey)
+{
+    struct smNotifWork *work;
+
+    if (!addr)
+        return;
+
+    work = (struct smNotifWork *)calloc(1, sizeof(struct smNotifWork));
+    if (!work) {
+        loge("Failed to allocate SM work item\n");
+        return;
+    }
+    work->type = SM_WORK_NOTIFY_PASSKEY_DISPLAY;
+    work->passkeyDisp.addr = *addr;
+    work->passkeyDisp.valid = valid;
+    if (valid)
+        work->passkeyDisp.passkey = passkey;
+
+    if (!workQueuePut(mNotifWork, work)) {
         loge("Failed to enqueue SM work for pairing state change\n");
+        free(work);
+    }
+}
+
+/*
+ * FUNCTION: smRegisterPasskeyRequestObserver
+ * USE:      Register as the observer if interested in receiving the passkey request during the
+ *           pairing with remote LE devices.
+ * PARAMS:   observerData - observer's own data passed when the callback is invoked
+ *           cbk - the callback invoked if there is a passkey request
+ * RETURN:   a none-zero unique observer ID in success case; 0 otherwise
+ * NOTES:    there can be one observer of passkey request at a time
+ */
+uniq_t smRegisterPasskeyRequestObserver(void *observerData, smPasskeyRequestCbk cbk)
+{
+    uniq_t ret = 0;
+    pthread_mutex_lock(&mObvrLock);
+    if (!cbk || mPasskeyRequestObserver)
+        goto out;
+
+    mPasskeyRequestObserver = (struct smPasskeyRequestObserver *)
+        calloc(1, sizeof(struct smPasskeyRequestObserver));
+    if (!mPasskeyRequestObserver)
+        goto out;
+    mPasskeyRequestObserver->id = ret = uniqGetNext();
+    mPasskeyRequestObserver->cbk = cbk;
+    mPasskeyRequestObserver->data = observerData;
+out:
+    pthread_mutex_unlock(&mObvrLock);
+    return ret;
+}
+
+/*
+ * FUNCTION: smUnregisterPasskeyRequestObserver
+ * USE:      Unregister as an observer if no longer interested in receiving notifications about
+ *           the passkey request
+ * PARAMS:   observerId - an unique observer ID
+ * RETURN:   NONE
+ * NOTES:
+ */
+void smUnregisterPasskeyRequestObserver(uniq_t observerId)
+{
+    pthread_mutex_lock(&mObvrLock);
+    if (!mPasskeyRequestObserver || observerId != mPasskeyRequestObserver->id) {
+        pthread_mutex_unlock(&mObvrLock);
+        return;
+    }
+    free(mPasskeyRequestObserver);
+    mPasskeyRequestObserver = NULL;
+    pthread_mutex_unlock(&mObvrLock);
+}
+
+/*
+ * FUNCTION: smNotifyPasskeyRequestObserver
+ * USE:      Notify the observer about the passkey request
+ * PARAMS:   addr - the address of the peer device
+ *           valid - indicate whether a passkey request is valid; if true, the request is new and
+ *           should be displayed; if false, the passkey request is either done or canceled
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void smNotifyPasskeyRequestObserver(const struct bt_addr *addr, bool valid)
+{
+    struct smNotifWork *work;
+
+    if (!addr)
+        return;
+
+    work = (struct smNotifWork *)calloc(1, sizeof(struct smNotifWork));
+    if (!work) {
+        loge("Failed to allocate SM work item\n");
+        return;
+    }
+    work->type = SM_WORK_NOTIFY_PASSKEY_REQUEST;
+    work->passkeyReq.addr = *addr;
+    work->passkeyReq.valid = valid;
+    if (!workQueuePut(mNotifWork, work)) {
+        loge("Failed to enqueue SM work for passkey request\n");
         free(work);
     }
 }
@@ -2624,7 +2898,7 @@ void smPair(const struct bt_addr *addr, const struct smPairSecurityRequirements 
 {
     bool mitm = false, bonded = false;
     struct smInstance *inst = NULL;
-    smPairErr pairErr = SM_PAIR_ERR_UNKNOWN;
+    SmPairErr pairErr = SM_PAIR_ERR_UNKNOWN;
 
     if (!addr || !secReqs) {
         logd("%s(): Invalid peer address or security requirements\n", __func__);
@@ -2634,11 +2908,10 @@ void smPair(const struct bt_addr *addr, const struct smPairSecurityRequirements 
 
     logd("%s(): "ADDRFMT"\n", __func__, ADDRCONV(*addr));
 
-    /* check if there is an existing instance with the same peer device */
     pthread_mutex_lock(&mInstLock);
-    inst = smInstFindByAddr(addr);
-    pthread_mutex_unlock(&mInstLock);
-    if (inst) {
+
+    /* check if there is an existing instance with the same peer device */
+    if ((inst = smInstFindByAddr(addr))) {
         logd("%s(): Pairing in progress with "ADDRFMT"\n", __func__, ADDRCONV(*addr));
         pairErr = SM_PAIR_ERR_IN_PROGRESS;
         goto fail;
@@ -2682,8 +2955,11 @@ void smPair(const struct bt_addr *addr, const struct smPairSecurityRequirements 
      * is optional for the remote device to support resolvable address generation, but it is
      * mandatory to support resolvable address resolution.
      */
-    inst->myKeyDistr = (SM_KEY_DISTR_LTK | (secReqs->bond ? SM_KEY_DISTR_IRK : 0x00) |
-                        SM_KEY_DISTR_CSRK);
+    inst->myKeyDistrReq = (SM_KEY_DISTR_LTK | (secReqs->bond ? SM_KEY_DISTR_IRK : 0x00) |
+                           SM_KEY_DISTR_CSRK);
+    inst->myKeyDistr = inst->myKeyDistrReq;
+    inst->peerKeyDistrReq = inst->myKeyDistrReq;
+    inst->peerKeyDistr = inst->myKeyDistrReq;
 
     if (!l2cApiCreateFixedChConnection(L2C_FIXED_CH_NUM_SM, addr, smFixedChState, NULL, inst)) {
         logw("%s(): Error creating a fixed channel l2cap connection\n", __func__);
@@ -2691,10 +2967,12 @@ void smPair(const struct bt_addr *addr, const struct smPairSecurityRequirements 
         goto fail;
     }
 
-    smNotifyPairObserver(&inst->peerAddr, SM_PAIR_STATE_START, SM_PAIR_ERR_NONE);
+    smNotifyPairStateObserver(&inst->peerAddr, SM_PAIR_STATE_START, SM_PAIR_ERR_NONE);
+    pthread_mutex_unlock(&mInstLock);
     return;
 fail:
-    smNotifyPairObserver(addr, SM_PAIR_STATE_FAILED, pairErr);
+    smNotifyPairStateObserver(addr, SM_PAIR_STATE_FAILED, pairErr);
+    pthread_mutex_unlock(&mInstLock);
 }
 
 /*
@@ -2712,30 +2990,30 @@ void smUnpair(const struct bt_addr *addr)
     bool cancelled = false;
 
     if (!addr || !persistGetKnownDev(addr, NULL, NULL, NULL)) {
-        smNotifyPairObserver(addr, SM_PAIR_STATE_FAILED, SM_PAIR_ERR_NO_SUCH_DEVICE);
+        smNotifyPairStateObserver(addr, SM_PAIR_STATE_FAILED, SM_PAIR_ERR_NO_SUCH_DEVICE);
         return;
     }
 
     logd("%s(): "ADDRFMT"\n", __func__, ADDRCONV(*addr));
 
-    /* check if there is an existing instance with the peer device */
     pthread_mutex_lock(&mInstLock);
+    /* check if there is an existing instance with the peer device */
     inst = smInstFindByAddr(addr);
-    pthread_mutex_unlock(&mInstLock);
     if (inst) {
         /* Let L2CAP handle the removal of the instance to avoid race condition */
         if (inst->conn)
             l2cApiDisconnect(inst->conn);
         cancelled = inst->phase != SM_PHASE_DONE && inst->phase != SM_PHASE_LTK_ENCRYPTED;
     }
+    pthread_mutex_unlock(&mInstLock);
 
     persistDelDevKeys(addr);
     persistDelDevNumbers(addr);
 
     logd("%s(): Pairing with "ADDRFMT" is %s\n", __func__, ADDRCONV(*addr),
          cancelled ? "cancelled" : "forgotten");
-    smNotifyPairObserver(addr, cancelled ? SM_PAIR_STATE_CANCELED : SM_PAIR_STATE_NOT_PAIRED,
-                         SM_PAIR_ERR_NONE);
+    smNotifyPairStateObserver(addr, cancelled ? SM_PAIR_STATE_CANCELED : SM_PAIR_STATE_NOT_PAIRED,
+                              SM_PAIR_ERR_NONE);
 }
 
 /*
@@ -2808,6 +3086,55 @@ bool smGenNonResolvableAddr(struct bt_addr *addr)
         addr->addr[i] = rand; /* addr->addr is stored in [0]->[5] : LSO -> MSO order */
 
     return true;
+}
+
+/*
+ * FUNCTION: smProvidePasskey
+ * USE:      The observer of passkey request should call this to provide the passkey displayed on
+ *           on the peer device
+ * PARAMS:   addr - the peer address
+ *           entered - indicate whether the user provide a passkey or not
+ *           passkey - the input passkey
+ * RETURN:   true if addr is a valid address; false otherwise
+ * NOTES:    if there is no observer registered to handle to passkey input, or the observer fails to
+ *           provide the passkey input in time, pairing will fail due to timeout
+ */
+void smProvidePasskey(const struct bt_addr *addr, bool provided, uint32_t passkey)
+{
+    uint8_t i, prevPhase;
+    struct smInstance *inst = NULL;
+
+    pthread_mutex_lock(&mInstLock);
+
+    if (!(inst = smInstFindByAddr(addr)))
+        goto out;
+
+    if (inst->isInitiator || (inst->phase != SM_PHASE_REQ_RESP &&
+                              inst->phase != SM_PHASE_MCONF_RECEIVED))
+        goto out;
+    prevPhase = inst->phase;
+
+    smNotifyPasskeyRequestObserver(addr, false);
+
+    for (i = sizeof(inst->tk.key) - 1; i > sizeof(inst->tk.key) - 4; --i, passkey >>= 8)
+        inst->tk.key[i] = passkey;
+
+    smGenConfVal(&inst->myConfVal, inst, false);
+    smTransitPhase(inst, SM_PHASE_SCONF_READY);
+
+    /* a passkey can be provided before or after receiving Mconfirm. if it is provided after
+     * Mconfirm, we send Sconfirm right away */
+    if (prevPhase == SM_PHASE_MCONF_RECEIVED) {
+        if (!smSendPairConf(inst)) {
+            smNotifyPairStateObserver(&inst->peerAddr, SM_PAIR_STATE_FAILED,
+                                      SM_PAIR_ERR_SEND_SM_CMD);
+            smTransitPhase(inst, SM_PHASE_START);
+            goto out;
+        }
+        smTransitPhase(inst, SM_PHASE_SCONF_SENT);
+    }
+out:
+    pthread_mutex_unlock(&mInstLock);
 }
 
 /*
@@ -3205,6 +3532,9 @@ static bool smGenSTK(struct smInstance *inst)
  */
 static bool smGenTK(struct smInstance *inst)
 {
+    uint8_t i;
+    uint32_t passkey, p;
+
     if (!inst) {
         logw("%s(): Invalid instance\n", __func__);
         return false;
@@ -3221,8 +3551,18 @@ static bool smGenTK(struct smInstance *inst)
         memset(inst->tk.key, 0, sizeof(inst->tk.key));
         inst->isMitmSafe = false;
         break;
-    case SM_ALG_PASS_KEY: /* TODO(mcchou): retrieve passkey from user */
-    case SM_ALG_OOB:      /* TODO(mcchou): retrieve OOB data from OOB source */
+    case SM_ALG_PASS_KEY:
+        if (inst->isInitiator) {
+            smGenRandNum((uint8_t *)&passkey, sizeof(passkey));
+            passkey %= 1000000; /* the range is between 000,000 and 999,999 */
+            for (i = sizeof(inst->tk.key) - 1, p = passkey; i > sizeof(inst->tk.key) - 4; --i, p >>= 8)
+                inst->tk.key[i] = p;
+            smNotifyPasskeyDisplayObserver(&inst->peerAddr, true, passkey);
+        } else {
+            smNotifyPasskeyRequestObserver(&inst->peerAddr, true);
+        }
+        break;
+    case SM_ALG_OOB: /* TODO(mcchou): retrieve OOB data from OOB source */
         logw("%s(): Pairing method %d not implemented\n", __func__, inst->alg);
         inst->isMitmSafe = true;
         return false;
@@ -3265,17 +3605,17 @@ static bool smGenConfVal(struct smPairConf *conf, const struct smInstance *inst,
     /* prepare params for calculation of confirm value */
     if (inst->isInitiator) {
         if (!smPrepPreqPrsp(&pReqCmd, SM_PAIRING_REQ, mIoCap, mHasOob, inst->myAuthReq,
-                            inst->myMaxKeySz, inst->peerKeyDistr, inst->myKeyDistr) ||
+                            inst->myMaxKeySz, inst->myKeyDistrReq, inst->peerKeyDistrReq) ||
             !smPrepPreqPrsp(&pRspCmd, SM_PAIRING_RSP, inst->peerIoCap, inst->peerHasOob,
-                            inst->peerAuthReq, inst->peerMaxKeySz, inst->peerKeyDistr,
-                            inst->myKeyDistr) ||
+                            inst->peerAuthReq, inst->peerMaxKeySz, inst->myKeyDistr,
+                            inst->peerKeyDistr) ||
             !smPrepInitRspAddr(&ia, &iat, &inst->myAddr) ||
             !smPrepInitRspAddr(&ra, &rat, &inst->peerAddr))
             goto fail;
     } else {
         if (!smPrepPreqPrsp(&pReqCmd, SM_PAIRING_REQ, inst->peerIoCap, inst->peerHasOob,
-                            inst->peerAuthReq, inst->peerMaxKeySz, inst->myKeyDistr,
-                            inst->peerKeyDistr) ||
+                            inst->peerAuthReq, inst->peerMaxKeySz, inst->myKeyDistrReq,
+                            inst->peerKeyDistrReq) ||
             !smPrepPreqPrsp(&pRspCmd, SM_PAIRING_RSP, mIoCap, mHasOob, inst->myAuthReq,
                             inst->myMaxKeySz, inst->myKeyDistr, inst->peerKeyDistr) ||
             !smPrepInitRspAddr(&ia, &iat, &inst->peerAddr) ||
