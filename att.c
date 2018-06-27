@@ -837,7 +837,7 @@ bool attEncrAuthUpdate(l2c_handle_t who, bool encr, bool mitmSafe)
     }
     pthread_mutex_unlock(&mAttLock);
 
-    return true;
+    return ret;
 }
 
 /*
@@ -1786,7 +1786,7 @@ static uint8_t attSrvIsValReadableBy(struct attSrvRange *range, struct attSrvVal
  * RETURN:   ATT_ERROR_*
  * NOTES:    call with mAttLock held
  */
-static bool attSrvIsValWriteableBy(struct attSrvRange *range, struct attSrvVal *val, struct attConn *conn, bool isSigned)
+static uint8_t attSrvIsValWriteableBy(struct attSrvRange *range, struct attSrvVal *val, struct attConn *conn, bool isSigned)
 {
     if (val->perms & ATT_PERM_WRITE)
         return ATT_ERROR_NONE;
@@ -2780,24 +2780,16 @@ static bool attSrvOpExecuteWriteStart(l2c_handle_t to, uint32_t mtu, uint8_t fla
 {
     uint8_t err = ATT_ERROR_UNLIKELY_ERROR;
     struct attConn* conn = attConnFindByL2cConn(to);
-    bool ret = ATT_ERROR_NONE;
 
     if (!conn) {
         /* not much to do here - nothing we CAN do */
     } else if (flags == ATT_EXECUTE_WRITE_FLG_CANCEL || flags == ATT_EXECUTE_WRITE_FLG_EXECUTE) {
-        if (attSrvSchedExecCbk(conn, flags == ATT_EXECUTE_WRITE_FLG_EXECUTE))
-            return true;
+       return attSrvSchedExecCbk(conn, flags == ATT_EXECUTE_WRITE_FLG_EXECUTE) && attSendPacketEmptyPacket(to, ATT_OPCODE_EXECUTE_WRITE_RSP);
     } else {
         err = ATT_ERROR_INVALID_PDU;
-        goto err;
     }
 
-    if (ret == ATT_ERROR_NONE && attSendPacketEmptyPacket(to, ATT_OPCODE_EXECUTE_WRITE_RSP))
-        return true;
-    /* if we fail to send, fall through and try to signal an error */
-
-err:
-    return attSrvSendPacketErrorReply(to, ret, ATT_OPCODE_EXECUTE_WRITE_REQ, 0);
+    return attSrvSendPacketErrorReply(to, err, ATT_OPCODE_EXECUTE_WRITE_REQ, 0);
 }
 
 /*
@@ -3245,6 +3237,7 @@ void attSrvCbkReply(att_cid_t cid, att_trans_t transId, uint16_t handle, uint8_t
 {
     struct attConn* conn;
     bool ret = false;
+    uint8_t opcode;
 
     pthread_mutex_lock(&mAttLock);
     conn = attConnFindBySrvCid(cid);
@@ -3253,7 +3246,7 @@ void attSrvCbkReply(att_cid_t cid, att_trans_t transId, uint16_t handle, uint8_t
     else if (conn->srv.expectedTransId != transId)
         loge("Got callback reply for unknown transaction id "ATT_TRANS_FMT"u\n", ATT_TRANS_CONV(transId));
     else {
-        switch (conn->srv.penOp.origOpcode) {
+        switch ((opcode = conn->srv.penOp.origOpcode)) {
         case ATT_OPCODE_FIND_BY_TYPE_VAL_REQ:
             ret = attSrvOpFindByTypeValContinue(conn, data, len, err);
             break;
@@ -3280,7 +3273,10 @@ void attSrvCbkReply(att_cid_t cid, att_trans_t transId, uint16_t handle, uint8_t
         default:
             loge("Unknown original opcode\n");
             conn->srv.penOp.origOpcode = 0;
+            ret = true; // to avoid re-logging the error
         }
+        if (!ret)
+            logw("Error handling reply for opcode %u\n", opcode);
     }
     pthread_mutex_unlock(&mAttLock);
 }
@@ -3679,7 +3675,7 @@ uniq_t attCliFindByTypeValue(l2c_handle_t to, uint16_t hStart, uint16_t hEnd, ui
     pthread_mutex_lock(&mAttLock);
     mtu = attConnMtuGetByL2c(to, true);
     if (sizeof(req) + sizeof(struct attHdr) + sgLength(value) > mtu) {
-        logw("Truncating value in FindByTypeValue to fit into mtu %u -> %u\n", sgLength(value), mtu - sizeof(req) - sizeof(struct attHdr));
+        logw("Truncating value in FindByTypeValue to fit into mtu %u -> %u\n", (unsigned)sgLength(value), (unsigned)(mtu - sizeof(req) - sizeof(struct attHdr)));
         sgTruncBack(value, sgLength(value) + sizeof(req) + sizeof(struct attHdr) - mtu);
     }
 
@@ -3854,7 +3850,7 @@ uniq_t attCliWriteInt(l2c_handle_t to, uint16_t handle, sg data, bool cmd)
     pthread_mutex_lock(&mAttLock);
     mtu = attConnMtuGetByL2c(to, true);
     if (sizeof(req) + sizeof(struct attHdr) + sgLength(data) > mtu) {
-        logw("Truncating value in Write to fit into mtu %u -> %u\n", sgLength(data), mtu - sizeof(req) - sizeof(struct attHdr));
+        logw("Truncating value in Write to fit into mtu %u -> %u\n", (unsigned)sgLength(data), (unsigned)(mtu - sizeof(req) - sizeof(struct attHdr)));
         sgTruncBack(data, sgLength(data) + sizeof(req) + sizeof(struct attHdr) - mtu);
     }
 
@@ -3927,7 +3923,7 @@ bool attCliSignedWriteNoAck(l2c_handle_t to, uint16_t handle, sg data)
     pthread_mutex_lock(&mAttLock);
     mtu = attConnMtuGetByL2c(to, true);
     if (sizeof(hdr) + sizeof(sig) + sgLength(data) > mtu) {
-        logw("Truncating value in SignedWrite to fit into mtu %u -> %u\n", sgLength(data), mtu - sizeof(hdr) - sizeof(sig));
+        logw("Truncating value in SignedWrite to fit into mtu %u -> %u\n", (unsigned)sgLength(data), (unsigned)(mtu - sizeof(hdr) - sizeof(sig)));
         sgTruncBack(data, sgLength(data) + sizeof(hdr) + sizeof(sig) - mtu);
     }
 
@@ -3968,7 +3964,7 @@ uniq_t attCliPrepareWrite(l2c_handle_t to, uint16_t handle, uint16_t offset, sg 
     pthread_mutex_lock(&mAttLock);
     mtu = attConnMtuGetByL2c(to, true);
     if (sizeof(req) + sizeof(struct attHdr) + sgLength(data) > mtu) {
-        logw("Truncating value in PrepareWrite to fit into mtu %u -> %u\n", sgLength(data), mtu - sizeof(req) - sizeof(struct attHdr));
+        logw("Truncating value in PrepareWrite to fit into mtu %u -> %u\n", (unsigned)sgLength(data), (unsigned)(mtu - sizeof(req) - sizeof(struct attHdr)));
         sgTruncBack(data, sgLength(data) + sizeof(req) + sizeof(struct attHdr) - mtu);
     }
 
