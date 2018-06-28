@@ -1738,10 +1738,10 @@ bool attReadUuid(struct uuid *dst, sg s)
     struct uuid *ru = (struct uuid*)buf;
 
     if (sgLength(s) == sizeof(uint16_t)) {
-        sgSerializeCutFront(s, buf, sizeof(uint16_t));
+        sgSerialize(s, 0, sizeof(uint16_t), buf);
         uuidFromUuid16(dst, utilGetLE16(buf));
     } else if (sgLength(s) == sizeof(struct uuid)) {
-        sgSerializeCutFront(s, buf, sizeof(struct uuid));
+        sgSerialize(s, 0, sizeof(struct uuid), buf);
         uuidReadLE(dst, ru);
     } else
         return false;
@@ -2888,7 +2888,7 @@ static uniq_t attCliReqStop(l2c_handle_t to)
     conn = attConnFindByL2cConn(to);
 
     if (!conn)
-        loge("Cannot find connection for enw ATT transaction\n");
+        loge("Cannot find connection for new ATT transaction\n");
     else if (!conn->cli.ongoingTrans)
         logw("Refusing to stop ATT transaction while none inflight\n");
     else {
