@@ -89,6 +89,7 @@ struct gattCliTodoItem {
     bool                               commit;       // for write-execute
     uint8_t                            authReq;      // for some reads and writes
     sg                                 data;         // sometimes we actually need data
+    uniq_t                             notifLocator; // used to find a notif rec for cccd writes
 
     struct uuid                        desiredUuid;  // find-service-by-uuid will save the desired uuid here as else we'll lose it
 
@@ -114,8 +115,9 @@ struct gattCliTodoItem {
 #define GATT_CLI_TODO_WRITE_NO_ACK       7
 #define GATT_CLI_TODO_SIGNED_WRITE       8
 #define GATT_CLI_TODO_PREPARE_WRITE      9
-#define GATT_CLI_TOTO_WRITE_EXEC         10
+#define GATT_CLI_TODO_WRITE_EXEC         10
 #define GATT_CLI_TODO_SEND_MTU_REQ       11
+#define GATT_CLI_TODO_WRITE_CCCD         12 // special case that will devolve into a write once we resolve what to write
 
 #define GATT_INTENT_INTERNAL             0
 #define GATT_INTENT_FIND_SVC             1
@@ -199,10 +201,10 @@ struct gattService {
 struct gattCliNotif { /* keeps track of all notifications all clients are subscribed to */
     struct gattCliNotif     *prev;
     struct gattCliNotif     *next;
-    uint32_t                 refCtInd;         /* how many clients want indication */
-    uint32_t                 refCtNotif;       /* how many clients want notification */
-    uint8_t                  curState;         /* NOTIF_C_STATE_* */
-    uint8_t                  subState;         /* NOTIF_S_STATE_* */
+    uint32_t                 refCtInd;         // how many clients want indication
+    uint32_t                 refCtNotif;       // how many clients want notification
+    uniq_t                   locator;          // used to locate this cli-notif structure
+    uint8_t                  curState;         // NOTIF_C_STATE_*
 
     /* cache of relevant values for speed and convenience. spec promises these can never change */
     uint16_t                 charHeaderHandle; /* first handle for this characteristic */
@@ -210,15 +212,10 @@ struct gattCliNotif { /* keeps track of all notifications all clients are subscr
     uint16_t                 charConfigHandle; /* characteristic's "config" handle for unsubscribing */
 };
 
-#define NOTIF_C_STATE_DISCOVERY          0 /* we have not finished finding the handles */
-#define NOTIF_C_STATE_NOT_SUBBED         1
-#define NOTIF_C_STATE_SUBBED_TO_IND      2
-#define NOTIF_C_STATE_SUBBED_TO_NOTIF    3
+#define NOTIF_C_STATE_NOT_SUBBED         0
+#define NOTIF_C_STATE_SUBBED_TO_IND      1
+#define NOTIF_C_STATE_SUBBED_TO_NOTIF    2
 
-#define NOTIF_S_STATE_NONE               0 /* no transition taking place */
-#define NOTIF_S_STATE_SUBBING_TO_IND     1
-#define NOTIF_S_STATE_SUBBING_TO_NOTIF   2
-#define NOTIF_S_STATE_UNSUBBING          3
 
 struct gattCliNotifRec { /* used to keep track of all notifications that a client is subscribed to */
     struct gattCliNotifRec       *next;
@@ -304,7 +301,7 @@ struct gattWorkItem {
 #define GATT_WORK_SRV_IND_CALL           2
 #define GATT_WORK_SRV_DISC_CALL          3
 #define GATT_WORK_CLI_CONN_STATE_NOTIF   4
-#define GATT_WORK_CLI_DO_NEXT            5 /* run the next todo item, if none in flight currently */
+#define GATT_WORK_CLI_DO_NEXT            5 // run the next todo item, if none in flight currently
 #define GATT_WORK_CLI_IND_CALL           6
 #define GATT_WORK_CLI_SUB_UNSUB_CALL     7
 
@@ -321,6 +318,7 @@ static struct gattClientConnection *mClientConns = NULL; /* one per client's ide
 
 
 /* fwd decls */
+static struct gattCliTodoItem* gattCliTodoMakeWrite(gatt_client_conn_t connId, uint8_t purpose, uint8_t writeType, uint16_t handle, uint8_t authReq, uint16_t offset, sg data);
 static void gattCliTodoEnqItem(struct gattConnState *conn, struct gattCliTodoItem *todo, bool inFront);
 static void gattCliTodoNext(l2c_handle_t conn, struct gattCliTodoItem *now);
 static void gattCliTodoItemFree(struct gattCliTodoItem *todo);
@@ -374,6 +372,26 @@ static struct gattConnState* gattConnFindById(uniq_t gattConnId)
     for (state = mConns; state && state->gattConnId != gattConnId; state = state->next);
 
     return state;
+}
+
+/*
+ * FUNCTION: gattNotifFindByLocatorInConn
+ * USE:      find a notification record structure given a connection it belongs to and its locator value
+ * PARAMS:   conn - connection structure
+ *           notifLocator - unique notif record locator value
+ * RETURN:   notif structure or NULL
+ * NOTES:    call with mGattLock held
+ */
+static struct gattCliNotif* gattNotifFindByLocatorInConn(struct gattConnState* conn, uniq_t notifLocator)
+{
+    struct gattCliNotif *notif;
+
+    for (notif = conn->cliNotifs; notif; notif = notif->next) {
+        if (notif->locator == notifLocator)
+            return notif;
+    }
+
+    return NULL;
 }
 
 /*
@@ -1907,8 +1925,11 @@ static bool gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *han
  */
 static void gattAttCliWriteCbk(uniq_t trans, l2c_handle_t to)
 {
-    static const uint8_t expectedWorkTypes[] = {GATT_CLI_TODO_WRITE, GATT_CLI_TODO_PREPARE_WRITE, GATT_CLI_TOTO_WRITE_EXEC};
+    static const uint8_t expectedWorkTypes[] = {GATT_CLI_TODO_WRITE, GATT_CLI_TODO_PREPARE_WRITE, GATT_CLI_TODO_WRITE_EXEC, GATT_CLI_TODO_WRITE_CCCD};
+    struct gattClientConnection *clicon;
     struct gattConnState *conn;
+    struct gattCliNotif *notif;
+    bool somethingDone;
 
     pthread_mutex_lock(&mGattLock);
     conn = gattAttCbkCheckState(trans, to, expectedWorkTypes, sizeof(expectedWorkTypes), "Write");
@@ -1916,12 +1937,64 @@ static void gattAttCliWriteCbk(uniq_t trans, l2c_handle_t to)
         struct gattCliTodoItem *todo = conn->todoCurr;
 
         switch (todo->purpose) {
+        case GATT_INTENT_NOTIF_SUB_UNSUB:
+            notif = gattNotifFindByLocatorInConn(conn, todo->notifLocator);
+            if (!notif)
+                break;
+
+            // update the notif rec's state
+            switch (todo->offset) {
+            default:
+                logw("Weird unknown value written by us to CCCD: 0x%04x\n", todo->offset);
+                // fallthrough
+            case 0:
+                notif->curState = NOTIF_C_STATE_NOT_SUBBED;
+                break;
+            case GATT_CLI_CFG_BIT_NOTIFS:
+                notif->curState = NOTIF_C_STATE_SUBBED_TO_NOTIF;
+                break;
+            case GATT_CLI_CFG_BIT_INDS:
+                notif->curState = NOTIF_C_STATE_SUBBED_TO_IND;
+                break;
+            }
+
+            // tell everyone who needs to know - first iterate all client connections
+            do {
+
+                somethingDone = false;
+                for (clicon = mClientConns; clicon && !somethingDone; clicon = clicon->next) {
+                    struct gattCliNotifRec *nr;
+
+                    // for each, iterate the notifications/indications requested
+                    for (nr = clicon->notifs; nr; nr = nr->next) {
+
+                        // for those applicable to this CCCD write, and in proper state, and not yet told we are subscribed, tell them
+                        if (nr->notif == notif && !nr->subCallMade && ((nr->wantInd && notif->curState == NOTIF_C_STATE_SUBBED_TO_IND) || (notif->curState == NOTIF_C_STATE_SUBBED_TO_NOTIF))) {
+
+                            gattCliNotifSubscribeStateCbk stateCbk = nr->stateCbk;
+
+                            nr->subCallMade = true;
+                            conn->doNotFreeTodoCurr = true;
+                            pthread_mutex_unlock(&mGattLock);
+                            stateCbk(clicon->connId, todo->auxHandle[0], true, GATT_CLI_STATUS_OK);
+                            pthread_mutex_lock(&mGattLock);
+                            conn->doNotFreeTodoCurr = false;
+                            somethingDone = true;
+                            conn = gattConnFindByL2cConn(to);
+                            break;
+                        }
+                    }
+                }
+            } while (conn && somethingDone);
+            break;
+
         default:
             loge("Unknown reason for getting a write result\n");
             break;
         }
 
         if (conn) {
+            conn->todoCurr = NULL;
             gattCliTodoItemFree(todo);
             gattEnqueueCliDoNextTodoItem(conn);
         }
@@ -1944,7 +2017,7 @@ static void gattAttCliWriteCbk(uniq_t trans, l2c_handle_t to)
 static void gattAttCliError(uniq_t trans, l2c_handle_t to, const uint16_t *handleP, const uint8_t *errP, const uint8_t *errOpcodeP)
 {
     static const uint8_t expectedWorkTypes[] = {GATT_CLI_TODO_FIND_INFO, GATT_CLI_TODO_FIND_BY_TYPE_VAL, GATT_CLI_TODO_READ_BY_TYPE, GATT_CLI_TODO_READ, GATT_CLI_TODO_READ_BLOB,
-                                                GATT_CLI_TODO_READ_BY_GRP_TYPE, GATT_CLI_TODO_WRITE, GATT_CLI_TODO_PREPARE_WRITE, GATT_CLI_TOTO_WRITE_EXEC};
+                                                GATT_CLI_TODO_READ_BY_GRP_TYPE, GATT_CLI_TODO_WRITE, GATT_CLI_TODO_PREPARE_WRITE, GATT_CLI_TODO_WRITE_EXEC, GATT_CLI_TODO_WRITE_CCCD};
     struct gattConnState *conn;
     bool handled = false;
     struct uuid tempUuid;
@@ -2038,8 +2111,10 @@ static void gattAttCliIndNotif(l2c_handle_t to, bool needsAck, uint16_t handle, 
     struct gattConnState *conn;
 
     pthread_mutex_lock(&mGattLock);
-    conn = gattAttCbkCheckState(0, to, NULL, 0, "Notif");
-    if (conn) {
+    conn = gattConnFindByL2cConn(to);
+    if (!conn)
+        logw("Notif callback on a nonexistent connection\n");
+    else {
         struct gattCliNotif *n;
 
         /* find the per-connection notif structure */
@@ -2847,12 +2922,73 @@ out:
 }
 
 /*
+ * FUNCTION: gattCliHandleCccdWriteRequestIfNeeded
+ * USE:      Figure out of a CCCD write is needed, and enqueue it if so
+ * PARAMS:   conn - the conection handle
+ *           now - the todo item
+ * RETURN:   att transaction ID if we start a transaction, 0 else
+ * NOTES:    called from the worker thread with mGattLock NOT held!
+ */
+static uniq_t gattCliHandleCccdWriteRequestIfNeeded(l2c_handle_t conn, struct gattCliTodoItem *now)
+{
+    uint8_t writeData[sizeof(uint16_t)];
+    struct gattConnState *connState;
+    struct gattCliNotif *notif;
+    uint16_t cccdVal;
+    uniq_t trans = 0;
+    sg writeDataSg;
+
+    pthread_mutex_lock(&mGattLock);
+    connState = gattConnFindByL2cConn(conn);
+    if (!connState)
+        goto out;
+
+    //find the notif by locator;
+    notif = gattNotifFindByLocatorInConn(connState, now->notifLocator);
+    if (!notif)
+        goto out;
+
+    //figure out what (if anything) to do with it
+    if (notif->refCtInd && notif->curState == NOTIF_C_STATE_SUBBED_TO_IND)
+        goto out;
+    if (!notif->refCtInd && notif->refCtNotif && notif->curState == NOTIF_C_STATE_SUBBED_TO_NOTIF)
+        goto out;
+
+    if(!notif->refCtInd && !notif->refCtNotif && notif->curState != NOTIF_C_STATE_NOT_SUBBED)
+        goto out;
+
+    //we now know we need a CCCD write - figure out the value
+    if (notif->refCtInd)
+        cccdVal = GATT_CLI_CFG_BIT_INDS;
+    else if (notif->refCtNotif)
+        cccdVal = GATT_CLI_CFG_BIT_NOTIFS;
+    else
+        cccdVal = 0;
+    utilSetLE16(writeData, cccdVal);
+
+    //store the data into the todo and the value we're writing into offset (so we can know what we wrote when the ACK comes)
+    writeDataSg = sgNewWithCopyData(writeData, sizeof(writeData));
+    if (!writeDataSg)
+        goto out;
+    now->offset = cccdVal;
+
+    //try to issue the write
+    trans = attCliWrite(conn, now->handle, writeDataSg);
+    if (!trans)
+        sgFree(writeDataSg);
+
+out:
+    pthread_mutex_unlock(&mGattLock);
+    return trans;
+}
+
+/*
  * FUNCTION: gattCliTodoNext
  * USE:      Start on the next to-do item for the connection
  * PARAMS:   conn - the conection handle
  *           now - the todo item
  * RETURN:   NONE
- * NOTES:    This shoudl ONLY be called fro mthe worker thread with mGattLock NOT held!
+ * NOTES:    This should ONLY be called from the worker thread with mGattLock NOT held!
  */
 static void gattCliTodoNext(l2c_handle_t conn, struct gattCliTodoItem *now)
 {
@@ -2940,7 +3076,7 @@ static void gattCliTodoNext(l2c_handle_t conn, struct gattCliTodoItem *now)
         }
         break;
 
-    case GATT_CLI_TOTO_WRITE_EXEC:
+    case GATT_CLI_TODO_WRITE_EXEC:
         trans = attCliExecuteStagedWrites(conn, now->commit);
         if (!trans)
             logw("ExecWrite failed\n");
@@ -2948,6 +3084,10 @@ static void gattCliTodoNext(l2c_handle_t conn, struct gattCliTodoItem *now)
 
     case GATT_CLI_TODO_SEND_MTU_REQ:
         trans = attCliRequestMtu(conn, now->mtu);
+        break;
+
+    case GATT_CLI_TODO_WRITE_CCCD:
+        trans = gattCliHandleCccdWriteRequestIfNeeded(conn, now);
         break;
     }
 
@@ -2972,14 +3112,26 @@ static void gattCliTodoNext(l2c_handle_t conn, struct gattCliTodoItem *now)
  * USE:      Issue a write to the notif/ind subscription descriptor if needed
  * PARAMS:   conn - the connection structure
  *           notif - the notif struct
- * RETURN:   true if a write is needed and the todo item was created and enqueued, also true if no write weas needed
- * NOTES:    call with mGattLock held. When is a write needed (if we have clients
- *           who need a different subscription model than we currently have, or all
- *           clients go away)
+ * RETURN:   false on immediate error
+ * NOTES:    call with mGattLock held. When is a write needed? If all clients we
+ *           have need a different subscription model than we currently have, or
+ *           all clients go away.
  */
 static bool gattCliNotifSubUnsubIssueWriteIfNeededNewTodo(struct gattConnState *conn, struct gattCliNotif *notif)
 {
-    // TODO
+    struct gattCliTodoItem *todo;
+
+    todo = calloc(1, sizeof(struct gattCliTodoItem));
+    if (!todo)
+        return false;
+
+    todo->purpose = GATT_INTENT_NOTIF_SUB_UNSUB;
+    todo->type = GATT_CLI_TODO_WRITE_CCCD;
+    todo->handle = notif->charConfigHandle;
+    todo->auxHandle[0] = notif->charValueHandle;
+    todo->notifLocator = notif->locator;
+
+    gattCliTodoEnqItem(conn, todo, false);
 
     return true;
 }
@@ -3745,7 +3897,7 @@ uint8_t gattClientStagedWritesExecute(gatt_client_conn_t connId, bool execute, g
     if (!todo)
         goto out;
 
-    todo->type = GATT_CLI_TOTO_WRITE_EXEC;
+    todo->type = GATT_CLI_TODO_WRITE_EXEC;
     todo->execute = execute;
     todo->executeCbk = cbk;
 
@@ -3830,6 +3982,8 @@ uint8_t gattClientNotifsSubscribe(gatt_client_conn_t connId, uint16_t charHandle
         }
         if (!notif) {
 
+            logd("Nobody was previously subscribed to char at 0x%04x - making new struct\n", charHandle);
+
             /* no structure? create it */
             notif = calloc(1, sizeof(struct gattCliNotif));
             if (!notif) {
@@ -3841,9 +3995,15 @@ uint8_t gattClientNotifsSubscribe(gatt_client_conn_t connId, uint16_t charHandle
             notif->charValueHandle = charValueHandle;
             notif->charConfigHandle = cccdHandle;
             notif->curState = NOTIF_C_STATE_NOT_SUBBED;
+            notif->locator = uniqGetNext();
             sta = GATT_CLI_STATUS_OK;
-
+            notif->next = conn->cliNotifs;
+            conn->cliNotifs = notif;
+            if (notif->next)
+                notif->next->prev = notif;
         } else {
+
+            logd("Somebody was previously subscribed to char at 0x%04x - reusing struct\n", charHandle);
 
             /* see if we can already tell them it's ready */
             if (notif->curState == NOTIF_C_STATE_SUBBED_TO_IND || (!reliable && notif->curState == NOTIF_C_STATE_SUBBED_TO_NOTIF)) {
@@ -3851,15 +4011,15 @@ uint8_t gattClientNotifsSubscribe(gatt_client_conn_t connId, uint16_t charHandle
                 nr->subCallMade = true;
                 sta = GATT_CLI_STATUS_OK;
             }
+        }
 
-            /* if needed, do [another] char descr write */
-            if (!gattCliNotifSubUnsubIssueWriteIfNeededNewTodo(conn, notif)) {
-                sta = GATT_CLI_STATUS_ERR;
-                loge("Notif write enqueue failed\n");
-                free(nr);
-                nr = NULL;
-                callStateCbk = false;
-            }
+        /* if needed, do [another] char descr write */
+        if (!gattCliNotifSubUnsubIssueWriteIfNeededNewTodo(conn, notif)) {
+            sta = GATT_CLI_STATUS_ERR;
+            loge("Notif write enqueue failed\n");
+            free(nr);
+            nr = NULL;
+            callStateCbk = false;
         }
 
         if (nr) {
@@ -3871,6 +4031,8 @@ uint8_t gattClientNotifsSubscribe(gatt_client_conn_t connId, uint16_t charHandle
 
             nr->next = clicon->notifs;
             clicon->notifs = nr;
+            if (nr->next)
+                nr->next->prev = nr;
         }
     }
 
@@ -3912,7 +4074,9 @@ uint8_t gattClientNotifsUnsubscribe(gatt_client_conn_t conn, uint16_t charValueH
                 continue;
             break;
         }
-        if (nr) {
+        if (!nr)
+            logw("NotifRec not found for unsub\n");
+        else {
             if (!nr->unsubCallMade)
                 stateCbk = nr->stateCbk;
             nr->unsubCallMade = true;
