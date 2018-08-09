@@ -9,7 +9,12 @@
 #include "newblue-macros.h"
 #include "types.h"
 
-#define BT_UUID_BASE                  {0x800000805F9B34FBULL, 0x0000000000001000ULL}
+#define BT_UUID_BASE_LO               0x800000805F9B34FBULL
+#define BT_UUID_BASE_HI               0x0000000000001000ULL
+#define BT_UUID_STATIC(uuid16or32)    {BT_UUID_BASE_LO, BT_UUID_BASE_HI + (((uint64_t)(uuid16or32)) << 32)}
+#define BT_UUID_STATIC_16(uuid16)     BT_UUID_STATIC(uuid16)
+#define BT_UUID_STATIC_32(uuid32)     BT_UUID_STATIC(uuid32)
+#define BT_UUID_BASE                  BT_UUID_STATIC(0)
 
 #define UUIDFMT      "{%08lx-%04x-%04x-%04x-%04x%08lx}"
 #define UUIDCONV(u)  (unsigned long)(((u).hi) >> 32),(unsigned)((((u).hi) >> 16) & 0xFFFF),(unsigned)(((u).hi) & 0xFFFF),\
@@ -20,7 +25,6 @@ struct uuid {
     uint64_t lo;
     uint64_t hi;
 } __packed;
-
 
 
 void uuidFromUuid16(struct uuid *dst, uint16_t uuid16) NEWBLUE_EXPORT;
