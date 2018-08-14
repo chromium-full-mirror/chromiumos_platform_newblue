@@ -34,6 +34,7 @@ common_OBJS = att.o \
               sg.o \
               sm.o \
               timer.o \
+              uhid.o \
               uniq.o \
               uuid.o \
               vendorLib.o \
@@ -60,6 +61,7 @@ libnewblue_HEADERS = att.h \
                      sm.h \
                      timer.h \
                      types.h \
+                     uhid.h \
                      uniq.h \
                      uuid.h
 

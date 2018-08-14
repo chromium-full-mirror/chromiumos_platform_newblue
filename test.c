@@ -15,6 +15,7 @@
 #include "gatt-builtin.h"
 #include "vendorLib.h"
 #include "btleHid.h"
+#include "uhid.h"
 #include "l2cap.h"
 #include "timer.h"
 #include "aapi.h"
@@ -555,23 +556,6 @@ static void gattConnectedCbkHidTest(gatt_client_conn_t conn, uint8_t status)
     sem_post(&mGattTestSem);
 }
 
-
-static void btleHidConnStateCbk(ble_hid_conn_t hidId, uint8_t state)
-{
-    logi("HID state: %u\n", state);
-
-    //if terminal state, unblock main thread
-    if (state == BTLE_HID_CONN_STATE_UP || state == BTLE_HID_CONN_STATE_TEARDOWN)
-        sem_post(&mGattTestSem);
-}
-
-static void btleHidReportRxCbk(ble_hid_conn_t hidId, int32_t reportId, sg data, bool byRequest)
-{
-    logi("HID report ID %d RXed, %u bytes%s\n", reportId, sgLength(data), byRequest ? " by request" : "");
-
-    sgFree(data);
-}
-
 static void battSvcStateCbk(gatt_svc_batt_conn_t handle, uint8_t state)
 {
     logi("BattSvc state: %u\n", state);
@@ -983,7 +967,7 @@ int main(int argc, char** argv)
             else if (doHidTest) {
 
                 gattSvcBattInit(battSvcStateCbk, battSvcRxCbk);
-                btleHidInit(btleHidConnStateCbk, btleHidReportRxCbk);
+                btleHidInit(hidConnStateCbk, hidReportRxCbk);
                 gattSvcMiscInfoInit(miscInfoSvcStateCbk, miscInfoSvcRxCbk);
 
                 con = gattClientConnect(&connTo, gattConnectedCbkHidTest);

@@ -15,6 +15,7 @@ COMMON_SRC_FILES :=     \
     mt.c                \
     sm.c                \
     persist.c           \
+    uhid.c              \
     uuid.c              \
     att.c               \
     gatt.c              \
