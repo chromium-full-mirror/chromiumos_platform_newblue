@@ -587,6 +587,103 @@ static void terminateCbk(uniq_t which,  uint64_t cbkData) {
     terminate = true;
 }
 
+static void interpAvdData(const uint8_t *data, uint32_t len)
+{
+    while (len >= 2) {
+        uint8_t i, typ, sz;
+        struct uuid uuid;
+        char *buf;
+
+        sz = *data++;
+
+        if (!sz || sz > len - 1)
+            break;
+        typ = *data++;
+        len -= 2;
+        sz--;
+
+        switch (typ) {
+        case 0x01:
+            if (sz != 1)
+                goto out;
+            logi("\t\tFLAGS: 0x%02x\n", data[0]);
+            break;
+        case 0x02:
+        case 0x03:
+            logi("\t\tUUID16s (%scomplete):\n", (typ & 1) ? "" : "in");
+            if (sz % SIZEOF_UUID_16)
+                goto out;
+            for (i = 0; i < sz; i += SIZEOF_UUID_16)
+                logi("\t\t\t0x%04x\n", utilGetLE16(data + i));
+            break;
+        case 0x04:
+        case 0x05:
+            logi("\t\tUUID32s (%scomplete):\n", (typ & 1) ? "" : "in");
+            if (sz % SIZEOF_UUID_32)
+                goto out;
+            for (i = 0; i < sz; i += SIZEOF_UUID_32)
+                logi("\t\t\t0x%08x\n", utilGetLE32(data + i));
+            break;
+        case 0x06:
+        case 0x07:
+            logi("\t\tUUID128s (%scomplete):\n", (typ & 1) ? "" : "in");
+            if (sz % sizeof(struct uuid))
+                goto out;
+            for (i = 0; i < sz; i += sizeof(struct uuid)) {
+                uuidReadLE(&uuid, data + i);
+                logi("\t\t\t"UUIDFMT"\n", UUIDCONV(uuid));
+            }
+            break;
+        case 0x08:
+        case 0x09:
+            buf = malloc(sz + 1);
+            memcpy(buf, data, sz);
+            buf[sz] = 0;
+            logi("\t\tNAME (%scomplete): <<%s>>\n", (typ & 1) ? "" : "in", buf);
+            free(buf);
+            break;
+        case 0x0a:
+            if (sz != 1)
+                goto out;
+            logi("\t\tTX PWR: %d dBm\n", (int8_t)data[0]);
+            break;
+        case 0x0d:
+            if (sz != 3)
+                goto out;
+            logi("\t\tCLASS: 0x%06x\n", utilGetLE24(data));
+            break;
+        case 0x11:
+            if (sz != 1)
+                goto out;
+            logi("\t\tSEC MGR FLAGS: 0x%02x\n", data[0]);
+            break;
+        case 0x16:
+        case 0xff:
+            if (sz < 2)
+                goto out;
+            logi("\t\t%s 0x%04x (%u bytes)\n", (typ == 0xFF) ? "MANUF DATA FOR MANUF" : "SERVICE DATA FOR SVC", utilGetLE16(data), sz - 2);
+            i = 2;
+        showdata:
+            buf = malloc(sz * 4);
+            buf[0] = 0;
+            for (; i < sz; i++)
+                sprintf(buf + strlen(buf), "%02x%s", data[i], (i == sz - 1) ? "" : ", ");
+            logi("\t\t\t%s\n", buf);
+            free(buf);
+            break;
+        default:
+            logi("\t\tTYPE 0x%02x, %u bytes:\n", typ, sz);
+            i = 0;
+            goto showdata;
+        }
+        len -= sz;
+        data += sz;
+    }
+out:
+    if (len)
+        logi("\tLEFTOVER %u bytes!\n", len);
+}
+
 int main(int argc, char** argv)
 {
     static const uint8_t mac[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
@@ -681,10 +778,12 @@ int main(int argc, char** argv)
 
                 logData(str, t->advData, t->advLen);
                 logi("\tADV %s\n", str);
+                interpAvdData(t->advData, t->advLen);
 
                 if (t->haveRsp) {
                     logData(str, t->rspData, t->rspLen);
                     logi("\tRSP %s\n", str);
+                    interpAvdData(t->rspData, t->rspLen);
                 }
 
                 if (wantConnect) {   //is this the one we shoudl connect to???

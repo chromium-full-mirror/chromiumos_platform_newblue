@@ -21,6 +21,10 @@
                      (unsigned)(((u).lo) >> 48),(unsigned)((((u).lo) >> 32) & 0xFFFF),(unsigned long)(((u).lo) & 0xFFFFFFFF)
 
 
+#define SIZEOF_UUID_16                2
+#define SIZEOF_UUID_32                4
+
+
 struct uuid {
     uint64_t lo;
     uint64_t hi;
