@@ -630,7 +630,7 @@ int main(int argc, char** argv)
     if (!gattBuiltinInit())
         loge("Failed to init GATT services\n");
 
-    if (!smInit(HCI_DISP_CAP_KBD_DISP)) {
+    if (!smInit()) {
         loge("Failed to init SM\n");
         goto cleanup;
     }
