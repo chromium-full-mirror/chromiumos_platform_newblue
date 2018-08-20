@@ -234,9 +234,18 @@ struct smPasskeyRequestObserver {
     void *data; /* observer data */
 };
 
+/* IO capability in terms of output and input */
+#define SM_OUT_CAP_NONE                  0x00
+#define SM_OUT_CAP_NUMERIC               0x01
+#define SM_IN_CAP_NONE                   0x00
+#define SM_IN_CAP_YES_NO                 0x01
+#define SM_IN_CAP_KBD                    0x02
+
 /* local settings and state */
-static uint8_t mIoCap;
-static bool mHasOob;                                                    /* whether we support OOB data */
+static uint8_t mInCap = SM_IN_CAP_NONE;                                 /* input capability */
+static uint8_t mOutCap = SM_OUT_CAP_NONE;                               /* output capability */
+static uint8_t mIoCap = HCI_DISP_CAP_NONE;                              /* IO capability based on mIoCaps[mInCap][mOutCap] */
+static bool mHasOob = false;                                            /* whether we support OOB data */
 
 static pthread_mutex_t mInstLock = PTHREAD_MUTEX_INITIALIZER;           /* lock for the active instance list */
 static struct smInstance *mActInstList = NULL;                          /* the active instances */
@@ -270,6 +279,13 @@ static bool smResolveAddr(struct bt_addr *addr, const struct bt_addr *peerAddr);
 
 /* sendQ for packet transmissions */
 static struct sendQ *mSmSendQ;
+
+/* table of IO capability mapping */
+static const uint8_t mIoCaps[3][2] = {
+    {HCI_DISP_CAP_NONE, HCI_DISP_CAP_DISP_ONLY},
+    {HCI_DISP_CAP_NONE, HCI_DISP_CAP_DISP_YES_NO},
+    {HCI_DISP_CAP_KBD_ONLY, HCI_DISP_CAP_KBD_DISP},
+};
 
 /* pairing algorithms */
 #define SM_ALG_JUST_WORK                0x00
@@ -2051,6 +2067,32 @@ static void smStallTimerCb(uniq_t timerId, uint64_t conn)
 }
 
 /*
+ * FUNCTION: smUpdateIoCap
+ * USE:      Update the IO capability based on the value of mInCap and mOutCap if there is no
+ *           ongoing pairings
+ * PARAMS:   inCap - input capability
+ *           outCap - output capability
+ * RETURN:   success
+ * NOTES:    call with mInstLock held
+ */
+static bool smUpdateIoCap(uint8_t inCap, uint8_t outCap)
+{
+    if ((inCap != SM_IN_CAP_NONE && inCap != SM_IN_CAP_YES_NO && inCap != SM_IN_CAP_KBD) ||
+        (outCap != SM_OUT_CAP_NONE && outCap != SM_OUT_CAP_NUMERIC))
+        return false;
+
+    mInCap = inCap;
+    mOutCap = outCap;
+
+    // postpone the update if there is any ongoing pairing
+    if (mActInstList)
+        return true;
+
+    mIoCap = mIoCaps[mInCap][mOutCap];
+    return true;
+}
+
+/*
  * FUNCTION: smInstDeinit
  * USE:      Delete an instance from the active instance list, cancel the pairing timer and free it
  * PARAMS:   inst - the instance
@@ -2073,6 +2115,8 @@ static void smInstDeinit(struct smInstance* inst)
 
     if (inst->stallTimer)
         timerCancel(inst->stallTimer);
+
+    smUpdateIoCap(mInCap, mOutCap);
 
     free(inst);
 
@@ -2516,19 +2560,16 @@ out:
  * RETURN:   success
  * NOTES:
  */
-bool smInit(uint8_t ioCapability)
+bool smInit(void)
 {
     static const struct l2cServiceFixedChDescriptor descr = {
         .serviceFixedChAlloc = smFixedChAlloc,
         .serviceFixedChStateCbk = smFixedChState,
     };
 
-    if (ioCapability != HCI_DISP_CAP_DISP_ONLY && ioCapability != HCI_DISP_CAP_DISP_YES_NO &&
-        ioCapability != HCI_DISP_CAP_KBD_ONLY && ioCapability != HCI_DISP_CAP_NONE &&
-        ioCapability != HCI_DISP_CAP_KBD_DISP) {
-        return false;
-    }
-    mIoCap = ioCapability;
+    pthread_mutex_lock(&mInstLock);
+    smUpdateIoCap(SM_IN_CAP_NONE, SM_OUT_CAP_NONE);
+    pthread_mutex_unlock(&mInstLock);
 
     /* TODO(mcchou): this needs to be changed accordingly for the OOB support */
     mHasOob = false;
@@ -2735,7 +2776,7 @@ static void smNotifyPairStateObserver(const struct bt_addr *addr, SmPairState st
  * PARAMS:   observerData - observer's own data passed when the callback is invoked
  *           cbk - the callback invoked if there is a passkey to be displayed
  * RETURN:   a none-zero unique observer ID in success case; 0 otherwise
- * NOTES:    there can be one observer of passkey display at a time
+ * NOTES:    there can be only one observer of passkey display at a time
  */
 uniq_t smRegisterPasskeyDisplayObserver(void *observerData, smPasskeyDisplayCbk cbk)
 {
@@ -2748,9 +2789,12 @@ uniq_t smRegisterPasskeyDisplayObserver(void *observerData, smPasskeyDisplayCbk 
         calloc(1, sizeof(struct smPasskeyDisplayObserver));
     if (!mPasskeyDisplayObserver)
         goto out;
+
     mPasskeyDisplayObserver->id = ret = uniqGetNext();
     mPasskeyDisplayObserver->cbk = cbk;
     mPasskeyDisplayObserver->data = observerData;
+
+    smUpdateIoCap(mInCap, SM_OUT_CAP_NUMERIC);
 out:
     pthread_mutex_unlock(&mObvrLock);
     return ret;
@@ -2771,8 +2815,11 @@ void smUnregisterPasskeyDisplayObserver(uniq_t observerId)
         pthread_mutex_unlock(&mObvrLock);
         return;
     }
+
     free(mPasskeyDisplayObserver);
     mPasskeyDisplayObserver = NULL;
+    smUpdateIoCap(mInCap, SM_OUT_CAP_NONE);
+
     pthread_mutex_unlock(&mObvrLock);
 }
 
@@ -2820,7 +2867,7 @@ static void smNotifyPasskeyDisplayObserver(const struct bt_addr *addr, bool vali
  * PARAMS:   observerData - observer's own data passed when the callback is invoked
  *           cbk - the callback invoked if there is a passkey request
  * RETURN:   a none-zero unique observer ID in success case; 0 otherwise
- * NOTES:    there can be one observer of passkey request at a time
+ * NOTES:    there can be only one observer of passkey request at a time
  */
 uniq_t smRegisterPasskeyRequestObserver(void *observerData, smPasskeyRequestCbk cbk)
 {
@@ -2833,9 +2880,12 @@ uniq_t smRegisterPasskeyRequestObserver(void *observerData, smPasskeyRequestCbk 
         calloc(1, sizeof(struct smPasskeyRequestObserver));
     if (!mPasskeyRequestObserver)
         goto out;
+
     mPasskeyRequestObserver->id = ret = uniqGetNext();
     mPasskeyRequestObserver->cbk = cbk;
     mPasskeyRequestObserver->data = observerData;
+
+    smUpdateIoCap(SM_IN_CAP_KBD, mOutCap);
 out:
     pthread_mutex_unlock(&mObvrLock);
     return ret;
@@ -2856,8 +2906,11 @@ void smUnregisterPasskeyRequestObserver(uniq_t observerId)
         pthread_mutex_unlock(&mObvrLock);
         return;
     }
+
     free(mPasskeyRequestObserver);
     mPasskeyRequestObserver = NULL;
+    smUpdateIoCap(SM_IN_CAP_NONE, mOutCap);
+
     pthread_mutex_unlock(&mObvrLock);
 }
 
