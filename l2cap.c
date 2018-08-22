@@ -2503,7 +2503,7 @@ static void l2cSignallingRx(struct l2cAclConn *conn, sg payload)
             struct l2cSigConnUpdtReq params;
 
             sgSerialize(payload, 0, sizeof(params), &params);
-            if (!BT_ADDR_IS_EDR(conn->peerAddr)) {
+            if (BT_ADDR_IS_EDR(conn->peerAddr)) {
                 logw("Got a Connection Update Request packet on an EDR link\n");
                 if (!l2cSigSendErrCmdNotUnderstood(conn, ident))
                     loge("Failed to send command not understood msg to the other side\n");
