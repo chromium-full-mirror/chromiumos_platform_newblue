@@ -1,6 +1,7 @@
 #ifndef _SG_H_
 #define _SG_H_
 
+#include "newblue-macros.h"
 #include "types.h"
 
 struct sgbuf;
@@ -18,55 +19,55 @@ typedef struct sgbuf *sg;
 
 
 //create a new empty sg -> null on error
-sg sgNew(void);
+sg sgNew(void) NEWBLUE_EXPORT;
 
 //create a new sg with given data,  a copy is made -> null on error
-sg sgNewWithCopyData(const void* data, uint32_t len);
+sg sgNewWithCopyData(const void* data, uint32_t len) NEWBLUE_EXPORT;
 
 //create a new sg with given data. sg takes ownership of data buf and will free it -> null on error
-sg sgNewWithAllocedData(void *data, uint32_t len);
+sg sgNewWithAllocedData(void *data, uint32_t len) NEWBLUE_EXPORT;
 
 //delete an sg
-void sgFree(sg s);
+void sgFree(sg s) NEWBLUE_EXPORT;
 
 //query length
-uint32_t sgLength(sg s);
+uint32_t sgLength(sg s) NEWBLUE_EXPORT;
 
 //concat. back is freed, front gets its data
-void sgConcat(sg front, sg back);
+void sgConcat(sg front, sg back) NEWBLUE_EXPORT;
 
 //convenient permutations of concat
-bool sgConcatFrontCopy(sg s, const void *data, uint32_t len);
-bool sgConcatFrontAlloced(sg s, void *data, uint32_t len);
-bool sgConcatBackCopy(sg s, const void *data, uint32_t len);
-bool sgConcatBackAlloced(sg s, void *data, uint32_t len);
+bool sgConcatFrontCopy(sg s, const void *data, uint32_t len) NEWBLUE_EXPORT;
+bool sgConcatFrontAlloced(sg s, void *data, uint32_t len) NEWBLUE_EXPORT;
+bool sgConcatBackCopy(sg s, const void *data, uint32_t len) NEWBLUE_EXPORT;
+bool sgConcatBackAlloced(sg s, void *data, uint32_t len) NEWBLUE_EXPORT;
 
 //truncation (delete end)
-void sgTruncBack(sg s, uint32_t bytes_to_delete);
+void sgTruncBack(sg s, uint32_t bytes_to_delete) NEWBLUE_EXPORT;
 
 //truncation (delete front)
-void sgTruncFront(sg s, uint32_t bytes_to_delete);
+void sgTruncFront(sg s, uint32_t bytes_to_delete) NEWBLUE_EXPORT;
 
 //cuts the last few bytes off into a new sg. param is how many bytes stay with the first sg
-sg sgSplit(sg s, uint32_t firstLen);
+sg sgSplit(sg s, uint32_t firstLen) NEWBLUE_EXPORT;
 
 //serialization
-uint32_t sgSerialize(sg s, uint32_t offset, uint32_t len, void* dstBuf);
+uint32_t sgSerialize(sg s, uint32_t offset, uint32_t len, void* dstBuf) NEWBLUE_EXPORT;
 
 //swap the data in a and b
-void sgSwap(sg a, sg b);
+void sgSwap(sg a, sg b) NEWBLUE_EXPORT;
 
 //combo
-bool sgSerializeCutFront(sg s, void *buf, uint32_t len);
+bool sgSerializeCutFront(sg s, void *buf, uint32_t len) NEWBLUE_EXPORT;
 
 //duplication
-sg sgDup(sg data);
+sg sgDup(sg data) NEWBLUE_EXPORT;
 
 //iter start
-void* sgIterStart(sg s);               /* null means iteration is over */
-uint32_t sgIterCurLen(void *iter);     /* get "current" length */
-const void* sgIterCurData(void *iter); /* get "current" data */
-void* sgIterAdvance(void *iter);       /* null means iteration is over */
+void* sgIterStart(sg s) NEWBLUE_EXPORT;               /* null means iteration is over */
+uint32_t sgIterCurLen(void *iter) NEWBLUE_EXPORT;     /* get "current" length */
+const void* sgIterCurData(void *iter) NEWBLUE_EXPORT; /* get "current" data */
+void* sgIterAdvance(void *iter) NEWBLUE_EXPORT;       /* null means iteration is over */
 
 
 #endif
