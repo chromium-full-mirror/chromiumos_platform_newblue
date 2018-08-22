@@ -208,7 +208,7 @@ void smSignatureCalc(sg m, const uint8_t *key, uint8_t *sig) NEWBLUE_EXPORT;
 /* ONE TIME SM INIT/DEINIT */
 
 /* call this to perform on-time init of SM */
-bool smInit(void) NEWBLUE_EXPORT;
+bool smInit(uint8_t ioCapability) NEWBLUE_EXPORT;
 /* call this to perform on-time deinit of SM */
 void smDeinit(void) NEWBLUE_EXPORT;
 
