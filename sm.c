@@ -1947,7 +1947,13 @@ static void smRx(struct smInstance *inst, sg packet)
             inst->myKeyDistr = inst->myKeyDistrReq;
             inst->peerKeyDistrReq = inst->myKeyDistrReq;
             inst->peerKeyDistr = inst->myKeyDistrReq;
-            smSendPairReq(inst); /* all fields required were set when the instance was allocated */
+
+            /* all fields required were set when the instance was allocated */
+            if (!smSendPairReq(inst)) {
+                pairErr = SM_PAIR_ERR_SEND_SM_CMD;
+                break;
+            }
+            smTransitPhase(inst, SM_PHASE_REQ_SENT);
         } else {
             pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
             break;
