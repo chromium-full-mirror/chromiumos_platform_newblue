@@ -587,9 +587,53 @@ static void terminateCbk(uniq_t which,  uint64_t cbkData) {
     terminate = true;
 }
 
+//for details see https://www.bluetooth.com/specifications/gatt/viewer?attributeXmlFile=org.bluetooth.characteristic.gap.appearance.xml
+static const char* mLeAppearanceClasses[] =
+    {
+        "Unknown", "Phone", "Computer", "Watch", "Clock", "Display", "Remote Control", "Eyeglasses",
+        "Tag", "Keyring", "Media Player", "Barcode Scanner", "Thermometer", "Heart Rate Sensor", "Blood Pressure", "HID",
+        "Glucose Meter", "Running / Walking Sensor", "Cycling",
+        [49] = "Pulse Oximeter",
+        [50] = "Weight Scale",
+        [51] = "Personal Mobility Device",
+        [52] = "Continuous Glucose Monitor",
+        [53] = "Insulin Pump",
+        [54] = "Medication Delivery",
+        [81] = "Outdoor Sports Activity",
+    };
+
+static const char *getAppearanceTypeStr(uint32_t appVal)
+{
+    uint32_t cls = appVal >> 6;
+
+    return (cls >= sizeof(mLeAppearanceClasses) / sizeof(*mLeAppearanceClasses) || !mLeAppearanceClasses[cls]) ? "Unknown" : mLeAppearanceClasses[cls];
+}
+
+static const char* getAppearanceSubtypeStr(uint32_t appVal)
+{
+    static const char* hidSubclasses[] = {"Generic", "Keyboard", "Mouse", "Joystick", "Gamepad", "Digitizer Tablet", "Card Reader", "Digital Pen", "Barcode Scanner", NULL};
+    static const char* outdoorSubclasses[] = {"Generic", "Location Display Device", "Location and Navigation Display Device", "Location Pod", "Location and Navigation Pod", NULL};
+    static const char** subclasses[] = {[15] = hidSubclasses, [81] = outdoorSubclasses,};
+    const char** t;
+
+    uint32_t cls = appVal >> 6;
+    uint32_t subclass = appVal & 0x3F;
+
+    if (cls >= sizeof(subclasses) / sizeof(*subclasses) || !subclasses[cls])
+        return "Unknown";
+
+    //search for sentinel value or proper place
+    for (t = subclasses[cls]; *t && subclass; t++, subclass--);
+
+    return *t ? *t : "Unknown";
+}
+
 static void interpAvdData(const uint8_t *data, uint32_t len)
 {
+
+    //for details, see https://www.bluetooth.com/specifications/assigned-numbers/generic-access-profile
     while (len >= 2) {
+        uint32_t val;
         uint8_t i, typ, sz;
         struct uuid uuid;
         char *buf;
@@ -656,6 +700,22 @@ static void interpAvdData(const uint8_t *data, uint32_t len)
             if (sz != 1)
                 goto out;
             logi("\t\tSEC MGR FLAGS: 0x%02x\n", data[0]);
+            break;
+        case 0x12:
+            if (sz != 4)
+                goto out;
+            logi("\t\tSLAVE CONNECTION INTERVAL PREFERENCE: 0x%04x - 0x%04x\n", utilGetLE16(data + 0), utilGetLE16(data + 2));
+            break;
+        case 0x19:
+            if (sz != 2)
+                goto out;
+            val = utilGetLE16(data);
+            logi("\t\tAPPEARANCE: 0x%04x (%s,%s)\n", val, getAppearanceTypeStr(val), getAppearanceSubtypeStr(val));
+            break;
+        case 0x1b:
+            if (sz != 7)
+                goto out;
+            logi("\t\tADDRESS: %s %02x:%02x:%02x:%02x:%02x:%02x\n", data[0] ? (data[0] == 1 ? "Random" : "Unknown") : "Public", data[6], data[5], data[4], data[3], data[2], data[1]);
             break;
         case 0x16:
         case 0xff:
