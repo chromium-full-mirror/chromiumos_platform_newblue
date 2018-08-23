@@ -87,6 +87,8 @@ struct gattCliTodoItem {
     uint8_t                            authReq;      // for some reads and writes
     sg                                 data;         // sometimes we actually need data
 
+    struct uuid                        desiredUuid;  // find-service-by-uuid will save the desired uuid here as else we'll lose it
+
     // callbacks
     union {
         gattCliSvcEnumCbk              enumSvcsCbk;
@@ -1573,7 +1575,7 @@ static bool gattAttCliFindByTypeValCbk(uniq_t trans, l2c_handle_t to, uint16_t h
 {
     static const uint8_t expectedWorkTypes[] = {GATT_CLI_TODO_FIND_BY_TYPE_VAL};
     bool killItem = true, ret = false;
-    struct uuid uuid, tempUuid;
+    struct uuid tempUuid;
     struct gattConnState *conn;
 
     pthread_mutex_lock(&mGattLock);
@@ -1584,13 +1586,9 @@ static bool gattAttCliFindByTypeValCbk(uniq_t trans, l2c_handle_t to, uint16_t h
         switch (conn->todoCurr->purpose) {
         case GATT_INTENT_FIND_SVC:
             uuidFromUuid16(&tempUuid, GATT_UUID_SVC_PRIMARY);
-            if (!attReadUuid(&uuid, todo->data)) {
-                loge("ToDo's small data length is not what we expected for this request\n");
-                break;
-            }
             conn->doNotFreeTodoCurr = true;
             pthread_mutex_unlock(&mGattLock); // see "A NOTE ABOUT LOCKS" above
-            todo->enumSvcsCbk(todo->connId, &uuid, uuidCmp(&tempUuid, &todo->uuid), handle, grpEndHandle - handle + 1, GATT_CLI_STATUS_OK);
+            todo->enumSvcsCbk(todo->connId, &todo->desiredUuid, uuidCmp(&tempUuid, &todo->uuid), handle, grpEndHandle - handle + 1, GATT_CLI_STATUS_OK);
             pthread_mutex_lock(&mGattLock);
             conn = gattConnFindByL2cConn(to);
             if (conn)
@@ -1697,10 +1695,10 @@ static bool gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *han
 
                 conn->doNotFreeTodoCurr = true;
                 pthread_mutex_unlock(&mGattLock); // see "A NOTE ABOUT LOCKS" above
-                todo->enumCharsCbk(to, &uuid, *handleP, tmpHandle, utilGetLE8(&charDef.charProps), GATT_CLI_STATUS_OK);
+                todo->enumCharsCbk(todo->connId, &uuid, *handleP, tmpHandle, utilGetLE8(&charDef.charProps), GATT_CLI_STATUS_OK);
                 // if this is the end - signal that now
                 if (tmpHandle >= todo->endHandle) {
-                    todo->enumCharsCbk(to, NULL, 0, 0, 0, GATT_CLI_STATUS_OK);
+                    todo->enumCharsCbk(todo->connId, NULL, 0, 0, 0, GATT_CLI_STATUS_OK);
                     done = true;
                 }
                 pthread_mutex_lock(&mGattLock);
@@ -1732,11 +1730,11 @@ static bool gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *han
                     // call up to report found include
                     conn->doNotFreeTodoCurr = true;
                     pthread_mutex_unlock(&mGattLock); // see "A NOTE ABOUT LOCKS" above
-                    todo->enumIncludedSvcsCbk(to, &uuid, *handleP, utilGetLE16(&inclDef.startHandle), utilGetLE16(&inclDef.endHandle), GATT_CLI_STATUS_OK);
+                    todo->enumIncludedSvcsCbk(todo->connId, &uuid, *handleP, utilGetLE16(&inclDef.startHandle), utilGetLE16(&inclDef.endHandle), GATT_CLI_STATUS_OK);
                     // if this is the end - signal that now
                     if (*handleP >= todo->endHandle) {
                         done = true;
-                        todo->enumIncludedSvcsCbk(to, NULL, 0, 0, 0, GATT_CLI_STATUS_OK);
+                        todo->enumIncludedSvcsCbk(todo->connId, NULL, 0, 0, 0, GATT_CLI_STATUS_OK);
                     }
                     pthread_mutex_lock(&mGattLock);
                     conn = gattConnFindByL2cConn(to);
@@ -1774,11 +1772,11 @@ static bool gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *han
                     // call up to report now that we have all the info
                     conn->doNotFreeTodoCurr = true;
                     pthread_mutex_unlock(&mGattLock); // see "A NOTE ABOUT LOCKS" above
-                    todo->enumIncludedSvcsCbk(to, &uuid, todo->auxHandle[0], todo->handle, todo->auxHandle[1], GATT_CLI_STATUS_OK);
+                    todo->enumIncludedSvcsCbk(todo->connId, &uuid, todo->auxHandle[0], todo->handle, todo->auxHandle[1], GATT_CLI_STATUS_OK);
                     // if this is the end - signal that now
                     if (todo->auxHandle[0] >= todo->endHandle) {
                         done = true;
-                        todo->enumIncludedSvcsCbk(to, NULL, 0, 0, 0, GATT_CLI_STATUS_OK);
+                        todo->enumIncludedSvcsCbk(todo->connId, NULL, 0, 0, 0, GATT_CLI_STATUS_OK);
                     }
                     pthread_mutex_lock(&mGattLock);
                     conn = gattConnFindByL2cConn(to);
@@ -1803,7 +1801,7 @@ static bool gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *han
             break;
 
         default:
-            loge("Unknown reason for getting a read result\n");
+            loge("Unknown reason for getting a read result. purpose = %u\n", todo->purpose);
             break;
         }
 
@@ -1900,7 +1898,7 @@ static void gattAttCliError(uniq_t trans, l2c_handle_t to, const uint16_t *handl
         case GATT_INTENT_ENUM_INCL_SVCS:
             if (*errP == ATT_ERROR_ATTRIBUTE_NOT_FOUND) { // end of enum (we could check handle, but even spec is conflicted on what it should be, so we do not)
                 pthread_mutex_unlock(&mGattLock); // see "A NOTE ABOUT LOCKS" above
-                todo->enumIncludedSvcsCbk(to, NULL, 0, 0, 0, GATT_CLI_STATUS_OK);
+                todo->enumIncludedSvcsCbk(todo->connId, NULL, 0, 0, 0, GATT_CLI_STATUS_OK);
                 pthread_mutex_lock(&mGattLock);
                 conn = gattConnFindByL2cConn(to);
                 if (!conn)
@@ -1912,7 +1910,7 @@ static void gattAttCliError(uniq_t trans, l2c_handle_t to, const uint16_t *handl
         case GATT_INTENT_ENUM_CHARS:
             if (*errP == ATT_ERROR_ATTRIBUTE_NOT_FOUND) { // end of enum (we could check handle, but even spec is conflicted on what it should be, so we do not)
                 pthread_mutex_unlock(&mGattLock); // see "A NOTE ABOUT LOCKS" above
-                todo->enumCharsCbk(to, NULL, 0, 0, 0, GATT_CLI_STATUS_OK);
+                todo->enumCharsCbk(todo->connId, NULL, 0, 0, 0, GATT_CLI_STATUS_OK);
                 pthread_mutex_lock(&mGattLock);
                 conn = gattConnFindByL2cConn(to);
                 if (!conn)
@@ -3415,8 +3413,10 @@ uint8_t gattClientFindService(gatt_client_conn_t conn, bool primary, const struc
 
     pthread_mutex_lock(&mGattLock);
     todo = gattCliTodoMakeFindByTypeValue(conn, primary ? GATT_UUID_SVC_PRIMARY : GATT_UUID_SVC_SECONDARY, buf, uuidLen, GATT_INTENT_FIND_SVC, ATT_FIRST_VALID_HANDLE, ATT_LAST_VALID_HANDLE);
-    if (todo)
+    if (todo) {
         todo->enumSvcsCbk = cbk;
+        todo->desiredUuid = *searchForThis;
+    }
     pthread_mutex_unlock(&mGattLock);
 
     return todo ? GATT_CLI_STATUS_OK : GATT_CLI_STATUS_ERR;
