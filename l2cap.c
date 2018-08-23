@@ -5174,8 +5174,8 @@ uint8_t l2cApiConnectionlessDataTx(const struct bt_addr *addr, psm_t psm, sg dat
  */
 bool l2cApiLeEncryptConn(l2c_handle_t handle, uint64_t rand, uint16_t ediv, const uint8_t *key)
 {
-    bool ret = false;
     struct l2cAclConn *aclConn;
+    hci_conn_t aclConnId;
     struct l2cConn *conn;
 
     pthread_mutex_lock(&mConnsLock);
@@ -5189,12 +5189,15 @@ bool l2cApiLeEncryptConn(l2c_handle_t handle, uint64_t rand, uint16_t ediv, cons
             loge("Cannot find Connection to encrypt\n");
         else if (aclConn->encrypted)
             logw("Connection was encrypted already\n");
-        else
-            ret = hciLeEncryptConn(aclConn->conn, rand, ediv, key);
+        else {
+            aclConnId = aclConn->conn;
+            pthread_mutex_unlock(&mConnsLock);
+            return hciLeEncryptConn(aclConnId, rand, ediv, key);
+        }
     }
     pthread_mutex_unlock(&mConnsLock);
 
-    return ret;
+    return false;
 }
 
 /*
