@@ -1,3 +1,4 @@
+#include <sys/time.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <time.h>
@@ -7,8 +8,6 @@
 #include "uniq.h"
 #include "log.h"
 #include "mt.h"
-
-//TODO: wakelocks & alarms for android environment
 
 
 struct timer {
@@ -53,6 +52,25 @@ static uint64_t timerCurTime(void)
 }
 
 /*
+ * FUNCTION: timersWaitOnCondWithTimeout
+ * USE:      pthread_cond_wait but with an msec-precise timeout
+ * PARAMS:   c - cond variable
+ *           m - mutex
+ *           msec - timeout length
+ * RETURN:   0 on success, else return value of pthread_cond_timedwait() - the error code
+ * NOTES:
+ */
+static int timersWaitOnCondWithTimeout(pthread_cond_t *c, pthread_mutex_t *m, unsigned msec) {
+    struct timeval tv;
+    struct timespec ts;
+
+    gettimeofday(&tv, NULL);
+    ts.tv_sec = tv.tv_sec + msec / 1000;
+    ts.tv_nsec = (tv.tv_usec + (msec % 1000) * 1000L) * 1000L;
+    return pthread_cond_timedwait(c, m, &ts);
+}
+
+/*
  * FUNCTION: timersThread
  * USE:      Worker thread for timers code
  * PARAMS:   unused - unused
@@ -93,7 +111,7 @@ static void* timersThread(void *unused)
                 break;
 
             if (mTimers)
-                pthread_cond_timeout_np(&mTimersCond, &mTimersLock, mTimers->fireTime - curTime);
+                timersWaitOnCondWithTimeout(&mTimersCond, &mTimersLock, mTimers->fireTime - curTime);
             else
                 pthread_cond_wait(&mTimersCond, &mTimersLock);
 
