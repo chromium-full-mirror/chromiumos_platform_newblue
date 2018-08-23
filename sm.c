@@ -1558,7 +1558,7 @@ static void smRx(struct smInstance *inst, sg packet)
             if (!smReadReversedBytes(stk, sizeof(stk), inst->stk.key, sizeof(inst->stk.key))) {
                 break;
             } else if (!l2cApiLeEncryptConn(inst->conn, 0, 0, stk)) {
-                pairErr = SM_PAIR_ERR_L2C_CONN;
+                pairErr = SM_PAIR_ERR_ENCR_CONN;
                 break;
             } else {
                 smTransitPhase(inst, SM_PHASE_STK_SENT);
