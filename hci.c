@@ -137,6 +137,7 @@ struct hciCmdSendWorkItem {
 #define CBK_WORK_LE_KEY_REQ         9
 #define CBK_WORK_ENCR_KEY_REFRESH   10
 #define CBK_WORK_MAKE_NEXT_LE_CONN  11
+#define CBK_WORK_ACL_RX             12
 
 struct hciCbkWorkItem {
     uint8_t       cbkWorkItemType;
@@ -213,6 +214,11 @@ struct hciCbkWorkItem {
             uint64_t                      randomNum;
             uint16_t                      diversifier;
         } leKeyReq;
+
+        struct {
+            uint16_t                      hdr;
+            sg                            packet;
+        } aclRx;
     };
 };
 
@@ -394,6 +400,8 @@ static bool hciConnDisconnect(uint16_t cid);
 static bool hciConnLeCancel(void);
 static void hciConnCfg(struct hciAclConn *c, uint32_t step, uint32_t aux);
 static bool hciRxAclForRunningConn(struct hciAclConn* conn, uint16_t hdr, sg packet);
+static void hciRxAcl(uint16_t hdr, sg packet);
+static bool hciScheduleAclRx(uint16_t hdr, sg packet);
 static void hciConnAclStructDel(struct hciAclConn* conn);
 static bool hciSetupResetEventHandler(bool cmdWaitLockHeld);
 static void hciAdvSetGetCurAdvAddrLocked(struct hciAdvSet *set, struct bt_addr *ownAddr);
@@ -907,8 +915,10 @@ static void hciRx(void *cbkData, uint8_t typ, sg packet)
             break;
         }
         sgTruncFront(packet, sizeof(struct hciAclHdr));
-        hciRxAcl(hdr, packet);
-        packet = NULL;
+        if (hciScheduleAclRx(hdr, packet))
+            packet = NULL;
+        else
+            logw("Dropping data packet\n");
         break;
     case HCI_PKT_TYP_SCO:
         loge("Got SCO packet\n");
@@ -951,6 +961,8 @@ static void hciCallbackWorkDeallocator(void *workItem)
 
     if (w->cbkWorkItemType == CBK_WORK_ACL_DATA)
         sgFree(w->aclDataRx.packet);
+    else if (w->cbkWorkItemType == CBK_WORK_ACL_RX)
+        sgFree(w->aclRx.packet);
 
     free(workItem);
 }
@@ -1081,6 +1093,9 @@ static void* hciCbkWorker(void *unused)
             break;
         case CBK_WORK_MAKE_NEXT_LE_CONN:
             hciMakeProgressOnLeConnectionReqs();
+            break;
+        case CBK_WORK_ACL_RX:
+            hciRxAcl(w->aclRx.hdr, w->aclRx.packet);
             break;
         default:
             loge("Unknown callback work type %u\n", w->cbkWorkItemType);
@@ -1390,7 +1405,6 @@ static bool hciScheduleConnEncrKeyRefresh(hci_conn_t conn, bool nowEncrypted, bo
     return false;
 }
 
-
 /*
  * FUNCTION: hciScheduleMakeProgressOnLeConnectionReqs
  * USE:      Enqueue a call to hciMakeProgressOnLeConnectionReqs
@@ -1407,6 +1421,33 @@ static bool hciScheduleMakeProgressOnLeConnectionReqs(void)
         return false;
 
     w->cbkWorkItemType = CBK_WORK_MAKE_NEXT_LE_CONN;
+
+    if (workQueuePut(mCallbackWork, w))
+        return true;
+
+    free(w);
+    return false;
+}
+
+/*
+ * FUNCTION: hciScheduleAclRx
+ * USE:      Enqueue a call to hciRxAcl
+ * PARAMS:   hdr - packet header
+ *           packet - the packet we got
+ * RETURN:   true if enqueued, false else
+ * NOTES:
+ */
+static bool hciScheduleAclRx(uint16_t hdr, sg packet)
+{
+    struct hciCbkWorkItem *w;
+
+    w = (struct hciCbkWorkItem*)malloc(sizeof(struct hciCbkWorkItem));
+    if (!w)
+        return false;
+
+    w->cbkWorkItemType = CBK_WORK_ACL_RX;
+    w->aclRx.hdr = hdr;
+    w->aclRx.packet = packet;
 
     if (workQueuePut(mCallbackWork, w))
         return true;
@@ -4133,7 +4174,7 @@ bool hciLeConnGetInfo(hci_conn_t aclConn, bool *masterP, uint64_t *peerFtrsP, ui
 bool hciLeEncryptConn(hci_conn_t aclConn, uint64_t rand, uint16_t ediv, const uint8_t *key)
 {
     struct hciAclConn* conn;
-    bool ret = false;
+    uint16_t cid;
 
     pthread_mutex_lock(&mConnsLock);
 
@@ -4146,12 +4187,14 @@ bool hciLeEncryptConn(hci_conn_t aclConn, uint64_t rand, uint16_t ediv, const ui
         logw("Connection already encrypted up to requested level\n");
     else if (!BT_ADDR_IS_LE(conn->peerAddr))
         logw("Not an LE connection\n");
-    else if (key)
-        ret = !hciLeStartEncryptionSync(conn->id, rand, ediv, key);
+    else if (key) {
+        cid = conn->id;
+        pthread_mutex_unlock(&mConnsLock);
+        return !hciLeStartEncryptionSync(cid, rand, ediv, key);
+    }
 
     pthread_mutex_unlock(&mConnsLock);
-
-    return ret;
+    return false;
 }
 
 /*
