@@ -1691,7 +1691,7 @@ static bool gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *han
                 logw("Char definition does not end in a uuid\n");
             else {
                 tmpHandle = utilGetLE16(&charDef.valHandle);
-                logd("Found char with props 0x%02x @ 0x%04x: "UUIDFMT"\n", utilGetLE8(&charDef.charProps), tmpHandle, UUIDCONV(uuid));
+                logd("Found char @ 0x%04x with props 0x%02x & val @ 0x%04x: "UUIDFMT"\n", *handleP, utilGetLE8(&charDef.charProps), tmpHandle, UUIDCONV(uuid));
 
                 conn->doNotFreeTodoCurr = true;
                 pthread_mutex_unlock(&mGattLock); // see "A NOTE ABOUT LOCKS" above
@@ -1798,6 +1798,10 @@ static bool gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *han
                 }
             }
             sgFree(data);
+            break;
+
+        case GATT_INTENT_READ:
+            todo->readCbk(todo->connId, todo->handle, GATT_CLI_STATUS_OK, data);
             break;
 
         default:
