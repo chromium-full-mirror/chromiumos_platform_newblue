@@ -81,7 +81,10 @@ struct gattCliTodoItem {
     uint16_t                           handle;
     uint16_t                           endHandle;
     uint16_t                           auxHandle[2]; // sometimes we need to store some handle values temporarily in a todo's state. eg for enum included svcs, when reading 128 bit uuid, it stores {next incl handle to search, end of cur handle }
-    uint16_t                           offset;       // for some reads and writes
+    union {
+        uint16_t                       offset;       // for some reads and writes
+        uint16_t                       mtu;          // for MTU negotiations
+    };
     struct uuid                        uuid;         // uuid16 for find-by-type-value, any uuid for read-by-type, read-by-group-type
     bool                               commit;       // for write-execute
     uint8_t                            authReq;      // for some reads and writes
@@ -112,6 +115,7 @@ struct gattCliTodoItem {
 #define GATT_CLI_TODO_SIGNED_WRITE       8
 #define GATT_CLI_TODO_PREPARE_WRITE      9
 #define GATT_CLI_TOTO_WRITE_EXEC         10
+#define GATT_CLI_TODO_SEND_MTU_REQ       11
 
 #define GATT_INTENT_INTERNAL             0
 #define GATT_INTENT_FIND_SVC             1
@@ -123,6 +127,7 @@ struct gattCliTodoItem {
 #define GATT_INTENT_WRITE                7
 #define GATT_INTENT_EXECUTE              8
 #define GATT_INTENT_NOTIF_SUB_UNSUB      9
+#define GATT_INTENT_MTU_XCHG             10
 
 
 #define GATT_CONN_STATE_CONNECTING       0  /* only if initiating */
@@ -320,6 +325,7 @@ static void gattCliTodoEnqItem(struct gattConnState *conn, struct gattCliTodoIte
 static void gattCliTodoNext(l2c_handle_t conn, struct gattCliTodoItem *now);
 static void gattCliTodoItemFree(struct gattCliTodoItem *todo);
 static void gattWorkItemFree(struct gattWorkItem *wi);
+static struct gattCliTodoItem* gattCliTodoMakeMtuReq(struct gattConnState* conn, uint16_t mtu, uint8_t purpose);
 
 
 /*
@@ -973,14 +979,60 @@ static bool gattAttExecWriteCbk(l2c_handle_t who, att_cid_t cid, att_trans_t tra
 }
 
 /*
- * FUNCTION: gattAttMtuCbk
- * USE:      ATT calls this with results of MTU negotiation
+ * FUNCTION: gattMtuAdjust
+ * USE:      Set MTU as per negotiation
+ * PARAMS:   gatt - the gatt connection state
+ *           mtu - the mtu to set
+ * RETURN:   NONE
+ * NOTES:    call with mGattLock held
+ */
+static void gattMtuAdjust(struct gattConnState* gatt, uint32_t mtu)
+{
+    if (gatt->mtu > mtu)
+        loge("MTU decrease not allowed\n");
+    else
+        gatt->mtu = mtu;
+}
+
+/*
+ * FUNCTION: gattAttCliMtuCbk
+ * USE:      ATT calls this with results of MTU negotiation (if we are client)
  * PARAMS:   who - whom the MTU is to
  *           mtu - the mtu to the client
  * RETURN:   NONE
  * NOTES:
  */
-static void gattAttMtuCbk(l2c_handle_t who, uint32_t mtu)
+static void gattAttCliMtuCbk(l2c_handle_t who, uint32_t mtu)
+{
+    struct gattConnState *conn;
+
+    pthread_mutex_lock(&mGattLock);
+    conn = gattConnFindByL2cConn(who);
+    if (conn) {
+        struct gattCliTodoItem *todo = conn->todoCurr;
+
+        if (!todo || todo->type != GATT_CLI_TODO_SEND_MTU_REQ || todo->purpose != GATT_INTENT_MTU_XCHG)
+            logw("Unexpected MTU reply\n");
+        else {
+            gattMtuAdjust(conn, mtu);
+        }
+
+        conn->todoCurr = NULL;
+        gattCliTodoItemFree(todo);
+        gattEnqueueCliDoNextTodoItem(conn);
+    }
+    pthread_mutex_unlock(&mGattLock);
+}
+
+/*
+ * FUNCTION: gattAttSrvMtuCbk
+ * USE:      ATT calls this with results of MTU negotiation (if we are server)
+ * PARAMS:   who - whom the MTU is to
+ *           mtu - the mtu to the client
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void gattAttSrvMtuCbk(l2c_handle_t who, uint32_t mtu)
 {
     struct gattConnState* state;
 
@@ -988,10 +1040,29 @@ static void gattAttMtuCbk(l2c_handle_t who, uint32_t mtu)
     state = gattConnFindByL2cConn(who);
     if (!state)
         loge("Unknown connection for MTU change event\n");
-    else if (state->mtu > mtu)
-        loge("MTU decrease not allowed\n");
     else
-        state->mtu = mtu;
+        gattMtuAdjust(state, mtu);
+    pthread_mutex_unlock(&mGattLock);
+}
+
+/*
+ * FUNCTION: gattAttEdrMtuCbk
+ * USE:      ATT calls this with results of MTU negotiation (on EDR)
+ * PARAMS:   who - whom the MTU is to
+ *           mtu - the mtu to the client
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void gattAttEdrMtuCbk(l2c_handle_t who, uint32_t mtu)
+{
+    struct gattConnState* state;
+
+    pthread_mutex_lock(&mGattLock);
+    state = gattConnFindByL2cConn(who);
+    if (!state)
+        loge("Unknown connection for MTU change event\n");
+    else
+        gattMtuAdjust(state, mtu);
     pthread_mutex_unlock(&mGattLock);
 }
 
@@ -1069,10 +1140,8 @@ static void gattConnEvt(void *userData, void *instance, uint8_t evt, const void 
             state->state = GATT_CONN_STATE_RUNNING;
             if (BT_ADDR_IS_LE(state->addr)) { // try to negotiate mtu if LE
                 logd("Requesting gatt MTU negotiation\n");
-                if (attCliRequestMtu(conn, L2C_MAX_SAFE_MTU))
-                    logw("Failed to request MTU change - ATT may be slow\n");
-                else
-                    logd("Requested gatt MTU negotiation\n");
+                if (!gattCliTodoMakeMtuReq(state, L2C_MAX_SAFE_MTU, GATT_INTENT_MTU_XCHG))
+                    logw("Failed to make MTU request change todo - ATT may be slow\n");
             }
             gattNotifyAllClientsOfConn(state, GATT_CLI_STATUS_OK);
         }
@@ -1090,7 +1159,7 @@ static void gattConnEvt(void *userData, void *instance, uint8_t evt, const void 
         }
         mtu = *(uint16_t*)data;
         attSetMtu(state->conn, mtu);
-        gattAttMtuCbk(state->conn, mtu);
+        gattAttEdrMtuCbk(state->conn, mtu);
         break;
 
     case L2C_STATE_ENCR:
@@ -2032,8 +2101,8 @@ bool gattProfileInit(void)
         .serviceFixedChStateCbk = gattConnEvt,
     };
 
-    attSrvInit(gattAttSrvTxCbk, gattAttMtuCbk, gattAttSrvIndCbk, gattAttExecWriteCbk, gattAttSvrReadCbk, gattAttSvrWriteCbk);
-    attCliInit(gattAttMtuCbk, gattAttCliFindInfoCbk, gattAttCliFindByTypeValCbk, gattAttCliReadCbk, gattAttCliWriteCbk, gattAttCliError, gattAttCliIndNotif);
+    attSrvInit(gattAttSrvTxCbk, gattAttSrvMtuCbk, gattAttSrvIndCbk, gattAttExecWriteCbk, gattAttSvrReadCbk, gattAttSvrWriteCbk);
+    attCliInit(gattAttCliMtuCbk, gattAttCliFindInfoCbk, gattAttCliFindByTypeValCbk, gattAttCliReadCbk, gattAttCliWriteCbk, gattAttCliError, gattAttCliIndNotif);
 
     mWorkQ = workQueueAlloc(GATT_WORK_Q_SIZE);
     if (!mWorkQ) {
@@ -2873,6 +2942,10 @@ static void gattCliTodoNext(l2c_handle_t conn, struct gattCliTodoItem *now)
         if (!trans)
             logw("ExecWrite failed\n");
         break;
+
+    case GATT_CLI_TODO_SEND_MTU_REQ:
+        trans = attCliRequestMtu(conn, now->mtu);
+        break;
     }
 
     pthread_mutex_lock(&mGattLock);
@@ -3383,6 +3456,31 @@ static struct gattCliTodoItem* gattCliTodoMakeWrite(gatt_client_conn_t connId, u
     todo->connId = clicon->connId;
     todo->authReq = authReq;
     todo->data = data;
+    gattCliTodoEnqItem(conn, todo, false);
+
+    return todo;
+}
+
+/*
+ * FUNCTION: gattCliTodoMakeMtuReq
+ * USE:      Create a MTU request todo
+ * PARAMS:   conn - the connection structure
+ *           mtu - the mtu to ask for
+ *           purpose - the stated purpose
+ * RETURN:   GATT_CLI_STATUS_*
+ * NOTES:
+ */
+static struct gattCliTodoItem* gattCliTodoMakeMtuReq(struct gattConnState* conn, uint16_t mtu, uint8_t purpose)
+{
+    struct gattCliTodoItem *todo;
+
+    todo = calloc(1, sizeof(struct gattCliTodoItem));
+    if (!todo)
+        return NULL;
+
+    todo->type = GATT_CLI_TODO_SEND_MTU_REQ;
+    todo->purpose = purpose;
+    todo->mtu = mtu;
     gattCliTodoEnqItem(conn, todo, false);
 
     return todo;
