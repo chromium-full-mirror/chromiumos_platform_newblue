@@ -1824,6 +1824,8 @@ static void l2cHandleEchoReq(struct l2cAclConn *aclConn, uint8_t ident, sg paylo
  */
 static void l2cHandleConnUpdtReq(struct l2cAclConn *conn, uint8_t ident, uint16_t intMin, uint16_t intMax, uint16_t latency, uint16_t timeoutMult)
 {
+    logd("Accepting requested connection update for {%u-%u, %u, %u} with id %u\n", intMin, intMax, latency, timeoutMult, ident);
+
     /* verify intervals are in valid range */
     if (intMin < BT_LE_CONN_INTERVAL_MIN || intMax < intMin || intMax > BT_LE_CONN_INTERVAL_MAX)
         goto error;
@@ -1840,9 +1842,10 @@ static void l2cHandleConnUpdtReq(struct l2cAclConn *conn, uint8_t ident, uint16_
     if (!conn->isMaster)
         goto error;
 
-    /* see if another is inflight for this ACL connection and reject if so */
+    /* see if another is inflight for this ACL connection and reject if so, else record this one */
     if (conn->connUpdtRequestIdent)
         goto error;
+    conn->connUpdtRequestIdent = ident;
 
     /* try to execute it */
     if (!l2cSvcWorkScheduleAclConnUpdt(conn->conn, intMin, intMax, latency, timeoutMult))
@@ -1850,10 +1853,9 @@ static void l2cHandleConnUpdtReq(struct l2cAclConn *conn, uint8_t ident, uint16_
     else
         return;
 
-
 error:
     logw("Unable to request connection update to {[%d, %d], %d, %d}, inflight=%d master=%d\n",
-        intMin, intMax, latency, timeoutMult, conn->connUpdtRequestIdent, conn->isMaster);
+        intMin, intMax, latency, timeoutMult, ident, conn->isMaster);
     if (!l2cSigSendConnUpdateRsp(conn, ident, L2C_SIG_CONN_UPDT_NO))
         loge("Failed to sent connection update response frame\n");
 }
@@ -4305,6 +4307,7 @@ static uint8_t l2cSigSendConnUpdateRsp(struct l2cAclConn *aclConn, uint8_t ident
 {
     struct l2cSigConnUpdtRsp rsp;
 
+    logd("L2C conn updte rsp: %u with id %u\n", result, ident);
     utilSetLE16(&rsp.result, result);
 
     return l2cSigSend(aclConn, ident, L2C_SIG_CONN_UPDT_RSP, &rsp, sizeof(rsp), NULL, 0);
