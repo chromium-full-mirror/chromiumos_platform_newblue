@@ -3,7 +3,7 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
-#undef MT_DEBUG
+#define MT_IN_MT
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/time.h>
@@ -21,17 +21,6 @@
 inline int gettid() { return syscall(__NR_gettid); }
 #endif
 
-#if !defined(ANDROID) || defined(__LP64__)
-int pthread_cond_timeout_np(pthread_cond_t *c, pthread_mutex_t *m, unsigned msec) {
-    struct timeval tv;
-    struct timespec ts;
-
-    gettimeofday(&tv, NULL);
-    ts.tv_sec = tv.tv_sec + msec / 1000;
-    ts.tv_nsec = (tv.tv_usec + (msec % 1000) * 1000L) * 1000L;
-    return pthread_cond_timedwait(c, m, &ts);
-}
-#endif
 
 /* the utility things */
 
@@ -391,35 +380,34 @@ int mt_pthread_mutex_unlock(const char *file, int line, const char *name, pthrea
     return mt_pthread_mutex_unlock_int(file, line, name, m, false);
 }
 
-static int mt_pthread_cond_wait_stub(pthread_cond_t *c, pthread_mutex_t *m, unsigned msec)
+static int mt_pthread_cond_wait_stub(pthread_cond_t *c, pthread_mutex_t *m, const struct timespec *restrict abstime)
 {
     return pthread_cond_wait(c, m);
 }
 
-static int mt_pthread_cond_timeout_np_stub(pthread_cond_t *c, pthread_mutex_t *m, unsigned msec)
+static int mt_pthread_cond_timedwait_stub(pthread_cond_t *c, pthread_mutex_t *m, const struct timespec *restrict abstime)
 {
-    return pthread_cond_timeout_np(c, m, msec);
+    return pthread_cond_timedwait(c, m, abstime);
 }
 
-static int mt_pthread_cond_wait_generic(const char* file, int line, const char* name, pthread_cond_t *c, pthread_mutex_t *m, unsigned msec, int(*f)(pthread_cond_t*, pthread_mutex_t*, unsigned))
+static int mt_pthread_cond_wait_generic(const char* file, int line, const char* name, pthread_cond_t *c, pthread_mutex_t *m, const struct timespec *restrict abstime, int(*f)(pthread_cond_t*, pthread_mutex_t*, const struct timespec *restrict abstime))
 {
     int ret;
     mt_pthread_mutex_unlock_int(file, line, name, m, true);
-    ret = f(c, m, msec);
+    ret = f(c, m, abstime);
     mt_pthread_mutex_lock_int(file, line, name, m, true, false);
     return ret;
 }
 
 int mt_pthread_cond_wait(const char* file, int line, const char* name, pthread_cond_t *c, pthread_mutex_t *m)
 {
-    return mt_pthread_cond_wait_generic(file, line, name, c, m, 0, mt_pthread_cond_wait_stub);
+    return mt_pthread_cond_wait_generic(file, line, name, c, m, NULL, mt_pthread_cond_wait_stub);
 }
 
-int mt_pthread_cond_timeout_np(const char* file, int line, const char* name, pthread_cond_t *c, pthread_mutex_t *m, unsigned msec)
+int mt_pthread_cond_timedwait(const char* file, int line, const char* name, pthread_cond_t *c, pthread_mutex_t *m, const struct timespec *restrict abstime)
 {
-    return mt_pthread_cond_wait_generic(file, line, name, c, m, msec, mt_pthread_cond_timeout_np_stub);
+    return mt_pthread_cond_wait_generic(file, line, name, c, m, abstime, mt_pthread_cond_timedwait_stub);
 }
-
 
 int mt_pthread_mutex_init(const char *file, int line, const char *name, pthread_mutex_t *m, const pthread_mutexattr_t *a)
 {

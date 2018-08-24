@@ -1,7 +1,9 @@
 #ifndef _MT_H_
 #define _MT_H_
 
-#ifdef MT_DEBUG
+#include "newblue-macros.h"
+
+#if defined(MT_DEBUG) && !defined(MT_IN_MT)
 # define pthread_mutex_lock       mt_old_pthread_mutex_lock
 # define pthread_mutex_trylock    mt_old_pthread_mutex_trylock
 # define pthread_mutex_unlock     mt_old_pthread_mutex_unlock
@@ -15,24 +17,21 @@
 # define pthread_create           mt_old_pthread_create
 # define pthread_setname_np       mt_old_pthread_setname_np
 # define pthread_cond_wait        mt_old_pthread_cond_wait
-# define pthread_cond_timeout_np  mt_old_pthread_cond_timeout_np
+# define pthread_cond_timedwait  mt_old_pthread_cond_timedwait
 #endif
 
 #include <semaphore.h>
 #include <pthread.h>
 
-/* because phread.h is missing this somehow even though bionic implements this */
-int pthread_cond_timeout_np(pthread_cond_t *cond,  pthread_mutex_t * mutex, unsigned msecs);
-
 /* These handle EINTR */
-int r_sem_wait(sem_t* sem);
-int r_sem_trywait(sem_t* sem);
-int r_sem_timedwait(sem_t* sem, const struct timespec *abs_timeout);
+int r_sem_wait(sem_t* sem) NEWBLUE_EXPORT;
+int r_sem_trywait(sem_t* sem) NEWBLUE_EXPORT;
+int r_sem_timedwait(sem_t* sem, const struct timespec *abs_timeout) NEWBLUE_EXPORT;
 
-bool r_write(int fd, const void *data, size_t count); /* true if all writen, else false */
-bool r_read(int fd, void *data, size_t count); /* true if all writen, else false */
+bool r_write(int fd, const void *data, size_t count) NEWBLUE_EXPORT; /* true if all writen, else false */
+bool r_read(int fd, void *data, size_t count) NEWBLUE_EXPORT; /* true if all writen, else false */
 
-#ifdef MT_DEBUG
+#if defined(MT_DEBUG) && !defined(MT_IN_MT)
 # undef pthread_mutex_lock
 # undef pthread_mutex_trylock
 # undef pthread_mutex_unlock
@@ -46,7 +45,7 @@ bool r_read(int fd, void *data, size_t count); /* true if all writen, else false
 # undef pthread_create
 # undef pthread_setname_np
 # undef pthread_cond_wait
-# undef pthread_cond_timeout_np
+# undef pthread_cond_timedwait
 # define pthread_mutex_lock(m)          mt_pthread_mutex_lock(__FILE__, __LINE__, #m, m)
 # define pthread_mutex_trylock(m)       mt_pthread_mutex_trylock(__FILE__, __LINE__, #m, m)
 # define pthread_mutex_unlock(m)        mt_pthread_mutex_unlock(__FILE__, __LINE__, #m, m)
@@ -60,28 +59,28 @@ bool r_read(int fd, void *data, size_t count); /* true if all writen, else false
 # define pthread_create(t,a,f,p)        mt_pthread_create(__FILE__, __LINE__, #f, t, a, f, p)
 # define pthread_setname_np(t,n)        mt_pthread_setname_np(__FILE__, __LINE__, #t, t, n)
 # define pthread_cond_wait(c,m)         mt_pthread_cond_wait(__FILE__, __LINE__, #m, c, m)
-# define pthread_cond_timeout_np(c,m,t) mt_pthread_cond_timeout_np(__FILE__, __LINE__, #m, c, m, t)
+# define pthread_cond_timedwait(c,m,t)  mt_pthread_cond_timedwait(__FILE__, __LINE__, #m, c, m, t)
 #define mt_analize_death mt_do_analize_death
 #else
 #define mt_analize_death()
 #endif
 
 
-void mt_do_analize_death();
-int mt_pthread_mutex_lock(const char* file, int line, const char* name, pthread_mutex_t *m);
-int mt_pthread_mutex_trylock(const char* file, int line, const char* name, pthread_mutex_t *m);
-int mt_pthread_mutex_unlock(const char* file, int line, const char* name, pthread_mutex_t *m);
-int mt_pthread_mutex_init(const char* file, int line, const char* name, pthread_mutex_t *m, const pthread_mutexattr_t *a);
-int mt_pthread_mutex_destroy(const char* file, int line, const char* name, pthread_mutex_t *m);
-int mt_sem_destroy(const char* file, int line, const char* name, sem_t *s);
-int mt_sem_init(const char* file, int line, const char* name, sem_t *s, int shared, unsigned val);
-int mt_sem_post(const char* file, int line, const char* name, sem_t *s);
-int mt_r_sem_trywait(const char* file, int line, const char* name, sem_t *s);
-int mt_r_sem_wait(const char* file, int line, const char* name, sem_t *s);
-int mt_pthread_create(const char* file, int line, const char* name, pthread_t *th, const pthread_attr_t *attr, void *(*proc)(void *), void *param);
-int mt_pthread_setname_np(const char* file, int line, const char* name, pthread_t thread, const char* threadName);
-int mt_pthread_cond_wait(const char* file, int line, const char* name, pthread_cond_t *c, pthread_mutex_t *m);
-int mt_pthread_cond_timeout_np(const char* file, int line, const char* name, pthread_cond_t *c, pthread_mutex_t *m, unsigned msec);
+void mt_do_analize_death() NEWBLUE_EXPORT;
+int mt_pthread_mutex_lock(const char* file, int line, const char* name, pthread_mutex_t *m) NEWBLUE_EXPORT;
+int mt_pthread_mutex_trylock(const char* file, int line, const char* name, pthread_mutex_t *m) NEWBLUE_EXPORT;
+int mt_pthread_mutex_unlock(const char* file, int line, const char* name, pthread_mutex_t *m) NEWBLUE_EXPORT;
+int mt_pthread_mutex_init(const char* file, int line, const char* name, pthread_mutex_t *m, const pthread_mutexattr_t *a) NEWBLUE_EXPORT;
+int mt_pthread_mutex_destroy(const char* file, int line, const char* name, pthread_mutex_t *m) NEWBLUE_EXPORT;
+int mt_sem_destroy(const char* file, int line, const char* name, sem_t *s) NEWBLUE_EXPORT;
+int mt_sem_init(const char* file, int line, const char* name, sem_t *s, int shared, unsigned val) NEWBLUE_EXPORT;
+int mt_sem_post(const char* file, int line, const char* name, sem_t *s) NEWBLUE_EXPORT;
+int mt_r_sem_trywait(const char* file, int line, const char* name, sem_t *s) NEWBLUE_EXPORT;
+int mt_r_sem_wait(const char* file, int line, const char* name, sem_t *s) NEWBLUE_EXPORT;
+int mt_pthread_create(const char* file, int line, const char* name, pthread_t *th, const pthread_attr_t *attr, void *(*proc)(void *), void *param) NEWBLUE_EXPORT;
+int mt_pthread_setname_np(const char* file, int line, const char* name, pthread_t thread, const char* threadName) NEWBLUE_EXPORT;
+int mt_pthread_cond_wait(const char* file, int line, const char* name, pthread_cond_t *c, pthread_mutex_t *m) NEWBLUE_EXPORT;
+int mt_pthread_cond_timedwait(const char* file, int line, const char* name, pthread_cond_t *c, pthread_mutex_t *m, const struct timespec *restrict abstime) NEWBLUE_EXPORT;
 
 
 #endif
