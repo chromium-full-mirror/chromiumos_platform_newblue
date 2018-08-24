@@ -1870,7 +1870,10 @@ static bool gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *han
             break;
 
         case GATT_INTENT_READ:
+            pthread_mutex_unlock(&mGattLock); // see "A NOTE ABOUT LOCKS" above
             todo->readCbk(todo->connId, todo->handle, GATT_CLI_STATUS_OK, data);
+            pthread_mutex_lock(&mGattLock);
+            conn = gattConnFindByL2cConn(to);
             break;
 
         default:
