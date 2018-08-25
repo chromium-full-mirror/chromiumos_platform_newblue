@@ -3119,8 +3119,10 @@ void attSrvDataRx(l2c_handle_t from, sg s)
         else {
             wi->who = from;
             wi->cli.trans = trans;
-            if (workQueuePut(mWorkQ, wi))
+            if (workQueuePut(mWorkQ, wi)) {
                 s = NULL;
+                ret = true;
+            }
             else {
                 free(wi);
                 loge("Failed to enqueue work item\n");
@@ -3159,8 +3161,10 @@ void attSrvDataRx(l2c_handle_t from, sg s)
             wi->cliIndNotif.needsAck = opcode == ATT_OPCODE_HANDLE_VALUE_IND;
             wi->cliIndNotif.data = s;
             wi->cliIndNotif.handle = utilGetLE16(&notif.handle);
-            if (workQueuePut(mWorkQ, wi))
+            if (workQueuePut(mWorkQ, wi)) {
                 s = NULL;
+                ret = true;
+            }
             else {
                 free(wi);
                 loge("Failed to enqueue work item\n");
