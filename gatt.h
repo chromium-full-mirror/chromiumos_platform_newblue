@@ -137,25 +137,25 @@ bool gattServiceSendInd(gatt_service_t svc, att_cid_t cid, uint16_t handle, cons
 typedef void (*gattCliConnectResultCbk)(gatt_client_conn_t conn, uint8_t status);
 
 //called when a service is found. Expect one or more calls to this after calling gattClientFindService() or gattClientEnumServices(). UUID set to NULL when enumeration is complete
-typedef void (*gattCliSvcEnumCbk)(gatt_client_conn_t conn, const struct uuid *uuid, bool primary, uint16_t firstHandle, uint16_t numHandles, uint8_t status);
+typedef void (*gattCliSvcEnumCbk)(gatt_client_conn_t conn, uniq_t trans, const struct uuid *uuid, bool primary, uint16_t firstHandle, uint16_t numHandles, uint8_t status);
 
 //called when an included service has been discovered. Expect one or more calls to this after calling gattClientEnumIncludedServices(). UUID set to NULL when enumeration is complete
-typedef void (*gattCliEnumIncludedSvcsCbk)(gatt_client_conn_t conn, const struct uuid *uuid, uint16_t includeDefHandle, uint16_t firstHandle, uint16_t lastHandle, uint8_t status);
+typedef void (*gattCliEnumIncludedSvcsCbk)(gatt_client_conn_t conn, uniq_t trans, const struct uuid *uuid, uint16_t includeDefHandle, uint16_t firstHandle, uint16_t lastHandle, uint8_t status);
 
 //called when a characteristic has been discovered. Expect one or more calls to this after calling gattClientEnumCharacteristics(). UUID set to NULL when enumeration is complete
-typedef void (*gattCliEnumCharacteristicsCbk)(gatt_client_conn_t conn, const struct uuid *uuid, uint16_t charHandle, uint16_t valHandle, uint8_t props, uint8_t status);
+typedef void (*gattCliEnumCharacteristicsCbk)(gatt_client_conn_t conn, uniq_t trans, const struct uuid *uuid, uint16_t charHandle, uint16_t valHandle, uint8_t props, uint8_t status);
 
 //called when a characteristic descriptor has been discovered. Expect one or more calls to this after calling gattClientEnumCharDescriptors(). UUID set to NULL when enumeration is complete
-typedef void (*gattCliEnumCharDescrsCbk)(gatt_client_conn_t conn, const struct uuid *uuid, uint16_t handle, uint8_t status);
+typedef void (*gattCliEnumCharDescrsCbk)(gatt_client_conn_t conn, uniq_t trans, const struct uuid *uuid, uint16_t handle, uint8_t status);
 
 //called as a response to gattClientRead(). data will be non-NULL if the read was a success
-typedef void (*gattCliReadCbk)(gatt_client_conn_t conn, uint16_t handle, uint8_t status, sg data);
+typedef void (*gattCliReadCbk)(gatt_client_conn_t conn, uniq_t trans, uint16_t handle, uint8_t status, sg data);
 
 //called as a response to gattClientWrite()
-typedef void (*gattCliWriteCbk)(gatt_client_conn_t conn, uint16_t handle, uint8_t status);
+typedef void (*gattCliWriteCbk)(gatt_client_conn_t conn, uniq_t trans, uint16_t handle, uint8_t status);
 
 //called as a response to gattClientStagedWritesExecute() when the other side has replied
-typedef void (*gattCliStagedWriteExecuteCb)(gatt_client_conn_t conn, bool success);
+typedef void (*gattCliStagedWriteExecuteCb)(gatt_client_conn_t conn, uniq_t trans, bool success);
 
 //Expect this after a call to gattClientNotifsSubscribe() or gattClientNotifsUnsubscribe(), telling you whether your request succeeded
 typedef void (*gattCliNotifSubscribeStateCbk)(gatt_client_conn_t conn, uint16_t cccdHandle, bool forSubscribe, uint8_t status);
@@ -176,18 +176,18 @@ bool gattClientInvalidateCache(const struct bt_addr *whomTo) NEWBLUE_EXPORT; //t
 /* all of the following return GATT_CLI_* */
 
 /* service search */
-uint8_t gattClientFindService(gatt_client_conn_t conn, bool primary, const struct uuid *searchForThis, gattCliSvcEnumCbk cbk) NEWBLUE_EXPORT;
-uint8_t gattClientEnumServices(gatt_client_conn_t conn, bool primary, gattCliSvcEnumCbk cbk) NEWBLUE_EXPORT;
+uint8_t gattClientFindService(gatt_client_conn_t conn, bool primary, const struct uuid *searchForThis, uniq_t trans, gattCliSvcEnumCbk cbk) NEWBLUE_EXPORT;
+uint8_t gattClientEnumServices(gatt_client_conn_t conn, bool primary, uniq_t trans, gattCliSvcEnumCbk cbk) NEWBLUE_EXPORT;
 
 /* various enumerations */
-uint8_t gattClientEnumIncludedServices(gatt_client_conn_t conn, uint16_t fromHandle, uint16_t toHandle, gattCliEnumIncludedSvcsCbk cbk) NEWBLUE_EXPORT;
-uint8_t gattClientEnumCharacteristics(gatt_client_conn_t conn, uint16_t fromHandle, uint16_t toHandle, gattCliEnumCharacteristicsCbk cbk) NEWBLUE_EXPORT;
-uint8_t gattClientEnumCharDescriptors(gatt_client_conn_t conn, uint16_t fromHandle, uint16_t toHandle, gattCliEnumCharDescrsCbk cbk) NEWBLUE_EXPORT;
+uint8_t gattClientEnumIncludedServices(gatt_client_conn_t conn, uint16_t fromHandle, uint16_t toHandle, uniq_t trans, gattCliEnumIncludedSvcsCbk cbk) NEWBLUE_EXPORT;
+uint8_t gattClientEnumCharacteristics(gatt_client_conn_t conn, uint16_t fromHandle, uint16_t toHandle, uniq_t trans, gattCliEnumCharacteristicsCbk cbk) NEWBLUE_EXPORT;
+uint8_t gattClientEnumCharDescriptors(gatt_client_conn_t conn, uint16_t fromHandle, uint16_t toHandle, uniq_t trans, gattCliEnumCharDescrsCbk cbk) NEWBLUE_EXPORT;
 
 /* reads/writes (writes MUST fit into MTU minus whatever, or they will be truncated) */
-uint8_t gattClientRead(gatt_client_conn_t conn, uint16_t handle, uint8_t authReq, uint16_t offset, gattCliReadCbk cbk) NEWBLUE_EXPORT;
-uint8_t gattClientWrite(gatt_client_conn_t conn, uint16_t handle, uint8_t authReq, uint8_t writeType, uint16_t ofst, sg data, gattCliWriteCbk cbk) NEWBLUE_EXPORT;
-uint8_t gattClientStagedWritesExecute(gatt_client_conn_t conn, bool execute, gattCliStagedWriteExecuteCb cbk) NEWBLUE_EXPORT; //if not execute then drop them all
+uint8_t gattClientRead(gatt_client_conn_t conn, uint16_t handle, uint8_t authReq, uint16_t offset, uniq_t trans, gattCliReadCbk cbk) NEWBLUE_EXPORT;
+uint8_t gattClientWrite(gatt_client_conn_t conn, uint16_t handle, uint8_t authReq, uint8_t writeType, uint16_t ofst, sg data, uniq_t trans, gattCliWriteCbk cbk) NEWBLUE_EXPORT;
+uint8_t gattClientStagedWritesExecute(gatt_client_conn_t conn, bool execute, uniq_t trans, gattCliStagedWriteExecuteCb cbk) NEWBLUE_EXPORT; //if not execute then drop them all
 
 /* notification subscription/unsubscription. gattClientNotifsSubscribe assumes you do not ask for the impossible */
 uint8_t gattClientNotifsSubscribe(gatt_client_conn_t conn, uint16_t charHandle, uint16_t charValueHandle, uint16_t cccdHandle, bool reliable, gattCliNotifSubscribeStateCbk stateCbk, gattCliNotifArrivedCbk arrivedCbk) NEWBLUE_EXPORT;

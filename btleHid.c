@@ -783,13 +783,14 @@ static bool btleHidAttachPrerequisiteReadGetNext(struct HidConn *hid, uint16_t *
  * FUNCTION: btleHidAttachPrerequisiteReadDataRxedCbk
  * USE:      Receive the result of a read done by btleHidAttachPerformPrerequisiteRead
  * PARAMS:   gattConn - the GATT client connection id
+ *           trans - transaction ID (unused here as we can look up by gatt conn id)
  *           handle - the handle read
  *           status - the status of the read
  *           data - the data read
  * RETURN:   NONE
  * NOTES:
  */
-static void btleHidAttachPrerequisiteReadDataRxedCbk(gatt_client_conn_t gattConn, uint16_t handle, uint8_t status, sg data)
+static void btleHidAttachPrerequisiteReadDataRxedCbk(gatt_client_conn_t gattConn, uniq_t trans, uint16_t handle, uint8_t status, sg data)
 {
     uint16_t expectedHandle = 0;
     struct DataBuffer **bufPP;
@@ -893,7 +894,7 @@ static void btleHidAttachPerformPrerequisiteRead(gatt_client_conn_t gattConn)
 
     // read the thing we've decided to read
     pthread_mutex_unlock(&mHidLock);
-    if (GATT_CLI_STATUS_OK != gattClientRead(gattConn, handleToRead, 0, 0, btleHidAttachPrerequisiteReadDataRxedCbk)) {
+    if (GATT_CLI_STATUS_OK != gattClientRead(gattConn, handleToRead, 0, 0, 0, btleHidAttachPrerequisiteReadDataRxedCbk)) {
         logw("Failed to read a required handle 0x%04x\n", handleToRead);
         if (!btleHidDetachFromGatt(gattConn))
             loge("Failed to detach from GATT conn on error in descriptors search!\n");
@@ -913,6 +914,7 @@ out_unlock:
  * FUNCTION: btleHidAttachDescrEnumCbk
  * USE:      Called by GATT when descriptors are found (at request of btleHidAttachCharEnumCbk)
  * PARAMS:   gattConn - the GATT client connection id
+ *           trans - transaction ID (unused here as we can look up by gatt conn id)
  *           uuid - the UUID of the found descriptor or NULL on error or end of list
  *           charHandle - handle of the char descriptor attribute
  *           valHandle - handle of the char value attribute
@@ -921,7 +923,7 @@ out_unlock:
  * RETURN:   NONE
  * NOTES:
  */
-static void btleHidAttachDescrEnumCbk(gatt_client_conn_t gattConn, const struct uuid *uuid, uint16_t handle, uint8_t status)
+static void btleHidAttachDescrEnumCbk(gatt_client_conn_t gattConn, uniq_t trans, const struct uuid *uuid, uint16_t handle, uint8_t status)
 {
     struct ReportsListNode *node;
     struct HidConn *hid;
@@ -1039,6 +1041,7 @@ static struct CharInfo* btleHidUtilAddCharToCharList(struct ReportsListNode **li
  * FUNCTION: btleHidAttachCharEnumCbk
  * USE:      Called by GATT when characteristics are found (at request of btleHidAttachServiceEnumCbk)
  * PARAMS:   gattConn - the GATT client connection id
+ *           trans - transaction ID (unused here as we can look up by gatt conn id)
  *           uuid - the UUID of the found characteristic or NULL on error or end of list
  *           charHandle - handle of the char descriptor attribute
  *           valHandle - handle of the char value attribute
@@ -1047,7 +1050,7 @@ static struct CharInfo* btleHidUtilAddCharToCharList(struct ReportsListNode **li
  * RETURN:   NONE
  * NOTES:
  */
-static void btleHidAttachCharEnumCbk(gatt_client_conn_t gattConn, const struct uuid *uuid, uint16_t charHandle, uint16_t valHandle, uint8_t props, uint8_t status)
+static void btleHidAttachCharEnumCbk(gatt_client_conn_t gattConn, uniq_t trans, const struct uuid *uuid, uint16_t charHandle, uint16_t valHandle, uint8_t props, uint8_t status)
 {
     struct CharInfo *dst = NULL;
     struct CharStartInfo *csi;
@@ -1097,7 +1100,7 @@ static void btleHidAttachCharEnumCbk(gatt_client_conn_t gattConn, const struct u
         mCbkState(id, BTLE_HID_CONN_STATE_FINDING_DESCRS);
 
         //this is actually OK to do - we'll just manually figure out where each descriptor goes - much simpler than making multiple requests
-        if (GATT_CLI_STATUS_OK != gattClientEnumCharDescriptors(gattConn, hid->hidServiceFirstHandle, hid->hidServiceLastHandle, btleHidAttachDescrEnumCbk)) {
+        if (GATT_CLI_STATUS_OK != gattClientEnumCharDescriptors(gattConn, hid->hidServiceFirstHandle, hid->hidServiceLastHandle, 0, btleHidAttachDescrEnumCbk)) {
             logw("Failed to start searching for descriptors\n");
             if (!btleHidDetachFromGatt(gattConn))
                 loge("Failed to detach from GATT conn on error in descriptors search!\n");
@@ -1177,6 +1180,7 @@ out_unlock:
  * FUNCTION: btleHidAttachServiceEnumCbk
  * USE:      Called by GATT when the HID service is found at request of btleHidAttach()
  * PARAMS:   gattConn - the GATT client connection id
+ *           trans - transaction ID (unused here as we can look up by gatt conn id)
  *           uuid - the UUID of the found service or NULL on error or end of list
  *           primary - whether the found service was primary
  *           firstHandle - the first handle value for the found service
@@ -1185,7 +1189,7 @@ out_unlock:
  * RETURN:   NONE
  * NOTES:
  */
-static void btleHidAttachServiceEnumCbk(gatt_client_conn_t gattConn, const struct uuid *uuid, bool primary, uint16_t firstHandle, uint16_t numHandles, uint8_t status)
+static void btleHidAttachServiceEnumCbk(gatt_client_conn_t gattConn, uniq_t trans, const struct uuid *uuid, bool primary, uint16_t firstHandle, uint16_t numHandles, uint8_t status)
 {
     const struct uuid hidUuid = BT_UUID_STATIC_16(BTLE_UUID_HID_SERVICE);
     bool found = uuid && uuidCmp(uuid, &hidUuid) && primary && numHandles;
@@ -1222,7 +1226,7 @@ static void btleHidAttachServiceEnumCbk(gatt_client_conn_t gattConn, const struc
     pthread_mutex_unlock(&mHidLock);
     mCbkState(id, BTLE_HID_CONN_STATE_FINDING_CHARS);
 
-    if (GATT_CLI_STATUS_OK != gattClientEnumCharacteristics(gattConn, firstHandle, lastHandle, btleHidAttachCharEnumCbk)) {
+    if (GATT_CLI_STATUS_OK != gattClientEnumCharacteristics(gattConn, firstHandle, lastHandle, 0, btleHidAttachCharEnumCbk)) {
 
         logw("Failed to start searching for characteristics\n");
         if (!btleHidDetachFromGatt(gattConn))
@@ -1279,7 +1283,7 @@ ble_hid_conn_t btleHidAttach(gatt_client_conn_t gattConn)
     mCbkState(id, BTLE_HID_CONN_STATE_FINDING_SVC);
 
     logi("HID attempting an attachment to GATT conn "GATTHANDLEFMT"\n", GATTHANDLECNV(gattConn));
-    if (GATT_CLI_STATUS_OK == gattClientFindService(gattConn, true, &hidUuid, btleHidAttachServiceEnumCbk))
+    if (GATT_CLI_STATUS_OK == gattClientFindService(gattConn, true, &hidUuid, 0, btleHidAttachServiceEnumCbk))
         return hidConn;
 
     logw("Failed to start the GATT service search\n");
@@ -1359,12 +1363,13 @@ bool btleHidGetHidInfo(ble_hid_conn_t hidId, uint16_t *hidVerP, uint8_t *country
  * FUNCTION: btleHidWriteReportWriteCbk
  * USE:      Called by GATT when our write succeeds or fails
  * PARAMS:   gattConn - a gatt client connection
+ *           trans - transaction ID (unused here as we can look up by gatt conn id)
  *           handle - handle we wrote
  *           status - GATT status
  * RETURN:   NONE
  * NOTES:    it is likely that this success or failure is not actionable for us, so we do nothing
  */
-static void btleHidWriteReportWriteCbk(gatt_client_conn_t gattConn, uint16_t handle, uint8_t status)
+static void btleHidWriteReportWriteCbk(gatt_client_conn_t gattConn, uniq_t trans, uint16_t handle, uint8_t status)
 {
     if (status != GATT_CLI_STATUS_OK)
         logi("HID GATT Write to handle 0x%04 failed with status 0x%02x\n", handle, status);
@@ -1408,7 +1413,7 @@ bool btleHidWriteReport(ble_hid_conn_t hidId, int32_t reportId, sg data)
             gatt_client_conn_t conn = hid->gattConn;
 
             pthread_mutex_unlock(&mHidLock);
-            return GATT_CLI_STATUS_OK == gattClientWrite(conn, handle, 0, GATT_CLI_WRITE_TYPE_WRITE, 0, data, btleHidWriteReportWriteCbk);
+            return GATT_CLI_STATUS_OK == gattClientWrite(conn, handle, 0, GATT_CLI_WRITE_TYPE_WRITE, 0, data, 0, btleHidWriteReportWriteCbk);
         }
     }
 
@@ -1420,13 +1425,14 @@ bool btleHidWriteReport(ble_hid_conn_t hidId, int32_t reportId, sg data)
  * FUNCTION: btleHidReadReportReadCbk
  * USE:      Called by GATT when our read succeeds or fails
  * PARAMS:   gattConn - a gatt client connection
+ *           trans - transaction ID (unused here as we can look up by gatt conn id)
  *           handle - handle we wrote
  *           status - GATT status
  *           data - the data
  * RETURN:   NONE
  * NOTES:    it is likely that this success or failure is not actionable for us, so we do nothing
  */
-static void btleHidReadReportReadCbk(gatt_client_conn_t gattConn, uint16_t handle, uint8_t status, sg data)
+static void btleHidReadReportReadCbk(gatt_client_conn_t gattConn, uniq_t trans, uint16_t handle, uint8_t status, sg data)
 {
     if (status != GATT_CLI_STATUS_OK)
         logi("HID GATT READ to handle 0x%04 failed with status 0x%02x\n", handle, status);
@@ -1471,7 +1477,7 @@ bool btleHidReadReport(ble_hid_conn_t hidId, int32_t reportId)
             gatt_client_conn_t conn = hid->gattConn;
 
             pthread_mutex_unlock(&mHidLock);
-            return GATT_CLI_STATUS_OK == gattClientRead(conn, handle, 0, 0, btleHidReadReportReadCbk);
+            return GATT_CLI_STATUS_OK == gattClientRead(conn, handle, 0, 0, 0, btleHidReadReportReadCbk);
         }
     }
 
