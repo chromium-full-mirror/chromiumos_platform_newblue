@@ -1,8 +1,16 @@
+/*
+ * Copyright 2018 The Chromium OS Authors. All rights reserved.
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file.
+ */
+
 #ifndef _SG_H_
 #define _SG_H_
 
 #include "newblue-macros.h"
 #include "types.h"
+
+NEWBLUE_BEGIN_DECLS
 
 struct sgbuf;
 typedef struct sgbuf *sg;
@@ -21,7 +29,7 @@ typedef struct sgbuf *sg;
 //create a new empty sg -> null on error
 sg sgNew(void) NEWBLUE_EXPORT;
 
-//create a new sg with given data,  a copy is made -> null on error
+//create a new sg with given data, a copy is made -> null on error
 sg sgNewWithCopyData(const void* data, uint32_t len) NEWBLUE_EXPORT;
 
 //create a new sg with given data. sg takes ownership of data buf and will free it -> null on error
@@ -69,6 +77,8 @@ uint32_t sgIterCurLen(void *iter) NEWBLUE_EXPORT;     /* get "current" length */
 const void* sgIterCurData(void *iter) NEWBLUE_EXPORT; /* get "current" data */
 void* sgIterAdvance(void *iter) NEWBLUE_EXPORT;       /* null means iteration is over */
 
+
+NEWBLUE_END_DECLS
 
 #endif
 
