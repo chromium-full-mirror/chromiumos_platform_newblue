@@ -49,13 +49,14 @@ struct EdrDiscDev {
     char               name[249];
 };
 
-struct HandleList {
-    struct HandleList* next;
-    uint16_t start, end, val;
+struct ServiceList {
+    struct ServiceList* next;
+    uint16_t start, end;
+    struct uuid uuid;
 };
 
 static sem_t mGattTestSem;
-static struct HandleList *mGattItems = NULL;
+static struct ServiceList *mGattSvcs = NULL;
 static ble_hid_conn_t mHidConn = 0;
 
 static void testHciScoRxCbk(hci_conn_t aclConn, const void *data, uint8_t len, uint8_t lossAmount)
@@ -467,9 +468,37 @@ void passkeyRequestObserverCallback(void *observerData,
     terminate = true;
 }
 
+static void gattSvcTraversed(gatt_client_conn_t conn, uniq_t trans, const struct GattTraversedService* data)
+{
+    uint32_t i, j;
+
+    if (!data)
+        logi("Traversal failed\n");
+    else {
+        logi("SERVICE "UUIDFMT" in range 0x%04x - 0x%04x:\n", UUIDCONV(data->uuid), data->firstHandle, data->lastHandle);
+        if (data->numInclSvcs) {
+            logi("  INCLUDED SERVICES (%u):\n", data->numInclSvcs);
+            for (i = 0; i < data->numInclSvcs; i++)
+                logi("    iSVC "UUIDFMT" with range 0x%04x - 0x%04x (defined at 0x%04x)\n", UUIDCONV(data->inclSvcs[i].uuid), data->inclSvcs[i].firstHandle, data->inclSvcs[i].lastHandle, data->inclSvcs[i].includeDefHandle);
+        }
+        if (data->numChars) {
+            logi("  CHARACTERISTICS (%u):\n", data->numChars);
+            for (i = 0; i < data->numChars; i++) {
+                logi("    CHAR "UUIDFMT" with range 0x%04x - 0x%04x (value   at 0x%04x)\n", UUIDCONV(data->chars[i].uuid), data->chars[i].firstHandle, data->chars[i].lastHandle, data->chars[i].valHandle);
+                if (data->chars[i].numDescrs) {
+                    logi("      DESCRIPTORS (%u):\n", data->chars[i].numDescrs);
+                    for (j = 0; j < data->chars[i].numDescrs; j++)
+                        logi("          DESCR "UUIDFMT" at 0x%04x\n", UUIDCONV(data->chars[i].descrs[j].uuid), data->chars[i].descrs[j].handle);
+                }
+            }
+        }
+    }
+    sem_post(&mGattTestSem);
+}
+
 static void gattSvcFoundCbk(gatt_client_conn_t conn, uniq_t trans, const struct uuid *uuid, bool primary, uint16_t firstHandle, uint16_t numHandles, uint8_t status)
 {
-    struct HandleList *t;
+    struct ServiceList *t;
 
     if (status != GATT_CLI_STATUS_OK) {
         logi("enum status %u\n", status);
@@ -484,61 +513,12 @@ static void gattSvcFoundCbk(gatt_client_conn_t conn, uniq_t trans, const struct 
 
     logi("Found %s service "UUIDFMT" with handles 0x%04x+0x%04x\n", primary ? "primary" : "secondary", UUIDCONV(*uuid), firstHandle, numHandles);
 
-    t = calloc(sizeof(struct HandleList), 1);
+    t = calloc(sizeof(struct ServiceList), 1);
+    t->uuid = *uuid;
     t->start = firstHandle;
     t->end = firstHandle + numHandles - 1;
-    t->next = mGattItems;
-    mGattItems = t;
-}
-
-static void gattEnumCharDescrsCbk(gatt_client_conn_t conn, uniq_t trans, const struct uuid *uuid, uint16_t handle, uint8_t status)
-{
-    logi("in gattEnumCharDescrsCbk\n");
-
-    if (status != GATT_CLI_STATUS_OK || !uuid) {
-        logi("enumeration ends\n");
-        sem_post(&mGattTestSem);
-    }
-    else
-        logi("    Found char descr with handle 0x%04x & uuid "UUIDFMT"\n", handle, UUIDCONV(*uuid));
-}
-
-static void gattEnumCharacteristicsCbk(gatt_client_conn_t conn, uniq_t trans, const struct uuid *uuid, uint16_t charHandle, uint16_t valHandle, uint8_t props, uint8_t status)
-{
-    logi("in gattEnumCharacteristicsCbk\n");
-
-    if (status != GATT_CLI_STATUS_OK || !uuid) {
-        logi("enumeration ends\n");
-        sem_post(&mGattTestSem);
-    }
-    else {
-        struct HandleList *node;
-
-        logi("    Found char with handle 0x%04x (value at 0x%04x) with uuid "UUIDFMT" and props 0x%02x\n", charHandle, valHandle, UUIDCONV(*uuid), props);
-
-        node = calloc(1, sizeof(struct HandleList));
-        node->start = charHandle;
-        node->val = valHandle;
-        node->end = 0;
-
-        if (mGattItems)
-            mGattItems->end = charHandle - 1;	//prev char ends where this one starts (for last the caller will fill in "svc end" range)
-
-        node->next = mGattItems;
-        mGattItems = node;
-    }
-}
-
-static void gattEnumInclSvcsCbk(gatt_client_conn_t conn, uniq_t trans, const struct uuid *uuid, uint16_t includeDefHandle, uint16_t firstHandle, uint16_t lastHandle, uint8_t status)
-{
-    logi("in gattEnumInclSvcsCbk\n");
-
-    if (status != GATT_CLI_STATUS_OK || !uuid) {
-        logi("enumeration ends\n");
-        sem_post(&mGattTestSem);
-    }
-    else
-        logi("    Found incl svc with handles 0x%04x - 0x%04x) with uuid "UUIDFMT"\n", firstHandle, lastHandle, UUIDCONV(*uuid));
+    t->next = mGattSvcs;
+    mGattSvcs = t;
 }
 
 static void gattConnectedCbkGattEnum(gatt_client_conn_t conn, uint8_t status)
@@ -549,7 +529,7 @@ static void gattConnectedCbkGattEnum(gatt_client_conn_t conn, uint8_t status)
         return;
 
     //list services
-    mGattItems = NULL;
+    mGattSvcs = NULL;
     logi("service enum = %u\n", gattClientEnumServices(conn, true, 0, gattSvcFoundCbk));
 }
 
@@ -920,57 +900,18 @@ int main(int argc, char** argv)
                 else {
                     logi("Gatt connection handle: "UNIQ_FMT"x\n", UNIQ_CONV(con));
 
-                    //enum will start and we'll drive it from here
-
-                    struct HandleList *items, *t, *n, *e;
-
+                    //service enum will start in gattConnectedCbkGattEnum() and we'll wait for it here
                     sem_wait(&mGattTestSem);
                     logi("Service enum ends...\n");
 
-                    //list characteristics of each service
-                    items = mGattItems;
-                    while (items) {
-                        t = items;
-                        items = items->next;
-                        mGattItems = NULL;
+                    //list details of each service
+                    while (mGattSvcs) {
+                        struct ServiceList *svc = mGattSvcs;
+                        mGattSvcs = mGattSvcs->next;
 
-                        logi("Enumerating included services in service with handles 0x%04x-0x%04x\n", t->start, t->end);
-                        logi("  ret = %u\n", gattClientEnumIncludedServices(con, t->start, t->end, 0, gattEnumInclSvcsCbk));
+                        logi("ENUMERATING SERVICE "UUIDFMT" (known to be in range 0x%04x - 0x%04x): %u\n", UUIDCONV(svc->uuid), svc->start, svc->end, gattClientUtilFindAndTraversePrimaryService(con, &svc->uuid, 0, gattSvcTraversed));
+                        free(svc);
                         sem_wait(&mGattTestSem);
-
-                        logi("Enumerating characteristics in service with handles 0x%04x-0x%04x\n", t->start, t->end);
-                        logi("  ret = %u\n", gattClientEnumCharacteristics(con, t->start, t->end, 0, gattEnumCharacteristicsCbk));
-                        sem_wait(&mGattTestSem);
-
-                        //now we have gatt chars list in mGattItems - deal with it
-                        if (mGattItems) //fill in "end" for last item
-                            mGattItems->end = t->end;
-
-                        //reverse it for convenience (user's)
-                        n = e = NULL;
-                        while (mGattItems) {
-                            n = mGattItems;
-                            mGattItems = mGattItems->next;
-                            n->next = e;
-                            e = n;
-                        }
-                        mGattItems = e;
-
-                        //print the ranges and then list characteristic descriptors in each
-                        while (mGattItems) {
-                            n = mGattItems;
-                            mGattItems = mGattItems->next;
-                            logi("Char range: 0x%04x-0x%04x, value is at 0x%04x\n", n->start, n->end, n->val);
-                            free(n);
-
-                            if (n->val < n->end) {
-                                logi("Enumerating characteristic descriptors in range 0x%04x-0x%04x\n", n->val + 1, n->end);
-                                logi("  ret = %u\n", gattClientEnumCharDescriptors(con, n->val + 1, n->end, 0, gattEnumCharDescrsCbk));
-                                sem_wait(&mGattTestSem);
-                            }
-                        }
-
-                        free(t);
                     }
                 }
             }

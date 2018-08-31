@@ -131,6 +131,28 @@ bool gattServiceSendInd(gatt_service_t svc, att_cid_t cid, uint16_t handle, cons
 #define GATT_CLI_AUTH_REQ_SIGNED_NO_MITM 3
 #define GATT_CLI_AUTH_REQ_SIGNED_MITM    4
 
+struct GattTraversedService {
+    struct uuid uuid;
+    uint16_t firstHandle, lastHandle;
+    uint16_t numChars;
+    struct GattTraversedServiceChar {
+        struct uuid uuid;
+        uint8_t charProps;
+        uint16_t firstHandle, valHandle, lastHandle;
+        uint16_t numDescrs;
+        struct GattTraversedServiceCharDescr {
+            struct uuid uuid;
+            uint16_t handle;
+        } *descrs;
+    } *chars;
+    uint16_t numInclSvcs;
+    struct GattTraversedServiceInclSvc {
+        struct uuid uuid;
+        uint16_t includeDefHandle, firstHandle, lastHandle;
+    } *inclSvcs;
+};
+
+
 /* gatt client callbacks */
 
 //called when a connection attempt has finished. status will say whether it was successful or not. Expect a call to this from gattClientConnect() and gattClientDisconnect()
@@ -163,6 +185,8 @@ typedef void (*gattCliNotifSubscribeStateCbk)(gatt_client_conn_t conn, uint16_t 
 //Expect this to be called when a notification or an indication you had subscribed to has arrived. NOTE: This is async, so this may even be called before gattClientNotifsSubscribe() returns
 typedef void (*gattCliNotifArrivedCbk)(gatt_client_conn_t conn, uint16_t charValueHandle, bool reliable, sg data);
 
+//Expect this to be called as a result of gattClientUtilFindAndTraversePrimaryService(). Data is NULL for failures. Data pointer NO LONGER VALID after this func returns - make copies!
+typedef void (*gattCliUtilSvcTraversedCbk)(gatt_client_conn_t conn, uniq_t trans, const struct GattTraversedService* data);
 
 
 
@@ -192,6 +216,9 @@ uint8_t gattClientStagedWritesExecute(gatt_client_conn_t conn, bool execute, uni
 /* notification subscription/unsubscription. gattClientNotifsSubscribe assumes you do not ask for the impossible */
 uint8_t gattClientNotifsSubscribe(gatt_client_conn_t conn, uint16_t charHandle, uint16_t charValueHandle, uint16_t cccdHandle, bool reliable, gattCliNotifSubscribeStateCbk stateCbk, gattCliNotifArrivedCbk arrivedCbk) NEWBLUE_EXPORT;
 uint8_t gattClientNotifsUnsubscribe(gatt_client_conn_t conn, uint16_t charValueHandle) NEWBLUE_EXPORT;
+
+/* higher-level utilities */
+uint8_t gattClientUtilFindAndTraversePrimaryService(gatt_client_conn_t conn, const struct uuid *svcUuid, uniq_t trans, gattCliUtilSvcTraversedCbk cbk) NEWBLUE_EXPORT;
 
 NEWBLUE_END_DECLS
 

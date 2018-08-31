@@ -298,6 +298,19 @@ struct gattWorkItem {
     };
 };
 
+struct GattCliUtilSvcTraverseState {
+    struct GattCliUtilSvcTraverseState *next;
+    struct GattCliUtilSvcTraverseState *prev;
+    uniq_t curTrans, clientTrans;
+    struct GattTraversedService res;
+    uint32_t numChars, numDescrs, numInclSvcs;
+    struct GattTraversedServiceChar *allChars;
+    struct GattTraversedServiceCharDescr* allDescrs;
+    struct GattTraversedServiceInclSvc *allInclSvcs;
+    gattCliUtilSvcTraversedCbk cbk;
+};
+
+
 #define GATT_WORK_SRV_READ_CALL          0
 #define GATT_WORK_SRV_WRITE_CALL         1
 #define GATT_WORK_SRV_IND_CALL           2
@@ -318,6 +331,8 @@ static struct gattConnState *mConns = NULL; /* one per L2C conn (max one per pee
 static struct gattService *mSvcs = NULL;
 static struct gattClientConnection *mClientConns = NULL; /* one per client's idea of a connection */
 
+static pthread_mutex_t mGattUtilLock = PTHREAD_MUTEX_INITIALIZER;
+static struct GattCliUtilSvcTraverseState *mUtilSvcEnumStates;
 
 /* fwd decls */
 static struct gattCliTodoItem* gattCliTodoMakeWrite(gatt_client_conn_t connId, uint8_t purpose, uint8_t writeType, uint16_t handle, uint8_t authReq, uint16_t offset, sg data);
@@ -1837,7 +1852,7 @@ static bool gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *han
                     if (conn && !done) {
                         ret = true;
                         killItem = false;
-                        todo->handle = utilGetLE16(&charDef.valHandle) + 1;
+                        todo->handle = *handleP + 1;
                         if (!haveMore)
                             gattCliTodoEnqItem(conn, todo, false);
                     }
@@ -4117,30 +4132,403 @@ uint8_t gattClientNotifsUnsubscribe(gatt_client_conn_t conn, uint16_t charValueH
     return sta;
 }
 
+/*
+ * FUNCTION: gattClientUtilSvcTraversalStructFindByTransId
+ * USE:      find a service traversal state structure by a transaction id
+ * PARAMS:   trans - the transaction Id to look for
+ * RETURN:   structure pointer or NULL
+ * NOTES:    call with mGattUtilLock held
+ */
+static struct GattCliUtilSvcTraverseState* gattClientUtilSvcTraversalStructFindByTransId(uniq_t trans)
+{
+    struct GattCliUtilSvcTraverseState* t;
 
+    for (t = mUtilSvcEnumStates; t; t = t->next) {
+        if (t->curTrans == trans)
+            break;
+    }
 
+    return t;
+}
 
+/*
+ * FUNCTION: gattClientUtilSvcTraversalStructUnlink
+ * USE:      Unlink a service traversal state struct from the list
+ * PARAMS:   state the service traversal state structure
+ * RETURN:   NONE
+ * NOTES:    call with mGattUtilLock held
+ */
+static void gattClientUtilSvcTraversalStructUnlink(struct GattCliUtilSvcTraverseState* state)
+{
+    // unlink from list
+    if (state->prev)
+        state->prev->next = state->next;
+    else
+        mUtilSvcEnumStates = state->next;
+    if (state->next)
+        state->next->prev = state->prev;
+}
 
+/*
+ * FUNCTION: gattClientUtilSvcTraversalStructFreeData
+ * USE:      Properly free a service traversal state structure's data
+ * PARAMS:   state the service traversal state structure
+ * RETURN:   NONE
+ * NOTES:    call with mGattUtilLock held
+ */
+static void gattClientUtilSvcTraversalStructFreeData(struct GattCliUtilSvcTraverseState* state)
+{
+    uint32_t i;
 
+    // free constituent parts & itself
+    for (i = 0; i < state->res.numChars; i++)
+        free(state->res.chars[i].descrs);
+    free(state->res.inclSvcs);
+    free(state->res.chars);
+    free(state);
+}
 
+/*
+ * FUNCTION: gattClientUtilSvcTraversalStructFree
+ * USE:      Properly unlink & then free a service traversal state structure
+ * PARAMS:   state the service traversal state structure
+ * RETURN:   NONE
+ * NOTES:    call with mGattUtilLock held
+ */
+static void gattClientUtilSvcTraversalStructFree(struct GattCliUtilSvcTraverseState* state)
+{
+    gattClientUtilSvcTraversalStructUnlink(state);
+    gattClientUtilSvcTraversalStructFreeData(state);
+}
 
+/*
+ * FUNCTION: gattClientUtilFindAndTraversePrimaryServiceDescrEnumCbk
+ * USE:      Called by GATT code when we find a descriptor (or another attribute that looks like it)
+ * PARAMS:   conn - the connection id
+ *           trans - out transaction ID (matches to "->curTrans")
+ *           uuid - the found uuid of the descriptor or NULL at end
+ *           handle - the handle of the descriptor
+ *           status - GATT status for this search
+ * RETURN:   GATT_CLI_STATUS_*
+ * NOTES:
+ */
+static void gattClientUtilFindAndTraversePrimaryServiceDescrEnumCbk(gatt_client_conn_t conn, uniq_t trans, const struct uuid *uuid, uint16_t handle, uint8_t status)
+{
+    struct GattCliUtilSvcTraverseState* st;
+    gattCliUtilSvcTraversedCbk cbk = NULL;
+    uniq_t clientTrans;
 
+    pthread_mutex_lock(&mGattUtilLock);
+    st = gattClientUtilSvcTraversalStructFindByTransId(trans);
+    if (!st)
+        logi("state for this transaction not found\n");
+    else {
+        if (status != GATT_CLI_STATUS_OK)
+            logi("error finding descriptors");
+        else if (uuid) { // a descriptor is potentially found
 
+            struct GattTraversedServiceChar *inChr = NULL;
+            bool discard;
+            uint32_t i;
 
+            logd("GATT util svc traversal: descr search produces "UUIDFMT" @ 0x%04x\n", UUIDCONV(*uuid), handle);
 
+            // verify it is not something else (here we'll get "characteristic" declarations, characteristic values, "include service" declarations, and our actual "service" declaration)
+            discard = handle == st->res.firstHandle;
+            for (i = 0; i < st->res.numInclSvcs && !discard; i++) {
+                discard = handle == st->res.inclSvcs[i].includeDefHandle;
+            }
+            // while doing that also find what char it is in
+            for (i = 0; i < st->res.numChars && !discard; i++) {
+                discard = handle == st->res.chars[i].firstHandle || handle == st->res.chars[i].valHandle;
+                if (handle > st->res.chars[i].firstHandle && handle <= st->res.chars[i].lastHandle)
+                    inChr = &st->res.chars[i];
+            }
+            if (discard) {
+                logd("GATT util svc traversal: descr discarded\n");
+                pthread_mutex_unlock(&mGattUtilLock);
+                return;
+            }
 
+            if (!inChr)
+                logi("This descriptor not in a characteristic!\n");
+            else {
+                struct GattTraversedServiceCharDescr *t = realloc(inChr->descrs, sizeof(struct GattTraversedServiceCharDescr) * (inChr->numDescrs + 1));
 
+                if (!t)
+                    logi("mem error\n");
+                else {
+                    inChr->descrs = t;
+                    inChr->descrs[inChr->numDescrs].uuid = *uuid;
+                    inChr->descrs[inChr->numDescrs].handle = handle;
+                    inChr->numDescrs++;
+                    pthread_mutex_unlock(&mGattUtilLock);
+                    return;
+                }
+            }
+        }
+        else { // enum of descrs is done - tell user & then free data
+            logd("GATT util svc traversal: descr search complete\n");
 
+            // we unlink it from the list so we can drop the lock. We do not want to hold the lock during a callback. Once unliked it CANNOT disappear from under us
+            gattClientUtilSvcTraversalStructUnlink(st);
+            pthread_mutex_unlock(&mGattUtilLock);
+            st->cbk(conn, st->clientTrans, &st->res);
+            gattClientUtilSvcTraversalStructFreeData(st);
+            return;
+        }
+        // an error happened - clean up and tell user
+        if (st) {
+            clientTrans = st->clientTrans;
+            cbk = st->cbk;
+            gattClientUtilSvcTraversalStructFree(st);
+        }
+        pthread_mutex_unlock(&mGattUtilLock);
+        if (cbk)
+            cbk(conn, clientTrans, NULL);
+    }
+}
 
+/*
+ * FUNCTION: gattClientUtilFindAndTraversePrimaryServiceCharEnumCbk
+ * USE:      Called by GATT code when we find a characteristic
+ * PARAMS:   conn - the connection id
+ *           trans - out transaction ID (matches to "->curTrans")
+ *           uuid - the found uuid of the characteristic or NULL at end
+ *           charHandle - the handle of the "characteristic" definition
+ *           valHandle - the handle of the characteristic's "value" attribute
+ *           props - character properties as per GATT
+ *           status - GATT status for this search
+ * RETURN:   GATT_CLI_STATUS_*
+ * NOTES:
+ */
+static void gattClientUtilFindAndTraversePrimaryServiceCharEnumCbk(gatt_client_conn_t conn, uniq_t trans, const struct uuid *uuid, uint16_t charHandle, uint16_t valHandle, uint8_t props, uint8_t status)
+{
+    struct GattCliUtilSvcTraverseState* st;
+    gattCliUtilSvcTraversedCbk cbk = NULL;
+    uniq_t clientTrans;
+    uint32_t i, j;
 
+    pthread_mutex_lock(&mGattUtilLock);
+    st = gattClientUtilSvcTraversalStructFindByTransId(trans);
+    if (!st)
+        logi("state for this transaction not found\n");
+    else {
+        if (status != GATT_CLI_STATUS_OK)
+            logi("error finding characteristics");
+        else if (uuid) { // a characteristic is found
+            logd("GATT util svc traversal: char search produces "UUIDFMT" {0x%04x,0x%04x,0x%02x}\n", UUIDCONV(*uuid), charHandle, valHandle, props);
 
+            struct GattTraversedServiceChar *t = realloc(st->res.chars, sizeof(struct GattTraversedServiceChar) * (st->res.numChars + 1));
+            if (!t)
+                logi("mem error\n");
+            else {
+                st->res.chars = t;
+                st->res.chars[st->res.numChars].uuid = *uuid;
+                st->res.chars[st->res.numChars].charProps = props;
+                st->res.chars[st->res.numChars].firstHandle = charHandle;
+                st->res.chars[st->res.numChars].valHandle = valHandle;
+                st->res.chars[st->res.numChars].lastHandle = st->res.lastHandle; // we'll calculate this properly later, but all chars DO end where service ends
+                st->res.chars[st->res.numChars].numDescrs = 0;
+                st->res.chars[st->res.numChars].descrs = NULL;
+                st->res.numChars++;
+                pthread_mutex_unlock(&mGattUtilLock);
+                return;
+            }
+        }
+        else { // enum of chars is done
+            uint16_t firstHandle, lastHandle;
 
+            logd("GATT util svc traversal: char search complete\n");
 
+            // calculate char ends (this is N^2, but there are never too many chars so we can live with it). a char ends where next begins. last one ends where service ends
+            for (i = 0; i < st->res.numChars; i++) {
+                for (j = 0; j < st->res.numChars; j++) {
+                    if (st->res.chars[i].firstHandle < st->res.chars[j].firstHandle && st->res.chars[i].lastHandle >= st->res.chars[j].firstHandle)
+                        st->res.chars[i].lastHandle = st->res.chars[j].firstHandle - 1;
+                }
+                logd("GATT util svc traversal: char "UUIDFMT" range determined to be 0x%04x-0x%04x\n", UUIDCONV(st->res.chars[i].uuid), st->res.chars[i].firstHandle, st->res.chars[i].lastHandle);
+            }
 
+            // enum descriptors (doing it all at once is simpler, but we need to filter out non-descriptor things)
 
+            st->curTrans = trans = uniqGetNext();
+            firstHandle = st->res.firstHandle;
+            lastHandle = st->res.lastHandle;
+            pthread_mutex_unlock(&mGattUtilLock);
+            status = gattClientEnumCharDescriptors(conn, firstHandle, lastHandle, trans, gattClientUtilFindAndTraversePrimaryServiceDescrEnumCbk);
+            if (status == GATT_CLI_STATUS_OK)
+                return;
+            pthread_mutex_lock(&mGattUtilLock);
+            st = gattClientUtilSvcTraversalStructFindByTransId(trans);
+        }
+        // an error happened - clean up and tell user
+        if (st) {
+            clientTrans = st->clientTrans;
+            cbk = st->cbk;
+            gattClientUtilSvcTraversalStructFree(st);
+        }
+        pthread_mutex_unlock(&mGattUtilLock);
+        if (cbk)
+            cbk(conn, clientTrans, NULL);
+    }
+}
 
+/*
+ * FUNCTION: gattClientUtilFindAndTraversePrimaryServiceInclSvcEnumCbk
+ * USE:      Called by GATT code when we find an included service
+ * PARAMS:   conn - the connection id
+ *           trans - out transaction ID (matches to "->curTrans")
+ *           uuid - the found uuid of the included service or NULL at end
+ *           includeDefHandle - the handle of the "include" definition
+ *           firstHandle - the start of this included service's handle range
+ *           lastHandle - the ed of this included service's handle range
+ *           status - GATT status for this search
+ * RETURN:   GATT_CLI_STATUS_*
+ * NOTES:
+ */
+static void gattClientUtilFindAndTraversePrimaryServiceInclSvcEnumCbk(gatt_client_conn_t conn, uniq_t trans, const struct uuid *uuid, uint16_t includeDefHandle, uint16_t firstHandle, uint16_t lastHandle, uint8_t status)
+{
+    struct GattCliUtilSvcTraverseState* st;
+    gattCliUtilSvcTraversedCbk cbk = NULL;
+    uniq_t clientTrans;
 
+    pthread_mutex_lock(&mGattUtilLock);
+    st = gattClientUtilSvcTraversalStructFindByTransId(trans);
+    if (!st)
+        logi("state for this transaction not found\n");
+    else {
+        logd("GATT util svc traversal: include search produces return with status %u and uuid is %sNULL\n", status, uuid ? "non-" : "");
 
+        if (status != GATT_CLI_STATUS_OK)
+            logi("error finding included services");
+        else if (uuid) { // an included service is found
+            struct GattTraversedServiceInclSvc *t = realloc(st->res.inclSvcs, sizeof(struct GattTraversedServiceInclSvc) * (st->res.numInclSvcs + 1));
+            if (!t)
+                logi("mem error\n");
+            else {
+                st->res.inclSvcs = t;
+                st->res.inclSvcs[st->res.numInclSvcs].uuid = *uuid;
+                st->res.inclSvcs[st->res.numInclSvcs].includeDefHandle = includeDefHandle;
+                st->res.inclSvcs[st->res.numInclSvcs].firstHandle = firstHandle;
+                st->res.inclSvcs[st->res.numInclSvcs].lastHandle = lastHandle;
+                st->res.numInclSvcs++;
+                pthread_mutex_unlock(&mGattUtilLock);
+                return;
+            }
+        }
+        else { // enum of included services is done
+            st->curTrans = trans = uniqGetNext();
+            firstHandle = st->res.firstHandle;
+            lastHandle = st->res.lastHandle;
+            pthread_mutex_unlock(&mGattUtilLock);
+            status = gattClientEnumCharacteristics(conn, firstHandle, lastHandle, trans, gattClientUtilFindAndTraversePrimaryServiceCharEnumCbk);
+            if (status == GATT_CLI_STATUS_OK)
+                return;
+            pthread_mutex_lock(&mGattUtilLock);
+            st = gattClientUtilSvcTraversalStructFindByTransId(trans);
+        }
+        // an error happened - clean up and tell user
+        if (st) {
+            clientTrans = st->clientTrans;
+            cbk = st->cbk;
+            gattClientUtilSvcTraversalStructFree(st);
+        }
+        pthread_mutex_unlock(&mGattUtilLock);
+        if (cbk)
+            cbk(conn, clientTrans, NULL);
+    }
+}
 
+/*
+ * FUNCTION: gattClientUtilFindAndTraversePrimaryServiceSvcEnumCbk
+ * USE:      Called by GATT code when we find the desired service (or find it does not exist)
+ * PARAMS:   conn - the connection id
+ *           trans - out transaction ID (matches to "->curTrans")
+ *           uuid - the found uuid (should match "->res.uuid") or NULL at end
+ *           primary - is it a primary service (we expect yes)
+ *           firstHandle - the start of this service's handle range
+ *           numHandles - how many handles the service contains
+ *           status - GATT status for this search
+ * RETURN:   GATT_CLI_STATUS_*
+ * NOTES:
+ */
+static void gattClientUtilFindAndTraversePrimaryServiceSvcEnumCbk(gatt_client_conn_t conn, uniq_t trans, const struct uuid *uuid, bool primary, uint16_t firstHandle, uint16_t numHandles, uint8_t status)
+{
+    uint16_t lastHandle = firstHandle + numHandles - 1;
+    struct GattCliUtilSvcTraverseState* st;
+    gattCliUtilSvcTraversedCbk cbk = NULL;
+    uniq_t clientTrans;
 
+    pthread_mutex_lock(&mGattUtilLock);
+    st = gattClientUtilSvcTraversalStructFindByTransId(trans);
+    if (!st)
+        logi("state for this transaction not found\n");
+    else {
+        if (status == GATT_CLI_STATUS_OK && uuid && uuidCmp(uuid, &st->res.uuid) && primary) {
+
+            st->res.firstHandle = firstHandle;
+            st->res.lastHandle = lastHandle;
+            st->curTrans = trans = uniqGetNext();
+            pthread_mutex_unlock(&mGattUtilLock);
+            logd("GATT util svc traversal: service found at 0x%04x-0x%04x. Enumerating includes\n", firstHandle, lastHandle);
+            status = gattClientEnumIncludedServices(conn, firstHandle, lastHandle, trans, gattClientUtilFindAndTraversePrimaryServiceInclSvcEnumCbk);
+            if (status == GATT_CLI_STATUS_OK)
+                return;
+            pthread_mutex_lock(&mGattUtilLock);
+            st = gattClientUtilSvcTraversalStructFindByTransId(trans);
+        }
+
+        // an error happened - clean up and tell user
+        if (st) {
+            clientTrans = st->clientTrans;
+            cbk = st->cbk;
+            gattClientUtilSvcTraversalStructFree(st);
+        }
+        pthread_mutex_unlock(&mGattUtilLock);
+        if (cbk)
+            cbk(conn, clientTrans, NULL);
+    }
+}
+
+/*
+ * FUNCTION: gattClientUtilFindAndTraversePrimaryService
+ * USE:      Perform all the work needed to completely traverse a service
+ * PARAMS:   conn - the connection id
+ *           svcUuid - the service uuid to find
+ *           clientTrans - transaction ID (unused, passed to callback)
+ *           cbk - callback to call with results
+ * RETURN:   GATT_CLI_STATUS_*
+ * NOTES:    if more than service with a given uuid exists, first is returned
+ */
+uint8_t gattClientUtilFindAndTraversePrimaryService(gatt_client_conn_t conn, const struct uuid *svcUuid, uniq_t clientTrans, gattCliUtilSvcTraversedCbk cbk)
+{
+    struct GattCliUtilSvcTraverseState* st = (struct GattCliUtilSvcTraverseState*)calloc(1, sizeof(struct GattCliUtilSvcTraverseState));
+    uniq_t trans;
+    uint8_t ret;
+
+    if (!st)
+        return GATT_CLI_STATUS_ERR;
+
+    st->res.uuid = *svcUuid;
+    st->clientTrans = clientTrans;
+    st->curTrans = trans = uniqGetNext();
+    st->cbk = cbk;
+
+    pthread_mutex_lock(&mGattUtilLock);
+    st->next = mUtilSvcEnumStates;
+    mUtilSvcEnumStates = st;
+    if (st->next)
+        st->next->prev = st;
+    pthread_mutex_unlock(&mGattUtilLock);
+    ret = gattClientFindService(conn, true, svcUuid, trans, gattClientUtilFindAndTraversePrimaryServiceSvcEnumCbk);
+    if (ret != GATT_CLI_STATUS_OK) {
+        pthread_mutex_lock(&mGattUtilLock);
+        st = gattClientUtilSvcTraversalStructFindByTransId(trans);
+        if(st)
+            gattClientUtilSvcTraversalStructFree(st);
+        pthread_mutex_unlock(&mGattUtilLock);
+    }
+    return ret;
+}
 
