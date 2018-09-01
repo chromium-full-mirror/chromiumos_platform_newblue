@@ -310,6 +310,15 @@ struct GattCliUtilSvcTraverseState {
     gattCliUtilSvcTraversedCbk cbk;
 };
 
+struct GattCliUtilLongReadState {
+    struct GattCliUtilLongReadState *next;
+    struct GattCliUtilLongReadState *prev;
+    uniq_t curTrans, clientTrans;
+    uint16_t handle;
+    uint8_t authReq;
+    sg dataSoFar;
+    gattCliUtilLongReadCompletedCbk cbk;
+};
 
 #define GATT_WORK_SRV_READ_CALL          0
 #define GATT_WORK_SRV_WRITE_CALL         1
@@ -333,6 +342,7 @@ static struct gattClientConnection *mClientConns = NULL; /* one per client's ide
 
 static pthread_mutex_t mGattUtilLock = PTHREAD_MUTEX_INITIALIZER;
 static struct GattCliUtilSvcTraverseState *mUtilSvcEnumStates;
+static struct GattCliUtilLongReadState *mUtilLongReadStates;
 
 /* fwd decls */
 static struct gattCliTodoItem* gattCliTodoMakeWrite(gatt_client_conn_t connId, uint8_t purpose, uint8_t writeType, uint16_t handle, uint8_t authReq, uint16_t offset, sg data);
@@ -341,6 +351,7 @@ static void gattCliTodoNext(l2c_handle_t conn, struct gattCliTodoItem *now);
 static void gattCliTodoItemFree(struct gattCliTodoItem *todo);
 static void gattWorkItemFree(struct gattWorkItem *wi);
 static struct gattCliTodoItem* gattCliTodoMakeMtuReq(struct gattConnState* conn, uint16_t mtu, uint8_t purpose);
+static uint8_t gattClientUtilLongReadScheduleNextChunk(gatt_client_conn_t conn, uint32_t curTrans, bool needCallback);
 
 
 /*
@@ -2095,6 +2106,14 @@ static void gattAttCliError(uniq_t trans, l2c_handle_t to, const uint16_t *handl
                     logd("Connection went away while processing\n");
                 handled = true;
             }
+            break;
+
+        case GATT_INTENT_READ:
+            pthread_mutex_unlock(&mGattLock); // see "A NOTE ABOUT LOCKS" above
+            // "invalid offset" or "not long" are not error, just EOFs, so we treat them as not errors.
+            todo->readCbk(todo->connId, todo->clientTrans, todo->handle, (*errP == ATT_ERROR_ATTRIBUTE_NOT_LONG || *errP == ATT_ERROR_INVALID_OFFSET) ? GATT_CLI_STATUS_OK : GATT_CLI_STATUS_ERR, NULL);
+            pthread_mutex_lock(&mGattLock);
+            conn = gattConnFindByL2cConn(to);
             break;
 
         default:
@@ -4530,5 +4549,208 @@ uint8_t gattClientUtilFindAndTraversePrimaryService(gatt_client_conn_t conn, con
         pthread_mutex_unlock(&mGattUtilLock);
     }
     return ret;
+}
+
+/*
+ * FUNCTION: gattClientUtilLongReadStructFindByTransId
+ * USE:      find a long read state structure by a transaction id
+ * PARAMS:   trans - the transaction id to look for
+ * RETURN:   structure pointer or NULL
+ * NOTES:    call with mGattUtilLock held
+ */
+static struct GattCliUtilLongReadState* gattClientUtilLongReadStructFindByTransId(uniq_t trans)
+{
+    struct GattCliUtilLongReadState* t;
+
+    for (t = mUtilLongReadStates; t; t = t->next) {
+        if (t->curTrans == trans)
+            break;
+    }
+
+    return t;
+}
+
+/*
+ * FUNCTION: gattClientUtilLongReadStructUnlink
+ * USE:      Unlink a long read state state struct from the list
+ * PARAMS:   state the long read state state structure
+ * RETURN:   NONE
+ * NOTES:    call with mGattUtilLock held
+ */
+static void gattClientUtilLongReadStructUnlink(struct GattCliUtilLongReadState* state)
+{
+    // unlink from list
+    if (state->prev)
+        state->prev->next = state->next;
+    else
+        mUtilLongReadStates = state->next;
+    if (state->next)
+        state->next->prev = state->prev;
+}
+
+/*
+ * FUNCTION: gattClientUtilLongReadStructFreeData
+ * USE:      Properly free a long read state state structure's data
+ * PARAMS:   state the long read state state structure
+ * RETURN:   NONE
+ * NOTES:    call with mGattUtilLock held
+ */
+static void gattClientUtilLongReadStructFreeData(struct GattCliUtilLongReadState* state)
+{
+    // free constituent parts & itself
+    if (state->dataSoFar)
+        sgFree(state->dataSoFar);
+    free(state);
+}
+
+/*
+ * FUNCTION: gattClientUtilLongReadReadCbk
+ * USE:      Called by GATT code when a reach chunk arrives
+ * PARAMS:   conn - the connection id
+ *           curTrans - current transaction ID used to look up this long read operation
+ *           handle - the handle that was read
+ *           status - GATT status of thie read
+ *           data - the data we got or NULL on EOF
+ * RETURN:
+ * NOTES:
+ */
+static void gattClientUtilLongReadReadCbk(gatt_client_conn_t conn, uniq_t curTrans, uint16_t handle, uint8_t status, sg data)
+{
+    struct GattCliUtilLongReadState* st;
+
+    pthread_mutex_lock(&mGattUtilLock);
+    st = gattClientUtilLongReadStructFindByTransId(curTrans);
+    if (!st) {
+        logi("state for this transaction not found\n");
+        pthread_mutex_unlock(&mGattUtilLock);
+        if (data)
+            sgFree(data);
+        return;
+    }
+
+    // unlikely, but why not check?
+    if (handle != st->handle)
+        logw("Handle mismatch is impossible with transaction match!\n");
+
+    // if error, discard all data and tell user NO
+    if (status != GATT_CLI_STATUS_OK) {
+        if (st->dataSoFar)
+            sgFree(st->dataSoFar);
+        st->dataSoFar = NULL;
+    }
+    else if (data) { // some data in reply
+        uint32_t rxedLen = sgLength(data);
+
+        sgConcat(st->dataSoFar, data);
+        if (rxedLen) {  // got data? ask for more
+            pthread_mutex_unlock(&mGattUtilLock);
+            (void)gattClientUtilLongReadScheduleNextChunk(conn, curTrans, true);
+            return;
+        }
+    }
+
+    // done? tell caller
+    gattClientUtilLongReadStructUnlink(st);
+    pthread_mutex_unlock(&mGattUtilLock);
+    st->cbk(conn, st->clientTrans, st->dataSoFar);
+    st->dataSoFar = NULL; // callback owns it
+    gattClientUtilLongReadStructFreeData(st);
+}
+
+/*
+ * FUNCTION: gattClientUtilLongReadScheduleNextChunk
+ * USE:      Schedule the next read chunk for a long read operation
+ * PARAMS:   conn - the connection id
+ *           curTrans - current transaction ID used to look up this long read operation
+ *           needCallback - set to send callback in cases of error
+ * RETURN:   GATT_CLI_STATUS_*
+ * NOTES:
+ */
+static uint8_t gattClientUtilLongReadScheduleNextChunk(gatt_client_conn_t conn, uint32_t curTrans, bool needCallback)
+{
+    struct GattCliUtilLongReadState* st;
+    uint8_t ret, authReq;
+    uint32_t offset;
+    uint16_t handle;
+
+    pthread_mutex_lock(&mGattUtilLock);
+    st = gattClientUtilLongReadStructFindByTransId(curTrans);
+    if (!st) {
+        logi("state for this transaction not found\n");
+        pthread_mutex_unlock(&mGattUtilLock);
+        return GATT_CLI_STATUS_ERR;
+    }
+
+    handle = st->handle;
+    authReq = st->authReq;
+    offset = sgLength(st->dataSoFar);
+    st->curTrans = curTrans = uniqGetNext();
+    pthread_mutex_unlock(&mGattUtilLock);
+
+    if (offset != (uint16_t)offset) {
+        logi("GATT util long read: offset too large\n");
+        ret = GATT_CLI_STATUS_ERR;
+    }
+    else {
+        ret = gattClientRead(conn, handle, authReq, offset, curTrans, gattClientUtilLongReadReadCbk);
+        if (ret == GATT_CLI_STATUS_OK)
+            return GATT_CLI_STATUS_OK;
+        logi("GATT util long read: failed to schedule a read: 0x%02x\n", ret);
+    }
+
+    //if we ge this far, we failed - cleanup
+    pthread_mutex_lock(&mGattUtilLock);
+    st = gattClientUtilLongReadStructFindByTransId(curTrans);
+    if (!st) {
+        logi("Failed to delete struct since there is no more struct\n");
+        pthread_mutex_unlock(&mGattUtilLock);
+        return ret;
+    }
+    gattClientUtilLongReadStructUnlink(st);
+    pthread_mutex_unlock(&mGattUtilLock);
+    if (needCallback)
+        st->cbk(conn, st->clientTrans, NULL);
+    gattClientUtilLongReadStructFreeData(st);
+    return ret;
+}
+
+/*
+ * FUNCTION: gattClientUtilLongRead
+ * USE:      Perform all the work needed to completely read a handle
+ * PARAMS:   conn - the connection id
+ *           handle - the handle to read
+ *           authReq - the authentication requirements
+ *           clientTrans - transaction ID (unused, passed to callback)
+ *           cbk - callback to call with results
+ * RETURN:   GATT_CLI_STATUS_*
+ * NOTES:    even handles cases of MTU changing during the read. Pessimistically does one extra read at end to avoid caring about MTUs
+ */
+uint8_t gattClientUtilLongRead(gatt_client_conn_t conn, uint16_t handle, uint8_t authReq, uniq_t clientTrans, gattCliUtilLongReadCompletedCbk cbk)
+{
+    struct GattCliUtilLongReadState* st = (struct GattCliUtilLongReadState*)calloc(1, sizeof(struct GattCliUtilLongReadState));
+    uniq_t trans;
+
+    if (!st)
+        return GATT_CLI_STATUS_ERR;
+
+    st->dataSoFar = sgNew();
+    if (!st->dataSoFar) {
+        free(st);
+        return GATT_CLI_STATUS_ERR;
+    }
+
+    st->handle = handle;
+    st->authReq = authReq;
+    st->clientTrans = clientTrans;
+    st->curTrans = trans = uniqGetNext();
+    st->cbk = cbk;
+
+    pthread_mutex_lock(&mGattUtilLock);
+    st->next = mUtilLongReadStates;
+    mUtilLongReadStates = st;
+    if (st->next)
+        st->next->prev = st;
+    pthread_mutex_unlock(&mGattUtilLock);
+    return gattClientUtilLongReadScheduleNextChunk(conn, trans, false); // no need for callback this first time as we're sync
 }
 
