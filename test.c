@@ -68,6 +68,12 @@ static const char* getAppearanceTypeStr(uint32_t appVal);
 static const char* getAppearanceSubtypeStr(uint32_t appVal);
 
 
+static void gattConnectedCbkHidTest(gatt_client_conn_t conn, uint8_t status);
+static void battSvcStateCbk(gatt_svc_batt_conn_t handle, uint8_t state);
+static void battSvcRxCbk(gatt_svc_batt_conn_t handle, uint8_t percent, bool byRequest);
+static void miscInfoSvcStateCbk(gatt_svc_misc_info_conn_t handle, uint8_t state);
+static void miscInfoSvcRxCbk(gatt_svc_misc_info_conn_t handle, enum GattSvcMiscInfoType type, sg data);
+
 static void testHciScoRxCbk(hci_conn_t aclConn, const void *data, uint8_t len, uint8_t lossAmount)
 {
    static const char *lossAmtStr[] = {"none", "some", "unknown", "all"};
@@ -150,6 +156,7 @@ static uniq_t terminateTimerId = 0;
 static bool terminate = false;
 
 static hci_adv_set_t mAdvSet[3] = {0,};
+static bool mIsHidDevice = false;
 
 static struct bt_addr mAddrs[3];
 static struct bt_addr mInputDevAddr;
@@ -416,6 +423,33 @@ out:
     return svc;
 }
 
+static void initSvcSubsystemsAndGattConnect(struct bt_addr *connTo)
+{
+    gatt_client_conn_t con = 0;
+
+    gattSvcBattInit(battSvcStateCbk, battSvcRxCbk);
+    gattSvcMiscInfoInit(miscInfoSvcStateCbk, miscInfoSvcRxCbk);
+    btleHidInit(hidConnStateCbk, hidReportRxCbk);
+
+    con = gattClientConnect(connTo, gattConnectedCbkHidTest);
+    if (!con)
+        logw("Failed to try to form a GATT connection!\n");
+    else {
+        logi("Gatt connection handle: "UNIQ_FMT"x\n", UNIQ_CONV(con));
+
+        sem_wait(&mGattTestSem);
+        if (mHidConn) {
+            //connection in progress - wait some more
+            sem_wait(&mGattTestSem);
+            logi("HID connected. press a key to exit\n");
+            getchar();
+            mIsHidDevice = false;
+            btleHidDetachFromGatt(con);
+            gattClientDisconnect(con);
+        }
+    }
+}
+
 void pairStateObserverCallback(void *observerData, const void *pairStateChange, uniq_t observerId) {
     struct smPairStateChange state;
 
@@ -429,6 +463,11 @@ void pairStateObserverCallback(void *observerData, const void *pairStateChange, 
 
     // Unpair with the target device once it's paired
     if (state.pairState == SM_PAIR_STATE_PAIRED) {
+        if (mIsHidDevice) {
+            logi("Connect to the HID device.\n");
+            initSvcSubsystemsAndGattConnect(&state.peerAddr);
+        }
+
         sleep(5);
         smUnpair(&state.peerAddr);
     }
@@ -442,7 +481,7 @@ void passkeyDisplayObserverCallback(void *observerData,
         return;
 
     if (passkeyDisplay->valid)
-        logi("Please enter %06d with the keyboard with "ADDRFMT"\n", passkeyDisplay->passkey,
+        logi("######## Please enter %06d with the keyboard with "ADDRFMT"\n", passkeyDisplay->passkey,
              ADDRCONV(passkeyDisplay->peerAddr));
     else
         logi("The passkey section expired with the keyboard with "ADDRFMT"\n",
@@ -546,7 +585,7 @@ static void gattConnectedCbkHidTest(gatt_client_conn_t conn, uint8_t status)
 {
     logi("GATT for HID connect status: %u\n", status);
 
-    if (status == GATT_CLI_STATUS_OK) {
+    if (status == GATT_CLI_STATUS_OK && !mHidConn) {
         mHidConn = btleHidAttach(conn);
         mBattSvcCon = gattSvcBattAttach(conn);
         mMiscInfoSvcCon = gattSvcMiscInfoAttach(conn);
@@ -729,6 +768,38 @@ static const char* getAppearanceSubtypeStr(uint32_t appVal)
     return *t ? *t : "Unknown";
 }
 
+/*
+ * FUNCTION: isHidDevice
+ * USE:      determine if the remote device is a HID device
+ * PARAMS:   data - advertising data or scan response data of the remote device
+ *           len - the data length
+ * RETURN:   false if it is not a HID device
+ * NOTES:
+ */
+static bool isHidDevice(const uint8_t *data, uint32_t len)
+{
+    uint8_t typ, sz;
+
+    while (len >= 2) {
+        sz = *data++;
+        if (!sz || sz > len - 1)
+            break;
+        typ = *data++;
+        len -= 2;
+        sz--;
+
+        if (typ == 0x19) {
+            if (sz != 2)
+                return false;
+            if (!strcmp(getAppearanceTypeStr(utilGetLE16(data)), "HID"))
+                return true;
+        }
+        len -= sz;
+        data += sz;
+    }
+    return false;
+}
+
 static void interpAvdData(const uint8_t *data, uint32_t len)
 {
 
@@ -906,7 +977,8 @@ int main(int argc, char** argv)
         goto cleanup;
     }
 
-    if (argc == 2 && (!strcmp(argv[1], "scan") || !strcmp(argv[1], "scanconnect") || !strcmp(argv[1], "hidtest"))) {
+    if ((argc == 2 && (!strcmp(argv[1], "scan") || !strcmp(argv[1], "scanconnect"))) ||
+        (argc == 3 && !strcmp(argv[1], "hidtest"))) {
         /*
          * Option: scan, scanconnect, hidtest
          * Use:    start LE scanning for a while and terminate. in case of scanconnect, connect and enumerate GATT things, for "hidtest", try the hid test
@@ -950,13 +1022,15 @@ int main(int argc, char** argv)
 
                 if (wantConnect || doHidTest) {   //is this the one we shoudl connect to???
 
-                    static const char *connNameMatch = "PC120A";
+                    const char *connNameMatch = argc == 2 ? "PC120A" : argv[2];
+                    logi("Connect to device: %s\n", connNameMatch);
 
                     if (eirNameMatch(t->advData, t->advLen, connNameMatch) || (t->haveRsp && eirNameMatch(t->rspData, t->rspLen, connNameMatch))) {
                       foundDev = true;
                       memcpy(connTo.addr, t->mac, BT_MAC_LEN);
                       connTo.type = t->randomAddr ? BT_ADDR_TYPE_LE_RANDOM : BT_ADDR_TYPE_LE_PUBLIC;
                       logi("Found device to connect to: "ADDRFMT"\n", ADDRCONV(connTo));
+                      mIsHidDevice = isHidDevice(t->advData, t->advLen) || isHidDevice(t->rspData, t->rspLen);
                     }
                 }
                 free(t);
@@ -965,26 +1039,33 @@ int main(int argc, char** argv)
             if (!foundDev)
                 logi("Desired device not found. Sorry\n");
             else if (doHidTest) {
-
-                gattSvcBattInit(battSvcStateCbk, battSvcRxCbk);
-                btleHidInit(hidConnStateCbk, hidReportRxCbk);
-                gattSvcMiscInfoInit(miscInfoSvcStateCbk, miscInfoSvcRxCbk);
-
-                con = gattClientConnect(&connTo, gattConnectedCbkHidTest);
-                if (!con)
-                    logw("Failed to try to form a GATT connection!\n");
-                else {
-                    logi("Gatt connection handle: "UNIQ_FMT"x\n", UNIQ_CONV(con));
-
-                    sem_wait(&mGattTestSem);
-                    if (mHidConn) { //connection in progress - wait some more
-                        sem_wait(&mGattTestSem);
-                        logi("HID connected. press a key to exit\n");
-                        getchar();
-                        btleHidDetachFromGatt(con);
-                        gattClientDisconnect(con);
-                    }
+                // Register an observer to respond to passkey display.
+                mPasskeyDisplayObserverId =
+                    smRegisterPasskeyDisplayObserver(NULL, passkeyDisplayObserverCallback);
+                if (!mPasskeyDisplayObserverId) {
+                    loge("Failed to register as an observer to passkey display\n");
+                    goto cleanup;
                 }
+
+                // Register an observer of pairing state changes.
+                struct smPairSecurityRequirements secReqs = {.bond = true, .mitm = true};
+                struct bt_addr* target = calloc(1, sizeof(struct bt_addr));
+                if (!target) {
+                    loge("Failed to allocate memory of bt address for hidtest.\n");
+                    goto cleanup;
+                }
+                *target = connTo;
+                mPairStateObserverId = smRegisterPairStateObserver(target, pairStateObserverCallback);
+                if (!mPairStateObserverId) {
+                    loge("Failed to register as an observer to pairing state changes\n");
+                    goto cleanup;
+                }
+
+                // Pair the target HID device.
+                smPair(target, &secReqs);
+
+                logi("waiting...press a key\n");
+                getchar();
             }
             else if (wantConnect) {
 
@@ -1038,7 +1119,6 @@ int main(int argc, char** argv)
             sscanf(argv[2], "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", &mInputDevAddr.addr[5],
                    &mInputDevAddr.addr[4], &mInputDevAddr.addr[3], &mInputDevAddr.addr[2],
                    &mInputDevAddr.addr[1], &mInputDevAddr.addr[0]);
-            mInputDevAddr.type = BT_ADDR_TYPE_LE_RANDOM;
         }
 
         // register as an observer to respond to passkey display
@@ -1089,6 +1169,9 @@ int main(int argc, char** argv)
             if (found) {
                 logi("Target device found, try to pair with device "ADDRFMT" ...\n",
                      ADDRCONV(argc == 3 ? mInputDevAddr : mAddrs[0]));
+                mInputDevAddr.type = t->randomAddr ? BT_ADDR_TYPE_LE_RANDOM : BT_ADDR_TYPE_LE_PUBLIC;
+                logi("remote device address type: %s, mIsHidDevice: %d\n",
+                     mInputDevAddr.type == BT_ADDR_TYPE_LE_RANDOM ? "LE_RANDOM" : "LE_PUBLIC", mIsHidDevice);
                 smPair((argc == 3 ? &mInputDevAddr : &mAddrs[0]), &secReqs);
                 break;
             }
