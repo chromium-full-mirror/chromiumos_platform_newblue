@@ -65,11 +65,6 @@ struct ReportsListNode {
     uint8_t reportType; // as per hid spec
 };
 
-struct CharStartInfo { //due to GATT being weird, we need this info to determine where chars end
-    struct CharStartInfo *next;
-    uint16_t handle;
-};
-
 struct HidConn {
     struct HidConn *prev;
     struct HidConn *next;
@@ -91,8 +86,6 @@ struct HidConn {
     struct CharInfo protocolMode;
 
     struct ReportsListNode *reports;
-
-    struct CharStartInfo* tmpCharInfo; //used at connect time only to cover for GATT's shitty design (no way to tell where a characteristic ends)
 };
 
 
@@ -167,7 +160,6 @@ static void btleHidFreeCharInfo(gatt_client_conn_t gattConn, struct CharInfo *ch
  */
 static bool btleHidDetachWithDev(struct HidConn *hid)
 {
-    struct CharStartInfo *ci = hid->tmpCharInfo;
     struct ReportsListNode *node = hid->reports;
 
     hid->state = BTLE_HID_CONN_STATE_TEARDOWN;
@@ -184,12 +176,6 @@ static bool btleHidDetachWithDev(struct HidConn *hid)
         struct ReportsListNode *t = node;
         node = node->next;
         btleHidFreeCharInfo(hid->gattConn, &t->chr);
-        free(t);
-    }
-
-    while (ci) {
-        struct CharStartInfo *t = ci;
-        ci = ci->next;
         free(t);
     }
 
@@ -275,19 +261,6 @@ void btleHidInit(BtleHidConnStateCbk stateCbk, BtleHidReportRxCbk rxCbk)
 {
     mCbkState = stateCbk;
     mCbkRx = rxCbk;
-}
-
-/*
- * FUNCTION: btleHidCanCharContainDescr
- * USE:      simple utility func to see if a given descriptor handle can be contained in a given characteristic
- * PARAMS:   chr - characteristic info struct
- *           descrHandle - the descriptor handle in question
- * RETURN:   the answer
- * NOTES:
- */
-static bool btleHidCanCharContainDescr(const struct CharInfo* chr, uint16_t descrHandle)
-{
-    return (chr->charHandle && chr->valHandle < descrHandle && chr->endHandle >= descrHandle);
 }
 
 /*
@@ -909,112 +882,6 @@ out_unlock:
 }
 
 /*
- * FUNCTION: btleHidAttachDescrEnumCbk
- * USE:      Called by GATT when descriptors are found (at request of btleHidAttachCharEnumCbk)
- * PARAMS:   gattConn - the GATT client connection id
- *           trans - transaction ID (unused here as we can look up by gatt conn id)
- *           uuid - the UUID of the found descriptor or NULL on error or end of list
- *           charHandle - handle of the char descriptor attribute
- *           valHandle - handle of the char value attribute
- *           props - char properties
- *           status - GATT's status code for the char search (if not OK, it failed)
- * RETURN:   NONE
- * NOTES:
- */
-static void btleHidAttachDescrEnumCbk(gatt_client_conn_t gattConn, uniq_t trans, const struct uuid *uuid, uint16_t handle, uint8_t status)
-{
-    struct ReportsListNode *node;
-    struct HidConn *hid;
-    uint16_t uuid16;
-
-    pthread_mutex_lock(&mHidLock);
-    hid = hidFindConnByGattConn(gattConn);
-    if (!hid) {
-        logw("Unexpected GATT descriptor discovery callback for unknown-to-HID connection "GATTHANDLEFMT"\n", GATTHANDLECNV(gattConn));
-        goto out_unlock;
-    }
-
-    if (status != GATT_CLI_STATUS_OK) {
-        logw("Failed to find descriptors on GATT conn "GATTHANDLEFMT"\n", GATTHANDLECNV(gattConn));
-        goto out_detach;
-    }
-
-    if (!uuid) { // descr enumeration is over - we've discoverd all there was to be discovered - verify it is enough, then proceed
-        ble_hid_conn_t id;
-
-        if (!btleHidVerifyGattRequirementsMet(hid)) {
-            logw("HID device on GATT connection "GATTHANDLEFMT" did not meet requirements of HID-over-GATT spec and will not be usable!\n", GATTHANDLECNV(gattConn));
-            goto out_detach;
-        }
-
-        // start reading the required things
-        hid->state = BTLE_HID_CONN_STATE_READING;
-        id = hid->id;
-        pthread_mutex_unlock(&mHidLock);
-        mCbkState(id, BTLE_HID_CONN_STATE_READING);
-
-        btleHidAttachPerformPrerequisiteRead(gattConn);
-        return;
-    }
-
-    if (!uuidToUuid16(&uuid16, uuid)) {
-        logw("Unexpected uuid128-named descr found in HID service: "UUIDFMT"\n", UUIDCONV(*uuid));
-        goto out_unlock;
-    }
-
-    logd("HID: found descr with uuid16 0x%04x at handle 0x%04x\n", uuid16, handle);
-
-    //if this char belongs to a report, record it there
-    for (node = hid->reports; node; node = node->next) {
-        if (btleHidCanCharContainDescr(&node->chr, handle)) {
-            if (uuid16 == GATT_UUID_CHAR_CLI_CHAR_CFG) // cccd in a report
-                node->chr.cccdHandle = handle;
-            else if (uuid16 == BTLE_UUID_HID_CHARDESCR_REPORT_REF) // report ref in a report
-                node->chr.extraHandle = handle;
-            else
-                logi("Unexpected descriptor with uuid16 0x%04x in report at 0x%04x\n", uuid16, node->chr.charHandle);
-            goto out_unlock;
-        }
-    }
-
-    // some non-report characteristics also have descriptors we care about
-    if (uuid16 == GATT_UUID_CHAR_CLI_CHAR_CFG && btleHidCanCharContainDescr(&hid->bootKbdInput, handle))
-        hid->bootKbdInput.cccdHandle = handle;
-    if (uuid16 == GATT_UUID_CHAR_CLI_CHAR_CFG && btleHidCanCharContainDescr(&hid->bootMouseInput, handle))
-        hid->bootMouseInput.cccdHandle = handle;
-    if (uuid16 == BTLE_UUID_HID_CHARDESCR_EXTERNAL_REPORT_REF && btleHidCanCharContainDescr(&hid->reportMap, handle))
-        hid->bootMouseInput.extraHandle = handle;
-
-    // all done with this descr, let the enumeration proceed
-    goto out_unlock;
-
-out_detach:
-    if (!btleHidDetachWithDev(hid))
-        loge("Failed to detach on error in descriptors enum!\n");
-
-out_unlock:
-    pthread_mutex_unlock(&mHidLock);
-}
-
-/*
- * FUNCTION: btleHidGattRecalcCharEnd
- * USE:      Calculate char's end handle given start handles of all chars
- * PARAMS:   ci - the char info structure for the char to work on
- *           csi - list of all chars' start handles
- * RETURN:   NONE
- * NOTES:    assumes ci's end handle is already pre-set to service's end handle
- *           for details, see GATT spec (basically a char ends where next char
- *           starts or where service ends).
- */
-static void btleHidGattRecalcCharEnd(struct CharInfo* ci, const struct CharStartInfo *csi)
-{
-    for (; csi; csi = csi->next) {
-        if (csi->handle > ci->charHandle && csi->handle <= ci->endHandle)
-            ci->endHandle = csi->handle - 1;
-    }
-}
-
-/*
  * FUNCTION: btleHidUtilAddCharToCharList
  * USE:      Add a node to a characteristic list and return pointer to it
  * PARAMS:   listP - pointer to where list head is stored
@@ -1036,106 +903,44 @@ static struct CharInfo* btleHidUtilAddCharToCharList(struct ReportsListNode **li
 }
 
 /*
- * FUNCTION: btleHidAttachCharEnumCbk
- * USE:      Called by GATT when characteristics are found (at request of btleHidAttachServiceEnumCbk)
- * PARAMS:   gattConn - the GATT client connection id
- *           trans - transaction ID (unused here as we can look up by gatt conn id)
- *           uuid - the UUID of the found characteristic or NULL on error or end of list
- *           charHandle - handle of the char descriptor attribute
- *           valHandle - handle of the char value attribute
- *           props - char properties
- *           status - GATT's status code for the char search (if not OK, it failed)
+ * FUNCTION: btleHidAttachAddDiscoveredChar
+ * USE:      Called once per discovered characteristic
+ * PARAMS:   hid - the connection structure
+ *           chr - info on a character
  * RETURN:   NONE
- * NOTES:
+ * NOTES:    caleld with mHidLock held
  */
-static void btleHidAttachCharEnumCbk(gatt_client_conn_t gattConn, uniq_t trans, const struct uuid *uuid, uint16_t charHandle, uint16_t valHandle, uint8_t props, uint8_t status)
+static void btleHidAttachAddDiscoveredChar(struct HidConn *hid, const struct GattTraversedServiceChar *chr)
 {
+    bool isReport = false, isBootInputReport = false, isReportMap = false;
     struct CharInfo *dst = NULL;
-    struct CharStartInfo *csi;
-    struct HidConn *hid;
     uint16_t uuid16;
+    uint32_t i;
 
-    pthread_mutex_lock(&mHidLock);
-    hid = hidFindConnByGattConn(gattConn);
-    if (!hid) {
-        logw("Unexpected GATT characteristic discovery callback for unknown-to-HID connection "GATTHANDLEFMT"\n", GATTHANDLECNV(gattConn));
-        goto out_unlock;
-    }
-
-    if (status != GATT_CLI_STATUS_OK) {
-        logw("Failed to find characteristics on GATT conn "GATTHANDLEFMT"\n", GATTHANDLECNV(gattConn));
-        goto out_detach;
-    }
-
-    if (!uuid) { // char enumeration done
-        struct ReportsListNode *ReportsListNode;
-        ble_hid_conn_t id;
-
-        logd("HID: char enum done\n");
-
-        // calculate character ending handles
-        btleHidGattRecalcCharEnd(&hid->bootKbdInput, hid->tmpCharInfo);
-        btleHidGattRecalcCharEnd(&hid->bootKbdOutput, hid->tmpCharInfo);
-        btleHidGattRecalcCharEnd(&hid->bootMouseInput, hid->tmpCharInfo);
-        btleHidGattRecalcCharEnd(&hid->hidInfo, hid->tmpCharInfo);
-        btleHidGattRecalcCharEnd(&hid->reportMap, hid->tmpCharInfo);
-        btleHidGattRecalcCharEnd(&hid->controlPt, hid->tmpCharInfo);
-        btleHidGattRecalcCharEnd(&hid->protocolMode, hid->tmpCharInfo);
-        for (ReportsListNode = hid->reports; ReportsListNode; ReportsListNode = ReportsListNode->next)
-            btleHidGattRecalcCharEnd(&ReportsListNode->chr, hid->tmpCharInfo);
-
-        // free the char start info array (as we no longer need it)
-        while (hid->tmpCharInfo) {
-            struct CharStartInfo *t = hid->tmpCharInfo->next;
-            free(hid->tmpCharInfo);
-            hid->tmpCharInfo = t;
-        }
-
-        // now we need to find some descriptors - let's get started on that
-        hid->state = BTLE_HID_CONN_STATE_FINDING_DESCRS;
-        id = hid->id;
-        pthread_mutex_unlock(&mHidLock);
-        mCbkState(id, BTLE_HID_CONN_STATE_FINDING_DESCRS);
-
-        //this is actually OK to do - we'll just manually figure out where each descriptor goes - much simpler than making multiple requests
-        if (GATT_CLI_STATUS_OK != gattClientEnumCharDescriptors(gattConn, hid->hidServiceFirstHandle, hid->hidServiceLastHandle, 0, btleHidAttachDescrEnumCbk)) {
-            logw("Failed to start searching for descriptors\n");
-            if (!btleHidDetachFromGatt(gattConn))
-                loge("Failed to detach from GATT conn on error in descriptors search!\n");
-        }
+    if (!uuidToUuid16(&uuid16, &chr->uuid)) {
+        logw("Unexpected uuid128-named char found in HID service: "UUIDFMT"\n", UUIDCONV(chr->uuid));
         return;
     }
 
-    // record char start so we can calculate ends later
-    csi = calloc(1, sizeof(struct CharStartInfo));
-    if (csi) {
-        csi->handle = charHandle;
-        csi->next = hid->tmpCharInfo;
-        hid->tmpCharInfo = csi;
-    }
-
-    if (!uuidToUuid16(&uuid16, uuid)) {
-        logw("Unexpected uuid128-named char found in HID service: "UUIDFMT"\n", UUIDCONV(*uuid));
-        goto out_unlock;
-    }
-
     logd("HID: found char with uuid16 0x%04x\n", uuid16);
-
     switch (uuid16) {
     case BTLE_UUID_HID_CHAR_BOOT_KBD_INPUT_REPORT:
         dst = &hid->bootKbdInput;
+        isBootInputReport = true;
         break;
     case BTLE_UUID_HID_CHAR_BOOT_KBD_OUTPUT_REPORT:
         dst = &hid->bootKbdOutput;
         break;
     case BTLE_UUID_HID_CHAR_BOOT_MOUSE_INPUT_REPORT:
         dst = &hid->bootMouseInput;
+        isBootInputReport = true;
         break;
     case BTLE_UUID_HID_CHAR_INFORMATION:
         dst = &hid->hidInfo;
         break;
     case BTLE_UUID_HID_CHAR_REPORT_MAP:
         dst = &hid->reportMap;
+        isReportMap = true;
         break;
     case BTLE_UUID_HID_CHAR_CONTROL_PT:
         dst = &hid->controlPt;
@@ -1145,10 +950,11 @@ static void btleHidAttachCharEnumCbk(gatt_client_conn_t gattConn, uniq_t trans, 
         break;
     case BTLE_UUID_HID_CHAR_REPORT:
         dst = btleHidUtilAddCharToCharList(&hid->reports);
+        isReport = true;
         break;
     default:
-        logw("Unexpected uuid16 0x%04x found in HID service\n", uuid16);
-        goto out_unlock;
+        logw("Unexpected char with uuid16 0x%04x found in HID service\n", uuid16);
+        return;
     }
 
     if (!dst)
@@ -1156,81 +962,89 @@ static void btleHidAttachCharEnumCbk(gatt_client_conn_t gattConn, uniq_t trans, 
     else if (dst->charHandle)
         logw("Unexpected duplicate characteristic (uuid16 0x%04x) found in HID. Ignoring\n", uuid16);
     else {
-
         logd("HID: char recorded\n");
+        dst->charHandle = chr->firstHandle;
+        dst->valHandle = chr->valHandle;
+        dst->endHandle = chr->lastHandle;
+        dst->charProps = chr->charProps;
 
-        dst->charHandle = charHandle;
-        dst->valHandle = valHandle;
-        dst->endHandle = hid->hidServiceLastHandle; // will be recalculated later
-        dst->charProps = props;
+        // handle descriptors
+        for (i = 0; i < chr->numDescrs; i++) {
+
+            if (!uuidToUuid16(&uuid16, &chr->descrs[i].uuid)) {
+                logw("Unexpected uuid128-named descr found in HID service: "UUIDFMT"\n", UUIDCONV(chr->descrs[i].uuid));
+                continue;
+            }
+
+            logd("HID: found descr with uuid16 0x%04x at handle 0x%04x\n", uuid16, chr->descrs[i].handle);
+
+            //if this char belongs to a report, record it there
+            if (isReport) {
+                if (uuid16 == GATT_UUID_CHAR_CLI_CHAR_CFG) // cccd in a report
+                    dst->cccdHandle = chr->descrs[i].handle;
+                else if (uuid16 == BTLE_UUID_HID_CHARDESCR_REPORT_REF) // report ref in a report
+                    dst->extraHandle = chr->descrs[i].handle;
+                else
+                    logi("Unexpected descriptor with uuid16 0x%04x in report at 0x%04x\n", uuid16, dst->charHandle);
+            }
+            else if (isBootInputReport && uuid16 == GATT_UUID_CHAR_CLI_CHAR_CFG)
+                dst->cccdHandle = chr->descrs[i].handle;
+            else if (isReportMap && uuid16 == BTLE_UUID_HID_CHARDESCR_EXTERNAL_REPORT_REF)
+                dst->extraHandle = chr->descrs[i].handle;
+            else
+                logi("HID: descr in HID char is meaningless & was ignored\n");
+        }
     }
-    goto out_unlock;
-
-out_detach:
-    if (!btleHidDetachWithDev(hid))
-        loge("Failed to detach on error in characteristics enum!\n");
-
-out_unlock:
-    pthread_mutex_unlock(&mHidLock);
 }
 
 /*
- * FUNCTION: btleHidAttachServiceEnumCbk
+ * FUNCTION: btleHidAttachServiceTraversalCbk
  * USE:      Called by GATT when the HID service is found at request of btleHidAttach()
  * PARAMS:   gattConn - the GATT client connection id
  *           trans - transaction ID (unused here as we can look up by gatt conn id)
- *           uuid - the UUID of the found service or NULL on error or end of list
- *           primary - whether the found service was primary
- *           firstHandle - the first handle value for the found service
- *           numHandles - number of handles the found service contains
- *           status - GATT's status code for the service search (if not OK, it failed)
+ *           data - the traversal data or NULL on error
  * RETURN:   NONE
  * NOTES:
  */
-static void btleHidAttachServiceEnumCbk(gatt_client_conn_t gattConn, uniq_t trans, const struct uuid *uuid, bool primary, uint16_t firstHandle, uint16_t numHandles, uint8_t status)
+static void btleHidAttachServiceTraversalCbk(gatt_client_conn_t gattConn, uniq_t trans, const struct GattTraversedService* data)
 {
     const struct uuid hidUuid = BT_UUID_STATIC_16(BTLE_UUID_HID_SERVICE);
-    bool found = uuid && uuidCmp(uuid, &hidUuid) && primary && numHandles;
-    uint16_t lastHandle = firstHandle + numHandles - 1;
     struct HidConn *hid;
     ble_hid_conn_t id;
+    uint32_t i;
 
     pthread_mutex_lock(&mHidLock);
     hid = hidFindConnByGattConn(gattConn);
     if (!hid) {
-        logw("Unexpected GATT service discovery callback for unknown-to-HID connection "GATTHANDLEFMT"\n", GATTHANDLECNV(gattConn));
+        logw("Unexpected GATT service traversal callback for unknown-to-HID connection "GATTHANDLEFMT"\n", GATTHANDLECNV(gattConn));
         goto out_unlock;
     }
 
-    if (status != GATT_CLI_STATUS_OK) {
-        logw("Error looking for HID service on GATT conn "GATTHANDLEFMT"\n", GATTHANDLECNV(gattConn));
+    if (!data || !uuidCmp(&data->uuid, &hidUuid)) {
+        logw("Error finding or traversing HID service on GATT conn "GATTHANDLEFMT"\n", GATTHANDLECNV(gattConn));
         goto out_detach;
     }
+    
+    // copy basics
+    hid->hidServiceFirstHandle = data->firstHandle;
+    hid->hidServiceLastHandle = data->lastHandle;
 
-    if (!hid->hidServiceFirstHandle && !found) {
-        logw("Failed to find valid HID service on GATT conn "GATTHANDLEFMT"\n", GATTHANDLECNV(gattConn));
+    // record characteristics
+    for (i = 0; i < data->numChars; i++)
+        btleHidAttachAddDiscoveredChar(hid, &data->chars[i]);
+
+    // verify requirements are met
+    if (!btleHidVerifyGattRequirementsMet(hid)) {
+        logw("HID device on GATT connection "GATTHANDLEFMT" did not meet requirements of HID-over-GATT spec and will not be usable!\n", GATTHANDLECNV(gattConn));
         goto out_detach;
     }
-
-    if (hid->hidServiceFirstHandle && found) {
-        logw("More than one valid HID service found on GATT conn "GATTHANDLEFMT"\n", GATTHANDLECNV(gattConn));
-        goto out_detach;
-    }
-
-    hid->hidServiceFirstHandle = firstHandle;
-    hid->hidServiceLastHandle = lastHandle;
-    hid->state = BTLE_HID_CONN_STATE_FINDING_CHARS;
+    
+    //go on to read required prerequisites
     id = hid->id;
+    hid->state = BTLE_HID_CONN_STATE_READING;
     pthread_mutex_unlock(&mHidLock);
-    mCbkState(id, BTLE_HID_CONN_STATE_FINDING_CHARS);
-
-    if (GATT_CLI_STATUS_OK != gattClientEnumCharacteristics(gattConn, firstHandle, lastHandle, 0, btleHidAttachCharEnumCbk)) {
-
-        logw("Failed to start searching for characteristics\n");
-        if (!btleHidDetachFromGatt(gattConn))
-            loge("Failed to detach from GATT conn on error in characteristics enum!\n");
-    }
-
+    mCbkState(id, BTLE_HID_CONN_STATE_READING);
+    btleHidAttachPerformPrerequisiteRead(gattConn);
     return;
 
 out_detach:
@@ -1269,7 +1083,7 @@ ble_hid_conn_t btleHidAttach(gatt_client_conn_t gattConn)
 
     hid->id = hidConn = uniqGetNext();
     hid->gattConn = gattConn;
-    hid->state = BTLE_HID_CONN_STATE_FINDING_SVC;
+    hid->state = BTLE_HID_CONN_STATE_GATT_DISCOVERY;
     id = hid->id;
 
     hid->next = mHidDevs;
@@ -1278,10 +1092,10 @@ ble_hid_conn_t btleHidAttach(gatt_client_conn_t gattConn)
     mHidDevs = hid;
 
     pthread_mutex_unlock(&mHidLock);
-    mCbkState(id, BTLE_HID_CONN_STATE_FINDING_SVC);
+    mCbkState(id, BTLE_HID_CONN_STATE_GATT_DISCOVERY);
 
     logi("HID attempting an attachment to GATT conn "GATTHANDLEFMT"\n", GATTHANDLECNV(gattConn));
-    if (GATT_CLI_STATUS_OK == gattClientFindService(gattConn, true, &hidUuid, 0, btleHidAttachServiceEnumCbk))
+    if (GATT_CLI_STATUS_OK == gattClientUtilFindAndTraversePrimaryService(gattConn, &hidUuid, 0, btleHidAttachServiceTraversalCbk))
         return hidConn;
 
     logw("Failed to start the GATT service search\n");

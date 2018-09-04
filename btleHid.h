@@ -22,13 +22,11 @@ typedef uniq_t ble_hid_conn_t;
 
 //normal states
 #define BTLE_HID_CONN_STATE_INVALID                    0x00 // should never be seen
-#define BTLE_HID_CONN_STATE_FINDING_SVC                0x01 // looking for main HID service
-#define BTLE_HID_CONN_STATE_FINDING_CHARS              0x02 // looking for characteristics
-#define BTLE_HID_CONN_STATE_FINDING_DESCRS             0x03 // looking for descriptors
-#define BTLE_HID_CONN_STATE_READING                    0x04 // reading required things
-#define BTLE_HID_CONN_STATE_WRITING_CCCDS              0x05 // writing CCCDs as needed
-#define BTLE_HID_CONN_STATE_UP                         0x06 // ready to be used
-#define BTLE_HID_CONN_STATE_TEARDOWN                   0x07 // going down
+#define BTLE_HID_CONN_STATE_GATT_DISCOVERY             0x01 // looking for main HID service & enumerating its insides
+#define BTLE_HID_CONN_STATE_READING                    0x02 // reading required things
+#define BTLE_HID_CONN_STATE_WRITING_CCCDS              0x03 // writing CCCDs as needed
+#define BTLE_HID_CONN_STATE_UP                         0x04 // ready to be used
+#define BTLE_HID_CONN_STATE_TEARDOWN                   0x05 // going down
 
 #define BTLE_HID_REPORT_ID_BOOT_KEYBOARD_IN            -1  //fake report ID for boot mode keyboard input
 #define BTLE_HID_REPORT_ID_BOOT_KEYBOARD_OUT           -2  //fake report ID for boot mode keyboard output
