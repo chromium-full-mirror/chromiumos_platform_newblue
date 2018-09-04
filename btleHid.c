@@ -783,21 +783,19 @@ static bool btleHidAttachPrerequisiteReadGetNext(struct HidConn *hid, uint16_t *
  * FUNCTION: btleHidAttachPrerequisiteReadDataRxedCbk
  * USE:      Receive the result of a read done by btleHidAttachPerformPrerequisiteRead
  * PARAMS:   gattConn - the GATT client connection id
- *           trans - transaction ID (unused here as we can look up by gatt conn id)
- *           handle - the handle read
- *           status - the status of the read
- *           data - the data read
+ *           trans - transaction ID (we store handle here as a way to double-check we got what we wanted)
+ *           data - the data read or NULL on error
  * RETURN:   NONE
  * NOTES:
  */
-static void btleHidAttachPrerequisiteReadDataRxedCbk(gatt_client_conn_t gattConn, uniq_t trans, uint16_t handle, uint8_t status, sg data)
+static void btleHidAttachPrerequisiteReadDataRxedCbk(gatt_client_conn_t gattConn, uniq_t trans, sg data)
 {
-    uint16_t expectedHandle = 0;
+    uint16_t expectedHandle = 0, handle = trans;
     struct DataBuffer **bufPP;
     struct DataBuffer *buf;
     struct HidConn *hid;
 
-    logd("HID: prereq read cbk read hadle 0x%04x with status %u\n", handle, status);
+    logd("HID: prereq read cbk read hadle 0x%04x with %sNULL ptr data\n", handle, data ? "non-" : "");
 
     pthread_mutex_lock(&mHidLock);
     hid = hidFindConnByGattConn(gattConn);
@@ -806,8 +804,8 @@ static void btleHidAttachPrerequisiteReadDataRxedCbk(gatt_client_conn_t gattConn
         goto out_unlock;
     }
 
-    if (status != GATT_CLI_STATUS_OK || !data) {
-        logw("Failed to prereq read handle 0x%04x: 0x%02x\n", handle, status);
+    if (!data) {
+        logw("Failed to prereq read handle 0x%04x\n", handle);
         goto out_detach;
     }
 
@@ -894,7 +892,7 @@ static void btleHidAttachPerformPrerequisiteRead(gatt_client_conn_t gattConn)
 
     // read the thing we've decided to read
     pthread_mutex_unlock(&mHidLock);
-    if (GATT_CLI_STATUS_OK != gattClientRead(gattConn, handleToRead, 0, 0, 0, btleHidAttachPrerequisiteReadDataRxedCbk)) {
+    if (GATT_CLI_STATUS_OK != gattClientUtilLongRead(gattConn, handleToRead, 0, (uniq_t)handleToRead, btleHidAttachPrerequisiteReadDataRxedCbk)) {
         logw("Failed to read a required handle 0x%04x\n", handleToRead);
         if (!btleHidDetachFromGatt(gattConn))
             loge("Failed to detach from GATT conn on error in descriptors search!\n");
