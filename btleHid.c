@@ -353,16 +353,16 @@ static bool btleHidVerifyGattRequirementsMet(struct HidConn *hid)
  * FUNCTION: btleHidGetReportListNodeByCharHandle
  * USE:      find a report node in the reports list for a given char handle in a given HID device
  * PARAMS:   hid - the hid device struct
- *           chrHandle - the char handle
+ *           chrValueHandle - the char value handle
  * RETURN:   the list node if found, else NULL
  * NOTES:    called with mGattLock held.
  */
-static struct ReportsListNode* btleHidGetReportListNodeByCharHandle(struct HidConn *hid, uint16_t chrHandle)
+static struct ReportsListNode* btleHidGetReportListNodeByCharValueHandle(struct HidConn *hid, uint16_t chrValueHandle)
 {
     struct ReportsListNode *node;
 
     for (node = hid->reports; node; node = node->next) {
-        if (node->chr.charHandle == chrHandle)
+        if (node->chr.valHandle == chrValueHandle)
             return node;
     }
 
@@ -393,13 +393,13 @@ static struct ReportsListNode* btleHidGetReportListNodeByReportId(struct HidConn
  * FUNCTION: btleHidReportDataArrivedCbk
  * USE:      Called when a notif/ind/read reply arrives
  * PARAMS:   gattConn - the GATT client connection id
- *           chrHandle - the char handle
+ *           chrValueHandle - the char value handle
  *           data - the data
  *           isReadReply - was this a read reply
  * RETURN:   NONE
  * NOTES:
  */
-static void btleHidReportDataArrivedCbk(gatt_client_conn_t gattConn, uint16_t chrHandle, sg data, bool isReadReply)
+static void btleHidReportDataArrivedCbk(gatt_client_conn_t gattConn, uint16_t chrValueHandle, sg data, bool isReadReply)
 {
     struct ReportsListNode* node;
     struct HidConn *hid;
@@ -417,15 +417,15 @@ static void btleHidReportDataArrivedCbk(gatt_client_conn_t gattConn, uint16_t ch
         goto out_unlock;
     }
 
-    node = btleHidGetReportListNodeByCharHandle(hid, chrHandle);
+    node = btleHidGetReportListNodeByCharValueHandle(hid, chrValueHandle);
     if (node)
         reportId = (uint32_t)node->reportId;
-    else if (chrHandle == hid->bootKbdInput.charHandle)
+    else if (chrValueHandle == hid->bootKbdInput.valHandle)
         reportId = BTLE_HID_REPORT_ID_BOOT_KEYBOARD_IN;
-    else if (chrHandle == hid->bootMouseInput.charHandle)
+    else if (chrValueHandle == hid->bootMouseInput.valHandle)
         reportId = BTLE_HID_REPORT_ID_BOOT_MOUSE_IN;
     else {
-        logw("RXed data for value handle 0x%04x matches no report\n", chrHandle);
+        logw("RXed data for value handle 0x%04x matches no report\n", chrValueHandle);
         goto out_unlock;
     }
 
@@ -1424,7 +1424,7 @@ bool btleHidWriteReport(ble_hid_conn_t hidId, int32_t reportId, sg data)
  * USE:      Called by GATT when our read succeeds or fails
  * PARAMS:   gattConn - a gatt client connection
  *           trans - transaction ID (unused here as we can look up by gatt conn id)
- *           handle - handle we wrote
+ *           handle - handle we wrote (char value handle)
  *           status - GATT status
  *           data - the data
  * RETURN:   NONE
@@ -1432,7 +1432,7 @@ bool btleHidWriteReport(ble_hid_conn_t hidId, int32_t reportId, sg data)
  */
 static void btleHidReadReportReadCbk(gatt_client_conn_t gattConn, uniq_t trans, uint16_t handle, uint8_t status, sg data)
 {
-    if (status != GATT_CLI_STATUS_OK)
+    if (status != GATT_CLI_STATUS_OK || !data)
         logi("HID GATT READ to handle 0x%04 failed with status 0x%02x\n", handle, status);
 
     btleHidReportDataArrivedCbk(gattConn, handle, data, true);
