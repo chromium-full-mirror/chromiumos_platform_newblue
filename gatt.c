@@ -774,7 +774,7 @@ static bool gattEnqueueCliIndCall(struct gattClientConnection *clicon, struct ga
         wi->type = GATT_WORK_CLI_IND_CALL;
         wi->cliIndCall.cbk = nr->arrivedCbk;
         wi->cliIndCall.conn = clicon->connId;
-        wi->cliIndCall.handle = nr->notif->charHeaderHandle;
+        wi->cliIndCall.handle = nr->notif->charValueHandle;
         wi->cliIndCall.ind = nr->wantInd;
         wi->cliIndCall.data = data;
 
