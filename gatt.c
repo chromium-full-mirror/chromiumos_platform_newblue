@@ -746,6 +746,7 @@ static bool gattEnqueueCliDoNextTodoItem(struct gattConnState *conn)
             if (!conn->todoListH)
                 conn->todoListT = NULL;
             conn->todoCurr = now;
+            now->next = NULL;
 
             return true;
         }
@@ -3338,6 +3339,7 @@ static void gattCliTodoEnqItem(struct gattConnState *conn, struct gattCliTodoIte
             todo->next = conn->todoListH;
             conn->todoListH = todo;
         } else {
+            todo->next = NULL;
             conn->todoListT->next = todo;
             conn->todoListT = todo;
         }
