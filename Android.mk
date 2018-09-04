@@ -20,6 +20,7 @@ COMMON_SRC_FILES :=     \
     gatt.c              \
     gatt-builtin.c      \
     btleHid.c           \
+    gattSvcBattery.c    \
     a2dp.c              \
 
 COMMON_CFLAGS += -Wno-unused-parameter -DANDROID #-DTEST_DEBUG -DSG_DEBUG -DRFC_DEBUG -DMT_DEBUG -DSDP_DBG -DA2DP_DBG

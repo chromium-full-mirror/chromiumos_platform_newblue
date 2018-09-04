@@ -23,6 +23,7 @@ common_OBJS = att.o \
               gatt.o \
               gatt-builtin.o \
               btleHid.o \
+              gattSvcBattery.o \
               hci.o \
               l2cap.o \
               mt.o \
@@ -47,6 +48,7 @@ libnewblue_HEADERS = att.h \
                      bt.h \
                      gatt.h \
                      gatt-builtin.h \
+                     gattSvcBattery.h \
                      btleHid.h \
                      hci.h \
                      l2cap.h \

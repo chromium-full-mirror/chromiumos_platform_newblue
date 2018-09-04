@@ -10,6 +10,7 @@
 #include <regex.h>
 
 #include "newblue-macros.h"
+#include "gattSvcBattery.h"
 #include "gatt-builtin.h"
 #include "vendorLib.h"
 #include "btleHid.h"
@@ -58,6 +59,7 @@ struct ServiceList {
 static sem_t mGattTestSem;
 static struct ServiceList *mGattSvcs = NULL;
 static ble_hid_conn_t mHidConn = 0;
+static gatt_svc_batt_conn_t mBattSvcCon = 0;
 
 static void testHciScoRxCbk(hci_conn_t aclConn, const void *data, uint8_t len, uint8_t lossAmount)
 {
@@ -537,8 +539,10 @@ static void gattConnectedCbkHidTest(gatt_client_conn_t conn, uint8_t status)
 {
     logi("GATT for HID connect status: %u\n", status);
 
-    if (status == GATT_CLI_STATUS_OK)
+    if (status == GATT_CLI_STATUS_OK) {
         mHidConn = btleHidAttach(conn);
+        mBattSvcCon = gattSvcBattAttach(conn);
+    }
 
     //either way unblock main thread
     sem_post(&mGattTestSem);
@@ -559,6 +563,21 @@ static void btleHidReportRxCbk(ble_hid_conn_t hidId, int32_t reportId, sg data, 
     logi("HID report ID %d RXed, %u bytes%s\n", reportId, sgLength(data), byRequest ? " by request" : "");
 
     sgFree(data);
+}
+
+static void battSvcStateCbk(gatt_svc_batt_conn_t handle, uint8_t state)
+{
+    logi("BattSvc state: %u\n", state);
+
+    if (state == BTLE_BATT_SVC_CONN_STATE_UP) {
+        logi(" BattSvc async support: %s\n", gattSvcBattIsNotifSupported(mBattSvcCon) ? "YES" : "NO");
+        logi(" BattSvc read requested: \n", gattSvcBattRequestRead(mBattSvcCon) ? "OK" : "ERROR");
+    }
+}
+
+static void battSvcRxCbk(gatt_svc_batt_conn_t handle, uint8_t percent, bool byRequest)
+{
+    logi("Batt state: %u%% (%s)\n", percent, byRequest ? "by request" : "async update");
 }
 
 static bool eirNameMatch(const uint8_t *data, uint32_t len, const char *name)
@@ -874,6 +893,7 @@ int main(int argc, char** argv)
                 logi("Desired device not found. Sorry\n");
             else if (doHidTest) {
 
+                gattSvcBattInit(battSvcStateCbk, battSvcRxCbk);
                 btleHidInit(btleHidConnStateCbk, btleHidReportRxCbk);
 
                 con = gattClientConnect(&connTo, gattConnectedCbkHidTest);
