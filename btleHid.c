@@ -203,7 +203,7 @@ static bool btleHidDetachWithDev(struct HidConn *hid)
 
     free(hid);
 
-    return false;
+    return true;
 }
 
 /*
