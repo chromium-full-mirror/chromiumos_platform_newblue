@@ -3274,6 +3274,8 @@ static void gattClientConnClose(struct gattClientConnection *clicon, uint8_t sta
             if (tC->connId == clicon->connId) {
                 if (tC == conn->todoListH)
                     conn->todoListH = tN;
+                else
+                    tP->next = tN;
                 if (tC == conn->todoListT)
                     conn->todoListT = tP;
                 free(tC);
