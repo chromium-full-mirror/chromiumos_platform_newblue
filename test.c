@@ -10,6 +10,7 @@
 #include <regex.h>
 
 #include "newblue-macros.h"
+#include "gattSvcMiscInfo.h"
 #include "gattSvcBattery.h"
 #include "gatt-builtin.h"
 #include "vendorLib.h"
@@ -60,6 +61,11 @@ static sem_t mGattTestSem;
 static struct ServiceList *mGattSvcs = NULL;
 static ble_hid_conn_t mHidConn = 0;
 static gatt_svc_batt_conn_t mBattSvcCon = 0;
+static gatt_svc_misc_info_conn_t mMiscInfoSvcCon = 0;
+
+static const char* getAppearanceTypeStr(uint32_t appVal);
+static const char* getAppearanceSubtypeStr(uint32_t appVal);
+
 
 static void testHciScoRxCbk(hci_conn_t aclConn, const void *data, uint8_t len, uint8_t lossAmount)
 {
@@ -542,6 +548,7 @@ static void gattConnectedCbkHidTest(gatt_client_conn_t conn, uint8_t status)
     if (status == GATT_CLI_STATUS_OK) {
         mHidConn = btleHidAttach(conn);
         mBattSvcCon = gattSvcBattAttach(conn);
+        mMiscInfoSvcCon = gattSvcMiscInfoAttach(conn);
     }
 
     //either way unblock main thread
@@ -571,13 +578,95 @@ static void battSvcStateCbk(gatt_svc_batt_conn_t handle, uint8_t state)
 
     if (state == BTLE_BATT_SVC_CONN_STATE_UP) {
         logi(" BattSvc async support: %s\n", gattSvcBattIsNotifSupported(mBattSvcCon) ? "YES" : "NO");
-        logi(" BattSvc read requested: \n", gattSvcBattRequestRead(mBattSvcCon) ? "OK" : "ERROR");
+        logi(" BattSvc read requested: %s\n", gattSvcBattRequestRead(mBattSvcCon) ? "OK" : "ERROR");
     }
 }
 
 static void battSvcRxCbk(gatt_svc_batt_conn_t handle, uint8_t percent, bool byRequest)
 {
     logi("Batt state: %u%% (%s)\n", percent, byRequest ? "by request" : "async update");
+}
+
+static void miscInfoSvcStateCbk(gatt_svc_misc_info_conn_t handle, uint8_t state)
+{
+    uint32_t i;
+    logi("Misc Info state: %u\n", state);
+
+    if (state == BTLE_MISC_INFO_SVC_CONN_STATE_UP) {
+        for (i = 0; i < GattMiscInfoEnumMax; i++) // we expect first to fail (as it is invalid - this tests that)
+            logi("Misc Info Request %u: %s\n", i, gattSvcMiscInfoRequestRead(handle, i) ? "YES" : "NO");
+    }
+}
+
+static void showMiscInfoStr(const char *name, sg data)
+{
+    char* t;
+
+    if (!data)
+        return;
+
+    t = calloc(1, sgLength(data) + 1);
+    sgSerialize(data, 0, sgLength(data), t);
+    sgFree(data);
+    fprintf(stderr, "  %s: '%s'\n", name, t);
+    free(t);
+}
+
+static void miscInfoSvcRxCbk(gatt_svc_misc_info_conn_t handle, enum GattSvcMiscInfoType type, sg data)
+{
+    uint8_t buf[16];
+
+    if (!data)
+        return;
+
+    switch(type) {
+        case GattMiscInfoTypeManufNameString:
+            showMiscInfoStr("Manufacturer Name", data);
+            return;
+        case GattMiscInfoTypeModelNumberString:
+            showMiscInfoStr("Model Number", data);
+            return;
+        case GattMiscInfoTypeSerialNumberString:
+            showMiscInfoStr("Serial Number", data);
+            return;
+        case GattMiscInfoTypeHardwareRevisionString:
+            showMiscInfoStr("HW Revision", data);
+            return;
+        case GattMiscInfoTypeFirmwareRevisionString:
+            showMiscInfoStr("FW Revision", data);
+            return;
+        case GattMiscInfoTypeSoftwareRevisionString:
+            showMiscInfoStr("SW Revision", data);
+            return;
+        case GattMiscInfoTypeDeviceName:
+            showMiscInfoStr("Device Name", data);
+            return;
+        case GattMiscInfoTypeSystemID:
+            if (!sgSerializeCutFront(data, buf, sizeof(uint64_t)) || sgLength(data))
+                fprintf(stderr, "  Invalid SystemID value format\n");
+            else
+                fprintf(stderr, "  System ID: 0x%016llx\n", (unsigned long long)utilGetLE64(buf));
+            break;
+        case GattMiscInfoTypeIeee11073_20601regCertList:
+            fprintf (stderr, "  I have no idea how to show IEEE cert lists, but we got one %u bytes long\n", sgLength(data));
+            break;
+        case GattMiscInfoTypePnpID:
+            if (!sgSerializeCutFront(data, buf, 7) || sgLength(data))
+                fprintf(stderr, "  Invalid PnP ID value format\n");
+            else
+                fprintf(stderr, "  PnP ID: {src=%u,vid=0x%04x,pid=0x%04x,ver=0x%04x}\n", buf[0], utilGetLE16(buf + 1), utilGetLE16(buf + 3), utilGetLE16(buf + 5));
+            break;
+        case GattMiscInfoTypeAppearance:
+            if (!sgSerializeCutFront(data, buf, 2) || sgLength(data))
+                fprintf(stderr, "  Invalid appearance value format\n");
+            else
+                fprintf(stderr, "  Appearance: 0x%04x (%s,%s)\n", utilGetLE16(buf), getAppearanceTypeStr(utilGetLE16(buf)), getAppearanceSubtypeStr(utilGetLE16(buf)));
+            break;
+        default:
+            fprintf(stderr, "  Got unkwnon dev info type %u\n", type);
+            break;
+    }
+    sgFree(data);
 }
 
 static bool eirNameMatch(const uint8_t *data, uint32_t len, const char *name)
@@ -630,7 +719,7 @@ static const char* mLeAppearanceClasses[] =
         [81] = "Outdoor Sports Activity",
     };
 
-static const char *getAppearanceTypeStr(uint32_t appVal)
+static const char* getAppearanceTypeStr(uint32_t appVal)
 {
     uint32_t cls = appVal >> 6;
 
@@ -895,6 +984,7 @@ int main(int argc, char** argv)
 
                 gattSvcBattInit(battSvcStateCbk, battSvcRxCbk);
                 btleHidInit(btleHidConnStateCbk, btleHidReportRxCbk);
+                gattSvcMiscInfoInit(miscInfoSvcStateCbk, miscInfoSvcRxCbk);
 
                 con = gattClientConnect(&connTo, gattConnectedCbkHidTest);
                 if (!con)
