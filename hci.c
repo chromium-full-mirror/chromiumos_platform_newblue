@@ -3011,6 +3011,7 @@ static bool hciBtStackUp(void)
         evts &=~ HCI_EVENT_REMOTE_HOST_SUPPORTED_FEATURES; /* we do not want this one - it is spammy and useless for now */
         evts &=~ HCI_EVENT_MAX_SLOTS_CHANGE; /* same here, really */
         evtsLe &=~ HCI_LE_EVENT_SCAN_REQUEST_RECVD; /* same here */
+        evtsLe &=~ HCI_LE_EVENT_ENHANCED_CONN_COMPLETE; /* https://crbug.com/879325 */
         logi("Setting event mask to 0x"FMT64"X\n", CNV64(evts));
         ret = hciSetEventMaskSync(evts);
         if (ret)
