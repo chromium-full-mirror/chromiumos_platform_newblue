@@ -363,6 +363,27 @@ static struct ReportsListNode* btleHidGetReportListNodeByReportId(struct HidConn
 }
 
 /*
+ * FUNCTION: btleHidGetReportListNodeByReportIdAndType
+ * USE:      find a report node in the reports list for a given report ID and a report type in a given HID device
+ * PARAMS:   hid - the hid device struct
+ *           reportId - the desired report ID
+ *           reportType - the desired report type
+ * RETURN:   the list node if found, else NULL
+ * NOTES:    called with mGattLock held.
+ */
+static struct ReportsListNode* btleHidGetReportListNodeByReportIdAndType(struct HidConn *hid, uint16_t reportId, uint8_t reportType)
+{
+    struct ReportsListNode *node;
+
+    for (node = hid->reports; node; node = node->next) {
+        if (node->reportId == reportId && node->reportType == reportType)
+            return node;
+    }
+
+    return NULL;
+}
+
+/*
  * FUNCTION: btleHidReportDataArrivedCbk
  * USE:      Called when a notif/ind/read reply arrives
  * PARAMS:   gattConn - the GATT client connection id
@@ -647,10 +668,16 @@ static bool btleHidCheckAndProcessDescriptors(struct HidConn *hid)
         reportId = utilGetLE8(node->chr.descrData->data + 0);
         reportType = utilGetLE8(node->chr.descrData->data + 1);
 
-        // verify report ID is not a dupe
-        t = btleHidGetReportListNodeByReportId(hid, reportId);
+        /* Verify that the pair of report ID + report type is not a dupe.
+         * Some keyboards, e.g., Logitech K780, use the same report ID
+         * in both input report type and output report type.
+         * Let's be tolerant and relax a little bit on checking the report ID.
+         * Hence, we enforce the report ID uniqueness of the same report type
+         * instead of in the same device.
+         */
+        t = btleHidGetReportListNodeByReportIdAndType(hid, reportId, reportType);
         if (t) {
-            logw("HID report with handle 0x%04x has a report ID of 0x%02x, but so does the one at 0x%04x\n", node->chr.charHandle, reportId, t->chr.charHandle);
+            logw("HID report with handle 0x%04x has a report ID of 0x%02x and a report type of 0x%02x, but so does the one at 0x%04x\n", node->chr.charHandle, reportId, reportType, t->chr.charHandle);
             return false;
         }
 
@@ -1216,7 +1243,7 @@ bool btleHidWriteReport(ble_hid_conn_t hidId, int32_t reportId, sg data)
             handle = hid->bootKbdOutput.valHandle;
         else if (reportId == BTLE_HID_REPORT_ID_BOOT_MOUSE_IN && hid->bootMouseInput.charHandle && (hid->bootKbdInput.charProps & GATT_PROP_WRITE))
             handle = hid->bootMouseInput.valHandle;
-        else if (reportId >= 0 && (node = btleHidGetReportListNodeByReportId(hid, reportId)) && (node->chr.charProps & GATT_PROP_WRITE))
+        else if (reportId >= 0 && (node = btleHidGetReportListNodeByReportIdAndType(hid, reportId, HID_REPORT_TYPE_OUT)) && (node->chr.charProps & GATT_PROP_WRITE))
             handle = node->chr.valHandle;
         else
             logw("Write to report %d is permanently impossible\n", reportId);
@@ -1254,9 +1281,9 @@ static void btleHidReadReportReadCbk(gatt_client_conn_t gattConn, uniq_t trans, 
 
 /*
  * FUNCTION: btleHidReadReport
- * USE:      Write to a report
+ * USE:      Read a report
  * PARAMS:   hidId - HID device handle
- *           reportId - the report we want to write
+ *           reportId - the report we want to read
  * RETURN:   true on success
  * NOTES:
  */
@@ -1280,7 +1307,7 @@ bool btleHidReadReport(ble_hid_conn_t hidId, int32_t reportId)
             handle = hid->bootKbdOutput.valHandle;
         else if (reportId == BTLE_HID_REPORT_ID_BOOT_MOUSE_IN && hid->bootMouseInput.charHandle && (hid->bootKbdInput.charProps & GATT_PROP_READ))
             handle = hid->bootMouseInput.valHandle;
-        else if (reportId >= 0 && (node = btleHidGetReportListNodeByReportId(hid, reportId)) && (node->chr.charProps & GATT_PROP_READ))
+        else if (reportId >= 0 && (node = btleHidGetReportListNodeByReportIdAndType(hid, reportId, HID_REPORT_TYPE_IN)) && (node->chr.charProps & GATT_PROP_READ))
             handle = node->chr.valHandle;
         else
             logw("Read from report %d is permanently impossible\n", reportId);
