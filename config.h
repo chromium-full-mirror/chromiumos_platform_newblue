@@ -23,6 +23,11 @@
 #define GATT_WORK_Q_SIZE                    64
 
 /*
+ * How much can a GATT client buffer on us-as-server before we assume it is a DoS. Must be < 2^32
+ */
+#define GATT_SRV_PREPARE_WRITE_MAX_BYTES    1048576
+
+/*
  * How many milliseconds from sending an indication as a server to deciding it timed out?
  */
 #define ATT_IND_TIMEOUT                     30000

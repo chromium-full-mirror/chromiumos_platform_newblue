@@ -137,17 +137,27 @@ struct gattCliTodoItem {
 #define GATT_CONN_STATE_CONNECTING       0  /* only if initiating */
 #define GATT_CONN_STATE_RUNNING          1
 
+struct GattEnqueuedWrite {
+    struct GattEnqueuedWrite *next;
+    att_range_t rangeRef;
+    uint16_t handleOfst;
+    sg data;
+};
+
 struct gattConnState {
     struct gattConnState     *next;
     struct gattConnState     *prev;
     uniq_t                    gattConnId;
 
-    struct gattCliNotif      *cliNotifs; /* things we as a client are subscribed to */
+    struct gattCliNotif      *cliNotifs; // things we as a client are subscribed to
     struct bt_addr            addr;
     l2c_handle_t              conn;
     uint32_t                  mtu;
     uint8_t                   state;
     bool                      encr;
+
+    uint32_t                  queuedLength; // how much we've buffered so far
+    struct GattEnqueuedWrite *queuedWrites;
 
     struct gattCliTodoItem   *todoListH;
     struct gattCliTodoItem   *todoListT;
@@ -273,6 +283,12 @@ struct gattWorkItem {
             gatt_service_t           svcRef;
         } srvDiscCall;
         struct {
+            l2c_handle_t             who;
+            att_cid_t                cid;
+            struct GattEnqueuedWrite *q;
+            att_trans_t              transId;
+        } srvWriteExec;
+        struct {
             gattCliConnectResultCbk  cbk;
             gatt_client_conn_t       connId;
             uint8_t                  status;
@@ -324,10 +340,11 @@ struct GattCliUtilLongReadState {
 #define GATT_WORK_SRV_WRITE_CALL         1
 #define GATT_WORK_SRV_IND_CALL           2
 #define GATT_WORK_SRV_DISC_CALL          3
-#define GATT_WORK_CLI_CONN_STATE_NOTIF   4
-#define GATT_WORK_CLI_DO_NEXT            5 // run the next todo item, if none in flight currently
-#define GATT_WORK_CLI_IND_CALL           6
-#define GATT_WORK_CLI_SUB_UNSUB_CALL     7
+#define GATT_WORK_SRV_WRITE_EXEC         4
+#define GATT_WORK_CLI_CONN_STATE_NOTIF   5
+#define GATT_WORK_CLI_DO_NEXT            6 // run the next todo item, if none in flight currently
+#define GATT_WORK_CLI_IND_CALL           7
+#define GATT_WORK_CLI_SUB_UNSUB_CALL     8
 
 
 /* our state */
@@ -423,6 +440,26 @@ static struct gattCliNotif* gattNotifFindByLocatorInConn(struct gattConnState* c
 }
 
 /*
+ * FUNCTION: gattQueuedWriteQueueFree
+ * USE:      Free a queued wrote linked list properly
+ * PARAMS:   qw - the queued write linked list
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void gattQueuedWriteQueueFree(struct GattEnqueuedWrite *qw)
+{
+    struct GattEnqueuedWrite *t;
+
+    while (qw) {
+        t = qw;
+        qw = qw->next;
+        if (t->data)
+            sgFree(t->data);
+        free(t);
+    }
+}
+
+/*
  * FUNCTION: gattConnStructDelete
  * USE:      Delete and unlink a connection struct
  * PARAMS:   state - said struct
@@ -446,6 +483,8 @@ static void gattConnStructDelete(struct gattConnState *state)
 
     if (state->todoCurr && !state->doNotFreeTodoCurr)
         gattCliTodoItemFree(state->todoCurr);
+
+    gattQueuedWriteQueueFree(state->queuedWrites);
 
     if (state->next)
         state->next->prev = state->prev;
@@ -825,7 +864,7 @@ static bool gattEnqueueCliSubUnsubCall(struct gattClientConnection *clicon, stru
 /*
  * FUNCTION: gattAttSrvIndCbk
  * USE:      ATT calls this with results of sending an indication/notification
- * PARAMS:   who - whom the indidation/notification was sent to
+ * PARAMS:   who - who the remote is
  *           cid - the connection Id to pass back to ATT
  *           rangeRef - the range this is related to
  *           offset - the value in the range
@@ -851,7 +890,7 @@ static void gattAttSrvIndCbk(l2c_handle_t to, att_cid_t cid, att_range_t rangeRe
 /*
  * FUNCTION: gattAttSvrReadCbk
  * USE:      ATT calls this to read an attribute
- * PARAMS:   who - whom the indidation/notification was sent to
+ * PARAMS:   who - who the remote is
  *           rangeRef - the range this is related to
  *           cid - the connection Id to pass back to ATT
  *           ofst - the value in the range
@@ -971,12 +1010,86 @@ out:
 }
 
 /*
+ * FUNCTION: gattAttSrvProcessWriteReq
+ * USE:      Handle a prepare write command
+ * PARAMS:   who - who the remote is
+ *           cid - ATT's connection ID
+ *           rangeRef - the ATT range raference
+ *           handleOfst - offset of the given handle in the range
+ *           byteOfst - how many bytes into the characteristic we want to write
+ *           len - bytes to write
+ *           data - the data
+ * RETURN:   ATT_ERROR_*
+ * NOTES:    called with mGattLock held
+ */
+static uint8_t gattAttSrvProcessPrepareWriteReq(l2c_handle_t who, att_cid_t cid, att_range_t rangeRef, uint16_t handleOfst, uint32_t byteOfst, uint32_t len, const void *data)
+{
+    struct gattConnState *conn = gattConnFindByL2cConn(who);
+    struct GattEnqueuedWrite *qw, *t;
+    uint64_t totalBufSz;
+
+    if (!conn)
+        return ATT_ERROR_INVALID_HANDLE;
+
+    totalBufSz = conn->queuedLength;
+    qw = conn->queuedWrites;
+
+    // verify buffering limits are met
+    totalBufSz += len;
+    if (totalBufSz >= GATT_SRV_PREPARE_WRITE_MAX_BYTES)
+        return ATT_ERROR_PREPARE_QUEUE_FULL;
+
+    // see if this is a continuation of an existing write and if so, append to it
+    for (t = qw; t && (t->rangeRef != rangeRef || t->handleOfst != handleOfst); t = t->next);
+    if (t) {
+        // gaps arent really allowed when doing long writes in GATT, nor are overlaps
+        if (sgLength(t->data) != byteOfst)
+            return ATT_ERROR_INVALID_OFFSET;
+        // also, attribute max len is 65536 bytes
+        if (byteOfst + len > 0x10000)
+            return ATT_ERROR_INVALID_OFFSET;
+        // append
+        if (!sgConcatBackCopy(t->data, data, len))
+            return ATT_ERROR_UNLIKELY_ERROR;
+        // account for it
+        conn->queuedLength += len;
+        return ATT_ERROR_NONE;
+    }
+
+    // new entry - verify sanity (GATT long write must start at zero)
+    if (byteOfst)
+        return ATT_ERROR_INVALID_OFFSET;
+
+    // new entry - allocate it & data
+    t = calloc(1, sizeof(struct GattEnqueuedWrite));
+    if (!t)
+        return ATT_ERROR_INSUFFICIENT_RSRCS;
+
+    t->data = sgNewWithCopyData(data, len);
+    if (!t->data) {
+        free(t);
+        return ATT_ERROR_INSUFFICIENT_RSRCS;
+    }
+
+    // fill in details
+    t->rangeRef = rangeRef;
+    t->handleOfst = handleOfst;
+
+    // attach it & update totals
+    t->next = qw;
+    conn->queuedWrites = t;
+    conn->queuedLength += len;
+
+    return ATT_ERROR_NONE;
+}
+
+/*
  * FUNCTION: gattAttSvrWriteCbk
  * USE:      ATT calls this to write an attribute
- * PARAMS:   who - whom the indidation/notification was sent to
+ * PARAMS:   who - who the remote is
  *           rangeRef - the range this is related to
  *           cid - the connection Id to pass back to ATT
- *           ofst - the value in the range
+ *           handleOfst - the value in the range
  *           transId - transaction ID
  *           byteOfst - how mnay bytes into the characteristic we want to write
  *           reason - read reason (ATT_WRITE_FOR_*)
@@ -985,11 +1098,13 @@ out:
  * RETURN:   false on immediate failure
  * NOTES:    when write completes, a call to attSrvCbkReply() should be made
  */
-static bool gattAttSvrWriteCbk(l2c_handle_t who, att_cid_t cid, att_range_t rangeRef, uint16_t ofst, att_trans_t transId, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
+static bool gattAttSvrWriteCbk(l2c_handle_t who, att_cid_t cid, att_range_t rangeRef, uint16_t handleOfst, att_trans_t transId, uint16_t byteOfst, uint8_t reason, uint16_t len, const void *data)
 {
     /* attributes GATT creates internally for the user {service headers, includes, characteristic headers} are not writeable. All write pass to user */
+    bool replyEvenIfNoErr = false;
     uint8_t err = ATT_ERROR_NONE;
     struct gattService *svc;
+    uint16_t handle = handleOfst + attSrvHandleRangeGetBase(rangeRef);
 
     pthread_mutex_lock(&mGattLock);
     svc = gattServiceFindByRangeRef(rangeRef);
@@ -999,12 +1114,19 @@ static bool gattAttSvrWriteCbk(l2c_handle_t who, att_cid_t cid, att_range_t rang
         goto out;
     }
 
-    if (!gattEnqueueSrvWriteCall(svc, who, cid, transId, ofst + attSrvHandleRangeGetBase(svc->attRange), byteOfst, reason, len, data)) {
-        attSrvCbkReply(cid, transId, 0, err, NULL, 0);
+    if (reason == ATT_WRITE_FOR_PREPARE) {
+        err = gattAttSrvProcessPrepareWriteReq(who, cid, rangeRef, handleOfst, byteOfst, len, data);
+        replyEvenIfNoErr = true;
+        goto out;
+    }
+    if (!gattEnqueueSrvWriteCall(svc, who, cid, transId, handle, byteOfst, reason, len, data)) {
+        err = ATT_ERROR_INSUFFICIENT_RSRCS;
         goto out;
     }
 
 out:
+    if (err != ATT_ERROR_NONE || replyEvenIfNoErr)
+        attSrvCbkReply(cid, transId, handle, err, data, len);
     pthread_mutex_unlock(&mGattLock);
     return true;
 }
@@ -1012,17 +1134,66 @@ out:
 /*
  * FUNCTION: gattAttExecWriteCbk
  * USE:      ATT calls this when client asks us to execute a write
- * PARAMS:   who - whom the indidation/notification was sent to
+ * PARAMS:   who - who the remote is
  *           cid - the connection Id to pass back to ATT
- *           transId - the transcationID
+ *           transId - the transaction ID
  *           exec - execute or dump data?
  * RETURN:   NONE
  * NOTES:
  */
 static bool gattAttExecWriteCbk(l2c_handle_t who, att_cid_t cid, att_trans_t transId, bool exec)
 {
-    // TODO
-    return false;
+    struct GattEnqueuedWrite *qw = NULL;
+    uint8_t err = ATT_ERROR_NONE;
+    bool replyEvenIfOk = true;
+    struct gattConnState *conn;
+    struct gattWorkItem *wi;
+
+    pthread_mutex_lock(&mGattLock);
+    conn = gattConnFindByL2cConn(who);
+
+    if (!conn) {
+        err = ATT_ERROR_UNLIKELY_ERROR;
+        goto out;
+    }
+
+    /// if there are writes queued, detach them from the list
+    qw = conn->queuedWrites;
+    conn->queuedWrites = NULL;
+
+    // if the request was to cancel, and we have writes queued delete them and reply; if request was to apply, and no writes were queued just reply
+    if (!exec || !qw)
+        goto out;
+
+    // we only get this far if we had queued writes and we were asked to perform them - enqueue a work queue item to do that and only reply in case of failure to do so
+    wi = (struct gattWorkItem*)calloc(1, sizeof(struct gattWorkItem));
+    if (!wi) {
+        err = ATT_ERROR_INSUFFICIENT_RSRCS;
+        goto out;
+    }
+
+    wi->type = GATT_WORK_SRV_WRITE_EXEC;
+    wi->srvWriteExec.who = who;
+    wi->srvWriteExec.cid = cid;
+    wi->srvWriteExec.q = qw;
+    wi->srvWriteExec.transId = transId;
+
+    if (workQueuePut(mWorkQ, wi)) {
+        replyEvenIfOk = false;
+        qw = NULL;
+    }
+    else {
+        err = ATT_ERROR_UNLIKELY_ERROR;
+        free(wi);
+    }
+
+out:
+    gattQueuedWriteQueueFree(qw);
+
+    pthread_mutex_unlock(&mGattLock);
+    if (err != ATT_ERROR_NONE || replyEvenIfOk)
+        attSrvCbkReply(cid, transId, 0, err, NULL, 0);
+    return true;
 }
 
 /*
@@ -1495,6 +1666,90 @@ static void gattCliTodoItemFree(struct gattCliTodoItem *todo)
     free(todo);
 }
 
+
+/*
+ * FUNCTION: gattSrvDoOneQueuedWrite
+ * USE:      Perform a queued write as the server. Take locks as needed
+ * PARAMS:   who - the L2C cnnection
+ *           cid - the att connection id
+ *           rangeRef - the ATT handle range
+ *           handleOfst - the offset of the handle in that range
+ *           transId - ATT transaction ID (for reply)
+ *           data - the data
+ * RETURN:   ATT_ERROR_*
+ * NOTES:    called from gatt worker thread. take locks as needed
+ */
+static uint8_t gattSrvDoOneQueuedWrite(l2c_handle_t who, att_cid_t cid, att_range_t rangeRef, uint16_t handleOfst, att_trans_t transId, sg data)
+{
+    uint16_t handle = handleOfst + attSrvHandleRangeGetBase(rangeRef);
+    uint32_t len = sgLength(data);
+    uint8_t err = ATT_ERROR_NONE;
+    struct gattService *svc;
+    void *buf = NULL;
+
+    pthread_mutex_lock(&mGattLock);
+    svc = gattServiceFindByRangeRef(rangeRef);
+    if (!svc) {
+        logw("Failed to find service for queued write\n");
+        err = ATT_ERROR_INVALID_HANDLE;
+        goto out;
+    }
+
+    // we need to serialize the data here temporarily
+    buf = malloc(len);
+    if (!buf) {
+        err = ATT_ERROR_INSUFFICIENT_RSRCS;
+        goto out;
+    }
+
+    if (len != sgSerialize(data, 0, len, buf)) {
+        err = ATT_ERROR_UNLIKELY_ERROR;
+        goto out;
+    }
+
+    if (!svc->writeF(svc->svcRef, who, cid, transId, handle, 0, ATT_WRITE_FOR_PREPARE, len, buf)) {
+        err = ATT_ERROR_UNLIKELY_ERROR;
+        goto out;
+    }
+
+    //success? free data
+    sgFree(data);
+
+out:
+    if (buf)
+        free(buf);
+    pthread_mutex_unlock(&mGattLock);
+    return err;
+
+}
+
+/*
+ * FUNCTION: gattSrvQueuedWritesPerformFromWorkerThread
+ * USE:      Perform queued writes as the server. Take locks as needed. Send reply either way
+ * PARAMS:   who - the L2C cnnection
+ *           cid - the att connection id
+ *           qw - writes currently queued that we need to execute
+ *           transId - ATT transaction ID (for reply)
+ * RETURN:   NONE
+ * NOTES:    called from gatt worker thread. set "->data" to NULL if sg has been used or handed off
+ */
+static void gattSrvQueuedWritesPerformFromWorkerThread(l2c_handle_t who, att_cid_t cid, struct GattEnqueuedWrite *qw, att_trans_t transId)
+{
+    uint8_t err = ATT_ERROR_NONE;
+
+    while (qw) {
+        err = gattSrvDoOneQueuedWrite(who, cid, qw->rangeRef, qw->handleOfst, transId, qw->data);
+        if (err != ATT_ERROR_NONE)
+            break;
+
+        qw->data = NULL;
+        qw = qw->next;
+    }
+
+    //reply with err...
+    attSrvCbkReply(cid, transId, qw ? qw->handleOfst + attSrvHandleRangeGetBase(qw->rangeRef) : 0, err, NULL, 0);
+}
+
 /*
  * FUNCTION: gattWorkItemFree
  * USE:      Properly free a work item for GATT
@@ -1508,6 +1763,9 @@ static void gattWorkItemFree(struct gattWorkItem *wi)
         gattCliTodoItemFree(wi->cliDoNext.todo);
     else if (wi->type == GATT_WORK_CLI_IND_CALL && wi->cliIndCall.data)
         sgFree(wi->cliIndCall.data);
+    else if (wi->type == GATT_WORK_SRV_WRITE_EXEC)
+        gattQueuedWriteQueueFree(wi->srvWriteExec.q);
+
     free(wi);
 }
 
@@ -1546,6 +1804,9 @@ static void* gattWorker(void *param)
             break;
         case GATT_WORK_SRV_DISC_CALL:
             wi->srvDiscCall.discF(wi->srvDiscCall.svcRef, wi->srvDiscCall.who);
+            break;
+        case GATT_WORK_SRV_WRITE_EXEC:
+            gattSrvQueuedWritesPerformFromWorkerThread(wi->srvWriteExec.who, wi->srvWriteExec.cid, wi->srvWriteExec.q, wi->srvWriteExec.transId);
             break;
         case GATT_WORK_CLI_CONN_STATE_NOTIF:
             wi->cliConnStateNotif.cbk(wi->cliConnStateNotif.connId, wi->cliConnStateNotif.status);
