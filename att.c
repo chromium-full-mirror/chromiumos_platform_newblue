@@ -2605,13 +2605,13 @@ static bool attSrvOpReadMultStart(l2c_handle_t to, uint32_t mtu, sg handles)
  * FUNCTION: attSrvWriteContinue
  * USE:      Continue a [signed] write request / command
  * PARAMS:   conn - per-connection structure
- *           lastWriteData - return from the READ call
- *           leastWriteLen - length last read result produced
+ *           lastWriteData - return from the WRITE call
+ *           lastWriteLen - length last read result produced
  *           lastWriteRet - last read's result
  * RETURN:   false to fail immediately, true if more work will be done
  * NOTES:    call with mAttLock held
  */
-static bool attSrvWriteContinue(struct attConn *conn, const void *lastWriteData, uint16_t leastWriteLen, uint8_t lastWriteRet)
+static bool attSrvWriteContinue(struct attConn *conn, const void *lastWriteData, uint16_t lastWriteLen, uint8_t lastWriteRet)
 {
     if (conn->srv.penOp.origOpcode != ATT_OPCODE_WRITE_REQ && conn->srv.penOp.origOpcode != ATT_OPCODE_SIGNED_WRITE_CMD &&
          conn->srv.penOp.origOpcode != ATT_OPCODE_WRITE_REQ && conn->srv.penOp.origOpcode != ATT_OPCODE_PREPARE_WRITE_REQ)
@@ -2623,7 +2623,7 @@ static bool attSrvWriteContinue(struct attConn *conn, const void *lastWriteData,
     }
     if (conn->srv.penOp.origOpcode == ATT_OPCODE_PREPARE_WRITE_REQ) {
         conn->srv.penOp.origOpcode = 0;
-        return attSendPacket(conn->conn, ATT_OPCODE_PREPARE_WRITE_RSP, lastWriteData, leastWriteLen, NULL);
+        return attSendPacket(conn->conn, ATT_OPCODE_PREPARE_WRITE_RSP, lastWriteData, lastWriteLen, NULL);
     }
 
     return true;
