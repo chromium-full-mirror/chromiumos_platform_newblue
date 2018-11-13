@@ -1566,7 +1566,12 @@ static struct gattConnState* gattConnectionCreateOrLocate(const struct bt_addr *
  * PARAMS:   to - whom to connect to
  *           resultCbk - will be called with results
  * RETURN:   connection id or 0 on failure
- * NOTES:
+ * NOTES:    the callback might be called before this func returnes (talk
+ *           to your scheduler about that). This leaves you with a conundrum:
+ *           How will you know the callback is for you when you do not yet
+*            know thw connection id. Caller solves this themselves. eg: take
+ *           a mutex in callback, and also take it before calling this, do
+ *           not release it till this func returns.
  */
 gatt_client_conn_t gattClientConnect(const struct bt_addr *to, gattCliConnectResultCbk resultCbk)
 {
@@ -1595,6 +1600,10 @@ gatt_client_conn_t gattClientConnect(const struct bt_addr *to, gattCliConnectRes
     clicon->gattConnId = inst->gattConnId;
     clicon->connId = uniqGetNext();
     clicon->connCbk = resultCbk;
+
+    // call callback right away?
+    if (inst->state == GATT_CONN_STATE_RUNNING)
+        gattEnqueueCliConnStatusCall(clicon, GATT_CLI_STATUS_OK);
 
     // success!
     ret = clicon->connId;
