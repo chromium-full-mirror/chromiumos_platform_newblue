@@ -119,6 +119,7 @@ bool gattServiceSendInd(gatt_service_t svc, att_cid_t cid, uint16_t handle, cons
 #define GATT_CLI_STATUS_OK               0
 #define GATT_CLI_STATUS_OTHER_SIDE_DISC  1 /* the peer told us to go away */
 #define GATT_CLI_STATUS_ERR              2 /* an unknown error type in the local stack */
+#define GATT_CLI_STATUS_WE_DISC          3 /* we disconnected */
 
 #define GATT_CLI_WRITE_TYPE_SIGNED       0 /* bluedroid has no support of this so we can assign this value to whatever we want. we pick zero for better switch() compilation */
 #define GATT_CLI_WRITE_TYPE_WRITE_NO_RSP 1 /* these next values must match undocumented in the *android* includes values that bluedroid uses */

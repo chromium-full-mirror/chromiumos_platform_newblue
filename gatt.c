@@ -163,6 +163,10 @@ struct gattConnState {
     struct gattCliTodoItem   *todoListT;
     struct gattCliTodoItem   *todoCurr; // or null if none
     bool                      doNotFreeTodoCurr; // used to synchronize who frees "todoCurr". See "A NOTE ABOUT LOCKS"
+
+    // keep track of things we need to know to know when to close the connection
+    bool                      hadRemoteUse; //set if remote ever did GATT-ing to us
+    uint32_t                  numLocalUsers;  //number of local users of this connection
 };
 
 struct gattItem { /* a list of these exists in a a gatt service */
@@ -876,9 +880,16 @@ static bool gattEnqueueCliSubUnsubCall(struct gattClientConnection *clicon, stru
  */
 static void gattAttSrvIndCbk(l2c_handle_t to, att_cid_t cid, att_range_t rangeRef, uint16_t offset, uint8_t evt, uint64_t ref)
 {
+    struct gattConnState *conn;
     struct gattService *svc;
 
     pthread_mutex_lock(&mGattLock);
+    conn = gattConnFindByL2cConn(to);
+
+    // remember that our gatt server has been used by this connection
+    if (conn)
+        conn->hadRemoteUse = true;
+
     svc = gattServiceFindByRangeRef(rangeRef);
     if (!svc)
         logw("Failed to find service for read\n");
@@ -904,6 +915,7 @@ static void gattAttSrvIndCbk(l2c_handle_t to, att_cid_t cid, att_range_t rangeRe
 static bool gattAttSvrReadCbk(l2c_handle_t who, att_cid_t cid, att_range_t rangeRef, uint16_t ofst, att_trans_t transId, uint16_t byteOfst, uint8_t reason, uint16_t maxLen)
 {
     uint8_t err = ATT_ERROR_NONE;
+    struct gattConnState *conn;
     struct gattService *svc;
     struct gattItem *gi;
     uint8_t *ptr = NULL;
@@ -912,6 +924,12 @@ static bool gattAttSvrReadCbk(l2c_handle_t who, att_cid_t cid, att_range_t range
     uint8_t buf[32];
 
     pthread_mutex_lock(&mGattLock);
+    conn = gattConnFindByL2cConn(who);
+
+    // remember that our gatt server has been used by this connection
+    if (conn)
+        conn->hadRemoteUse = true;
+
     svc = gattServiceFindByRangeRef(rangeRef);
     if (!svc) {
         logw("Failed to find service for read\n");
@@ -1103,10 +1121,17 @@ static bool gattAttSvrWriteCbk(l2c_handle_t who, att_cid_t cid, att_range_t rang
     /* attributes GATT creates internally for the user {service headers, includes, characteristic headers} are not writeable. All write pass to user */
     bool replyEvenIfNoErr = false;
     uint8_t err = ATT_ERROR_NONE;
+    struct gattConnState *conn;
     struct gattService *svc;
     uint16_t handle = handleOfst + attSrvHandleRangeGetBase(rangeRef);
 
     pthread_mutex_lock(&mGattLock);
+    conn = gattConnFindByL2cConn(who);
+
+    // remember that our gatt server has been used by this connection
+    if (conn)
+        conn->hadRemoteUse = true;
+
     svc = gattServiceFindByRangeRef(rangeRef);
     if (!svc) {
         logw("Failed to find service for read\n");
@@ -1157,7 +1182,10 @@ static bool gattAttExecWriteCbk(l2c_handle_t who, att_cid_t cid, att_trans_t tra
         goto out;
     }
 
-    /// if there are writes queued, detach them from the list
+    // remember that our gatt server has been used by this connection
+    conn->hadRemoteUse = true;
+
+    // if there are writes queued, detach them from the list
     qw = conn->queuedWrites;
     conn->queuedWrites = NULL;
 
@@ -1569,7 +1597,7 @@ static struct gattConnState* gattConnectionCreateOrLocate(const struct bt_addr *
  * NOTES:    the callback might be called before this func returnes (talk
  *           to your scheduler about that). This leaves you with a conundrum:
  *           How will you know the callback is for you when you do not yet
-*            know thw connection id. Caller solves this themselves. eg: take
+ *           know the connection id. Caller solves this themselves. eg: take
  *           a mutex in callback, and also take it before calling this, do
  *           not release it till this func returns.
  */
@@ -1592,6 +1620,7 @@ gatt_client_conn_t gattClientConnect(const struct bt_addr *to, gattCliConnectRes
         goto out;
     }
 
+    inst->numLocalUsers++;
     clicon->next = mClientConns;
     if (mClientConns)
         mClientConns->prev = clicon;
@@ -1615,20 +1644,6 @@ out:
     free(clicon);
     return 0;
 }
-
-/*
- * FUNCTION: gattClientDisconnect
- * USE:      Disconnect an actual gatt connection
- * PARAMS:   conn - the connection
- * RETURN:   GATT_CLI_STATUS_*
- * NOTES:
- */
-uint8_t gattClientDisconnect(gatt_client_conn_t conn)
-{
-    // TODO: can call gattClientConnClose(cliCon, false /* do not notify client -> no need they're about to go away awnyways */);
-    return GATT_CLI_STATUS_OK;
-}
-
 
 /*
  * FUNCTION: gattWorkQueueFreeItem
@@ -3552,6 +3567,8 @@ static void gattClientConnClose(struct gattClientConnection *clicon, uint8_t sta
             } else
                 tP = tC;
         }
+
+        conn->numLocalUsers--;
     }
 
     /* destroy the structure(s) */
@@ -3562,6 +3579,36 @@ static void gattClientConnClose(struct gattClientConnection *clicon, uint8_t sta
     else
         mClientConns = clicon->next;
     free(clicon);
+
+    /* proactively close the connection */
+    if (!conn->hadRemoteUse && !conn->numLocalUsers) {
+
+        logd("GATT connection no longer being used, closing underlying L2C connection\n");
+        l2cApiDisconnect(conn->conn);
+    }
+}
+
+/*
+ * FUNCTION: gattClientDisconnect
+ * USE:      Disconnect an actual gatt connection
+ * PARAMS:   connId - the connection
+ * RETURN:   GATT_CLI_STATUS_*
+ * NOTES:
+ */
+uint8_t gattClientDisconnect(gatt_client_conn_t connId)
+{
+    static struct gattClientConnection* clicon;
+    uint8_t ret = GATT_CLI_STATUS_OK;
+
+    pthread_mutex_lock(&mGattLock);
+    clicon = gattClientConnFindById(connId);
+    if (clicon)
+        gattClientConnClose(clicon, GATT_CLI_STATUS_WE_DISC);
+    else
+        ret = GATT_CLI_STATUS_ERR;
+    pthread_mutex_unlock(&mGattLock);
+
+    return ret;
 }
 
 /*
