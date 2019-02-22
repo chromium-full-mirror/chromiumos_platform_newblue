@@ -157,7 +157,7 @@ struct GattTraversedService {
 /* gatt client callbacks */
 
 //called when a connection attempt has finished. status will say whether it was successful or not. Expect a call to this from gattClientConnect() and gattClientDisconnect()
-typedef void (*gattCliConnectResultCbk)(gatt_client_conn_t conn, uint8_t status);
+typedef void (*gattCliConnectResultCbk)(void *userData, gatt_client_conn_t conn, uint8_t status);
 
 //called when a service is found. Expect one or more calls to this after calling gattClientFindService() or gattClientEnumServices(). UUID set to NULL when enumeration is complete
 typedef void (*gattCliSvcEnumCbk)(gatt_client_conn_t conn, uniq_t trans, const struct uuid *uuid, bool primary, uint16_t firstHandle, uint16_t numHandles, uint8_t status);
@@ -195,7 +195,7 @@ typedef void (*gattCliUtilLongReadCompletedCbk)(gatt_client_conn_t conn, uniq_t 
 
 
 /* connection lifecycle */
-gatt_client_conn_t gattClientConnect(const struct bt_addr *to, gattCliConnectResultCbk resultCbk) NEWBLUE_EXPORT;
+gatt_client_conn_t gattClientConnect(void *userData, const struct bt_addr *to, gattCliConnectResultCbk resultCbk) NEWBLUE_EXPORT;
 uint8_t gattClientDisconnect(gatt_client_conn_t conn) NEWBLUE_EXPORT; /* -> GATT_CLI_*, calls the gattCliConnectResultCbk passed to gattClientConnect() with GATT_CLI_OTHER_SIDE_DISC */
 
 /* cache maintenance */

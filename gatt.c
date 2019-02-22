@@ -252,6 +252,7 @@ struct gattClientConnection {
     struct gattCliNotifRec       *notifs;
     gatt_client_conn_t            connId; // used by our callers
     gattCliConnectResultCbk       connCbk;
+    void                         *userData;
 };
 
 struct gattWorkItem {
@@ -294,6 +295,7 @@ struct gattWorkItem {
         } srvWriteExec;
         struct {
             gattCliConnectResultCbk  cbk;
+            void                     *userData;
             gatt_client_conn_t       connId;
             uint8_t                  status;
         } cliConnStateNotif;
@@ -741,6 +743,7 @@ static bool gattEnqueueCliConnStatusCall(struct gattClientConnection *clicon, ui
     if (wi) {
         wi->type = GATT_WORK_CLI_CONN_STATE_NOTIF;
         wi->cliConnStateNotif.cbk = clicon->connCbk;
+        wi->cliConnStateNotif.userData = clicon->userData;
         wi->cliConnStateNotif.connId = clicon->connId;
         wi->cliConnStateNotif.status = status;
 
@@ -1591,7 +1594,8 @@ static struct gattConnState* gattConnectionCreateOrLocate(const struct bt_addr *
 /*
  * FUNCTION: gattClientConnect
  * USE:      Make a new gatt client connection
- * PARAMS:   to - whom to connect to
+ * PARAMS:   userData - caller's data which will be given with the callback
+ *           to - whom to connect to
  *           resultCbk - will be called with results
  * RETURN:   connection id or 0 on failure
  * NOTES:    the callback might be called before this func returnes (talk
@@ -1601,7 +1605,8 @@ static struct gattConnState* gattConnectionCreateOrLocate(const struct bt_addr *
  *           a mutex in callback, and also take it before calling this, do
  *           not release it till this func returns.
  */
-gatt_client_conn_t gattClientConnect(const struct bt_addr *to, gattCliConnectResultCbk resultCbk)
+gatt_client_conn_t gattClientConnect(void *userData, const struct bt_addr *to,
+                                     gattCliConnectResultCbk resultCbk)
 {
     struct gattClientConnection *clicon;
     struct gattConnState *inst;
@@ -1626,6 +1631,7 @@ gatt_client_conn_t gattClientConnect(const struct bt_addr *to, gattCliConnectRes
         mClientConns->prev = clicon;
     mClientConns = clicon;
 
+    clicon->userData = userData;
     clicon->gattConnId = inst->gattConnId;
     clicon->connId = uniqGetNext();
     clicon->connCbk = resultCbk;
@@ -1833,7 +1839,7 @@ static void* gattWorker(void *param)
             gattSrvQueuedWritesPerformFromWorkerThread(wi->srvWriteExec.who, wi->srvWriteExec.cid, wi->srvWriteExec.q, wi->srvWriteExec.transId);
             break;
         case GATT_WORK_CLI_CONN_STATE_NOTIF:
-            wi->cliConnStateNotif.cbk(wi->cliConnStateNotif.connId, wi->cliConnStateNotif.status);
+            wi->cliConnStateNotif.cbk(wi->cliConnStateNotif.userData, wi->cliConnStateNotif.connId, wi->cliConnStateNotif.status);
             break;
         case GATT_WORK_CLI_DO_NEXT:
             gattCliTodoNext(wi->cliDoNext.conn, wi->cliDoNext.todo);

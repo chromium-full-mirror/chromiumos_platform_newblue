@@ -69,7 +69,7 @@ static const char* getAppearanceTypeStr(uint32_t appVal);
 static const char* getAppearanceSubtypeStr(uint32_t appVal);
 
 
-static void gattConnectedCbkHidTest(gatt_client_conn_t conn, uint8_t status);
+static void gattConnectedCbkHidTest(void *data, gatt_client_conn_t conn, uint8_t status);
 static void battSvcStateCbk(gatt_svc_batt_conn_t handle, uint8_t state);
 static void battSvcRxCbk(gatt_svc_batt_conn_t handle, uint8_t percent, bool byRequest);
 static void miscInfoSvcStateCbk(gatt_svc_misc_info_conn_t handle, uint8_t state);
@@ -432,7 +432,7 @@ static void initSvcSubsystemsAndGattConnect(struct bt_addr *connTo)
     gattSvcMiscInfoInit(miscInfoSvcStateCbk, miscInfoSvcRxCbk);
     btleHidInit(hidConnStateCbk, hidReportRxCbk);
 
-    con = gattClientConnect(connTo, gattConnectedCbkHidTest);
+    con = gattClientConnect(NULL, connTo, gattConnectedCbkHidTest);
     if (!con)
         logw("Failed to try to form a GATT connection!\n");
     else {
@@ -570,7 +570,7 @@ static void gattSvcFoundCbk(gatt_client_conn_t conn, uniq_t trans, const struct 
     mGattSvcs = t;
 }
 
-static void gattConnectedCbkGattEnum(gatt_client_conn_t conn, uint8_t status)
+static void gattConnectedCbkGattEnum(void *data, gatt_client_conn_t conn, uint8_t status)
 {
     logi("Connect status: %u\n", status);
 
@@ -582,7 +582,7 @@ static void gattConnectedCbkGattEnum(gatt_client_conn_t conn, uint8_t status)
     logi("service enum = %u\n", gattClientEnumServices(conn, true, 0, gattSvcFoundCbk));
 }
 
-static void gattConnectedCbkHidTest(gatt_client_conn_t conn, uint8_t status)
+static void gattConnectedCbkHidTest(void *data, gatt_client_conn_t conn, uint8_t status)
 {
     logi("GATT for HID connect status: %u\n", status);
 
@@ -1075,7 +1075,7 @@ int main(int argc, char** argv)
             }
             else if (wantConnect) {
 
-                con = gattClientConnect(&connTo, gattConnectedCbkGattEnum);
+                con = gattClientConnect(NULL, &connTo, gattConnectedCbkGattEnum);
                 if (!con)
                     logw("Failed to try to form a GATT connection!\n");
                 else {
