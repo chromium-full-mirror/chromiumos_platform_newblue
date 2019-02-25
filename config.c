@@ -5,4 +5,4 @@
  */
 #include "config.h"
 
-const char pref_path[] = "/var/lib/bt.newblue.prefs";
+const char pref_path[] = "/var/lib/bluetooth/bt.newblue.prefs";
