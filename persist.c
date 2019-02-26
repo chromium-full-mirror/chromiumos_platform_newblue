@@ -1586,3 +1586,344 @@ bool persistDelDevNumbers(const struct bt_addr *addr)
     return persistDelDevPropsByName(addr, PERS_NAME_NUMBERS);
 }
 
+/*
+ * FUNCTION: persistPropNameToString
+ * USE:      Return the string representation of a property name
+ * PARAMS:   name - the property name enum
+ * RETURN:   the string representation
+ * NOTES:
+ */
+char* persistPropNameToString(uint32_t name)
+{
+    switch (name) {
+        case PERS_NAME_DEVICE_NAME:
+            return "Device Name";
+        case PERS_NAME_DISC_TIMEOUT:
+            return "Discovery Timeout";
+        case PERS_NAME_DEV_CLS:
+            return "Device Class";
+        case PERS_NAME_KEYS:
+            return "Keys";
+        case PERS_NAME_KEY:
+            return "Key";
+        case PERS_NAME_DEVICE:
+            return "Device";
+        case PERS_NAME_KNOWN_DEVICES:
+            return "Known Devices";
+        case PERS_NAME_BT_ADDR:
+            return "BT Addr";
+        case PERS_NAME_LAST_SEEN:
+            return "Last Seen";
+        case PERS_NAME_NUMBERS:
+            return "Numbers";
+        case PERS_NAME_NUM:
+            return "Number";
+        case PERS_NAME_NUM_NAME:
+            return "Number Name";
+        case PERS_NAME_NUM_VAL:
+            return "Number Value";
+    }
+    return "Unknown Property";
+}
+
+/*
+ * FUNCTION: persistTypeToString
+ * USE:      Return the string representation of a property type
+ * PARAMS:   type - the property type enum
+ * RETURN:   the string representation
+ * NOTES:
+ */
+char* persistTypeToString(uint32_t type)
+{
+    switch (type) {
+        case PERS_TYPE_UINT:
+            return "unsigned int";
+        case PERS_TYPE_SINT:
+            return "signed int";
+        case PERS_TYPE_BYTE_ARRAY:
+            return "byte array";
+        case PERS_TYPE_BT_ADDR:
+            return "address";
+        case PERS_TYPE_ARRAY:
+            return "array";
+    }
+    return "unknown type";
+}
+
+/*
+ * FUNCTION: persistKeyTypeToString
+ * USE:      Return the string representation of a key type
+ * PARAMS:   type - the key type enum
+ * RETURN:   the string representation
+ * NOTES:
+ */
+char* persistKeyTypeToString(uint8_t type)
+{
+    switch (type) {
+        case KEY_TYPE_MITM_PROTECTED:
+            return "MITM protected";
+        case KEY_TYPE_MITM_UNPROTECTED:
+            return "MITM unprotected";
+        case KEY_TYPE_CSRK:
+            return "CSRK";
+        case KEY_TYPE_IRK:
+            return "IRK";
+        case KEY_TYPE_DHK:
+            return "DHK";
+        case KEY_TYPE_LTK:
+            return "LTK";
+        case KEY_TYPE_MY_LTK:
+            return "my LTK";
+    }
+    return "unknown key type";
+}
+
+/*
+ * FUNCTION: persistBtAddrTypeToString
+ * USE:      Return the string representation of a bt_addr type
+ * PARAMS:   type - the bt_addr type enum
+ * RETURN:   the string representation
+ * NOTES:
+ */
+char* persistBtAddrTypeToString(uint8_t type)
+{
+    switch (type) {
+        case BT_ADDR_TYPE_EDR:
+            return "EDR";
+        case BT_ADDR_TYPE_LE_PUBLIC:
+            return "LE public";
+        case BT_ADDR_TYPE_LE_RANDOM:
+            return "LE random";
+    }
+    return "unknown address type";
+}
+
+/*
+ * FUNCTION: persistNumberTypeToString
+ * USE:      Return the string representation of a number type
+ * PARAMS:   type - the number type enum
+ * RETURN:   the string representation
+ * NOTES:
+ */
+char* persistNumberTypeToString(uint8_t type)
+{
+    switch (type) {
+        case PERSIST_NUM_TYPE_SM_RANDOM:
+            return "random";
+        case PERSIST_NUM_TYPE_SM_MY_RANDOM:
+            return "my random";
+        case PERSIST_NUM_TYPE_SM_EDIV:
+            return "EDIV";
+        case PERSIST_NUM_TYPE_SM_MY_DIV:
+            return "my DIV";
+        case PERSIST_NUM_TYPE_SM_MITM_PROTECT:
+            return "MITM protect";
+        case PERSIST_NUM_TYPE_SM_BOND:
+            return "bond";
+    }
+    return "unknown number type";
+}
+
+/*
+ * FUNCTION: persistDumpPrintWithIndent
+ * USE:      Print an info log with leading spaces for indent
+ * PARAMS:   indent - the number of leading spaces
+ *           format - a printf format
+ * RETURN:   NONE
+ * NOTES:
+ */
+void persistDumpPrintWithIndent(int indent, const char *format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    char s[1000];
+    for (int i = 0; i < indent; i++) {
+        s[i] = ' ';
+    }
+    vsnprintf(s + indent, sizeof(s) - indent, format, args);
+    logi("%s\n", s);
+    va_end(args);
+}
+
+/*
+ * FUNCTION: persistDumpPrintPropValueNumberName
+ * USE:      Print the value of a property Number Name
+ * PARAMS:   indent - the number of leading spaces
+ *           p - the property
+ * RETURN:   NONE
+ * NOTES:
+ */
+void persistDumpPrintPropValueNumberName(int indent, struct persistProp *p)
+{
+    uint8_t type = *(uint8_t*)(p + 1);
+    persistDumpPrintWithIndent(
+            indent, "0x%02x (%s)", type, persistNumberTypeToString(type));
+}
+
+/*
+ * FUNCTION: persistDumpPrintPropValueUint32
+ * USE:      Print the value of a property of type uint32
+ * PARAMS:   indent - the number of leading spaces
+ *           p - the property
+ * RETURN:   NONE
+ * NOTES:
+ */
+void persistDumpPrintPropValueUint32(int indent, struct persistProp *p)
+{
+    uint32_t val = *(uint32_t*)(p + 1);
+    persistDumpPrintWithIndent(indent, "0x%08x (%d)", val, val);
+}
+
+/*
+ * FUNCTION: persistDumpPrintPropValueUint64
+ * USE:      Print the value of a property of type uint64
+ * PARAMS:   indent - the number of leading spaces
+ *           p - the property
+ * RETURN:   NONE
+ * NOTES:
+ */
+void persistDumpPrintPropValueUint64(int indent, struct persistProp *p)
+{
+    uint64_t val = *(uint64_t*)(p + 1);
+    persistDumpPrintWithIndent(indent, "0x%016lx (%ld)", val, val);
+}
+
+/*
+ * FUNCTION: persistDumpPrintPropValueBtAddr
+ * USE:      Print the value of a property of type bt_addr
+ * PARAMS:   indent - the number of leading spaces
+ *           p - the property
+ * RETURN:   NONE
+ * NOTES:
+ */
+void persistDumpPrintPropValueBtAddr(int indent, struct persistProp *p)
+{
+    struct bt_addr *addr = (struct bt_addr*)(p + 1);
+    char s[18] = "";
+    for (int i = 0; i < 6; i++) {
+        sprintf(s + strlen(s), i ? ":%02X" : "%02X", addr->addr[6 - i - 1]);
+    }
+    persistDumpPrintWithIndent(
+            indent, "%s (%s)", s, persistBtAddrTypeToString(addr->type));
+}
+
+/*
+ * FUNCTION: persistDumpPrintPropValueDeviceName
+ * USE:      Print the value of a property Device Name
+ * PARAMS:   indent - the number of leading spaces
+ *           p - the property
+ * RETURN:   NONE
+ * NOTES:
+ */
+void persistDumpPrintPropValueDeviceName(int indent, struct persistProp *p)
+{
+    char name[p->info.len + 1];
+    memcpy(name, p + 1, p->info.len);
+    name[p->info.len] = 0;
+
+    persistDumpPrintWithIndent(indent, "%s", name);
+}
+
+/*
+ * FUNCTION: persistDumpPrintPropValueKey
+ * USE:      Print the value of a property Key
+ * PARAMS:   indent - the number of leading spaces
+ *           p - the property
+ * RETURN:   NONE
+ * NOTES:
+ */
+void persistDumpPrintPropValueKey(int indent, struct persistProp *p)
+{
+    char s[HCI_LINK_KEY_LEN * 2 + 1];
+    struct persistKey *key = (struct persistKey*)(p + 1);
+
+    for (int i = 0; i < HCI_LINK_KEY_LEN; i++) {
+        sprintf(s + i * 2, "%02x", key->key[i]);
+    }
+
+    persistDumpPrintWithIndent(
+            indent, "%s (%s)", s, persistKeyTypeToString(key->keyType));
+}
+
+/* forward declaration */
+void persistDumpPropList(int indent, struct persistProp *p);
+
+/*
+ * FUNCTION: persistDumpPrintPropValue
+ * USE:      Print the value of a property
+ * PARAMS:   indent - the number of leading spaces
+ *           p - the property
+ * RETURN:   NONE
+ * NOTES:
+ */
+void persistDumpPrintPropValue(int indent, struct persistProp *p)
+{
+    /* Recurse if the value contains more properties. */
+    if (p->info.type == PERS_TYPE_ARRAY) {
+        struct persistArrayInRam *arr = (struct persistArrayInRam*)(p + 1);
+        persistDumpPropList(indent, arr->head);
+        return;
+    }
+
+    /* If the value is a leaf in the tree, print it based on property name. */
+    switch (p->info.name) {
+        case PERS_NAME_DEVICE_NAME:
+            persistDumpPrintPropValueDeviceName(indent, p);
+            break;
+        case PERS_NAME_DISC_TIMEOUT:
+            persistDumpPrintPropValueUint32(indent, p);
+            break;
+        case PERS_NAME_DEV_CLS:
+            persistDumpPrintPropValueUint32(indent, p);
+            break;
+        case PERS_NAME_KEY:
+            persistDumpPrintPropValueKey(indent, p);
+            break;
+        case PERS_NAME_BT_ADDR:
+            persistDumpPrintPropValueBtAddr(indent, p);
+            break;
+        case PERS_NAME_LAST_SEEN:
+            persistDumpPrintPropValueUint64(indent, p);
+            break;
+        case PERS_NAME_NUM_NAME:
+            persistDumpPrintPropValueNumberName(indent, p);
+            break;
+        case PERS_NAME_NUM_VAL:
+            persistDumpPrintPropValueUint64(indent, p);
+            break;
+    }
+}
+
+/*
+ * FUNCTION: persistDumpPrintPropList
+ * USE:      Print a property list
+ * PARAMS:   indent - the number of leading spaces
+ *           p - the property
+ * RETURN:   NONE
+ * NOTES:
+ */
+void persistDumpPropList(int indent, struct persistProp *p)
+{
+    while (p) {
+        persistDumpPrintWithIndent(
+                indent,
+                "%s (%s): ",
+                persistPropNameToString(p->info.name),
+                persistTypeToString(p->info.type));
+        persistDumpPrintPropValue(indent + 2, p);
+        p = p->next;
+    }
+}
+
+/*
+ * FUNCTION: persistDump
+ * USE:      Dump persistent preferences file content in human-readable format
+ * PARAMS:   NONE
+ * RETURN:   NONE
+ * NOTES:
+ */
+void persistDump()
+{
+    persistLoad();
+    persistDumpPropList(0, mPropsHead);
+}

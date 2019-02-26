@@ -27,6 +27,7 @@
 #include "log.h"
 #include "bt.h"
 #include "mt.h"
+#include "persist.h"
 
 struct LeDiscDev {
     struct LeDiscDev  *next;
@@ -1182,6 +1183,9 @@ int main(int argc, char** argv)
 
         logi("waiting...press a key\n");
         getchar();
+    }
+    else if ((argc == 2 && !strcmp(argv[1], "persist"))) {
+        persistDump();
     }
     else if (argc == 1) {
         /*
