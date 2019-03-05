@@ -3243,6 +3243,9 @@ static bool smIrkEnumF(void *cbkData, const struct bt_addr *addr, const void *na
     if (!cbkData)
         return true;
 
+    if (!wantedKey)
+        return true;
+
     data = (struct smIrkEnumCbkData *)cbkData;
     if (wantedKey) {
         if (!(haveKeys &(1 << data->keyType)))
@@ -3278,6 +3281,7 @@ static bool smResolveAddr(struct bt_addr *addr, const struct bt_addr *peerAddr)
         return false;
     enumData.keyType = keyType;
     enumData.resolAddr = *peerAddr;
+    enumData.wasFound = false;
 
     /* enumerate DB to find the peer address with IRK which can resolve peerAddr */
     persistEnumKnownDevs(smIrkEnumF, (void *)&enumData, NULL, &keyType);
