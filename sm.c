@@ -1279,16 +1279,15 @@ static bool smIsPaired(bool *mitm, bool *bonded, const struct bt_addr *addr)
     else
         a = addr;
 
-    paired = persistGetDevKey(a, KEY_TYPE_LTK, key) &&
-             persistGetDevKey(a, KEY_TYPE_MY_LTK, key) &&
+    paired = (persistGetDevKey(a, KEY_TYPE_LTK, key) &&
              persistGetDevNumber(a, PERSIST_NUM_TYPE_SM_EDIV, &num) &&
-             persistGetDevNumber(a, PERSIST_NUM_TYPE_SM_RANDOM, &num) &&
-             persistGetDevNumber(a, PERSIST_NUM_TYPE_SM_MY_RANDOM, &num) &&
-             persistGetDevNumber(a, PERSIST_NUM_TYPE_SM_MITM_PROTECT, &num);
+             persistGetDevNumber(a, PERSIST_NUM_TYPE_SM_RANDOM, &num)) ||
+             (persistGetDevKey(a, KEY_TYPE_MY_LTK, key) &&
+             persistGetDevNumber(a, PERSIST_NUM_TYPE_SM_MY_RANDOM, &num));
     if (!paired)
         return false;
 
-    if (mitm)
+    if (persistGetDevNumber(a, PERSIST_NUM_TYPE_SM_MITM_PROTECT, &num) && mitm)
         *mitm = !!num;
 
     if (bonded) {
