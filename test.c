@@ -927,6 +927,11 @@ int main(int argc, char** argv)
     fprintf(stderr, "NewBlue test\n");
     logi("LOG UP\n");
 
+    if ((argc == 2 && !strcmp(argv[1], "persist"))) {
+        persistDump();
+        exit(0);
+    }
+
     if (sem_init(&mGattTestSem, 0, 0)) {
         loge("sem init failed\n");
         return -1;
@@ -1183,9 +1188,6 @@ int main(int argc, char** argv)
 
         logi("waiting...press a key\n");
         getchar();
-    }
-    else if ((argc == 2 && !strcmp(argv[1], "persist"))) {
-        persistDump();
     }
     else if (argc == 1) {
         /*
