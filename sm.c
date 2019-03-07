@@ -1172,6 +1172,14 @@ static void smTransitPhase(struct smInstance *inst, uint8_t phase) {
         timerCancel(inst->stallTimer);
         inst->stallTimer = 0;
     }
+    if (phase == SM_PHASE_DONE) {
+        /* Pairing is successful, store bond information */
+        persistAddDevNumber(
+                &inst->peerAddr,
+                PERSIST_NUM_TYPE_SM_BOND,
+                (inst->myAuthReq & SM_AUTH_REQ_BOND_MASK) == SM_AUTH_REQ_BOND_BOND &&
+                (inst->peerAuthReq & SM_AUTH_REQ_BOND_MASK) == SM_AUTH_REQ_BOND_BOND);
+    }
 
     logd("Transit from phase %d to phase %d\n", inst->phase, phase);
     inst->phase = phase;
