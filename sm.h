@@ -198,6 +198,14 @@ struct smPairSecurityRequirements {
     bool mitm; /* indicate whether man-in-the-middle protection is required */
 };
 
+struct smKnownDevNode {
+    struct smKnownDevNode *next;
+
+    char                  *name;
+    struct bt_addr        addr;
+    bool                  isPaired;
+};
+
 
 /* HELPER FUNCTIONS */
 
@@ -252,6 +260,11 @@ bool smGenResolvableAddr(struct bt_addr *addr) NEWBLUE_EXPORT;
 bool smGenNonResolvableAddr(struct bt_addr *addr) NEWBLUE_EXPORT;
 /* call this to respond to the passkey request from addr */
 void smProvidePasskey(const struct bt_addr *addr, bool provided, uint32_t passkey) NEWBLUE_EXPORT;
+
+/* return a list of all known devices */
+struct smKnownDevNode* smGetKnownDevices() NEWBLUE_EXPORT;
+/* free the list of all known devices */
+void smKnownDevicesFree(struct smKnownDevNode*) NEWBLUE_EXPORT;
 
 
 /* ONLY FOR UNITTEST PURPOSE */

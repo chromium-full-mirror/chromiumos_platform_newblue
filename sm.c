@@ -212,6 +212,10 @@ struct smIrkEnumCbkData {
     struct bt_addr resolAddr; /* input: the address to be resolved */
 };
 
+struct smKnownDevices {
+    struct smKnownDevNode *head;
+};
+
 /* mask applied to the MSB of a address (addr[5] in this case) for checking the address type */
 #define SM_RAND_ADDR_MASK         0xC0
 #define SM_RAND_ADDR_STATIC       0xC0
@@ -3207,6 +3211,87 @@ void smProvidePasskey(const struct bt_addr *addr, bool provided, uint32_t passke
     }
 out:
     pthread_mutex_unlock(&mInstLock);
+}
+
+/*
+ * FUNCTION: smGetDevicesF
+ * USE:      Get all known devices from persist
+ * PARAMS:   cbkData - the callback data to the caller function to reveal the result of enumeration
+ *           addr - the peer address
+ *           name - device name if known
+ *           nameLen - length of the name
+ *           devCls - the device class
+ *           haveKeys - the bit mask of keys we have
+ *           wantedKey - NULL if unused
+ *           haveNums - the bit mask of numbers we have
+ *           wantedNum - NULL if unused
+ * RETURN:   success
+ * NOTES:
+ */
+static bool smGetDevicesF(void *cbkData, const struct bt_addr *addr, const void *name,
+                          uint32_t nameLen, uint32_t devCls, uint32_t haveKeys,
+                          const uint8_t *wantedKey, uint32_t haveNums, const uint64_t *wantedNum)
+{
+    struct smKnownDevices *knownDevices = (struct smKnownDevices*)cbkData;
+    struct smKnownDevNode *devNode = calloc(1, sizeof(struct smKnownDevNode));
+
+    devNode->addr = *addr;
+    devNode->name = NULL;
+    /* isPaired will be assigned after the enumeration finishes, otherwise
+     * there would be deadlock since smGetDevicesF is called inside
+     * persistEnumKnownDevs which holds a lock. And smIsPaired actually calls
+     * persistEnumKnownDevs which would try to hold the same lock.*/
+    devNode->isPaired = false;
+
+    if (nameLen) {
+        devNode->name = strdup(name);
+    }
+
+    /* insert the new node at the first of the list */
+    devNode->next = knownDevices->head;
+    knownDevices->head = devNode;
+
+    return true;
+}
+
+/*
+ * FUNCTION: smGetKnownDevices
+ * USE:      Return all known devices from persist
+ * PARAMS:   NONE
+ * RETURN:   A linked list of known devices
+ * NOTES:    Caller is responsible to free the returned list with smKnownDevicesFree()
+ */
+struct smKnownDevNode* smGetKnownDevices()
+{
+    struct smKnownDevices knownDevices;
+    knownDevices.head = NULL;
+    persistEnumKnownDevs(smGetDevicesF, (void *)&knownDevices, NULL, NULL);
+
+    struct smKnownDevNode *n = knownDevices.head;
+    while (n) {
+        n->isPaired = smIsPaired(NULL, NULL, &n->addr);
+        n = n->next;
+    }
+
+    return knownDevices.head;
+}
+
+/*
+ * FUNCTION: smKnownDevicesFree
+ * USE:      Free a linked list of known devices
+ * PARAMS:   The head node of the list
+ * RETURN:   NONE
+ * NOTES:
+ */
+void smKnownDevicesFree(struct smKnownDevNode *head)
+{
+    while (head) {
+        struct smKnownDevNode *next = head->next;
+        if (head->name)
+            free(head->name);
+        free(head);
+        head = next;
+    }
 }
 
 /*
