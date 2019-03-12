@@ -1954,8 +1954,14 @@ static void smRx(struct smInstance *inst, sg packet)
             }
             smTransitPhase(inst, SM_PHASE_REQ_SENT);
         } else {
-            pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
-            break;
+            /* Now, the phase has passed SM_PHASE_START.
+             * The Security Request packet should be simply ignored and the
+             * procedure should proceed according to
+             * BLUETOOTH SPECIFICATION Version 4.2 [Vol 3, Part H] 2.4.6 Slave
+             * Security Request
+             */
+            logd("Ignore security request in phase %u when we have sent pairing request.\n",
+                 inst->phase);
         }
 
         goto done;
