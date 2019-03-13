@@ -4963,7 +4963,13 @@ static void gattClientUtilLongReadReadCbk(gatt_client_conn_t conn, uniq_t curTra
         uint32_t rxedLen = sgLength(data);
 
         sgConcat(st->dataSoFar, data);
-        if (rxedLen) {  // got data? ask for more
+        if (rxedLen >= ATT_MTU_MIN_LE - 1) { 
+            /*
+             * got data? ask for more if it is possibly up to MTU (MTU can change so
+             * we only check for this as a heuristic, since some devices like Microsoft
+             * Universal Keyboard model 1695 violate the spec and reply to blob reads
+             * forever with a single byte), causing us to read them forever.
+             */
             pthread_mutex_unlock(&mGattUtilLock);
             (void)gattClientUtilLongReadScheduleNextChunk(conn, curTrans, true);
             return;
