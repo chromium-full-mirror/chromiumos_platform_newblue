@@ -3096,6 +3096,37 @@ void smUnpair(const struct bt_addr *addr)
 }
 
 /*
+ * FUNCTION: smStartEncryption
+ * USE:      Starts the link encryption to a peer device based on past pairing result.
+ * PARAMS:   addr - the address of the peer device
+ * RETURN:   true if encryption can be started, false otherwise
+ * NOTES:    This works only if link is already established with the peer device.
+ */
+bool smStartEncryption(const struct bt_addr *addr)
+{
+    struct smInstance *inst = NULL;
+    bool ret = false;
+
+    pthread_mutex_lock(&mSmLock);
+
+    if (!(inst = smInstFindByAddr(addr))) {
+        logd("%s(): No instance found with "ADDRFMT"\n", __func__, ADDRCONV(*addr));
+        goto unlock;
+    }
+
+    if (inst->phase == SM_PHASE_LTK_SENT || inst->phase == SM_PHASE_LTK_ENCRYPTED) {
+        logd("Encryption is already initiated\n");
+        goto unlock;
+    }
+
+    ret = smLtkEncrypt(inst);
+
+unlock:
+    pthread_mutex_unlock(&mSmLock);
+    return ret;
+}
+
+/*
  * FUNCTION: smGenResolvableAddr
  * USE:      Generate a resolvable private address based on our IRK
  * PARAMS:   addr - the output resolvable private address
