@@ -383,13 +383,13 @@ static struct persistProp* persistPropLoad(int fd, uint64_t *lenP)
             *(uint8_t*)(prop + 1) = utilGetBE8(buf);
             return prop;
         case sizeof(uint16_t):
-            *(uint8_t*)(prop + 1) = utilGetBE16(buf);
+            *(uint16_t*)(prop + 1) = utilGetBE16(buf);
             return prop;
         case sizeof(uint32_t):
-            *(uint8_t*)(prop + 1) = utilGetBE32(buf);
+            *(uint32_t*)(prop + 1) = utilGetBE32(buf);
             return prop;
         case sizeof(uint64_t):
-            *(uint8_t*)(prop + 1) = utilGetBE64(buf);
+            *(uint64_t*)(prop + 1) = utilGetBE64(buf);
             return prop;
         default:
             loge("Unknown integer length %u\n", inRamLen);
@@ -1785,7 +1785,7 @@ void persistDumpPrintPropValueUint32(int indent, struct persistProp *p)
 void persistDumpPrintPropValueUint64(int indent, struct persistProp *p)
 {
     uint64_t val = *(uint64_t*)(p + 1);
-    persistDumpPrintWithIndent(indent, "0x%016lx (%ld)", val, val);
+    persistDumpPrintWithIndent(indent, "0x%016lx (%lu)", val, val);
 }
 
 /*
