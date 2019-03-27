@@ -424,7 +424,7 @@ static void btleHidReportDataArrivedCbk(gatt_client_conn_t gattConn, uint16_t ch
     }
 
     pthread_mutex_unlock(&mHidLock);
-    mCbkRx(gattConn, reportId, data, isReadReply);
+    mCbkRx(hid->id, reportId, data, isReadReply);
     return;
 
 out_unlock:
