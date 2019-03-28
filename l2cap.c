@@ -5439,7 +5439,7 @@ bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr* addr, l2
     conn->instance = instance;
     conn->inUse = 1;
 
-    if (aclConn->conn == L2C_ACL_STATE_ESTABLISHED) {
+    if (aclConn->state == L2C_ACL_STATE_ESTABLISHED) {
         l2cChannelReadyForData(aclConn, conn);
         l2cAclDownTimerStop(aclConn);
     }
