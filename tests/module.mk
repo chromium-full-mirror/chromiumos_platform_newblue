@@ -5,7 +5,7 @@ include common.mk
 
 # Unit Tests
 newblue_unittest_DEPS = CC_STATIC_LIBRARY(libnewblue_for_unittest.pie.a)
-newblue_unittest_LIBS = `gtest-config --libs` $(libnewblue_LIBS)
+newblue_unittest_LIBS = -lgtest -pthread -lpthread $(libnewblue_LIBS)
 newblue_unittest_OBJS = tests/unittest.o \
                         tests/persist_unittest.o \
                         tests/sm_unittest.o
