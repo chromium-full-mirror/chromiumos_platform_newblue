@@ -177,6 +177,7 @@ struct smPasskeyDisplay {
 };
 /* SM calls this to notify an observer about the passkey generated for Passkey Entry pairing for
  * display purpose. there is no ownership transition of struct smPasskeyDisplay.
+ * smPasskeyDisplayCbk MUST NOT call any public SM API, otherwise there can be deadlock.
  */
 typedef void (*smPasskeyDisplayCbk)(void *observerData,
     const struct smPasskeyDisplay *passkeyDisplay, uniq_t observerId);
@@ -189,6 +190,7 @@ struct smPasskeyRequest {
 };
 /* SM calls this to notify an observer about the passkey request for input purpose. there is no
  * ownership transition of struct smPasskeyRequest.
+ * smPasskeyRequestCbk MUST NOT call any public SM API, otherwise there can be deadlock.
  */
 typedef void (*smPasskeyRequestCbk)(void *observerData,
     const struct smPasskeyRequest *passkeyRequest, uniq_t observerId);
