@@ -3341,9 +3341,9 @@ static void gattCliTodoNext(l2c_handle_t conn, struct gattCliTodoItem *now)
         trans = attCliFindByTypeValue(conn, now->handle, now->endHandle, uuid16, now->data);
         if (!trans) {
             sgFree(now->data);
-            now->data = NULL;
             logw("FindByTypeValue failed\n");
-         }
+        }
+        now->data = NULL;
         break;
 
     case GATT_CLI_TODO_READ_BY_TYPE:
@@ -3374,34 +3374,34 @@ static void gattCliTodoNext(l2c_handle_t conn, struct gattCliTodoItem *now)
         trans = attCliWrite(conn, now->handle, now->data);
         if (!trans) {
             sgFree(now->data);
-            now->data = NULL;
             logw("Write with confirm failed\n");
         }
+        now->data = NULL;
         break;
 
     case GATT_CLI_TODO_WRITE_NO_ACK:
         if (!attCliWriteNoAck(conn, now->handle, now->data)) {
             sgFree(now->data);
-            now->data = NULL;
             logi("Write with no confirm failed\n");
         }
+        now->data = NULL;
         break;
 
     case GATT_CLI_TODO_SIGNED_WRITE:
         if (!attCliSignedWriteNoAck(conn, now->handle, now->data)) {
             sgFree(now->data);
-            now->data = NULL;
             logi("Write with signature failed\n");
         }
+        now->data = NULL;
         break;
 
     case GATT_CLI_TODO_PREPARE_WRITE:
         trans = attCliPrepareWrite(conn, now->handle, now->offset, now->data);
         if (!trans) {
             sgFree(now->data);
-            now->data = NULL;
             logw("PrepareWrite failed\n");
         }
+        now->data = NULL;
         break;
 
     case GATT_CLI_TODO_WRITE_EXEC:
