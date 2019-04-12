@@ -245,20 +245,19 @@ struct smPasskeyRequestObserver {
 #define SM_IN_CAP_YES_NO                 0x01
 #define SM_IN_CAP_KBD                    0x02
 
-/* local settings and state */
+/* local settings and states */
+static pthread_mutex_t mSmLock = PTHREAD_MUTEX_INITIALIZER;             /* the lock for all */
+
 static uint8_t mInCap = SM_IN_CAP_NONE;                                 /* input capability */
 static uint8_t mOutCap = SM_OUT_CAP_NONE;                               /* output capability */
 static uint8_t mIoCap = HCI_DISP_CAP_NONE;                              /* IO capability based on mIoCaps[mInCap][mOutCap] */
 static bool mHasOob = false;                                            /* whether we support OOB data */
 
-static pthread_mutex_t mInstLock = PTHREAD_MUTEX_INITIALIZER;           /* lock for the active instance list */
 static struct smInstance *mActInstList = NULL;                          /* the active instances */
 
-static pthread_mutex_t mDevLock = PTHREAD_MUTEX_INITIALIZER;            /* lock for the banned device list */
 static struct smDevNode *mBannedDevList = NULL;                         /* the device banned on pairing */
 
 static struct multiNotifList *mPairStateObservers = NULL;               /* the observers of pairing state changes */
-static pthread_mutex_t mObvrLock = PTHREAD_MUTEX_INITIALIZER;           /* lock for the smObservers */
 static struct smPasskeyDisplayObserver *mPasskeyDisplayObserver = NULL; /* the observer of pairing passkey display */
 static struct smPasskeyRequestObserver *mPasskeyRequestObserver = NULL; /* the observer of pairing passkey request */
 
@@ -372,22 +371,22 @@ static void* smNotifWorker(void *unused)
             passkeyDisp.peerAddr = work->passkeyDisp.addr;
             passkeyDisp.valid = work->passkeyDisp.valid;
             passkeyDisp.passkey = work->passkeyDisp.passkey;
-            pthread_mutex_lock(&mObvrLock);
+            pthread_mutex_lock(&mSmLock);
             if (mPasskeyDisplayObserver) {
                 mPasskeyDisplayObserver->cbk(
                     mPasskeyDisplayObserver->data, &passkeyDisp, mPasskeyDisplayObserver->id);
             }
-            pthread_mutex_unlock(&mObvrLock);
+            pthread_mutex_unlock(&mSmLock);
             break;
         case SM_WORK_NOTIFY_PASSKEY_REQUEST:
             passkeyReq.peerAddr = work->passkeyReq.addr;
             passkeyReq.valid = work->passkeyReq.valid;
-            pthread_mutex_lock(&mObvrLock);
+            pthread_mutex_lock(&mSmLock);
             if (mPasskeyRequestObserver) {
                 mPasskeyRequestObserver->cbk(
                     mPasskeyRequestObserver->data, &passkeyReq, mPasskeyRequestObserver->id);
             }
-            pthread_mutex_unlock(&mObvrLock);
+            pthread_mutex_unlock(&mSmLock);
             break;
         default:
             logd("Unknown SM work type %d\n", work->type);
@@ -437,7 +436,7 @@ static void smBannedDevFree(struct smDevNode *dev)
  * USE:      Find a device node by the address of the device on the banned device list
  * PARAMS:   addr - the device address
  * RETURN:   the pointer to the device node if matched; NULL otherwise
- * NOTES:    call with mDevLock held
+ * NOTES:    call with mSmLock held
  */
 static struct smDevNode* smBannedDevFindByAddr(const struct bt_addr *addr)
 {
@@ -459,7 +458,7 @@ static struct smDevNode* smBannedDevFindByAddr(const struct bt_addr *addr)
  * USE:      Find a device node by the device ID on the banned device list
  * PARAMS:   id - the device ID
  * RETURN:   the pointer to the device node if matched; NULL otherwise
- * NOTES:    call with mDevLock held
+ * NOTES:    call with mSmLock held
  */
 static struct smDevNode* smBannedDevFindById(uniq_t id)
 {
@@ -481,7 +480,7 @@ static struct smDevNode* smBannedDevFindById(uniq_t id)
  * USE:      Find device node by Device ID and delete it from the banned device list if matched
  * PARAMS:   id - the device ID
  * RETURN:   NONE
- * NOTES:    call with mDevLock held
+ * NOTES:    call with mSmLock held
  */
 static void smBannedDevDel(uniq_t id)
 {
@@ -516,9 +515,9 @@ static void smBannedDevDel(uniq_t id)
  */
 static void smWaitTimerCb(uniq_t timerId,  uint64_t devId)
 {
-    pthread_mutex_lock(&mDevLock);
+    pthread_mutex_lock(&mSmLock);
     smBannedDevDel(devId);
-    pthread_mutex_unlock(&mDevLock);
+    pthread_mutex_unlock(&mSmLock);
 }
 
 /*
@@ -526,7 +525,7 @@ static void smWaitTimerCb(uniq_t timerId,  uint64_t devId)
  * USE:      Add a device to the banned device list
  * PARAMS:   addr - the device address
  * RETURN:   the pointer to the device node; NULL otherwise
- * NOTES:    call with mDevLock held
+ * NOTES:    call with mSmLock held
  */
 static struct smDevNode* smBannedDevAdd(const struct bt_addr *addr)
 {
@@ -565,19 +564,17 @@ fail:
  * USE:      Free all nodes of the banned device list
  * PARAMS:   NONE
  * RETURN:   NONE
- * NOTES:
+ * NOTES:    call with mSmLock held
  */
 static void smBannedDevFreeAll(void)
 {
     struct smDevNode *n;
 
-    pthread_mutex_lock(&mDevLock);
     while(mBannedDevList) {
         n = mBannedDevList->next;
         smBannedDevFree(mBannedDevList);
         mBannedDevList = n;
     }
-    pthread_mutex_unlock(&mDevLock);
 }
 
 /*
@@ -586,7 +583,7 @@ static void smBannedDevFreeAll(void)
  *           Security request or a Pairing response before the wait interval expires
  * PARAMS:   addr - the address of the device
  * RETURN:   NONE
- * NOTES:
+ * NOTES:    call with mSmLock held
  */
 static void smBanDeviceForTime(const struct bt_addr *addr)
 {
@@ -594,8 +591,6 @@ static void smBanDeviceForTime(const struct bt_addr *addr)
 
     if (!addr)
         return;
-
-    pthread_mutex_lock(&mDevLock);
 
     /* add the newly failed device in the banned device list */
     if (!(n = smBannedDevFindByAddr(addr))) {
@@ -619,8 +614,6 @@ static void smBanDeviceForTime(const struct bt_addr *addr)
         logd("%s(): Update device "ADDRFMT" and start wait timer with "FMT64"u secs\n", __func__,
              ADDRCONV(n->addr), CNV64(n->waitInvl / 1000));
     }
-
-    pthread_mutex_unlock(&mDevLock);
 }
 
 /*
@@ -629,18 +622,14 @@ static void smBanDeviceForTime(const struct bt_addr *addr)
  *           Security request or a Pairing response before the wait interval expires
  * PARAMS:   addr - the address of the device
  * RETURN:   is banned or not
- * NOTES:
+ * NOTES:    call with mSmLock held
  */
 static bool smIsDevBanned(const struct bt_addr *addr)
 {
-    struct smDevNode *n;
-
-    pthread_mutex_lock(&mDevLock);
-    n = smBannedDevFindByAddr(addr);
+    struct smDevNode *n = smBannedDevFindByAddr(addr);
     if (n)
         logd("%s(): Device "MACFMT" is banned currently for "FMT64"u secs\n", __func__,
              MACCONV(addr->addr), CNV64(n->waitInvl / 1000));
-    pthread_mutex_unlock(&mDevLock);
 
     return n;
 }
@@ -651,7 +640,7 @@ static bool smIsDevBanned(const struct bt_addr *addr)
  *           Authentication request
  * PARAMS:   inst - the instance
  * RETURN:   pairing algorithm used
- * NOTES:
+ * NOTES:    call with mSmLock held
  */
 static uint8_t smSelPairAlg(const struct smInstance *inst)
 {
@@ -686,7 +675,7 @@ static uint8_t smSelPairAlg(const struct smInstance *inst)
  *           changed state
  * PARAMS:   state - the new l2cap encryption state
  * RETURN:   true if the link encrypted as negotiated
- * NOTES:
+ * NOTES:    call with mSmLock held
  */
 static bool smIsEncryptExpected(const struct l2cEncrState *state, const struct smInstance *inst)
 {
@@ -740,7 +729,7 @@ static enum smAddrType smGetLeAddrType(const struct bt_addr *addr)
  *           data - the data to send
  *           len - length of said data
  * RETURN:   success
- * NOTES:
+ * NOTES:    call with mSmLock held
  */
 static bool smTx(const struct smInstance *inst, uint8_t pktTyp, const void *data, uint8_t len)
 {
@@ -780,7 +769,7 @@ tx_err:
  *           inst - the instance
  *           pairReqResp - the struct
  * RETURN:   return 0 if all values were read & found valid; SM_ERR_* otherwise
- * NOTES:
+ * NOTES:    call with mSmLock held
  */
 static uint8_t smParsePairReqResp(SmPairState *err, struct smInstance *inst,
                                   const struct smPairReqResp *pairReqResp)
@@ -900,7 +889,7 @@ static bool smWriteReversedBytes(uint8_t *out, int outLen, const uint8_t *in, in
  * USE:      Send security request
  * PARAMS:   inst - the instance
  * RETURN:   success
- * NOTES:
+ * NOTES:    call with mSmLock held
  */
 static bool smSendSecurityReq(struct smInstance *inst)
 {
@@ -920,7 +909,7 @@ static bool smSendSecurityReq(struct smInstance *inst)
  * USE:      Send pairing request
  * PARAMS:   inst - the instance
  * RETURN:   success
- * NOTES:
+ * NOTES:    call with mSmLock held
  */
 static bool smSendPairReq(struct smInstance *inst)
 {
@@ -949,7 +938,7 @@ static bool smSendPairReq(struct smInstance *inst)
  * USE:      Send pairing response
  * PARAMS:   inst - the instance
  * RETURN:   success
- * NOTES:
+ * NOTES:    call with mSmLock held
  */
 static bool smSendPairResp(const struct smInstance *inst)
 {
@@ -980,7 +969,7 @@ static bool smSendPairResp(const struct smInstance *inst)
  * USE:      Send pairing confirm value
  * PARAMS:   inst - the instance
  * RETURN:   success
- * NOTES:
+ * NOTES:    call with mSmLock held
  */
 static bool smSendPairConf(const struct smInstance *inst)
 {
@@ -1001,7 +990,7 @@ static bool smSendPairConf(const struct smInstance *inst)
  * USE:      Send pairing Random number
  * PARAMS:   inst - the instance
  * RETURN:   success
- * NOTES:
+ * NOTES:    call with mSmLock held
  */
 static bool smSendPairRand(const struct smInstance *inst)
 {
@@ -1022,7 +1011,7 @@ static bool smSendPairRand(const struct smInstance *inst)
  * USE:      Send LTK via Encryption Information
  * PARAMS:   inst - the instance
  * RETURN:   success
- * NOTES:
+ * NOTES:    call with mSmLock held
  */
 static bool smSendEncryptInfo(const struct smInstance *inst)
 {
@@ -1048,7 +1037,7 @@ static bool smSendEncryptInfo(const struct smInstance *inst)
  *           ediv - our EDIV associated with the peer device
  *           rand - our random number associated with the peer device
  * RETURN:   success
- * NOTES:
+ * NOTES:    call with mSmLock held
  */
 static bool smSendMasterId(const struct smInstance *inst, uint16_t ediv, uint64_t rand)
 {
@@ -1068,7 +1057,7 @@ static bool smSendMasterId(const struct smInstance *inst, uint16_t ediv, uint64_
  * USE:      Send IRK
  * PARAMS:   inst - the instance
  * RETURN:   success
- * NOTES:
+ * NOTES:    call with mSmLock held
  */
 static bool smSendIdInfo(const struct smInstance *inst)
 {
@@ -1092,7 +1081,7 @@ static bool smSendIdInfo(const struct smInstance *inst)
  * USE:      Send public device address or static random address
  * PARAMS:   inst - the instance
  * RETURN:   success
- * NOTES:
+ * NOTES:    call with mSmLock held
  */
 static bool smSendIdAddrInfo(const struct smInstance *inst)
 {
@@ -1135,7 +1124,7 @@ static bool smSendIdAddrInfo(const struct smInstance *inst)
  * USE:      Send CSRK
  * PARAMS:   inst - the instance
  * RETURN:   success
- * NOTES:
+ * NOTES:    call with mSmLock held
  */
 static bool smSendSignInfo(const struct smInstance *inst)
 {
@@ -1160,7 +1149,7 @@ static bool smSendSignInfo(const struct smInstance *inst)
  * PARAMS:   inst - the instance
  *           phase - the phase to transit to
  * RETURN:   NONE
- * NOTES:
+ * NOTES:    call with mSmLock held
  */
 static void smTransitPhase(struct smInstance *inst, uint8_t phase) {
     if (phase < SM_PHASE_START || phase > SM_PHASE_LTK_ENCRYPTED) {
@@ -1197,7 +1186,8 @@ static void smTransitPhase(struct smInstance *inst, uint8_t phase) {
  * USE:      Distribute our LTK, EDIV, Rand, IRK, Addr, CSRK based on the key distribution field
  * PARAMS:   inst - the instance
  * RETURN:   success
- * NOTES:    the phase will be transited based on the key distribution field
+ * NOTES:    the phase will be transited based on the key distribution field.
+ *           call with mSmLock held
  */
 static bool smDistributeKeys(struct smInstance *inst)
 {
@@ -1248,7 +1238,7 @@ fail:
  * PARAMS:   inst - the instance
  *           reason - the error reason
  * RETURN:   success
- * NOTES:
+ * NOTES:    call with mSmLock held
  */
 static bool smSendPairFail(const struct smInstance *inst, uint8_t reason)
 {
@@ -1318,7 +1308,8 @@ static bool smIsPaired(bool *mitm, bool *bonded, const struct bt_addr *addr)
  * USE:      (Re-)encrypt the link using peer's random number, EVID and LTK
  * PARAMS:   inst - the instance
  * RETURN:   true if encryption request sent
- * NOTES:    This should be called when we are the initiator of the link
+ * NOTES:    This should be called when we are the initiator of the link.
+ *           call with mSmLock held
  */
 static bool smLtkEncrypt(struct smInstance *inst)
 {
@@ -1351,7 +1342,7 @@ static bool smLtkEncrypt(struct smInstance *inst)
  * PARAMS:   inst - the instance
  *           packet - the data that arrived
  * RETURN:   NONE
- * NOTES:
+ * NOTES:    call with mSmLock held
  */
 static void smRx(struct smInstance *inst, sg packet)
 {
@@ -1392,7 +1383,6 @@ static void smRx(struct smInstance *inst, sg packet)
 
         if (smIsDevBanned(&inst->peerAddr)) {
             smSendPairFail(inst, SM_ERR_REPEATED_ATTEMPTS);
-            smBanDeviceForTime(&inst->peerAddr);
             pairErr = SM_PAIR_ERR_REPEATED_ATTEMPT;
             break;
         }
@@ -1926,7 +1916,6 @@ static void smRx(struct smInstance *inst, sg packet)
 
         if (smIsDevBanned(&inst->peerAddr)) {
             smSendPairFail(inst, SM_ERR_REPEATED_ATTEMPTS);
-            smBanDeviceForTime(&inst->peerAddr);
             pairErr = SM_PAIR_ERR_REPEATED_ATTEMPT;
             break;
         }
@@ -1991,7 +1980,6 @@ static void smRx(struct smInstance *inst, sg packet)
     smTransitPhase(inst, SM_PHASE_START);
 done:
     sgFree(packet);
-    return;
 }
 
 /*
@@ -1999,7 +1987,7 @@ done:
  * USE:      Find the instance node by the connection ID
  * PARAMS:   conn - the connection ID
  * RETURN:   the instance if matched; NULL otherwise
- * NOTES:    call with mInstLock held
+ * NOTES:    call with mSmLock held
  */
 static struct smInstance* smInstFindByConn(l2c_handle_t conn)
 {
@@ -2021,7 +2009,7 @@ static struct smInstance* smInstFindByConn(l2c_handle_t conn)
  * USE:      Find the instance node by the peer address
  * PARAMS:   addr
  * RETURN:   the instance if matched; NULL otherwise
- * NOTES:    call with mInstLock held
+ * NOTES:    call with mSmLock held
  */
 static struct smInstance* smInstFindByAddr(const struct bt_addr *addr)
 {
@@ -2050,11 +2038,11 @@ static void smStallTimerCb(uniq_t timerId, uint64_t conn)
 {
     struct smInstance *inst;
 
-    pthread_mutex_lock(&mInstLock);
+    pthread_mutex_lock(&mSmLock);
 
     inst = smInstFindByConn(conn);
     if (!inst) {
-        pthread_mutex_unlock(&mInstLock);
+        pthread_mutex_unlock(&mSmLock);
         return;
     }
 
@@ -2077,7 +2065,7 @@ static void smStallTimerCb(uniq_t timerId, uint64_t conn)
 
     smBanDeviceForTime(&inst->peerAddr);
 
-    pthread_mutex_unlock(&mInstLock);
+    pthread_mutex_unlock(&mSmLock);
 
     l2cApiDisconnect(conn);
     smNotifyPairStateObserver(&inst->peerAddr, SM_PAIR_STATE_FAILED, SM_PAIR_ERR_STALLED);
@@ -2090,7 +2078,7 @@ static void smStallTimerCb(uniq_t timerId, uint64_t conn)
  * PARAMS:   inCap - input capability
  *           outCap - output capability
  * RETURN:   success
- * NOTES:    call with mInstLock held
+ * NOTES:    call with mSmLock held
  */
 static bool smUpdateIoCap(uint8_t inCap, uint8_t outCap)
 {
@@ -2115,11 +2103,11 @@ static bool smUpdateIoCap(uint8_t inCap, uint8_t outCap)
  * PARAMS:   inst - the instance
  * RETURN:   NONE
  * NOTES:    This MUST be called only by smFixedChState when the state is L2C_STATE_CLOSED to avoid
- *           potential race and freeing already-freed instance
+ *           potential race and freeing already-freed instance.
+ *           call with mSmLock held
  */
 static void smInstDeinit(struct smInstance* inst)
 {
-    pthread_mutex_lock(&mInstLock);
     if (!inst)
         return;
 
@@ -2136,8 +2124,6 @@ static void smInstDeinit(struct smInstance* inst)
     smUpdateIoCap(mInCap, mOutCap);
 
     free(inst);
-
-    pthread_mutex_unlock(&mInstLock);
 }
 
 /*
@@ -2147,14 +2133,12 @@ static void smInstDeinit(struct smInstance* inst)
  *           not yet in the active instance list
  * PARAMS:   inst - the instance
  * RETURN:   NONE
- * NOTES:
+ * NOTES:    call with mSmLock held
  */
 static void smInstInit(struct smInstance *inst)
 {
     if (!inst)
         return;
-
-    pthread_mutex_lock(&mInstLock);
 
     if (!smInstFindByAddr(&inst->peerAddr)) {
         inst->prev = NULL;
@@ -2166,8 +2150,6 @@ static void smInstInit(struct smInstance *inst)
 
     /* TODO(mcchou): fix stall timer according to Volume 3, Part H, 3.4 SMP TIMEOUT */
     inst->stallTimer = timerSet(SM_STALL_INTVL, smStallTimerCb, inst->conn);
-
-    pthread_mutex_unlock(&mInstLock);
 }
 
 /*
@@ -2184,7 +2166,7 @@ static void smInstInit(struct smInstance *inst)
 static void smFixedChState(void *userData, void *instance, uint8_t evt, const void *data,
                            uint32_t len)
 {
-    struct smInstance *inst = (struct smInstance*)instance;
+    struct smInstance *inst;
     struct l2cEncrState *encrState = NULL;
     struct l2cKeyReqState *keyReqState = NULL;
     struct bt_addr peerAddr;
@@ -2197,7 +2179,12 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
     uint64_t myRand = 0, myDiv = 0;
     uint8_t key[HCI_LE_KEY_LEN] = {0,};
     uint8_t rawKey[HCI_LE_KEY_LEN] = {0,};
-    uint8_t phase = inst->phase;
+    uint8_t phase;
+
+    pthread_mutex_lock(&mSmLock);
+
+    inst = (struct smInstance*)instance;
+    phase = inst->phase;
 
     switch (evt) {
     case L2C_STATE_OPEN:
@@ -2405,6 +2392,8 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
         logd("unknown L2C event %u\n", evt);
         goto fail;
     }
+
+    pthread_mutex_unlock(&mSmLock);
     return;
 reset:
     smTransitPhase(inst, SM_PHASE_START);
@@ -2412,6 +2401,8 @@ fail:
     logd("Got l2cap event 0x%02X in phase %u when we are the %s\n", evt, phase,
          inst->isInitiator ? "initiator" : "responder");
     smNotifyPairStateObserver(&inst->peerAddr, SM_PAIR_STATE_FAILED, pairErr);
+
+    pthread_mutex_unlock(&mSmLock);
 }
 
 /*
@@ -2445,10 +2436,13 @@ static uint8_t smFixedChAlloc(void *userData, l2c_handle_t conn, void **instance
         return SVC_ALLOC_FAIL_OTHER;
     }
 
+    pthread_mutex_lock(&mSmLock);
     if (smIsDevBanned(&peerAddr)) {
         logd("Refusing SM connection for banned device\n");
+        pthread_mutex_unlock(&mSmLock);
         return SVC_ALLOC_FAIL_OTHER;
     }
+    pthread_mutex_unlock(&mSmLock);
 
     inst = (struct smInstance*)calloc(1, sizeof(struct smInstance));
     if (!inst)
@@ -2584,12 +2578,11 @@ bool smInit(void)
         .serviceFixedChStateCbk = smFixedChState,
     };
 
-    pthread_mutex_lock(&mInstLock);
+    pthread_mutex_lock(&mSmLock);
     smUpdateIoCap(SM_IN_CAP_NONE, SM_OUT_CAP_NONE);
-    pthread_mutex_unlock(&mInstLock);
-
     /* TODO(mcchou): this needs to be changed accordingly for the OOB support */
     mHasOob = false;
+    pthread_mutex_unlock(&mSmLock);
 
     if (!(mSmSendQ = sendQueueAlloc(MAX_PACKETS_SM_SEND_QUEUE))) {
         logw("%s(): Error allocating SM sendQ.\n", __func__);
@@ -2653,6 +2646,8 @@ void smDeinit(void)
 {
     l2cApiServiceFixedChUnregister(L2C_FIXED_CH_NUM_SM, NULL, NULL);
 
+    pthread_mutex_lock(&mSmLock);
+
     if (mNotifWork) {
         workQueueWakeAll(mNotifWork, 1);
         pthread_join(mNotifWorker, NULL);
@@ -2676,6 +2671,9 @@ void smDeinit(void)
         sendQueueFree(mSmSendQ);
 
     smBannedDevFreeAll();
+
+    pthread_mutex_unlock(&mSmLock);
+
     persistStore();
     logd("%s(): smDeinit finished correctly\n", __func__);
 }
@@ -2798,7 +2796,9 @@ static void smNotifyPairStateObserver(const struct bt_addr *addr, SmPairState st
 uniq_t smRegisterPasskeyDisplayObserver(void *observerData, smPasskeyDisplayCbk cbk)
 {
     uniq_t ret = 0;
-    pthread_mutex_lock(&mObvrLock);
+
+    pthread_mutex_lock(&mSmLock);
+
     if (!cbk || mPasskeyDisplayObserver)
         goto out;
 
@@ -2813,7 +2813,7 @@ uniq_t smRegisterPasskeyDisplayObserver(void *observerData, smPasskeyDisplayCbk 
 
     smUpdateIoCap(mInCap, SM_OUT_CAP_NUMERIC);
 out:
-    pthread_mutex_unlock(&mObvrLock);
+    pthread_mutex_unlock(&mSmLock);
     return ret;
 }
 
@@ -2827,9 +2827,9 @@ out:
  */
 void smUnregisterPasskeyDisplayObserver(uniq_t observerId)
 {
-    pthread_mutex_lock(&mObvrLock);
+    pthread_mutex_lock(&mSmLock);
     if (!mPasskeyDisplayObserver || observerId != mPasskeyDisplayObserver->id) {
-        pthread_mutex_unlock(&mObvrLock);
+        pthread_mutex_unlock(&mSmLock);
         return;
     }
 
@@ -2837,7 +2837,7 @@ void smUnregisterPasskeyDisplayObserver(uniq_t observerId)
     mPasskeyDisplayObserver = NULL;
     smUpdateIoCap(mInCap, SM_OUT_CAP_NONE);
 
-    pthread_mutex_unlock(&mObvrLock);
+    pthread_mutex_unlock(&mSmLock);
 }
 
 /*
@@ -2889,7 +2889,9 @@ static void smNotifyPasskeyDisplayObserver(const struct bt_addr *addr, bool vali
 uniq_t smRegisterPasskeyRequestObserver(void *observerData, smPasskeyRequestCbk cbk)
 {
     uniq_t ret = 0;
-    pthread_mutex_lock(&mObvrLock);
+
+    pthread_mutex_lock(&mSmLock);
+
     if (!cbk || mPasskeyRequestObserver)
         goto out;
 
@@ -2904,7 +2906,7 @@ uniq_t smRegisterPasskeyRequestObserver(void *observerData, smPasskeyRequestCbk 
 
     smUpdateIoCap(SM_IN_CAP_KBD, mOutCap);
 out:
-    pthread_mutex_unlock(&mObvrLock);
+    pthread_mutex_unlock(&mSmLock);
     return ret;
 }
 
@@ -2918,9 +2920,10 @@ out:
  */
 void smUnregisterPasskeyRequestObserver(uniq_t observerId)
 {
-    pthread_mutex_lock(&mObvrLock);
+    pthread_mutex_lock(&mSmLock);
+
     if (!mPasskeyRequestObserver || observerId != mPasskeyRequestObserver->id) {
-        pthread_mutex_unlock(&mObvrLock);
+        pthread_mutex_unlock(&mSmLock);
         return;
     }
 
@@ -2928,7 +2931,7 @@ void smUnregisterPasskeyRequestObserver(uniq_t observerId)
     mPasskeyRequestObserver = NULL;
     smUpdateIoCap(SM_IN_CAP_NONE, mOutCap);
 
-    pthread_mutex_unlock(&mObvrLock);
+    pthread_mutex_unlock(&mSmLock);
 }
 
 /*
@@ -2984,7 +2987,7 @@ void smPair(const struct bt_addr *addr, const struct smPairSecurityRequirements 
 
     logd("%s(): "ADDRFMT"\n", __func__, ADDRCONV(*addr));
 
-    pthread_mutex_lock(&mInstLock);
+    pthread_mutex_lock(&mSmLock);
 
     /* check if there is an existing instance with the same peer device */
     if ((inst = smInstFindByAddr(addr))) {
@@ -3044,11 +3047,11 @@ void smPair(const struct bt_addr *addr, const struct smPairSecurityRequirements 
     }
 
     smNotifyPairStateObserver(&inst->peerAddr, SM_PAIR_STATE_START, SM_PAIR_ERR_NONE);
-    pthread_mutex_unlock(&mInstLock);
+    pthread_mutex_unlock(&mSmLock);
     return;
 fail:
+    pthread_mutex_unlock(&mSmLock);
     smNotifyPairStateObserver(addr, SM_PAIR_STATE_FAILED, pairErr);
-    pthread_mutex_unlock(&mInstLock);
 }
 
 /*
@@ -3072,7 +3075,7 @@ void smUnpair(const struct bt_addr *addr)
 
     logd("%s(): "ADDRFMT"\n", __func__, ADDRCONV(*addr));
 
-    pthread_mutex_lock(&mInstLock);
+    pthread_mutex_lock(&mSmLock);
     /* check if there is an existing instance with the peer device */
     inst = smInstFindByAddr(addr);
     if (inst) {
@@ -3081,7 +3084,7 @@ void smUnpair(const struct bt_addr *addr)
             l2cApiDisconnect(inst->conn);
         cancelled = inst->phase != SM_PHASE_DONE && inst->phase != SM_PHASE_LTK_ENCRYPTED;
     }
-    pthread_mutex_unlock(&mInstLock);
+    pthread_mutex_unlock(&mSmLock);
 
     persistDelDevKeys(addr);
     persistDelDevNumbers(addr);
@@ -3180,7 +3183,7 @@ void smProvidePasskey(const struct bt_addr *addr, bool provided, uint32_t passke
     uint8_t i, prevPhase;
     struct smInstance *inst = NULL;
 
-    pthread_mutex_lock(&mInstLock);
+    pthread_mutex_lock(&mSmLock);
 
     if (!(inst = smInstFindByAddr(addr)))
         goto out;
@@ -3196,6 +3199,7 @@ void smProvidePasskey(const struct bt_addr *addr, bool provided, uint32_t passke
         inst->tk.key[i] = passkey;
 
     smGenConfVal(&inst->myConfVal, inst, false);
+
     smTransitPhase(inst, SM_PHASE_SCONF_READY);
 
     /* a passkey can be provided before or after receiving Mconfirm. if it is provided after
@@ -3210,7 +3214,7 @@ void smProvidePasskey(const struct bt_addr *addr, bool provided, uint32_t passke
         smTransitPhase(inst, SM_PHASE_SCONF_SENT);
     }
 out:
-    pthread_mutex_unlock(&mInstLock);
+    pthread_mutex_unlock(&mSmLock);
 }
 
 /*
@@ -3689,7 +3693,7 @@ static bool smGenSTK(struct smInstance *inst)
  * USE:      Generate a 128-bit Temporary Key and store it in the given instance
  * PARAS:    inst - instance
  * RETURN:   success
- * NOTES:
+ * NOTES:    call with mSmLock held
  */
 static bool smGenTK(struct smInstance *inst)
 {
@@ -3751,7 +3755,7 @@ static bool smGenTK(struct smInstance *inst)
  *                   value will be used as the input of confirm value calculation; otherwise the
  *                   local random value will be used.
  * RETURN:   success
- * NOTES:
+ * NOTES:    call with mSmLock held
  */
 static bool smGenConfVal(struct smPairConf *conf, const struct smInstance *inst, bool check)
 {
@@ -3837,6 +3841,7 @@ static bool smGenRandNum(uint8_t *out, uint8_t numLen)
  * PARAS:    inst - the instance
  * RETURN:   success if LTK is valid and stored
  * NOTES:    We use Database Lookup approach for key management.
+ *           call with mSmLock held
  */
 static bool smGenLtk(struct smInstance *inst)
 {
