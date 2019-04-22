@@ -27,6 +27,7 @@ common_OBJS = att.o \
               gattSvcMiscInfo.o \
               hci.o \
               l2cap.o \
+              log.o \
               mt.o \
               multiNotif.o \
               persist.o \
@@ -79,7 +80,7 @@ test: CC_STATIC_LIBRARY(libnewblue_for_unittest.pie.a)
 
 # Newblue Library Manual Test Program - new_blue_test
 libnewblue_test_DEPS = CC_LIBRARY(libnewblue.so) $(libnewblue_DEPS)
-CC_BINARY(new_blue_test): test.o $(libnewblue_test_DEPS)
+CC_BINARY(new_blue_test): test.o log.o $(libnewblue_test_DEPS)
 CC_BINARY(new_blue_test): LDLIBS += $(libnewblue_LIBS)
 clean: CLEAN(new_blue_test)
 all: CC_BINARY(new_blue_test)
