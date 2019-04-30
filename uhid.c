@@ -86,7 +86,7 @@ static int uhidWrite(int fd, const struct uhid_event *ev)
     ev_size = sizeof(*ev);
     while (1) {
         ret = write(fd, ev, ev_size);
-        logd("ret of write: %d (ev size: %zu)\n", ret, ev_size);
+        logv("ret of write: %d (ev size: %zu)\n", ret, ev_size);
 
         if (ret < 0) {
             if (errno == EINTR) {
@@ -490,7 +490,7 @@ static int handleUhidOutputEvent(const struct UhidDeviceInfo *devInfo)
         logd("ev type: UHID_CLOSE %d. The HID device is closed.\n", ev.type);
         break;
     case UHID_OUTPUT:
-        logd("ev type: UHID_OUTPUT %d\n", ev.type);
+        logv("ev type: UHID_OUTPUT %d\n", ev.type);
         sendOutputReport(devInfo, &ev);
         break;
     default:
@@ -815,7 +815,7 @@ void hidReportRxCbk(ble_hid_conn_t hidId, int32_t reportId, sg data, bool byRequ
     uint32_t max_size;
     struct UhidDeviceInfo *devInfo;
 
-    logd("HID conn id %" PRIu64 " report ID %d RXed, %u bytes%s\n", hidId, reportId, sgLength(data), byRequest ? " by request" : "");
+    logv("HID conn id %" PRIu64 " report ID %d RXed, %u bytes%s\n", hidId, reportId, sgLength(data), byRequest ? " by request" : "");
 
     if (!mDevices) {
         loge("Recived the HID report before a valid uhid device is created. Ignored.\n");

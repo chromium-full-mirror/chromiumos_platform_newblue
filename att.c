@@ -2945,7 +2945,7 @@ void attSrvDataRx(l2c_handle_t from, sg s)
     pthread_mutex_lock(&mAttLock);
     attConnListAddIfNew(from);
 
-    logd("ATT opcode RXed: 0x%02x\n", opcode);
+    logv("ATT opcode RXed: 0x%02x\n", opcode);
 
     switch (opcode) {
     case ATT_OPCODE_ERROR:

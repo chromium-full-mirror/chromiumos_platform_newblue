@@ -467,7 +467,7 @@ static void btleHidCccdWriteStatusCbk(gatt_client_conn_t gattConn, uint16_t valH
     if (!forSubscribe)
         return;
 
-    logd("CCCD subscribe status %u for val handle 0x%04x\n", status, valHandle);
+    logv("CCCD subscribe status %u for val handle 0x%04x\n", status, valHandle);
 
     pthread_mutex_lock(&mHidLock);
     hid = hidFindConnByGattConn(gattConn);
@@ -519,7 +519,7 @@ static void btleHidCccdWriteStatusCbk(gatt_client_conn_t gattConn, uint16_t valH
     }
 
     if (--hid->substate)
-        logd("HID: still waiting on %u CCCD writes\n", hid->substate);
+        logv("HID: still waiting on %u CCCD writes\n", hid->substate);
     else { // WE're DONE!
         hid->state = BTLE_HID_CONN_STATE_UP;
         id = hid->id;
@@ -619,7 +619,7 @@ static void btleHidAttachWriteCccds(gatt_client_conn_t gattConn)
 
     pthread_mutex_unlock(&mHidLock);
     for (i = 0; i < num; i++) {
-        logd("HID: writing %s CCCD {0x%04x 0x%04x 0x%04x}\n", reliable[i] ? "reliable" : "fast", charHandles[i], valHandles[i], cccdHandles[i]);
+        logv("HID: writing %s CCCD {0x%04x 0x%04x 0x%04x}\n", reliable[i] ? "reliable" : "fast", charHandles[i], valHandles[i], cccdHandles[i]);
         if (GATT_CLI_STATUS_OK != gattClientNotifsSubscribe(gattConn, charHandles[i], valHandles[i], cccdHandles[i], !!reliable[i], btleHidCccdWriteStatusCbk, btleHidAsyncDataArrivedCbk)) {
             logw("Failed to write CCCD for {0x%04x,0x%04x,0x%04x,%u\n", charHandles[i], valHandles[i], cccdHandles[i], !!reliable[i]);
             break;
@@ -795,7 +795,7 @@ static void btleHidAttachPrerequisiteReadDataRxedCbk(gatt_client_conn_t gattConn
     struct DataBuffer *buf;
     struct HidConn *hid;
 
-    logd("HID: prereq read cbk read hadle 0x%04x with %sNULL ptr data\n", handle, data ? "non-" : "");
+    logv("HID: prereq read cbk read hadle 0x%04x with %sNULL ptr data\n", handle, data ? "non-" : "");
 
     pthread_mutex_lock(&mHidLock);
     hid = hidFindConnByGattConn(gattConn);
@@ -814,7 +814,7 @@ static void btleHidAttachPrerequisiteReadDataRxedCbk(gatt_client_conn_t gattConn
         goto out_detach;
     }
 
-    logd("HID: prereq read matches what we expected, recording\n");
+    logv("HID: prereq read matches what we expected, recording\n");
 
     // record this data we just read
     buf = (struct DataBuffer*)malloc(sizeof(struct DataBuffer) + sgLength(data));
@@ -855,7 +855,7 @@ static void btleHidAttachPerformPrerequisiteRead(gatt_client_conn_t gattConn)
     uint16_t handleToRead;
     struct HidConn *hid;
 
-    logd("HID: prereq read do - deciding how to proceed\n");
+    logv("HID: prereq read do - deciding how to proceed\n");
 
     pthread_mutex_lock(&mHidLock);
     hid = hidFindConnByGattConn(gattConn);
@@ -888,7 +888,7 @@ static void btleHidAttachPerformPrerequisiteRead(gatt_client_conn_t gattConn)
         return;
     }
 
-    logd("HID: prereq read do decided to read handle 0x%04x\n", handleToRead);
+    logv("HID: prereq read do decided to read handle 0x%04x\n", handleToRead);
 
     // read the thing we've decided to read
     pthread_mutex_unlock(&mHidLock);
@@ -949,7 +949,7 @@ static void btleHidAttachAddDiscoveredChar(struct HidConn *hid, const struct Gat
         return;
     }
 
-    logd("HID: found char with uuid16 0x%04x\n", uuid16);
+    logv("HID: found char with uuid16 0x%04x\n", uuid16);
     switch (uuid16) {
     case BTLE_UUID_HID_CHAR_BOOT_KBD_INPUT_REPORT:
         dst = &hid->bootKbdInput;
@@ -1003,7 +1003,7 @@ static void btleHidAttachAddDiscoveredChar(struct HidConn *hid, const struct Gat
                 continue;
             }
 
-            logd("HID: found descr with uuid16 0x%04x at handle 0x%04x\n", uuid16, chr->descrs[i].handle);
+            logv("HID: found descr with uuid16 0x%04x at handle 0x%04x\n", uuid16, chr->descrs[i].handle);
 
             //if this char belongs to a report, record it there
             if (isReport) {

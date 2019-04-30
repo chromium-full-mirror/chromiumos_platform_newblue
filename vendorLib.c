@@ -445,19 +445,19 @@ static void* vendorWorker(void *pipeFdP)
                 char line[128];
                 uint32_t i;
 
-		if (!sz)
-			sprintf(line, "vRX (%u) <ZLP>", buf[0]);
+            if (!sz)
+                sprintf(line, "vRX (%u) <ZLP>", buf[0]);
 
                 for(i = 0; i < sz; i++) {
                     if (i & 15)
                         sprintf(line + strlen(line), " %02X", packet[i + packetOffset]);
                     else {
                         if (i)
-                            logd("%s\n", line);
+                            logv("%s\n", line);
                         sprintf(line, "vRX (%d) [%03X] %02X", buf[0], i, packet[i + packetOffset]);
                     }
                 }
-                logd("%s\n", line);
+                logv("%s\n", line);
             }
 
             /* vendor lib code has first dibs on valid command complete packets */
@@ -806,11 +806,11 @@ bool vendorTx(uint8_t typ, sg data, bool expectReply)
                 sprintf(line + strlen(line), " %02X", v);
             else {
                 if (i)
-                    logd("%s\n", line);
+                    logv("%s\n", line);
                 sprintf(line, "vTX (%d) [%03X] %02X", typ, i, v);
             }
         }
-        logd("%s\n", line);
+        logv("%s\n", line);
     }
 
     if (mNeedTypeBytes && !sgConcatFrontCopy(data, &typ, 1)) {

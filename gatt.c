@@ -768,14 +768,14 @@ static bool gattEnqueueCliDoNextTodoItem(struct gattConnState *conn)
     struct gattCliTodoItem *now;
     struct gattWorkItem *wi;
 
-    logd("gattEnqueueCliDoNextTodoItem cur=%p next=%p\n", conn->todoCurr, conn->todoListH);
+    logv("gattEnqueueCliDoNextTodoItem cur=%p next=%p\n", conn->todoCurr, conn->todoListH);
 
     if (conn->todoCurr) {
-        logd("gattEnqueueCliDoNextTodoItem called with an existing transaction running - not necessary\n");
+        logv("gattEnqueueCliDoNextTodoItem called with an existing transaction running - not necessary\n");
         return true;
     }
     if (!conn->todoListH) {
-        logd("gattEnqueueCliDoNextTodoItem called with no todo items - not necessary\n");
+        logv("gattEnqueueCliDoNextTodoItem called with no todo items - not necessary\n");
         return true;
     }
 
@@ -2099,7 +2099,7 @@ static bool gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *han
                 logw("Char definition does not end in a uuid\n");
             else {
                 tmpHandle = utilGetLE16(&charDef.valHandle);
-                logd("Found char @ 0x%04x with props 0x%02x & val @ 0x%04x: "UUIDFMT"\n", *handleP, utilGetLE8(&charDef.charProps), tmpHandle, UUIDCONV(uuid));
+                logv("Found char @ 0x%04x with props 0x%02x & val @ 0x%04x: "UUIDFMT"\n", *handleP, utilGetLE8(&charDef.charProps), tmpHandle, UUIDCONV(uuid));
 
                 conn->doNotFreeTodoCurr = true;
                 pthread_mutex_unlock(&mGattLock); // see "A NOTE ABOUT LOCKS" above
@@ -3326,7 +3326,7 @@ static void gattCliTodoNext(l2c_handle_t conn, struct gattCliTodoItem *now)
     uint16_t uuid16;
 
     /* actually start it */
-    logd("Current gatt cli todo command being sent: %u\n", now->type);
+    logv("Current gatt cli todo command being sent: %u\n", now->type);
     switch (now->type) {
     case GATT_CLI_TODO_FIND_INFO:
         trans = attCliFindInformation(conn, now->handle, now->endHandle);
@@ -3658,7 +3658,7 @@ static void gattCliTodoEnqItem(struct gattConnState *conn, struct gattCliTodoIte
     }
     todo->enqueued = true;
 
-    logd("Enqueuing item %p with handle range 0x%04x-0x%04x in %s\n", todo, todo->handle, todo->endHandle, inFront ? "front" : "rear");
+    logv("Enqueuing item %p with handle range 0x%04x-0x%04x in %s\n", todo, todo->handle, todo->endHandle, inFront ? "front" : "rear");
 
     if (conn->todoListH) { /* have items in list already? */
         if (inFront) {
@@ -4372,7 +4372,7 @@ uint8_t gattClientNotifsSubscribe(gatt_client_conn_t connId, uint16_t charHandle
         }
         if (!notif) {
 
-            logd("Nobody was previously subscribed to char at 0x%04x - making new struct\n", charHandle);
+            logv("Nobody was previously subscribed to char at 0x%04x - making new struct\n", charHandle);
 
             /* no structure? create it */
             notif = calloc(1, sizeof(struct gattCliNotif));
@@ -4582,7 +4582,7 @@ static void gattClientUtilFindAndTraversePrimaryServiceDescrEnumCbk(gatt_client_
             bool discard;
             uint32_t i;
 
-            logd("GATT util svc traversal: descr search produces "UUIDFMT" @ 0x%04x\n", UUIDCONV(*uuid), handle);
+            logv("GATT util svc traversal: descr search produces "UUIDFMT" @ 0x%04x\n", UUIDCONV(*uuid), handle);
 
             // verify it is not something else (here we'll get "characteristic" declarations, characteristic values, "include service" declarations, and our actual "service" declaration)
             discard = handle == st->res.firstHandle;
@@ -4596,7 +4596,7 @@ static void gattClientUtilFindAndTraversePrimaryServiceDescrEnumCbk(gatt_client_
                     inChr = &st->res.chars[i];
             }
             if (discard) {
-                logd("GATT util svc traversal: descr discarded\n");
+                logv("GATT util svc traversal: descr discarded\n");
                 pthread_mutex_unlock(&mGattUtilLock);
                 return;
             }
@@ -4668,7 +4668,7 @@ static void gattClientUtilFindAndTraversePrimaryServiceCharEnumCbk(gatt_client_c
         if (status != GATT_CLI_STATUS_OK)
             logi("error finding characteristics");
         else if (uuid) { // a characteristic is found
-            logd("GATT util svc traversal: char search produces "UUIDFMT" {0x%04x,0x%04x,0x%02x}\n", UUIDCONV(*uuid), charHandle, valHandle, props);
+            logv("GATT util svc traversal: char search produces "UUIDFMT" {0x%04x,0x%04x,0x%02x}\n", UUIDCONV(*uuid), charHandle, valHandle, props);
 
             struct GattTraversedServiceChar *t = realloc(st->res.chars, sizeof(struct GattTraversedServiceChar) * (st->res.numChars + 1));
             if (!t)
@@ -4698,7 +4698,7 @@ static void gattClientUtilFindAndTraversePrimaryServiceCharEnumCbk(gatt_client_c
                     if (st->res.chars[i].firstHandle < st->res.chars[j].firstHandle && st->res.chars[i].lastHandle >= st->res.chars[j].firstHandle)
                         st->res.chars[i].lastHandle = st->res.chars[j].firstHandle - 1;
                 }
-                logd("GATT util svc traversal: char "UUIDFMT" range determined to be 0x%04x-0x%04x\n", UUIDCONV(st->res.chars[i].uuid), st->res.chars[i].firstHandle, st->res.chars[i].lastHandle);
+                logv("GATT util svc traversal: char "UUIDFMT" range determined to be 0x%04x-0x%04x\n", UUIDCONV(st->res.chars[i].uuid), st->res.chars[i].firstHandle, st->res.chars[i].lastHandle);
             }
 
             // enum descriptors (doing it all at once is simpler, but we need to filter out non-descriptor things)
@@ -4823,7 +4823,7 @@ static void gattClientUtilFindAndTraversePrimaryServiceSvcEnumCbk(void* userData
             st->res.lastHandle = lastHandle;
             st->curTrans = trans = uniqGetNext();
             pthread_mutex_unlock(&mGattUtilLock);
-            logd("GATT util svc traversal: service found at 0x%04x-0x%04x. Enumerating includes\n", firstHandle, lastHandle);
+            logv("GATT util svc traversal: service found at 0x%04x-0x%04x. Enumerating includes\n", firstHandle, lastHandle);
             status = gattClientEnumIncludedServices(conn, firstHandle, lastHandle, trans, gattClientUtilFindAndTraversePrimaryServiceInclSvcEnumCbk);
             if (status == GATT_CLI_STATUS_OK)
                 return;

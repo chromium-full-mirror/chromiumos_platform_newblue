@@ -28,6 +28,8 @@ void newblue_log(const char *level, int syslog_pri, const char *fmt, ...)
 # define logw(...)	log("W", LOG_WARNING, __VA_ARGS__)
 # define logi(...)	log("I", LOG_INFO, __VA_ARGS__)
 # define logd(...)	log("D", LOG_DEBUG, __VA_ARGS__)
+// TODO(sonnysasaka): Make logv() do the actual verbose log.
+# define logv(...)
 #else
 # undef LOG_TAG
 # define LOG_TAG        "NB.BT" __FILE__ ":" LOG_STRINGIFY(__LINE__)
