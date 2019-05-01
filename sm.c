@@ -2972,6 +2972,11 @@ static void smNotifyPasskeyRequestObserver(const struct bt_addr *addr, bool vali
  * RETURN:   NONE
  * NOTES:    The outcome will be notified via smPairStateChangeCbk once a client registered as an
  *           observer of pairing state changes
+ *           TODO(mcchou): Honor bond request
+ *           Currently SM stores every key exchanged during pair process without checking the bond
+ *           value, and this should be changed to storing keys only if bond value is true. IRK is
+ *           only exchanged when bond is set, so even if we stored the previous LTK, there is no way
+ *           for us to retrieve LTK without resolving the address first with IRK.
  */
 void smPair(const struct bt_addr *addr, const struct smPairSecurityRequirements *secReqs)
 {
