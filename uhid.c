@@ -6,6 +6,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -80,7 +81,7 @@ static int uhidWrite(int fd, const struct uhid_event *ev)
     ev_size = sizeof(*ev);
     while (1) {
         ret = write(fd, ev, ev_size);
-        logd("ret of write: %d (ev size: %d)\n", ret, ev_size);
+        logd("ret of write: %d (ev size: %zu)\n", ret, ev_size);
 
         if (ret < 0) {
             if (errno == EINTR) {
@@ -91,7 +92,7 @@ static int uhidWrite(int fd, const struct uhid_event *ev)
             return -errno;
         }
         else if (ret != ev_size) {
-            loge("Wrong size written to uhid: actual=%d expected=%d\n", ret, ev_size);
+            loge("Wrong size written to uhid: actual=%d expected=%zu\n", ret, ev_size);
             return -EFAULT;
         }
         else
@@ -480,7 +481,7 @@ void hidConnStateCbk(ble_hid_conn_t hidId, uint8_t state)
     int fd;
     int ret;
 
-    logi("HID state: %u, hidId: %d\n", state, hidId);
+    logi("HID state: %u, hidId: %" PRIu64 "\n", state, hidId);
 
     if (state == BTLE_HID_CONN_STATE_UP) {
         const char *path = "/dev/uhid";

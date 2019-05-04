@@ -1211,7 +1211,7 @@ bool btleHidGetHidInfo(ble_hid_conn_t hidId, uint16_t *hidVerP, uint8_t *country
 static void btleHidWriteReportWriteCbk(gatt_client_conn_t gattConn, uniq_t trans, uint16_t handle, uint8_t status)
 {
     if (status != GATT_CLI_STATUS_OK)
-        logi("HID GATT Write to handle 0x%04 failed with status 0x%02x\n", handle, status);
+        logi("HID GATT Write to handle 0x%04x failed with status 0x%02x\n", handle, status);
 }
 
 /*
@@ -1274,7 +1274,7 @@ bool btleHidWriteReport(ble_hid_conn_t hidId, int32_t reportId, sg data)
 static void btleHidReadReportReadCbk(gatt_client_conn_t gattConn, uniq_t trans, uint16_t handle, uint8_t status, sg data)
 {
     if (status != GATT_CLI_STATUS_OK || !data)
-        logi("HID GATT READ to handle 0x%04 failed with status 0x%02x\n", handle, status);
+        logi("HID GATT READ to handle 0x%04x failed with status 0x%02x\n", handle, status);
 
     btleHidReportDataArrivedCbk(gattConn, handle, data, true);
 }

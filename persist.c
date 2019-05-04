@@ -5,6 +5,7 @@
  */
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -1732,6 +1733,7 @@ char* persistNumberTypeToString(uint8_t type)
  * RETURN:   NONE
  * NOTES:
  */
+__attribute__((format(printf, 2, 3)))
 void persistDumpPrintWithIndent(int indent, const char *format, ...)
 {
     va_list args;
@@ -1785,7 +1787,7 @@ void persistDumpPrintPropValueUint32(int indent, struct persistProp *p)
 void persistDumpPrintPropValueUint64(int indent, struct persistProp *p)
 {
     uint64_t val = *(uint64_t*)(p + 1);
-    persistDumpPrintWithIndent(indent, "0x%016lx (%lu)", val, val);
+    persistDumpPrintWithIndent(indent, "0x%016" PRIx64 " (%" PRIu64 ")", val, val);
 }
 
 /*

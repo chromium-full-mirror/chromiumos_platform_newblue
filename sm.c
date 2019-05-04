@@ -3,6 +3,7 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -716,7 +717,7 @@ static enum smAddrType smGetLeAddrType(const struct bt_addr *addr)
             return addrTypeUnknown;
         }
     default:
-        logw("%s(): Unexpected address type %02X\n", addr->type);
+        logw("%s(): Unexpected address type %02X\n", __func__, addr->type);
         return addrTypeUnknown;
     }
 }
@@ -2251,7 +2252,7 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
         }
 
         if (!smIsEncryptExpected(encrState, inst)) {
-            logw("Failed to encrypt the connection %llu\n", inst->conn);
+            logw("Failed to encrypt the connection %" PRIu64 "\n", inst->conn);
             pairErr = SM_PAIR_ERR_ENCR_CONN;
             goto reset;
         }
@@ -2372,7 +2373,7 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
         }
 
         if (!smIsEncryptExpected(encrState, inst)) {
-            logw("Failed to encrypt the connection %llu\n", inst->conn);
+            logw("Failed to encrypt the connection %" PRIu64 "\n", inst->conn);
             pairErr = SM_PAIR_ERR_ENCR_CONN;
             goto reset;
         }

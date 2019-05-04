@@ -228,7 +228,7 @@ static void gattSvcBattAsyncDataArrivedCbk(gatt_client_conn_t gattConn, uint16_t
 static void gattSvcBattReadReportReadCbk(gatt_client_conn_t gattConn, uniq_t trans, uint16_t handle, uint8_t status, sg data)
 {
     if (status != GATT_CLI_STATUS_OK || !data)
-        logi("BattSvc GATT READ to handle 0x%04 failed with status 0x%02x\n", handle, status);
+        logi("BattSvc GATT READ to handle 0x%04x failed with status 0x%02x\n", handle, status);
 
     gattSvcBattDataArrivedCbk(gattConn, handle, data, true);
 }

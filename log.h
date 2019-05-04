@@ -16,7 +16,8 @@
 #define LOG_STRINGIFYX(x) #x
 #define LOG_STRINGIFY(x) LOG_STRINGIFYX(x)
 
-void newblue_log(const char *level, int syslog_pri, const char *fmt, ...);
+void newblue_log(const char *level, int syslog_pri, const char *fmt, ...)
+    __attribute__((format(printf, 3, 4)));
 
 #ifdef EXECUTABLE
 # ifndef LOG_PRINTF_CALL
