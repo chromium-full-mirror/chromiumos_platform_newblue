@@ -92,6 +92,7 @@ struct gattCliTodoItem {
     uniq_t                             notifLocator; // used to find a notif rec for cccd writes
 
     uniq_t                             clientTrans;  // unused by us. set and given to clients for state tracking
+    void                              *userData;     // unused by us. set and given to clients for their own use
 
     struct uuid                        desiredUuid;  // find-service-by-uuid will save the desired uuid here as else we'll lose it
 
@@ -1995,7 +1996,7 @@ static bool gattAttCliFindByTypeValCbk(uniq_t trans, l2c_handle_t to, uint16_t h
             uuidFromUuid16(&tempUuid, GATT_UUID_SVC_PRIMARY);
             conn->doNotFreeTodoCurr = true;
             pthread_mutex_unlock(&mGattLock); // see "A NOTE ABOUT LOCKS" above
-            todo->enumSvcsCbk(todo->connId, todo->clientTrans, &todo->desiredUuid, uuidCmp(&tempUuid, &todo->uuid), handle, grpEndHandle - handle + 1, GATT_CLI_STATUS_OK);
+            todo->enumSvcsCbk(todo->userData, todo->connId, todo->clientTrans, &todo->desiredUuid, uuidCmp(&tempUuid, &todo->uuid), handle, grpEndHandle - handle + 1, GATT_CLI_STATUS_OK);
             pthread_mutex_lock(&mGattLock);
             conn = gattConnFindByL2cConn(to);
             if (conn)
@@ -2068,10 +2069,10 @@ static bool gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *han
             uuidFromUuid16(&tempUuid, GATT_UUID_SVC_PRIMARY);
             conn->doNotFreeTodoCurr = true;
             pthread_mutex_unlock(&mGattLock); // see "A NOTE ABOUT LOCKS" above
-            todo->enumSvcsCbk(todo->connId, todo->clientTrans, &uuid, uuidCmp(&tempUuid, &todo->uuid), *handleP, *endGrpHandleP - *handleP + 1, GATT_CLI_STATUS_OK);
+            todo->enumSvcsCbk(todo->userData, todo->connId, todo->clientTrans, &uuid, uuidCmp(&tempUuid, &todo->uuid), *handleP, *endGrpHandleP - *handleP + 1, GATT_CLI_STATUS_OK);
             // if this is the end - signal that now
             if (*endGrpHandleP == ATT_LAST_VALID_HANDLE) {
-                todo->enumSvcsCbk(todo->connId, todo->clientTrans, NULL, uuidCmp(&tempUuid, &todo->uuid), 0, 0, GATT_CLI_STATUS_OK);
+                todo->enumSvcsCbk(todo->userData, todo->connId, todo->clientTrans, NULL, uuidCmp(&tempUuid, &todo->uuid), 0, 0, GATT_CLI_STATUS_OK);
                 done = true;
             }
             pthread_mutex_lock(&mGattLock);
@@ -2355,7 +2356,7 @@ static void gattAttCliError(uniq_t trans, l2c_handle_t to, const uint16_t *handl
             if (*errP == ATT_ERROR_ATTRIBUTE_NOT_FOUND ) { // end of enum (we could check handle, but even spec is conflicted on what it should be, so we do not)
                 uuidFromUuid16(&tempUuid, GATT_UUID_SVC_PRIMARY);
                 pthread_mutex_unlock(&mGattLock); // see "A NOTE ABOUT LOCKS" above
-                todo->enumSvcsCbk(todo->connId, todo->clientTrans, NULL, uuidCmp(&tempUuid, &todo->uuid), 0, 0, GATT_CLI_STATUS_OK);
+                todo->enumSvcsCbk(todo->userData, todo->connId, todo->clientTrans, NULL, uuidCmp(&tempUuid, &todo->uuid), 0, 0, GATT_CLI_STATUS_OK);
                 pthread_mutex_lock(&mGattLock);
                 conn = gattConnFindByL2cConn(to);
                 if (!conn)
@@ -4007,7 +4008,8 @@ static struct gattCliTodoItem* gattCliTodoMakeMtuReq(struct gattConnState* conn,
 /*
  * FUNCTION: gattClientFindService
  * USE:      Find all services with a given uuid on a server
- * PARAMS:   conn - the connection id
+ * PARAMS:   userData - caller's data which will be given with the callback
+ *           conn - the connection id
  *           primary - search for primary services
  *           searchForThis - uuid of service to find
  *           trans - transaction ID (unused, passed to callback)
@@ -4015,7 +4017,7 @@ static struct gattCliTodoItem* gattCliTodoMakeMtuReq(struct gattConnState* conn,
  * RETURN:   GATT_CLI_STATUS_*
  * NOTES:
  */
-uint8_t gattClientFindService(gatt_client_conn_t conn, bool primary, const struct uuid *searchForThis, uniq_t trans, gattCliSvcEnumCbk cbk)
+uint8_t gattClientFindService(void *userData, gatt_client_conn_t conn, bool primary, const struct uuid *searchForThis, uniq_t trans, gattCliSvcEnumCbk cbk)
 {
     uint8_t buf[sizeof(struct uuid)];
     struct gattCliTodoItem *todo;
@@ -4038,6 +4040,7 @@ uint8_t gattClientFindService(gatt_client_conn_t conn, bool primary, const struc
         todo->enumSvcsCbk = cbk;
         todo->desiredUuid = *searchForThis;
         todo->clientTrans = trans;
+        todo->userData = userData;
     }
     pthread_mutex_unlock(&mGattLock);
 
@@ -4047,14 +4050,15 @@ uint8_t gattClientFindService(gatt_client_conn_t conn, bool primary, const struc
 /*
  * FUNCTION: gattClientEnumServices
  * USE:      Find all services on a server
- * PARAMS:   conn - the connection id
+ * PARAMS:   userData - caller's data which will be given with the callback
+ *           conn - the connection id
  *           primary - search for primary services
  *           trans - transaction ID (unused, passed to callback)
  *           cbk - the callback to call with results (we'll call it with NULL after all results have been returned)
  * RETURN:   GATT_CLI_STATUS_*
  * NOTES:
  */
-uint8_t gattClientEnumServices(gatt_client_conn_t conn, bool primary, uniq_t trans, gattCliSvcEnumCbk cbk)
+uint8_t gattClientEnumServices(void *userData, gatt_client_conn_t conn, bool primary, uniq_t trans, gattCliSvcEnumCbk cbk)
 {
     struct gattCliTodoItem *todo;
 
@@ -4063,6 +4067,7 @@ uint8_t gattClientEnumServices(gatt_client_conn_t conn, bool primary, uniq_t tra
     if (todo) {
         todo->enumSvcsCbk = cbk;
         todo->clientTrans = trans;
+        todo->userData = userData;
     }
     pthread_mutex_unlock(&mGattLock);
 
@@ -4789,7 +4794,8 @@ static void gattClientUtilFindAndTraversePrimaryServiceInclSvcEnumCbk(gatt_clien
 /*
  * FUNCTION: gattClientUtilFindAndTraversePrimaryServiceSvcEnumCbk
  * USE:      Called by GATT code when we find the desired service (or find it does not exist)
- * PARAMS:   conn - the connection id
+ * PARAMS:   userData - caller's data which will be given with the callback
+ *           conn - the connection id
  *           trans - out transaction ID (matches to "->curTrans")
  *           uuid - the found uuid (should match "->res.uuid") or NULL at end
  *           primary - is it a primary service (we expect yes)
@@ -4799,7 +4805,7 @@ static void gattClientUtilFindAndTraversePrimaryServiceInclSvcEnumCbk(gatt_clien
  * RETURN:   GATT_CLI_STATUS_*
  * NOTES:
  */
-static void gattClientUtilFindAndTraversePrimaryServiceSvcEnumCbk(gatt_client_conn_t conn, uniq_t trans, const struct uuid *uuid, bool primary, uint16_t firstHandle, uint16_t numHandles, uint8_t status)
+static void gattClientUtilFindAndTraversePrimaryServiceSvcEnumCbk(void* userData, gatt_client_conn_t conn, uniq_t trans, const struct uuid *uuid, bool primary, uint16_t firstHandle, uint16_t numHandles, uint8_t status)
 {
     uint16_t lastHandle = firstHandle + numHandles - 1;
     struct GattCliUtilSvcTraverseState* st;
@@ -4867,7 +4873,7 @@ uint8_t gattClientUtilFindAndTraversePrimaryService(gatt_client_conn_t conn, con
     if (st->next)
         st->next->prev = st;
     pthread_mutex_unlock(&mGattUtilLock);
-    ret = gattClientFindService(conn, true, svcUuid, trans, gattClientUtilFindAndTraversePrimaryServiceSvcEnumCbk);
+    ret = gattClientFindService(NULL, conn, true, svcUuid, trans, gattClientUtilFindAndTraversePrimaryServiceSvcEnumCbk);
     if (ret != GATT_CLI_STATUS_OK) {
         pthread_mutex_lock(&mGattUtilLock);
         st = gattClientUtilSvcTraversalStructFindByTransId(trans);
@@ -4969,7 +4975,7 @@ static void gattClientUtilLongReadReadCbk(gatt_client_conn_t conn, uniq_t curTra
         uint32_t rxedLen = sgLength(data);
 
         sgConcat(st->dataSoFar, data);
-        if (rxedLen >= ATT_MTU_MIN_LE - 1) { 
+        if (rxedLen >= ATT_MTU_MIN_LE - 1) {
             /*
              * got data? ask for more if it is possibly up to MTU (MTU can change so
              * we only check for this as a heuristic, since some devices like Microsoft

@@ -545,7 +545,7 @@ static void gattSvcTraversed(gatt_client_conn_t conn, uniq_t trans, const struct
     sem_post(&mGattTestSem);
 }
 
-static void gattSvcFoundCbk(gatt_client_conn_t conn, uniq_t trans, const struct uuid *uuid, bool primary, uint16_t firstHandle, uint16_t numHandles, uint8_t status)
+static void gattSvcFoundCbk(void *userData, gatt_client_conn_t conn, uniq_t trans, const struct uuid *uuid, bool primary, uint16_t firstHandle, uint16_t numHandles, uint8_t status)
 {
     struct ServiceList *t;
 
@@ -579,7 +579,7 @@ static void gattConnectedCbkGattEnum(void *data, gatt_client_conn_t conn, uint8_
 
     //list services
     mGattSvcs = NULL;
-    logi("service enum = %u\n", gattClientEnumServices(conn, true, 0, gattSvcFoundCbk));
+    logi("service enum = %u\n", gattClientEnumServices(NULL, conn, true, 0, gattSvcFoundCbk));
 }
 
 static void gattConnectedCbkHidTest(void *data, gatt_client_conn_t conn, uint8_t status)

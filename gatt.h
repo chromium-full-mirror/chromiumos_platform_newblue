@@ -160,7 +160,7 @@ struct GattTraversedService {
 typedef void (*gattCliConnectResultCbk)(void *userData, gatt_client_conn_t conn, uint8_t status);
 
 //called when a service is found. Expect one or more calls to this after calling gattClientFindService() or gattClientEnumServices(). UUID set to NULL when enumeration is complete
-typedef void (*gattCliSvcEnumCbk)(gatt_client_conn_t conn, uniq_t trans, const struct uuid *uuid, bool primary, uint16_t firstHandle, uint16_t numHandles, uint8_t status);
+typedef void (*gattCliSvcEnumCbk)(void *userData, gatt_client_conn_t conn, uniq_t trans, const struct uuid *uuid, bool primary, uint16_t firstHandle, uint16_t numHandles, uint8_t status);
 
 //called when an included service has been discovered. Expect one or more calls to this after calling gattClientEnumIncludedServices(). UUID set to NULL when enumeration is complete
 typedef void (*gattCliEnumIncludedSvcsCbk)(gatt_client_conn_t conn, uniq_t trans, const struct uuid *uuid, uint16_t includeDefHandle, uint16_t firstHandle, uint16_t lastHandle, uint8_t status);
@@ -204,8 +204,8 @@ bool gattClientInvalidateCache(const struct bt_addr *whomTo) NEWBLUE_EXPORT; //t
 /* all of the following return GATT_CLI_* */
 
 /* service search */
-uint8_t gattClientFindService(gatt_client_conn_t conn, bool primary, const struct uuid *searchForThis, uniq_t trans, gattCliSvcEnumCbk cbk) NEWBLUE_EXPORT;
-uint8_t gattClientEnumServices(gatt_client_conn_t conn, bool primary, uniq_t trans, gattCliSvcEnumCbk cbk) NEWBLUE_EXPORT;
+uint8_t gattClientFindService(void *userData, gatt_client_conn_t conn, bool primary, const struct uuid *searchForThis, uniq_t trans, gattCliSvcEnumCbk cbk) NEWBLUE_EXPORT;
+uint8_t gattClientEnumServices(void *userData, gatt_client_conn_t conn, bool primary, uniq_t trans, gattCliSvcEnumCbk cbk) NEWBLUE_EXPORT;
 
 /* various enumerations */
 uint8_t gattClientEnumIncludedServices(gatt_client_conn_t conn, uint16_t fromHandle, uint16_t toHandle, uniq_t trans, gattCliEnumIncludedSvcsCbk cbk) NEWBLUE_EXPORT;
