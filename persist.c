@@ -1253,7 +1253,7 @@ static struct persistProp* persistAddKnownDevInt(const struct bt_addr *addr, con
     if (devCls && !persistSetPropInList(&devArr->head, &devArr->tail, PERS_NAME_DEV_CLS, PERS_TYPE_UINT, devCls, sizeof(*devCls), true))
         logw("Failed to save device class\n");
 
-    if (devCls && !persistSetPropInList(&devArr->head, &devArr->tail, PERS_NAME_LAST_SEEN, PERS_TYPE_UINT, &time, sizeof(time), true))
+    if (!persistSetPropInList(&devArr->head, &devArr->tail, PERS_NAME_LAST_SEEN, PERS_TYPE_UINT, &time, sizeof(time), true))
         logw("Failed to save device last seen\n");
 
     if (!persistPropFind(devArr->head, PERS_NAME_KEYS, PERS_TYPE_ARRAY))
