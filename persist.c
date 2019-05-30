@@ -1236,6 +1236,21 @@ static struct persistProp* persistAddKnownDevInt(const struct bt_addr *addr, con
     if (!dev)
         goto out;
 
+    /* Move the discovered device to the tail to keep the list sorted by "last seen".
+     * This helps in optimizing garbage collection of old devices. */
+    if (dev->next) {
+        dev->next->prev = dev->prev;
+        if (dev->prev)
+            dev->prev->next = dev->next;
+        else
+            allDevsArr->head = dev->next;
+
+        dev->next = NULL;
+        allDevsArr->tail->next = dev;
+        dev->prev = allDevsArr->tail;
+        allDevsArr->tail = dev;
+    }
+
     devArr = (struct persistArrayInRam*)(dev + 1);
     if (!persistSetPropInList(&devArr->head, &devArr->tail, PERS_NAME_BT_ADDR, PERS_TYPE_BT_ADDR, addr, sizeof(struct bt_addr), true))
         logw("Failed to save device name\n");
