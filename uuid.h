@@ -9,6 +9,8 @@
 #include "newblue-macros.h"
 #include "types.h"
 
+NEWBLUE_BEGIN_DECLS
+
 #define BT_UUID_BASE_LO               0x800000805F9B34FBULL
 #define BT_UUID_BASE_HI               0x0000000000001000ULL
 #define BT_UUID_STATIC(uuid16or32)    {BT_UUID_BASE_LO, BT_UUID_BASE_HI + (((uint64_t)(uuid16or32)) << 32)}
@@ -43,6 +45,6 @@ void uuidReadBE(struct uuid *dst, const void *src) NEWBLUE_EXPORT;
 bool uuidIsZero(const struct uuid *uuid) NEWBLUE_EXPORT;
 void uuidZero(struct uuid *dst) NEWBLUE_EXPORT;
 
+NEWBLUE_END_DECLS
 
 #endif
-
