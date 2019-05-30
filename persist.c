@@ -83,6 +83,7 @@ struct persistKey {
 #define PERS_TYPE_ARRAY                  0x00000005
 
 
+#define MAX_DEVICE_AGE                   5 * 60 * 1000 /* Maximum device age before getting garbage collected (5 minutes) */
 
 
 static pthread_mutex_t mLock = PTHREAD_MUTEX_INITIALIZER;
@@ -1229,8 +1230,56 @@ static struct persistProp* persistAddKnownDevInt(const struct bt_addr *addr, con
         goto out;
 
     allDevsArr = (struct persistArrayInRam*)(allDevs + 1);
-    dev = persistFindKnownDev(addr);
 
+    // Garbage collection of old devices.
+    struct persistProp *devIter = allDevsArr->head;
+    while (devIter) {
+        struct persistArrayInRam *devItems = (struct persistArrayInRam*)(devIter + 1);
+        struct persistProp *keys = persistPropFind(devItems->head, PERS_NAME_KEYS, PERS_TYPE_ARRAY);
+        struct persistProp *nums = persistPropFind(devItems->head, PERS_NAME_NUMBERS, PERS_TYPE_ARRAY);
+        struct persistProp *lastSeenProp = persistPropFind(devItems->head, PERS_NAME_LAST_SEEN, PERS_TYPE_UINT);
+        uint64_t lastSeen = lastSeenProp ? *(uint64_t*)(lastSeenProp + 1) : 0;
+
+        /* The device list is sorted by last seen, so we can conclude that we don't
+         * need to continue iterating once we find the first recent device. */
+        if (time - lastSeen < MAX_DEVICE_AGE)
+            break;
+
+        bool paired = false;
+        if (keys) {
+            struct persistArrayInRam* keyArr = (struct persistArrayInRam*)(keys + 1);
+            struct persistArrayInRam* numArr = (struct persistArrayInRam*)(nums + 1);
+
+            paired = keyArr && numArr &&
+                     ((persistFindKey(keyArr->head, KEY_TYPE_LTK) &&
+                     persistFindNum(numArr->head, PERSIST_NUM_TYPE_SM_EDIV) &&
+                     persistFindNum(numArr->head, PERSIST_NUM_TYPE_SM_RANDOM)) ||
+                     (persistFindKey(keyArr->head, KEY_TYPE_MY_LTK) &&
+                     persistFindNum(numArr->head, PERSIST_NUM_TYPE_SM_MY_RANDOM)));
+        }
+
+        if (paired) {
+            devIter = devIter->next;
+            continue;
+        }
+
+        /* devIter is old and unpaired, remove it from the list. */
+        if (devIter->prev)
+            devIter->prev->next = devIter->next;
+        else
+            allDevsArr->head = devIter->next;
+
+        if (devIter->next)
+            devIter->next->prev = devIter->prev;
+        else
+            allDevsArr->tail = devIter->prev;
+
+        struct persistProp *temp = devIter;
+        devIter = devIter->next;
+        persistPropFree(temp);
+    }
+
+    dev = persistFindKnownDev(addr);
     if (!dev)
         dev = persistPropAddEmptyArray(&allDevsArr->head, &allDevsArr->tail, PERS_NAME_DEVICE);
     if (!dev)
