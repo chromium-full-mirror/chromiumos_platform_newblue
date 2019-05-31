@@ -1348,7 +1348,6 @@ void persistAddKnownDev(const struct bt_addr *addr, const void *name, const uint
     pthread_mutex_lock(&mLock);
     persistAddKnownDevInt(addr, name, nameLen, nameIsFull, devCls);
     pthread_mutex_unlock(&mLock);
-    persistStore();
 }
 
 /*
