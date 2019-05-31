@@ -677,14 +677,18 @@ void persistStore(void)
     struct persistFileHdr hdr;
     struct persistProp *t;
     int fd;
+    char *temp_path;
 
     pthread_mutex_lock(&mLock);
     utilSetBE32(&hdr.magic, PERSIST_MAGIC);
     utilSetBE32(&hdr.version, PERSIST_VERSION_CUR);
 
-    fd = open(pref_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-    if (fd == -1) {
-        loge("Preferences not opened: %d\n", errno);
+    if (asprintf(&temp_path, "%s.XXXXXX", pref_path) < 0)
+        goto unlock;
+
+    fd = mkstemp(temp_path);
+    if (fd < 0) {
+        loge("failed creating temp file %s\n", temp_path);
         goto fail;
     }
 
@@ -701,13 +705,20 @@ void persistStore(void)
     }
 
     close(fd);
+    if (rename(temp_path, pref_path) < 0)
+        loge("failed renaming %s to %s\n", temp_path, pref_path);
+
+    unlink(temp_path);
+    free(temp_path);
     pthread_mutex_unlock(&mLock);
     return;
 
 fail:
     close(fd);
+    unlink(temp_path);
+    free(temp_path);
+unlock:
     pthread_mutex_unlock(&mLock);
-    unlink(pref_path); /* better no file than bad file */
 }
 
 /*
