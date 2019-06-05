@@ -3901,6 +3901,8 @@ static struct hciAclConn* hciConnAclStructNew(uint16_t id, const struct bt_addr 
     conn->handle = uniqGetNext();
 
     conn->next = mConns;
+    if (mConns)
+        mConns->prev = conn;
     mConns = conn;
 
     return conn;
