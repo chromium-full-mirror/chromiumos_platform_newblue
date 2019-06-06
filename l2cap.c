@@ -5795,11 +5795,13 @@ static void l2cAclLinkDownInt(struct l2cAclConn *aclConn, bool tellOtherSide)
 {
     struct l2cConn *conn = mConns, *t;
 
-    while (conn && conn->acl == aclConn->handle) {
+    while (conn) {
         t = conn;
         conn = conn->next;
-        l2cConnRequestClose(aclConn, t, tellOtherSide);
+        if (t->acl == aclConn->handle)
+            l2cConnRequestClose(aclConn, t, tellOtherSide);
     }
+
     l2cAclConnStructDelete(aclConn);
 }
 
