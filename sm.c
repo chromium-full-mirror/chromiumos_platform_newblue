@@ -2386,6 +2386,10 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
         break;
 
     case L2C_STATE_CLOSED:
+        logd("l2cap is closed in phase %u when we are the %s\n", phase,
+             inst->isInitiator ? "initiator" : "responder");
+        if (inst->phase != SM_PHASE_DONE && inst->phase != SM_PHASE_LTK_SENT && inst->phase != SM_PHASE_LTK_ENCRYPTED)
+            smNotifyPairStateObserver(&inst->peerAddr, SM_PAIR_STATE_FAILED, SM_PAIR_ERR_L2C_CONN);
         smInstDeinit(inst);
         break;
 
