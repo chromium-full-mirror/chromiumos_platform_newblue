@@ -38,6 +38,7 @@ typedef bool (*persistKnownDevEnumeratorF)(void *cbkData, const struct bt_addr *
 
 void persistLoad(void);  //load prefs
 void persistStore(void); //store prefs
+void persistFree(void);  //free prefs data
 void persistDump(void) NEWBLUE_EXPORT;  //print prefs
 
 uint32_t persistGetDeviceName(void* buf); //should be at least HCI_DEV_NAME_LEN bytes long. actual length returned

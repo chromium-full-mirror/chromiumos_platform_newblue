@@ -191,7 +191,7 @@ static void persistPropDelete(struct persistProp **headP, struct persistProp **t
  * RETURN:   NONE
  * NOTES:    call with mLock held
  */
-static void persistFree(void)
+void persistFree(void)
 {
     while (mPropsHead) {
         mPropsTail = mPropsHead;

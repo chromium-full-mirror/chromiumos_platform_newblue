@@ -97,6 +97,7 @@ class PersistTestSuite: public testing::Test {
     void TearDown() override {
         persistDelKnownDev(&devOneAddr);
         persistDelKnownDev(&devTwoAddr);
+        persistFree();
         unlink(pref_path);
     }
 
