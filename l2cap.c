@@ -5813,12 +5813,12 @@ static void l2cAclLinkDownInt(struct l2cAclConn *aclConn, bool tellOtherSide)
  * RETURN:   NONEI
  * NOTES:
  */
-void l2cAclLinkDown(hci_conn_t aclConnID, uint8_t reason)
+void l2cAclLinkDown(hci_conn_t aclConnID, const struct bt_addr *peerAddr, uint8_t reason)
 {
     struct l2cAclConn *aclConn;
 
     pthread_mutex_lock(&mConnsLock);
-    aclConn = l2cAclConnFindById(aclConnID);
+    aclConn = l2cAclConnFindByAddr(peerAddr);
     if (aclConn) {
         /* TODO(mcchou): if including "hardware/bluetooth.h", complilatino fails with error
          * aapiGatt.h:4:32: fatal error: hardware/bluetooth.h: No such file or directory
