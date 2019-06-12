@@ -279,13 +279,14 @@ out_unlock:
 /*
  * FUNCTION: gattSvcMiscInfoAttachServiceTraversalCbk
  * USE:      Called by GATT when the Misc Info Service is found at request of gattSvcMiscInfoAttach()
- * PARAMS:   gattConn - the GATT client connection id
+ * PARAMS:   userData - our data (unused here)
+ *           gattConn - the GATT client connection id
  *           trans - transaction ID (unused here as we can look up by MiscInfoSvc conn handle)
  *           data - the traversal data or NULL on error
  * RETURN:   NONE
  * NOTES:
  */
-static void gattSvcMiscInfoAttachServiceTraversalCbk(gatt_client_conn_t gattConn, uniq_t trans, const struct GattTraversedService* data)
+static void gattSvcMiscInfoAttachServiceTraversalCbk(void* userData, gatt_client_conn_t gattConn, uniq_t trans, const struct GattTraversedService* data)
 {
     const struct uuid devInfoSvcUuid = BT_UUID_STATIC_16(BTLE_UUID_DEVICE_INFO_SERVICE);
     const struct uuid gapSvcUuid = BT_UUID_STATIC_16(BTLE_UUID_GAP_SERVICE);
@@ -422,10 +423,10 @@ gatt_svc_misc_info_conn_t gattSvcMiscInfoAttach(gatt_client_conn_t gattConn)
     mCbkState(svcConn, BTLE_MISC_INFO_SVC_CONN_STATE_GATT_DISCOVERY);
 
     logi("Misc Info Service attempting an attachment to GATT conn "GATTHANDLEFMT"\n", GATTHANDLECNV(gattConn));
-    if (GATT_CLI_STATUS_OK != gattClientUtilFindAndTraversePrimaryService(gattConn, &devInfoSvcUuid, (uniq_t)BTLE_UUID_DEVICE_INFO_SERVICE, gattSvcMiscInfoAttachServiceTraversalCbk))
+    if (GATT_CLI_STATUS_OK != gattClientUtilFindAndTraversePrimaryService(NULL, gattConn, &devInfoSvcUuid, (uniq_t)BTLE_UUID_DEVICE_INFO_SERVICE, gattSvcMiscInfoAttachServiceTraversalCbk))
         goto fail;
 
-    if (GATT_CLI_STATUS_OK != gattClientUtilFindAndTraversePrimaryService(gattConn, &gapSvcUuid, (uniq_t)BTLE_UUID_GAP_SERVICE, gattSvcMiscInfoAttachServiceTraversalCbk))
+    if (GATT_CLI_STATUS_OK != gattClientUtilFindAndTraversePrimaryService(NULL, gattConn, &gapSvcUuid, (uniq_t)BTLE_UUID_GAP_SERVICE, gattSvcMiscInfoAttachServiceTraversalCbk))
         goto fail;
 
     // no failure so far...

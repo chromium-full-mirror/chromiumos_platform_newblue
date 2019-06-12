@@ -517,7 +517,7 @@ void passkeyRequestObserverCallback(void *observerData,
     terminate = true;
 }
 
-static void gattSvcTraversed(gatt_client_conn_t conn, uniq_t trans, const struct GattTraversedService* data)
+static void gattSvcTraversed(void* userData, gatt_client_conn_t conn, uniq_t trans, const struct GattTraversedService* data)
 {
     uint32_t i, j;
 
@@ -1090,7 +1090,7 @@ int main(int argc, char** argv)
                         struct ServiceList *svc = mGattSvcs;
                         mGattSvcs = mGattSvcs->next;
 
-                        logi("ENUMERATING SERVICE "UUIDFMT" (known to be in range 0x%04x - 0x%04x): %u\n", UUIDCONV(svc->uuid), svc->start, svc->end, gattClientUtilFindAndTraversePrimaryService(con, &svc->uuid, 0, gattSvcTraversed));
+                        logi("ENUMERATING SERVICE "UUIDFMT" (known to be in range 0x%04x - 0x%04x): %u\n", UUIDCONV(svc->uuid), svc->start, svc->end, gattClientUtilFindAndTraversePrimaryService(NULL, con, &svc->uuid, 0, gattSvcTraversed));
                         free(svc);
                         sem_wait(&mGattTestSem);
                     }
