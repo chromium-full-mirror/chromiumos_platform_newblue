@@ -132,25 +132,31 @@ bool gattServiceSendInd(gatt_service_t svc, att_cid_t cid, uint16_t handle, cons
 #define GATT_CLI_AUTH_REQ_SIGNED_NO_MITM 3
 #define GATT_CLI_AUTH_REQ_SIGNED_MITM    4
 
+struct GattTraversedServiceCharDescr {
+  struct uuid uuid;
+  uint16_t handle;
+};
+
+struct GattTraversedServiceChar {
+    struct uuid uuid;
+    uint8_t charProps;
+    uint16_t firstHandle, valHandle, lastHandle;
+    uint16_t numDescrs;
+    struct GattTraversedServiceCharDescr *descrs;
+};
+
+struct GattTraversedServiceInclSvc {
+  struct uuid uuid;
+  uint16_t includeDefHandle, firstHandle, lastHandle;
+};
+
 struct GattTraversedService {
     struct uuid uuid;
     uint16_t firstHandle, lastHandle;
     uint16_t numChars;
-    struct GattTraversedServiceChar {
-        struct uuid uuid;
-        uint8_t charProps;
-        uint16_t firstHandle, valHandle, lastHandle;
-        uint16_t numDescrs;
-        struct GattTraversedServiceCharDescr {
-            struct uuid uuid;
-            uint16_t handle;
-        } *descrs;
-    } *chars;
+    struct GattTraversedServiceChar *chars;
     uint16_t numInclSvcs;
-    struct GattTraversedServiceInclSvc {
-        struct uuid uuid;
-        uint16_t includeDefHandle, firstHandle, lastHandle;
-    } *inclSvcs;
+    struct GattTraversedServiceInclSvc *inclSvcs;
 };
 
 
