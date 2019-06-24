@@ -139,4 +139,38 @@ TEST_F(SecurityManagerTestSuite, CorrectnessOfAddressHashActual) {
     ASSERT_EQ(smAddressHashForTest(rand, irk), hash);
 }
 
+TEST_F(SecurityManagerTestSuite, CorrectnessOfLtksBlocking) {
+    struct smKey ltks1[] = {
+        {0xF5, 0x08, 0xF8, 0x09, 0x86, 0xCA, 0x17, 0xF2,
+         0xFF, 0x96, 0x18, 0xBD, 0x5A, 0xF8, 0xAE, 0xE3}
+    };
+    struct smKey ltks2[] = {
+        {0xF6, 0x08, 0xF8, 0x09, 0x86, 0xCA, 0x17, 0xF2,
+         0xFF, 0x96, 0x18, 0xBD, 0x5A, 0xF8, 0xAE, 0xE3},
+        {0xF7, 0x08, 0xF8, 0x09, 0x86, 0xCA, 0x17, 0xF2,
+         0xFF, 0x96, 0x18, 0xBD, 0x5A, 0xF8, 0xAE, 0xE3}
+    };
+
+    // count > MAX_BLOCKED_LTKS
+    ASSERT_FALSE(smSetBlockedLtks(ltks1, 9));
+
+    // count == 0
+    ASSERT_TRUE(smSetBlockedLtks(ltks1, 0));
+    ASSERT_FALSE(smIsLtkBlockedForTest(&ltks1[0]));
+    ASSERT_FALSE(smIsLtkBlockedForTest(&ltks2[0]));
+    ASSERT_FALSE(smIsLtkBlockedForTest(&ltks2[0]));
+
+    // count == 1
+    ASSERT_TRUE(smSetBlockedLtks(ltks1, 1));
+    ASSERT_TRUE(smIsLtkBlockedForTest(&ltks1[0]));
+    ASSERT_FALSE(smIsLtkBlockedForTest(&ltks2[0]));
+    ASSERT_FALSE(smIsLtkBlockedForTest(&ltks2[1]));
+
+    // count > 1
+    ASSERT_TRUE(smSetBlockedLtks(ltks2, 2));
+    ASSERT_FALSE(smIsLtkBlockedForTest(&ltks1[0]));
+    ASSERT_TRUE(smIsLtkBlockedForTest(&ltks2[0]));
+    ASSERT_TRUE(smIsLtkBlockedForTest(&ltks2[1]));
+}
+
 } // namespace

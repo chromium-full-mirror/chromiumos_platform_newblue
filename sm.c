@@ -65,10 +65,6 @@ struct smPairFailed {
     uint8_t reason; /* SM_ERR_* */
 } __packed;
 
-struct smKey {
-    uint8_t key[HCI_LE_KEY_LEN]; /* [0]->[15] : MSO->LSO */
-} __packed;
-
 struct smMasterInfo {
     uint16_t ediv;
     uint64_t rand;
@@ -153,6 +149,8 @@ struct smAuthReq {
 #define SM_WORK_NOTIFY_PAIR_STATE_CHG   0 /* work type of notifying upper layer about the pairing state change */
 #define SM_WORK_NOTIFY_PASSKEY_DISPLAY  1 /* work type of notifying upper layer about the passkey display */
 #define SM_WORK_NOTIFY_PASSKEY_REQUEST  2 /* work type of notifying upper layer about the passkey request */
+
+#define MAX_BLOCKED_LTKS                8 /* Maximum number of LTKs we block */
 
 struct smInstance {
     struct smInstance*    prev;
@@ -264,6 +262,7 @@ static struct smPasskeyRequestObserver *mPasskeyRequestObserver = NULL; /* the o
 
 static pthread_t mNotifWorker;                                          /* the worker thread for notifying applications */
 static struct workQueue *mNotifWork = NULL;                             /* the work queue of notification works */
+static struct smBlockedLtks mBlockedLtks;                               /* the blocked LTKs */
 
 /* fwd decls */
 static bool smGenSTK(struct smInstance *inst);
@@ -280,6 +279,7 @@ static void smNotifyPasskeyDisplayObserver(const struct bt_addr *addr, bool vali
 static void smNotifyPasskeyRequestObserver(const struct bt_addr *addr, bool valid);
 static uint32_t smAddressHash(uint32_t r, const uint8_t *key);
 static bool smResolveAddr(struct bt_addr *addr, const struct bt_addr *peerAddr);
+static bool smIsLtkBlocked(const struct smKey *ltk);
 
 /* sendQ for packet transmissions */
 static struct sendQ *mSmSendQ;
@@ -1683,6 +1683,14 @@ static void smRx(struct smInstance *inst, sg packet)
             }
         }
 
+        /* Check the LTK and fail the pairing if it is blocked */
+        if (smIsLtkBlocked(&k)) {
+            logd("Rejecting pairing because a blocked LTK was used");
+            smSendPairFail(inst, SM_ERR_UNSPECCED_REASON);
+            pairErr = SM_PAIR_ERR_BLOCKED_LTK;
+            break;
+        }
+
         /* process and store peer's LTK */
         if (!smReadReversedBytes(key.key, sizeof(key.key), k.key, sizeof(k.key)))
             break;
@@ -2684,10 +2692,53 @@ void smDeinit(void)
 
     smBannedDevFreeAll();
 
+    free(mBlockedLtks.ltks);
+    mBlockedLtks.ltks = NULL;
+    mBlockedLtks.count = 0;
+
     pthread_mutex_unlock(&mSmLock);
 
     persistStore();
     logd("%s(): smDeinit finished correctly\n", __func__);
+}
+
+/*
+ * FUNCTION: smSetBlockedLtks
+ * USE:      Set the LTKs to be blocked.
+ * PARAMS:   ltks - the LTKs to be blocked.
+ * PARAMS:   count  - the count of the LTKs to be blocked.
+ * RETURN:   True if add successfully false otherwise.
+ * NOTES:
+ */
+bool smSetBlockedLtks(const struct smKey *ltks, uint8_t count)
+{
+    if (count > MAX_BLOCKED_LTKS) {
+        logd("Too many LTKs to block: %u\n", count);
+        return false;
+    }
+
+    pthread_mutex_lock(&mSmLock);
+    if (count == 0) {
+        free(mBlockedLtks.ltks);
+        mBlockedLtks.ltks = NULL;
+    } else {
+        struct smKey *newPtr =
+            realloc(mBlockedLtks.ltks, count * sizeof(struct smKey));
+        if (!newPtr) {
+            logd("Failed to allocate memory to store blocked LTKs: %u\n",
+                 count);
+            pthread_mutex_unlock(&mSmLock);
+            // The original LTKs remain valid.
+            return false;
+        }
+        mBlockedLtks.ltks = newPtr;
+        memcpy(mBlockedLtks.ltks, ltks, count * sizeof(struct smKey));
+    }
+
+    mBlockedLtks.count = count;
+    pthread_mutex_unlock(&mSmLock);
+
+    return true;
 }
 
 /*
@@ -2769,6 +2820,7 @@ static void smNotifyPairStateObserver(const struct bt_addr *addr, SmPairState st
     case SM_PAIR_ERR_ENCR_CONN:
     case SM_PAIR_ERR_UNEXPECTED_L2C_EVT:
     case SM_PAIR_ERR_STALLED:
+    case SM_PAIR_ERR_BLOCKED_LTK:
     case SM_PAIR_ERR_UNKNOWN:
         if (state != SM_PAIR_STATE_FAILED) {
             logd("Drop unexpected pair state %u with err %u\n", state, err);
@@ -4114,6 +4166,23 @@ static void smEncrypt(uint8_t* dst, const uint8_t *src, const uint8_t *key)
 }
 
 /*
+ * FUNCTION: smIsLtkBlocked
+ * USE:      Check if the given LTK is blocked.
+ * PARAS:    ltk - the LTK to check
+ * RETURN:   true if it is blocked, false otherwise
+ * NOTES:    call with mSmLock held
+ */
+static bool smIsLtkBlocked(const struct smKey *ltk)
+{
+    for (uint8_t i = 0; i < mBlockedLtks.count; i++) {
+        if (!memcmp(ltk, &mBlockedLtks.ltks[i], sizeof(struct smKey)))
+            return true;
+    }
+
+    return false;
+}
+
+/*
  * FUNCTION: smEncryptForTest
  * USE:      Perform an AES-128 encryption
  * PARAMS:   dst - place to store result (SM_ENCRYPT_DATA_LEN bytes)
@@ -4174,4 +4243,16 @@ void smCalcKeyForTest(uint8_t *out, const uint8_t *k, const uint8_t *r1, const u
 uint32_t smAddressHashForTest(uint32_t r, const uint8_t *key)
 {
     return smAddressHash(r, key);
+}
+
+/*
+ * FUNCTION: smIsLtkBlockedForTest
+ * USE:      Check if the given LTK is blocked.
+ * PARAS:    ltk - the LTK to check
+ * RETURN:   true if it is blocked, false otherwise
+ * NOTES:
+ */
+bool smIsLtkBlockedForTest(const struct smKey *ltk)
+{
+    return smIsLtkBlocked(ltk);
 }

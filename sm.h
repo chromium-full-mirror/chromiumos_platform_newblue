@@ -149,6 +149,10 @@ NEWBLUE_BEGIN_DECLS
  * NOTE:         Come with SM_PAIR_STATE_FAILED. Observer needs to transit to SM_PAIR_NOT_PAIRED.
  */
 #define SM_PAIR_ERR_UNKNOWN                20
+/* ERROR:        Error where the LTK sent by a peer device is blocked.
+ * NOTE:         Come with SM_PAIR_STATE_FAILED. Observer needs to transit to SM_PAIR_NOT_PAIRED.
+ */
+#define SM_PAIR_ERR_BLOCKED_LTK            21
 
 typedef uint8_t SmPairState;
 typedef uint8_t SmPairErr;
@@ -208,6 +212,14 @@ struct smKnownDevNode {
     bool                  isPaired;
 };
 
+struct smKey {
+    uint8_t key[HCI_LE_KEY_LEN]; /* [0]->[15] : MSO->LSO */
+} __packed;
+
+struct smBlockedLtks {
+    struct smKey *ltks;
+    uint8_t count;
+};
 
 /* HELPER FUNCTIONS */
 
@@ -222,6 +234,8 @@ bool smInit(void) NEWBLUE_EXPORT;
 /* call this to perform on-time deinit of SM */
 void smDeinit(void) NEWBLUE_EXPORT;
 
+/* call this to set the LTKs to be blocked */
+bool smSetBlockedLtks(const struct smKey *ltks, uint8_t count) NEWBLUE_EXPORT;
 
 /* HIGHER LAYER INTERFACE API */
 
@@ -278,6 +292,7 @@ void smCalcConfValForTest(uint8_t* out, const uint8_t *k, const uint8_t *r, uint
     uint64_t preq, bool iat, uint64_t ia, bool rat, uint64_t ra);
 void smCalcKeyForTest(uint8_t *out, const uint8_t *k, const uint8_t *r1, const uint8_t *r2);
 uint32_t smAddressHashForTest(uint32_t r, const uint8_t *key);
+bool smIsLtkBlockedForTest(const struct smKey *ltk);
 
 NEWBLUE_END_DECLS
 
