@@ -1538,12 +1538,13 @@ static uint8_t gattPsmSvcAlloc(void *userData, l2c_handle_t handle, void **insta
  * USE:      L2C calls this with requests to open a fixed channel
  * PARAMS:   userData - unused
  *           handle - the connection handle
+ *           isAclMaster - whether we are the master in the underlying ACL
  *           instanceP - we store per-connection instance here
  * RETURN:   SVC_ALLOC_*
  * NOTES:    if allocate is called, we are being connected to. in that case go right to
  *           GATT_CONN_STATE_RUNNING state
  */
-static uint8_t gattFixedChSvcAlloc(void *userData, l2c_handle_t handle, void **instanceP)
+static uint8_t gattFixedChSvcAlloc(void *userData, l2c_handle_t handle, bool isAclMaster, void **instanceP)
 {
     struct bt_addr peer;
 

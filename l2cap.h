@@ -94,7 +94,7 @@ struct l2cServiceFixedChDescriptor {
     void *userData; /* passed to all callbacks */
 
     /* called when ACL connection with a party supporting this channel is opened */
-    uint8_t (*serviceFixedChAlloc)(void *userData, l2c_handle_t handle, void **instanceP); /* return SVC_ALLOC_* */
+    uint8_t (*serviceFixedChAlloc)(void *userData, l2c_handle_t handle, bool isAclMaster, void **instanceP); /* return SVC_ALLOC_* */
 
     /* called when data is received */
     l2cStateCbk serviceFixedChStateCbk; /* free when called with the close state */

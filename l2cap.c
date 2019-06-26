@@ -341,6 +341,7 @@ struct l2cSvcWork {
         struct {
             l2c_handle_t handle;
             union l2cPsmOrChan which;
+            bool isAclMaster;
         } i_alloc;
         struct {
             l2c_handle_t handle;
@@ -744,7 +745,7 @@ static bool l2cSvcWorkSchedulePsmConnectionlessRx(psm_t psm, l2c_handle_t handle
  * RETURN:   false on immediate error
  * NOTES:    actual call will happen in the worker thread
  */
-static bool l2cSvcWorkScheduleFixedChAlloc(uint16_t chan, l2c_handle_t handle)
+static bool l2cSvcWorkScheduleFixedChAlloc(uint16_t chan, l2c_handle_t handle, bool isAclMaster)
 {
     struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_FIXEDCH_INST_ALLOC, 0);
 
@@ -753,6 +754,7 @@ static bool l2cSvcWorkScheduleFixedChAlloc(uint16_t chan, l2c_handle_t handle)
 
     w->i_alloc.handle = handle;
     w->i_alloc.which.chan = chan;
+    w->i_alloc.isAclMaster = isAclMaster;
 
     if (workQueuePut(mServiceWork, w))
         return true;
@@ -3508,7 +3510,7 @@ static void l2cFixedChSvcInstAllocDone(uint16_t chan, l2cStateCbk stateCbk, void
     if (result == SVC_ALLOC_DEMAND_ENCR || result == SVC_ALLOC_DEMAND_AUTH) {
         if (aclConn->encrypted && (aclConn->mitmSafe || result != SVC_ALLOC_DEMAND_AUTH)) {
             logi("Link acl "HCI_CONN_FMT"x already encrypted to the requested level\n", HCI_CONN_CONV(aclConn->conn));
-            if (!l2cSvcWorkScheduleFixedChAlloc(chan, handle)) {
+            if (!l2cSvcWorkScheduleFixedChAlloc(chan, handle, aclConn->isMaster)) {
                 loge("Failed to re-enqueue fixed alloc\n");
                 l2cConnRequestClose(aclConn, conn, false);
                 goto out;
@@ -3648,7 +3650,7 @@ static void* l2cSvcWorker(void* unused)
                 logi("Ignoring instance alloc for service (chan=%d) being removed\n", chan);
                 result = SVC_ALLOC_FAIL_BEING_REMOVED;
             } else {
-                result = fixedSvc->desc.serviceFixedChAlloc(fixedSvc->desc.userData, work->i_alloc.handle, &instance);
+                result = fixedSvc->desc.serviceFixedChAlloc(fixedSvc->desc.userData, work->i_alloc.handle, work->i_alloc.isAclMaster, &instance);
             }
             pthread_mutex_unlock(&mSvcsLock);
             l2cFixedChSvcInstAllocDone(chan, fixedSvc->desc.serviceFixedChStateCbk, fixedSvc->desc.userData, result, instance, work->i_alloc.handle);
@@ -5503,7 +5505,7 @@ static void l2cAclLinkEncrChangeInt(struct l2cAclConn *aclConn, bool isEncrypted
                 /* handle PSM connections */
                 if(!l2cSvcWorkSchedulePsmAlloc(conn->psm, conn->handle))
                     loge("Failed to re-enquque PSM alloc on encr\n");
-            } else if (!l2cSvcWorkScheduleFixedChAlloc(conn->localCh, conn->handle)) {
+            } else if (!l2cSvcWorkScheduleFixedChAlloc(conn->localCh, conn->handle, aclConn->isMaster)) {
                 /* handle FixedCh */
                 loge("Failed to re-enquque fixed alloc on encr\n");
             }
@@ -5725,7 +5727,7 @@ void l2cAclLinkUp(hci_conn_t aclConnID, const struct bt_addr *peerAddr, const st
                 }
 
                 conn->inUse = 0; /* until actually used */
-                if (l2cSvcWorkScheduleFixedChAlloc(svc->chan, conn->handle)) {
+                if (l2cSvcWorkScheduleFixedChAlloc(svc->chan, conn->handle, aclConn->isMaster)) {
                     conn->next = mConns;
                     if (mConns)
                         mConns->prev = conn;

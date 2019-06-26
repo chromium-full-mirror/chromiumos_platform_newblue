@@ -2416,11 +2416,12 @@ fail:
  *           structure
  * PARAMS:   userData - unused
  *           conn - l2c conn handle
+ *           isAclMaster - whether we are the master in the underlying ACL
  *           instanceP - we store instance here if we allocate one
  * RETURN:   SVC_ALLOC_*
  * NOTES:
  */
-static uint8_t smFixedChAlloc(void *userData, l2c_handle_t conn, void **instanceP)
+static uint8_t smFixedChAlloc(void *userData, l2c_handle_t conn, bool isAclMaster, void **instanceP)
 {
     struct smInstance *inst;
     struct bt_addr peerAddr;
