@@ -896,7 +896,11 @@ static bool smSendSecurityReq(struct smInstance *inst)
 {
     struct smAuthReq req;
 
-    inst->isInitiator = false;
+    if (inst->isInitiator) {
+        logw("Should not try to send Security Request when we are initiator\n");
+        return false;
+    }
+
     utilSetLE8(&req.authReq, inst->myAuthReq);
     if (!smTx(inst, SM_SECURITY_REQUEST, &req, sizeof(req))) {
         logw("%s(): Failed to send security request command\n", __func__);
@@ -1370,6 +1374,11 @@ static void smRx(struct smInstance *inst, sg packet)
     typ = utilGetLE8(&hdr.typ);
     switch (typ) {
     case SM_PAIRING_REQ:
+        if (inst->isInitiator) {
+            logw("Received Pairing Request when we are initiator\n");
+            pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
+            break;
+        }
         if (!sgSerializeCutFront(packet, &pairReqResp, sizeof(pairReqResp))) {
             logw("Incoming SM packet data extraction failed\n");
             pairErr = SM_PAIR_ERR_INVALID_PARAM;
@@ -1394,7 +1403,6 @@ static void smRx(struct smInstance *inst, sg packet)
             break;
         }
 
-        inst->isInitiator = false;
         if ((pairErr = smParsePairReqResp(&err, inst, &pairReqResp))) {
             smSendPairFail(inst, err);
             break;
@@ -1903,6 +1911,11 @@ static void smRx(struct smInstance *inst, sg packet)
         goto done;
 
     case SM_SECURITY_REQUEST:
+        if (!inst->isInitiator) {
+            logw("Received Security Request when we are not initiator\n");
+            pairErr = SM_PAIR_ERR_UNEXPECTED_SM_CMD;
+            break;
+        }
         if (!sgSerializeCutFront(packet, &authReq, sizeof(authReq))) {
             logw("Incoming SM packet data extraction failed\n");
             pairErr = SM_PAIR_ERR_INVALID_PARAM;
@@ -1923,7 +1936,6 @@ static void smRx(struct smInstance *inst, sg packet)
 
         if ((inst->phase == SM_PHASE_DONE || inst->phase == SM_PHASE_LTK_ENCRYPTED) &&
             inst->isInitiator) {
-            inst->isInitiator = true; /* for re-establishment, we are the initiator for sure */
             if (!smLtkEncrypt(inst)) {
                 pairErr = SM_PAIR_ERR_ENCR_CONN;
                 break;
@@ -1940,7 +1952,6 @@ static void smRx(struct smInstance *inst, sg packet)
 
             /* Use authentication requirements received from the responder to initiate the
              * pairing */
-            inst->isInitiator = true;
             inst->myAuthReq = auth;
             inst->myMaxKeySz = SM_MAX_KEY_LEN;
             inst->myKeyDistrReq = SM_KEY_DISTR_LTK | SM_KEY_DISTR_CSRK |
@@ -2207,11 +2218,6 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
          * pairing as an initiator
          */
         if (inst->isInitiator) {
-            if (inst->phase != SM_PHASE_START) {
-                pairErr = SM_PAIR_ERR_UNEXPECTED_L2C_EVT;
-                goto reset;
-            }
-
             inst->conn = conn;
 
             if (!l2cApiGetBtAddr(inst->conn, &peerAddr) ||
@@ -2228,7 +2234,7 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
 
         smInstInit(inst);
 
-        if (inst->isInitiator) {
+        if (inst->isInitiator && inst->phase == SM_PHASE_START) {
             if (!smSendPairReq(inst)) {
                 pairErr = SM_PAIR_ERR_SEND_SM_CMD;
                 goto reset;
@@ -2336,7 +2342,6 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
                 logw("Failed to retrieve LTK for connection re-establishment\n");
                 goto fail;
             } else {
-                inst->isInitiator = false; /* for re-establishment, we are the responder for sure */
                 l2cApiLeProvideLtk(inst->conn, rawKey);
                 smTransitPhase(inst, SM_PHASE_LTK_SENT);
             }
@@ -2454,6 +2459,7 @@ static uint8_t smFixedChAlloc(void *userData, l2c_handle_t conn, bool isAclMaste
     if (!inst)
         return SVC_ALLOC_FAIL_OTHER;
 
+    inst->isInitiator = isAclMaster;
     inst->peerAddr = peerAddr;
     inst->myAddr = myAddr;
     inst->conn = conn;
