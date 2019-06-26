@@ -2948,9 +2948,25 @@ static bool hciBtStackUp(void)
     {
         struct hciCmplLeReadLocalSupportedFeatures evtFtrs;
         struct hciCmplLeReadBufferSize evt;
+        struct hciCmplLeReadAdvChannelTxPower pwrLvlEvt;
         uint16_t i;
 
         logi("BT UP: reading LE buffer size\n");
+
+        /* TODO(crbug/978713) to use extended advertising commands instead of legacy.
+         *
+         * Bluetooth 5.0 disallows mixing of legacy and extended advertising commands.
+         * However, there is no command to explicitly choose which mode (legacy or extended)
+         * the host wants to use, but rather the first advertising command will determine
+         * whether legacy or extended advertising commands will be allowed for the rest
+         * of the controller's lifetime (until Reset).
+         * So here we call an arbitrary read-only legacy advertising command very early to tell
+         * the controller that we want to use the legacy adv commands instead of extended
+         * advertising commands.
+         * Note: Choosing legacy adv commands will prevent us from using Bluetooth 5's multi-adv
+         * features. */
+        hciLeReadAdvChannelTxPowerSync(&pwrLvlEvt);
+
         ret = hciLeReadBufferSizeSync(&evt);
         if (ret)
             goto out;
@@ -3097,9 +3113,11 @@ static bool hciBtStackUp(void)
             mMaxAdvSets = evt.maxAdvsets;
             mCanSetAdvTxPower = true;
             logi(" Controller supports up to %u adv sets\n", mMaxAdvSets);
+            goto out;
         }
     }
-    else if (mBtVer >= HCI_VERSION_4_0) {
+
+    if (mBtVer >= HCI_VERSION_4_0) {
         struct hciCmplVendorLeGetVendorCapabilities evt;
 
         logi("Will try BT4 android-vendor multi-adv support\n");
