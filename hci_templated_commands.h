@@ -28,6 +28,15 @@
  * W_STATUS - expects cmd status event
  */
 
+// Constructs a union of hciCmplXXX and hciEvtCmdStatus.
+// Useful to create a buffer that is guaranteed to be large enough to hold both Command Complete and Command Status.
+#define EVT_CMD_COMPLETE_OR_STATUS(name)       \
+    union {                                    \
+        uint8_t status;                        \
+        struct hciCmpl##name cmdComplete;      \
+        struct hciEvtCmdStatus cmdStatus;      \
+    }
+
 #define HCI_SIMPLY_SYNC_CMD_W_STATUS(name, params, ogf, ocf)                                                         \
                                            static int hci##name##Sync params                                         \
                                            {                                                                         \
@@ -38,6 +47,7 @@
                                                struct hciEvtCmdStatus *evt = &evtD;                                  \
                                                const uint8_t _ogf = ogf;                                             \
                                                const uint16_t _ocf = ocf;                                            \
+                                               const bool want_com = false;                                          \
                                                const bool want_sta = true;
 
 #define HCI_SIMPLY_SYNC_WRITE(name, params, ogf, ocf)                                                                \
@@ -46,10 +56,11 @@
                                                struct hci##name cmdD;                                                \
                                                struct hci##name *cmd = &cmdD;                                        \
                                                const uint32_t cmdSz = sizeof(*cmd);                                  \
-                                               struct hciCmpl##name evtD;                                            \
-                                               struct hciCmpl##name *evt = &evtD;                                    \
+                                               EVT_CMD_COMPLETE_OR_STATUS(name) evtD, *evt;                          \
+                                               evt = &evtD;                                                          \
                                                const uint8_t _ogf = ogf;                                             \
                                                const uint16_t _ocf = ocf;                                            \
+                                               const bool want_com = true;                                           \
                                                const bool want_sta = false;
 
 #define HCI_SIMPLY_SYNC_WRITE_VAR_LEN(name, params, ogf, ocf, lenParam)                                              \
@@ -57,10 +68,11 @@
                                            {                                                                         \
                                                struct hci##name *cmd;                                                \
                                                const uint32_t cmdSz = sizeof(*cmd) + lenParam;                       \
-                                               struct hciCmpl##name evtD;                                            \
-                                               struct hciCmpl##name *evt = &evtD;                                    \
+                                               EVT_CMD_COMPLETE_OR_STATUS(name) evtD, *evt;                          \
+                                               evt = &evtD;                                                          \
                                                const uint8_t _ogf = ogf;                                             \
                                                const uint16_t _ocf = ocf;                                            \
+                                               const bool want_com = true;                                           \
                                                const bool want_sta = false;                                          \
                                                const uint8_t varLenWriteMarker = 1; /* allow COPY_IN_VAR_LEN_DATA */ \
                                                if (cmdSz > 255) {                                                    \
@@ -75,10 +87,11 @@
                                            {                                                                         \
                                                struct hci##name *cmd = NULL;                                         \
                                                const uint32_t cmdSz = 0;                                             \
-                                               struct hciCmpl##name evtD;                                            \
-                                               struct hciCmpl##name *evt = &evtD;                                    \
+                                               EVT_CMD_COMPLETE_OR_STATUS(name) evtD, *evt;                          \
+                                               evt = &evtD;                                                          \
                                                const uint8_t _ogf = ogf;                                             \
                                                const uint16_t _ocf = ocf;                                            \
+                                               const bool want_com = true;                                           \
                                                const bool want_sta = false;
 
 #define HCI_SIMPLY_SYNC_READ(name, params, ogf, ocf)                                                                 \
@@ -89,6 +102,7 @@
                                                const uint32_t cmdSz = sizeof(*cmd);                                  \
                                                const uint8_t _ogf = ogf;                                             \
                                                const uint16_t _ocf = ocf;                                            \
+                                               const bool want_com = true;                                           \
                                                const bool want_sta = false;
 
 #define HCI_SIMPLY_SYNC_READ_NOCMDPARAMS(name, params, ogf, ocf)                                                     \
@@ -98,7 +112,8 @@
                                                const uint32_t cmdSz = 0;                                             \
                                                const uint8_t _ogf = ogf;                                             \
                                                const uint16_t _ocf = ocf;                                            \
-                                               const bool want_sta = false;
+                                               const bool want_com = true;                                           \
+                                               const bool want_sta = true;
 
 #define REQUIRE_VERSION(_v)                    if (mBtVer < _v) {                                                    \
                                                    loge("attempt to call 0x%02X.%04X on v%u\n", _ogf, _ocf, mBtVer); \
@@ -131,13 +146,18 @@
                                                }                                                                     \
                                                memcpy(cmd->name, name, len);
 
-#define HCI_SIMPLY_SYNC_END                    if (!want_sta && !hciCmdSubmitSimpleWithCompleteSync(_ogf, _ocf, cmd, \
-                                                      cmdSz, evt, sizeof(*evt)))                                     \
-                                                   return -1;                                                        \
-                                               if (want_sta && !hciCmdSubmitSimpleWithStatusSync(_ogf, _ocf, cmd,    \
-                                                      cmdSz, (struct hciEvtCmdStatus*)evt))                          \
-                                                   return -1;                                                        \
-                                               return (unsigned)utilGetLE8(&evt->status);                            \
+#define HCI_SIMPLY_SYNC_END                    if (want_com && want_sta && !hciCmdSubmitSimpleWithCompleteAndStatusSync(_ogf, _ocf, cmd,\
+                                                      cmdSz, evt, sizeof(*evt)))                                                        \
+                                                   return -1;                                                                           \
+                                               if (want_com && !want_sta && !hciCmdSubmitSimpleWithCompleteSync(_ogf, _ocf, cmd,        \
+                                                      cmdSz, evt, sizeof(*evt)))                                                        \
+                                                   return -1;                                                                           \
+                                               if (!want_com && want_sta && !hciCmdSubmitSimpleWithStatusSync(_ogf, _ocf, cmd,          \
+                                                      cmdSz, (struct hciEvtCmdStatus*)evt))                                             \
+                                                   return -1;                                                                           \
+                                               if (!want_com && !want_sta)                                                              \
+                                                   return -1;                                                                           \
+                                               return (unsigned)utilGetLE8(&evt->status);                                               \
                                            }
 
 /*

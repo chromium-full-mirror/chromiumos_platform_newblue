@@ -388,6 +388,7 @@ static bool hciScheduleConnDataRx(hci_conn_t conn, sg packet, bool first);
 static bool hciCmdSubmitSimpleWithStatusWithDoneCbk(uint8_t ogf, uint16_t ocf, const void* paramData, uint8_t paramLen, hciOpDoneCbk cbk, void *cbkData);
 static bool hciCmdSubmitSimpleWithCompleteSync(uint8_t ogf, uint16_t ocf, const void* paramData, uint8_t paramLen, void* evtBuf, uint8_t evtBufSz);
 static bool hciCmdSubmitSimpleWithStatusSync(uint8_t ogf, uint16_t ocf, const void *paramData, uint8_t paramLen, struct hciEvtCmdStatus *dstEvt);
+static bool hciCmdSubmitSimpleWithCompleteAndStatusSync(uint8_t ogf, uint16_t ocf, const void* paramData, uint8_t paramLen, void* evtBuf, uint8_t evtBufSz);
 static void hciHandleConnAclDown(uint16_t cid, uint8_t reason);
 static bool hciHandleConnAclLeUp(uint8_t status, uint16_t id, bool isMaster, const uint8_t *mac, bool addrRandom, uint16_t interval, uint16_t latency, uint16_t timeout, uint8_t mca);
 static bool hciHandleConnAclEncr(uint16_t cid, bool encrOn);
@@ -1860,6 +1861,74 @@ static bool hciCmdSubmitSimple(uint8_t ogf, uint16_t ocf, const void* paramData,
 }
 
 /*
+ * FUNCTION: hciCmdSubmitCompleteAndStatus
+ * USE:      Send a command and setup handlers for command complete/command status for it
+ * PARAMS:   ogf - command group
+ *           ocf - command code
+ *           paramData - command params
+ *           paramLen - length of command params
+ *           commandCompleteCbk - callback to call when command complete event arrives
+ *           commandStatusCbk - callback to call when command status event arrives
+ *           cbkData - data to pass to the callbacks
+ *           minEvtDataLen - minimum event data length to accept (excluding command complete/status event itself)
+ *           maxEvtDataLen - maximum event data length to accept (excluding command complete/status event itself)
+ *           wantEvt - pass a copy of the event to callback?
+ * RETURN:   true if we enqueued it, false else
+ * NOTES:
+ */
+static bool hciCmdSubmitCompleteAndStatus(uint8_t ogf, uint16_t ocf, const void* paramData, uint8_t paramLen,
+                                          hciSimpleCbk commandCompleteCbk, hciSimpleCbk commandStatusCbk,
+                                          void *cbkData, uint8_t minEvtDataLen, uint8_t maxEvtDataLen, bool wantEvt)
+{
+    struct hciEvtWaitDescr ewdComplete, ewdStatus;
+    struct hciSimpleCbkData *completeCbkData = NULL, *statusCbkData = NULL;
+    struct hciCmdSubmitWithCompleteSyncData* data = cbkData;
+
+    completeCbkData = (struct hciSimpleCbkData*)malloc(sizeof(struct hciSimpleCbkData));
+    if (!completeCbkData)
+        goto fail;
+
+    statusCbkData = (struct hciSimpleCbkData*)malloc(sizeof(struct hciSimpleCbkData));
+    if (!statusCbkData)
+        goto fail;
+
+    completeCbkData->cbk = commandCompleteCbk;
+    completeCbkData->cbkData1 = data; /* user data 1 for commandCompleteCbk */
+    completeCbkData->cbkData2 = NULL; /* user data 2 for commandCompleteCbk */
+    completeCbkData->complete = true;
+    completeCbkData->wantEventItself = wantEvt ? 1 : 0;
+    completeCbkData->expectedParamLenMin = minEvtDataLen;
+    completeCbkData->expectedParamLenMax = maxEvtDataLen;
+
+    statusCbkData->cbk = commandStatusCbk;
+    statusCbkData->cbkData1 = data->sem; /* user data 1 for commandStatusCbk */
+    statusCbkData->cbkData2 = data->evtBuf; /* user data 2 for commandStatusCbk */
+    statusCbkData->complete = false;
+    statusCbkData->wantEventItself = wantEvt ? 1 : 0;
+    statusCbkData->expectedParamLenMin = minEvtDataLen;
+    statusCbkData->expectedParamLenMax = maxEvtDataLen;
+
+    ewdComplete.evtType = HCI_EVT_Command_Complete;
+    ewdComplete.extra = CMD_MAKE_OPCODE(ogf, ocf);
+    ewdComplete.cbk = hciCmdSubmitSimpleCbk;
+    ewdComplete.cbkData = completeCbkData;
+    ewdComplete.persistent = false;
+
+    ewdStatus.evtType = HCI_EVT_Command_Status;
+    ewdStatus.extra = CMD_MAKE_OPCODE(ogf, ocf);
+    ewdStatus.cbk = hciCmdSubmitSimpleCbk;
+    ewdStatus.cbkData = statusCbkData;
+    ewdStatus.persistent = false;
+
+    if (hciCmdSubmit(ogf, ocf, paramData, paramLen, &ewdComplete, &ewdStatus, NULL))
+        return true;
+
+fail:
+    if (completeCbkData) free(completeCbkData);
+    if (statusCbkData) free(statusCbkData);
+    return false;
+}
+/*
  * FUNCTION: hciCmdSubmitWithDoneSimpleCbk
  * USE:      Event callback for command complete event used by hciCmdSubmitSimpleWithCompleteWithDoneCbk()
  * PARAMS:   cbkData1 - 1st callback data (actually the original hciOpDoneCbk)
@@ -2049,6 +2118,59 @@ static bool hciCmdSubmitSimpleWithStatusSync(uint8_t ogf, uint16_t ocf, const vo
     if (hciCmdSubmitSimple(ogf, ocf, paramData, paramLen, hciCmdSubmitStatusSyncSimpleCbk, &sem, dstEvt, 0, 0, true, false))
         r_sem_wait(&sem);
     else
+        ret = false;
+
+    sem_destroy(&sem);
+
+    return ret;
+}
+
+/*
+ * FUNCTION: hciCmdSubmitSimpleWithCompleteAndStatusSync
+ * USE:      Send a command and setup handlers for command complete and command status for it. Wait for it to complete. Optionally provide resulting event back.
+ * PARAMS:   ogf - command group
+ *           ocf - command code
+ *           paramData - command params
+ *           paramLen - length of command params
+ *           evtBuf - buffer where to put event (command complete event will be stripped, only params will remain)
+ *           evtBufSz - size of said buffer. Event will be truncated if it does not fit
+ * RETURN:   true if it happened. false else
+ * NOTES:    Will block!
+ */
+static bool hciCmdSubmitSimpleWithCompleteAndStatusSync(uint8_t ogf, uint16_t ocf, const void* paramData, uint8_t paramLen, void* evtBuf, uint8_t evtBufSz)
+{
+    bool ret = true;
+    sem_t sem;
+    struct hciCmdSubmitWithCompleteSyncData data;
+
+    if (pthread_self() == mCallbackThread) {
+        loge("Refusing to issue sync command from callback thread. This WILL deadlock\n");
+        return false;
+    }
+
+    if (evtBufSz < sizeof(struct hciEvtCmdStatus)) {
+        logw("evtBuf (for ogf=%02x ocf=%02x) must be at least as large as hciEvtCmdStatus, "
+             "falling back to expecting Command Complete only without Command Status\n", ogf, ocf);
+        return hciCmdSubmitSimpleWithCompleteSync(ogf, ocf, paramData, paramLen, evtBuf, evtBufSz);
+    }
+
+    data.sem = &sem;
+    data.evtBuf = evtBuf;
+    data.evtBufSz = evtBufSz;
+    data.goingDown = false;
+
+    if (sem_init(&sem, 0, 0)) {
+        loge("sem init failed\n");
+        return false;
+    }
+
+    if (hciCmdSubmitCompleteAndStatus(ogf, ocf, paramData, paramLen, hciCmdSubmitCompleteSyncSimpleCbk, hciCmdSubmitStatusSyncSimpleCbk, &data, 0 /* minEvtDataLen */, 255 /* maxEvtDataLen */, true /* wantEvt */)) {
+        r_sem_wait(&sem);
+        if (data.goingDown) {
+            logi("going down\n");
+            ret = false;
+        }
+    } else
         ret = false;
 
     sem_destroy(&sem);
@@ -3144,11 +3266,6 @@ static bool hciBtStackUp(void)
     }
 
 out:
-    if (ret) {
-        loge("Status was 0x%02X\n", ret);
-        mStackState = STACK_STATE_DOWN;
-        return false;
-    }
     mStackState = STACK_STATE_UP;
     return true;
 }
