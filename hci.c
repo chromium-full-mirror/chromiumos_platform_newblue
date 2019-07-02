@@ -3159,7 +3159,9 @@ static bool hciBtStackUp(void)
 
         logi("Setting event mask page 2 to 0x"FMT64"X\n", CNV64(evts2));
         ret = hciSetEventMaskPage2Sync(evts2);
-        if (ret)
+        if (ret == HCI_ERR_Unknown_HCI_Command)
+            logd("Controller doesn't recognize Set Event Mask Page 2\n");
+        else if (ret)
             goto out;
 
         logi("Setting LE event mask to 0x"FMT64"X\n", CNV64(evtsLe));

@@ -61,7 +61,7 @@
                                                const uint8_t _ogf = ogf;                                             \
                                                const uint16_t _ocf = ocf;                                            \
                                                const bool want_com = true;                                           \
-                                               const bool want_sta = false;
+                                               const bool want_sta = true;
 
 #define HCI_SIMPLY_SYNC_WRITE_VAR_LEN(name, params, ogf, ocf, lenParam)                                              \
                                            static int hci##name##Sync params                                         \
