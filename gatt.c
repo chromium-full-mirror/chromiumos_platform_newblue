@@ -331,6 +331,7 @@ struct GattCliUtilSvcTraverseState {
     struct GattTraversedServiceCharDescr* allDescrs;
     struct GattTraversedServiceInclSvc *allInclSvcs;
     gattCliUtilSvcTraversedCbk cbk;
+    void *userData; // unused by us. set and given to clients for their own use
 };
 
 struct GattCliUtilLongReadState {
@@ -4624,7 +4625,7 @@ static void gattClientUtilFindAndTraversePrimaryServiceDescrEnumCbk(gatt_client_
             // we unlink it from the list so we can drop the lock. We do not want to hold the lock during a callback. Once unliked it CANNOT disappear from under us
             gattClientUtilSvcTraversalStructUnlink(st);
             pthread_mutex_unlock(&mGattUtilLock);
-            st->cbk(conn, st->clientTrans, &st->res);
+            st->cbk(st->userData, conn, st->clientTrans, &st->res);
             gattClientUtilSvcTraversalStructFreeData(st);
             return;
         }
@@ -4636,7 +4637,7 @@ static void gattClientUtilFindAndTraversePrimaryServiceDescrEnumCbk(gatt_client_
         }
         pthread_mutex_unlock(&mGattUtilLock);
         if (cbk)
-            cbk(conn, clientTrans, NULL);
+            cbk(st->userData, conn, clientTrans, NULL);
     }
 }
 
@@ -4721,7 +4722,7 @@ static void gattClientUtilFindAndTraversePrimaryServiceCharEnumCbk(gatt_client_c
         }
         pthread_mutex_unlock(&mGattUtilLock);
         if (cbk)
-            cbk(conn, clientTrans, NULL);
+            cbk(st->userData, conn, clientTrans, NULL);
     }
 }
 
@@ -4787,7 +4788,7 @@ static void gattClientUtilFindAndTraversePrimaryServiceInclSvcEnumCbk(gatt_clien
         }
         pthread_mutex_unlock(&mGattUtilLock);
         if (cbk)
-            cbk(conn, clientTrans, NULL);
+            cbk(st->userData, conn, clientTrans, NULL);
     }
 }
 
@@ -4839,7 +4840,7 @@ static void gattClientUtilFindAndTraversePrimaryServiceSvcEnumCbk(void* userData
         }
         pthread_mutex_unlock(&mGattUtilLock);
         if (cbk)
-            cbk(conn, clientTrans, NULL);
+            cbk(st->userData, conn, clientTrans, NULL);
     }
 }
 
@@ -4853,7 +4854,7 @@ static void gattClientUtilFindAndTraversePrimaryServiceSvcEnumCbk(void* userData
  * RETURN:   GATT_CLI_STATUS_*
  * NOTES:    if more than service with a given uuid exists, first is returned
  */
-uint8_t gattClientUtilFindAndTraversePrimaryService(gatt_client_conn_t conn, const struct uuid *svcUuid, uniq_t clientTrans, gattCliUtilSvcTraversedCbk cbk)
+uint8_t gattClientUtilFindAndTraversePrimaryService(void* userData, gatt_client_conn_t conn, const struct uuid *svcUuid, uniq_t clientTrans, gattCliUtilSvcTraversedCbk cbk)
 {
     struct GattCliUtilSvcTraverseState* st = (struct GattCliUtilSvcTraverseState*)calloc(1, sizeof(struct GattCliUtilSvcTraverseState));
     uniq_t trans;
@@ -4862,6 +4863,7 @@ uint8_t gattClientUtilFindAndTraversePrimaryService(gatt_client_conn_t conn, con
     if (!st)
         return GATT_CLI_STATUS_ERR;
 
+    st->userData = userData;
     st->res.uuid = *svcUuid;
     st->clientTrans = clientTrans;
     st->curTrans = trans = uniqGetNext();

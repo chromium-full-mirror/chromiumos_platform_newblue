@@ -1027,13 +1027,14 @@ static void btleHidAttachAddDiscoveredChar(struct HidConn *hid, const struct Gat
 /*
  * FUNCTION: btleHidAttachServiceTraversalCbk
  * USE:      Called by GATT when the HID service is found at request of btleHidAttach()
- * PARAMS:   gattConn - the GATT client connection id
+ * PARAMS:   userData - our data (unused here)
+ *           gattConn - the GATT client connection id
  *           trans - transaction ID (unused here as we can look up by gatt conn id)
  *           data - the traversal data or NULL on error
  * RETURN:   NONE
  * NOTES:
  */
-static void btleHidAttachServiceTraversalCbk(gatt_client_conn_t gattConn, uniq_t trans, const struct GattTraversedService* data)
+static void btleHidAttachServiceTraversalCbk(void* userData, gatt_client_conn_t gattConn, uniq_t trans, const struct GattTraversedService* data)
 {
     const struct uuid hidUuid = BT_UUID_STATIC_16(BTLE_UUID_HID_SERVICE);
     struct HidConn *hid;
@@ -1051,7 +1052,7 @@ static void btleHidAttachServiceTraversalCbk(gatt_client_conn_t gattConn, uniq_t
         logw("Error finding or traversing HID service on GATT conn "GATTHANDLEFMT"\n", GATTHANDLECNV(gattConn));
         goto out_detach;
     }
-    
+
     // copy basics
     hid->hidServiceFirstHandle = data->firstHandle;
     hid->hidServiceLastHandle = data->lastHandle;
@@ -1065,7 +1066,7 @@ static void btleHidAttachServiceTraversalCbk(gatt_client_conn_t gattConn, uniq_t
         logw("HID device on GATT connection "GATTHANDLEFMT" did not meet requirements of HID-over-GATT spec and will not be usable!\n", GATTHANDLECNV(gattConn));
         goto out_detach;
     }
-    
+
     //go on to read required prerequisites
     id = hid->id;
     hid->state = BTLE_HID_CONN_STATE_READING;
@@ -1122,7 +1123,7 @@ ble_hid_conn_t btleHidAttach(gatt_client_conn_t gattConn)
     mCbkState(id, BTLE_HID_CONN_STATE_GATT_DISCOVERY);
 
     logi("HID attempting an attachment to GATT conn "GATTHANDLEFMT"\n", GATTHANDLECNV(gattConn));
-    if (GATT_CLI_STATUS_OK == gattClientUtilFindAndTraversePrimaryService(gattConn, &hidUuid, 0, btleHidAttachServiceTraversalCbk))
+    if (GATT_CLI_STATUS_OK == gattClientUtilFindAndTraversePrimaryService(NULL, gattConn, &hidUuid, 0, btleHidAttachServiceTraversalCbk))
         return hidConn;
 
     logw("Failed to start the GATT service search\n");

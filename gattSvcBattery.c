@@ -287,13 +287,14 @@ out_unlock:
 /*
  * FUNCTION: gattSvcBatteryAttachServiceTraversalCbk
  * USE:      Called by GATT when the Battery Service is found at request of gattSvcBattAttach()
- * PARAMS:   gattConn - the GATT client connection id
+ * PARAMS:   userData - our data (unused here)
+ *           gattConn - the GATT client connection id
  *           trans - transaction ID (unused here as we can look up by BattSvc conn handle)
  *           data - the traversal data or NULL on error
  * RETURN:   NONE
  * NOTES:
  */
-static void gattSvcBatteryAttachServiceTraversalCbk(gatt_client_conn_t gattConn, uniq_t trans, const struct GattTraversedService* data)
+static void gattSvcBatteryAttachServiceTraversalCbk(void* userData, gatt_client_conn_t gattConn, uniq_t trans, const struct GattTraversedService* data)
 {
     const struct uuid battSvcUuid = BT_UUID_STATIC_16(BTLE_UUID_BATTERY_SERVICE);
     struct BattSvcConn *svc;
@@ -359,7 +360,7 @@ static void gattSvcBatteryAttachServiceTraversalCbk(gatt_client_conn_t gattConn,
         logw("BattSvc failed to find BatteryValue characteristic!\n");
         goto out_detach;
     }
-    
+
     // if we have a CCCD, go to CCCD write stage, else just go to UP stage
     id = svc->id;
     if (svc->charCccdHandle) {
@@ -426,7 +427,7 @@ gatt_svc_batt_conn_t gattSvcBattAttach(gatt_client_conn_t gattConn)
     mCbkState(svcConn, BTLE_BATT_SVC_CONN_STATE_GATT_DISCOVERY);
 
     logi("Battery Service attempting an attachment to GATT conn "GATTHANDLEFMT"\n", GATTHANDLECNV(gattConn));
-    if (GATT_CLI_STATUS_OK == gattClientUtilFindAndTraversePrimaryService(gattConn, &battSvcUuid, 0, gattSvcBatteryAttachServiceTraversalCbk))
+    if (GATT_CLI_STATUS_OK == gattClientUtilFindAndTraversePrimaryService(NULL, gattConn, &battSvcUuid, 0, gattSvcBatteryAttachServiceTraversalCbk))
         return svcConn;
 
     logw("Failed to start the GATT service search\n");
