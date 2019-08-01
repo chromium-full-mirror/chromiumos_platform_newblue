@@ -167,6 +167,7 @@ struct smPairStateChange {
     SmPairState pairState;
     SmPairErr pairErr;
     struct bt_addr peerAddr;
+    struct bt_addr peerIdentityAddr;
 };
 
 struct smPasskeyDisplay {
@@ -210,6 +211,7 @@ struct smKnownDevNode {
     char                  *name;
     struct bt_addr        addr;
     bool                  isPaired;
+    struct bt_addr        identityAddr;
 };
 
 struct smKey {

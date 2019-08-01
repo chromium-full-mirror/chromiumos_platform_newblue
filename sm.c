@@ -314,6 +314,7 @@ struct smNotifWork {
             struct bt_addr addr;
             SmPairState state;
             SmPairErr err;
+            struct bt_addr identityAddr;
         } pairStateChg;
         struct {
             struct bt_addr addr;
@@ -366,6 +367,7 @@ static void* smNotifWorker(void *unused)
             pairStateChg.peerAddr = work->pairStateChg.addr;
             pairStateChg.pairState = work->pairStateChg.state;
             pairStateChg.pairErr = work->pairStateChg.err;
+            pairStateChg.peerIdentityAddr = work->pairStateChg.identityAddr;
             multiNotifNotify(mPairStateObservers, &pairStateChg);
             break;
         case SM_WORK_NOTIFY_PASSKEY_DISPLAY:
@@ -2846,6 +2848,10 @@ static void smNotifyPairStateObserver(const struct bt_addr *addr, SmPairState st
     work->pairStateChg.addr = *addr;
     work->pairStateChg.state = state;
     work->pairStateChg.err = err;
+    // Return identity address to the observer
+    if (state == SM_PAIR_STATE_PAIRED) {
+        persistGetDevOtherAddr(addr, PERSIST_ADDRESS_TYPE_IDENTITY, &work->pairStateChg.identityAddr);
+    }
 
     if (!workQueuePut(mNotifWork, work)) {
         loge("Failed to enqueue SM work for passkey display\n");
@@ -3379,6 +3385,9 @@ struct smKnownDevNode* smGetKnownDevices()
     struct smKnownDevNode *n = knownDevices.head;
     while (n) {
         n->isPaired = smIsPaired(NULL, NULL, &n->addr);
+        if (n->isPaired) {
+            persistGetDevOtherAddr(&n->addr, PERSIST_ADDRESS_TYPE_IDENTITY, &n->identityAddr);
+        }
         n = n->next;
     }
 
