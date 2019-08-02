@@ -73,7 +73,8 @@ struct persistKey {
 #define PERS_NAME_NUM                    0x0000000b /* type: PERS_TYPE_ARRAY of 2 elems {PERS_NAME_NUM_NAME, PERS_NAME_NUM_VAL} */
 #define PERS_NAME_NUM_NAME               0x0000000c /* type: PERS_TYPE_UINT, size: 1 */
 #define PERS_NAME_NUM_VAL                0x0000000d /* type: PERS_TYPE_UINT, size: 8 */
-
+#define PERS_NAME_IDENTITY_ADDR          0x0000000e /* type: PERS_TYPE_BT_ADDR */
+#define PERS_NAME_LATEST_ADDR            0x0000000f /* type: PERS_TYPE_BT_ADDR */
 
 /* types */
 #define PERS_TYPE_UINT                   0x00000001
@@ -82,9 +83,10 @@ struct persistKey {
 #define PERS_TYPE_BT_ADDR                0x00000004
 #define PERS_TYPE_ARRAY                  0x00000005
 
-
 #define MAX_DEVICE_AGE                   5 * 60 * 1000 /* Maximum device age before getting garbage collected (5 minutes) */
 
+#define IDENTITY_ADDR_TYPE_PUBLIC        0
+#define IDENTITY_ADDR_TYPE_STATIC_RANDOM 1
 
 static pthread_mutex_t mLock = PTHREAD_MUTEX_INITIALIZER;
 static struct persistProp *mPropsHead = NULL;
@@ -839,7 +841,7 @@ uint32_t persistGetDeviceName(void* buf)
 /*
  * FUNCTION: persistSetPropInList
  * USE:      Set a property in a given property list
- * PARAMS:   headP - head of lsit stored here
+ * PARAMS:   headP - head of list stored here
  *           tailP- tail of list stored here
  *           name - name of the property
  *           type - type of the property
@@ -1662,6 +1664,180 @@ bool persistDelDevNumbers(const struct bt_addr *addr)
 }
 
 /*
+ * FUNCTION: getAddrPersistenceNameFromType
+ * USE:      get the persistence name for an address from it's type
+ * PARAMS:   addrType - the address's type
+ *           persistName - the persistence name returned
+ * RETURN:   success
+ * NOTES:
+ */
+static bool getAddrPersistenceNameFromType(uint8_t addrType, uint8_t *persistName) {
+    switch(addrType) {
+        case PERSIST_ADDRESS_TYPE_IDENTITY:
+            *persistName = PERS_NAME_IDENTITY_ADDR;
+            break;
+        case PERSIST_ADDRESS_TYPE_LATEST:
+            *persistName = PERS_NAME_LATEST_ADDR;
+            break;
+        default:
+            return false;
+    }
+
+    return true;
+}
+
+/*
+ * FUNCTION: isAddressPersistenceValid
+ * USE:      Check whether the persistence of the address type is valid
+ * PARAMS:   addr - the address of the device or NULL for ourselves
+ *           addrType - address type
+ *           persistName - the address persistence name returned if valid
+ * RETURN:   success
+ * NOTES:
+ */
+static bool isAddressPersistenceValid(const struct bt_addr *addr, uint8_t addrType, uint8_t *persistName) {
+    if (!addr && addrType != PERSIST_ADDRESS_TYPE_IDENTITY) {
+        logw("Only identity address is supported for local device\n");
+        return false;
+    }
+    if (!getAddrPersistenceNameFromType(addrType, persistName)) {
+        logw("Failed to find address persistence name for the given device -> abandonning address operation\n");
+        return false;
+    }
+
+    return true;
+}
+
+/*
+ * FUNCTION: persistAddDevOtherAddr
+ * USE:      Add the address of the given type
+ * PARAMS:   addr - the address of the device or NULL for ourselves
+ *           addrType - address type
+ *           otherAddr - the address to add
+ * RETURN:   success
+ * NOTES:    the existing address is overwritten
+ */
+bool persistAddDevOtherAddr(const struct bt_addr *addr, uint8_t addrType, const struct bt_addr *otherAddr)
+{
+    struct persistProp **head;
+    struct persistProp **tail;
+    bool ret = false;
+    uint8_t persistName;
+
+    if (!isAddressPersistenceValid(addr, addrType, &persistName)) {
+        return false;
+    }
+    pthread_mutex_lock(&mLock);
+
+    if (!addr) { //self?
+        head = &mPropsHead;
+        tail = &mPropsTail;
+    } else { //someone else?
+        struct persistProp *parent = persistAddKnownDevInt(addr, NULL, NULL, false, NULL);
+        if (!parent) {
+            logw("Failed to find address parent for the given device -> abandonning address addition\n");
+            goto out;
+        }
+        head = &((struct persistArrayInRam*)(parent + 1))->head;
+        tail = &((struct persistArrayInRam*)(parent + 1))->tail;
+    }
+
+    ret = persistSetPropInList(head, tail, persistName, PERS_TYPE_BT_ADDR, otherAddr, sizeof(struct bt_addr), true);
+
+out:
+    pthread_mutex_unlock(&mLock);
+    persistStore();
+    return ret;
+}
+
+/*
+ * FUNCTION: persistGetDevOtherAddr
+ * USE:      Get the address of the given type
+ * PARAMS:   addr - the address of the device or NULL for ourselves
+ *           addrType - address type
+ *           otherAddr - the address to return
+ * RETURN:   success
+ * NOTES:
+ */
+bool persistGetDevOtherAddr(const struct bt_addr *addr, uint8_t addrType, struct bt_addr *otherAddr)
+{
+    struct persistProp *head;
+    bool ret = false;
+    uint8_t persistName;
+
+    if (!isAddressPersistenceValid(addr, addrType, &persistName)) {
+        return false;
+    }
+
+    pthread_mutex_lock(&mLock);
+
+    if (!addr) { //self?
+        head = mPropsHead;
+    } else { //someone else?
+        struct persistProp *parent = persistAddKnownDevInt(addr, NULL, NULL, false, NULL);
+        if (!parent) {
+            logw("Failed to find address parent for the given device -> abandonning address search\n");
+            goto out;
+        }
+        head = ((struct persistArrayInRam*)(parent + 1))->head;
+    }
+
+    struct persistProp *addrProp = persistPropFind(head, persistName, PERS_TYPE_BT_ADDR);
+    if (!addrProp)
+        goto out;
+
+    memcpy(otherAddr, (struct bt_addr*)(addrProp + 1), sizeof(struct bt_addr));
+    ret = true;
+out:
+    pthread_mutex_unlock(&mLock);
+    return ret;
+}
+
+/*
+ * FUNCTION: persistDelDevOtherAddr
+ * USE:      Delete the address of the given type
+ * PARAMS:   addr - the address of the device
+ *           addrType - address type
+ * RETURN:   success
+ * NOTES:
+ */
+bool persistDelDevOtherAddr(const struct bt_addr *addr, uint8_t addrType)
+{
+    struct persistProp **head;
+    struct persistProp **tail;
+    uint8_t persistName;
+    bool ret = false;
+
+    if (!isAddressPersistenceValid(addr, addrType, &persistName)) {
+        return false;
+    }
+
+    pthread_mutex_lock(&mLock);
+
+    if (!addr) { //self?
+        head = &mPropsHead;
+        tail = &mPropsTail;
+    } else { //someone else?
+        struct persistProp *parent = persistAddKnownDevInt(addr, NULL, NULL, false, NULL);
+        if (!parent) {
+            logw("Failed to find address parent for the given device -> abandonning address deletion\n");
+            goto out;
+        }
+        head = &((struct persistArrayInRam*)(parent + 1))->head;
+        tail = &((struct persistArrayInRam*)(parent + 1))->tail;
+    }
+    struct persistProp *addrProp = persistPropFind(*head, persistName, PERS_TYPE_BT_ADDR);
+    if (!addrProp)
+        goto out;
+    persistPropDelete(head, tail, addrProp);
+    ret = true;
+
+out:
+    pthread_mutex_unlock(&mLock);
+    return ret;
+}
+
+/*
  * FUNCTION: persistPropNameToString
  * USE:      Return the string representation of a property name
  * PARAMS:   name - the property name enum
@@ -1697,6 +1873,8 @@ char* persistPropNameToString(uint32_t name)
             return "Number Name";
         case PERS_NAME_NUM_VAL:
             return "Number Value";
+        case PERS_NAME_IDENTITY_ADDR:
+            return "Identity Addr";
     }
     return "Unknown Property";
 }
@@ -1771,6 +1949,24 @@ char* persistBtAddrTypeToString(uint8_t type)
             return "LE random";
     }
     return "unknown address type";
+}
+
+/*
+ * FUNCTION: persistIdentityAddrTypeToString
+ * USE:      Return the string representation of a identity address type
+ * PARAMS:   type - the identity address type enum
+ * RETURN:   the string representation
+ * NOTES:
+ */
+char* persistIdentityAddrTypeToString(uint8_t type)
+{
+    switch (type) {
+        case IDENTITY_ADDR_TYPE_PUBLIC:
+            return "public";
+        case IDENTITY_ADDR_TYPE_STATIC_RANDOM:
+            return "static random";
+    }
+    return "unknown identity address type";
 }
 
 /*
@@ -1869,10 +2065,11 @@ void persistDumpPrintPropValueUint64(int indent, struct persistProp *p)
  * USE:      Print the value of a property of type bt_addr
  * PARAMS:   indent - the number of leading spaces
  *           p - the property
+ *           isIdentityAddress - if this is an identity address
  * RETURN:   NONE
  * NOTES:
  */
-void persistDumpPrintPropValueBtAddr(int indent, struct persistProp *p)
+void persistDumpPrintPropValueBtAddr(int indent, struct persistProp *p, bool isIdentityAddress)
 {
     struct bt_addr *addr = (struct bt_addr*)(p + 1);
     char s[18] = "";
@@ -1880,7 +2077,8 @@ void persistDumpPrintPropValueBtAddr(int indent, struct persistProp *p)
         sprintf(s + strlen(s), i ? ":%02X" : "%02X", addr->addr[6 - i - 1]);
     }
     persistDumpPrintWithIndent(
-            indent, "%s (%s)", s, persistBtAddrTypeToString(addr->type));
+            indent, "%s (%s)", s, isIdentityAddress ? persistIdentityAddrTypeToString(addr->type) :
+            persistBtAddrTypeToString(addr->type));
 }
 
 /*
@@ -1956,7 +2154,7 @@ void persistDumpPrintPropValue(int indent, struct persistProp *p)
             persistDumpPrintPropValueKey(indent, p);
             break;
         case PERS_NAME_BT_ADDR:
-            persistDumpPrintPropValueBtAddr(indent, p);
+            persistDumpPrintPropValueBtAddr(indent, p, false);
             break;
         case PERS_NAME_LAST_SEEN:
             persistDumpPrintPropValueUint64(indent, p);
@@ -1966,6 +2164,9 @@ void persistDumpPrintPropValue(int indent, struct persistProp *p)
             break;
         case PERS_NAME_NUM_VAL:
             persistDumpPrintPropValueUint64(indent, p);
+            break;
+        case PERS_NAME_IDENTITY_ADDR:
+            persistDumpPrintPropValueBtAddr(indent, p, true);
             break;
     }
 }

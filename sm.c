@@ -1820,8 +1820,13 @@ static void smRx(struct smInstance *inst, sg packet)
             break;
         }
 
-        /* TODO(mcchou): store the address as a property in persist, note that according to spec,
-         * the address is considered valid after reconnecting using previously-exchanged LTK */
+        struct bt_addr identityAddress;
+        identityAddress.type = addrInfo.addrType;
+        memcpy(identityAddress.addr, addrInfo.mac, sizeof(identityAddress.addr));
+        logd("Saving device identity address: %u "MACFMT"\n", identityAddress.type, MACCONV(identityAddress.addr));
+        if (!persistAddDevOtherAddr(&inst->peerAddr, PERSIST_ADDRESS_TYPE_IDENTITY, &identityAddress))
+            logw("Failed to save device identity address\n");
+
         smTransitPhase(inst, SM_PHASE_ID_ADDR_INFO_RECEIVED);
 
         if (!(inst->peerKeyDistr & SM_KEY_DISTR_CSRK)) {

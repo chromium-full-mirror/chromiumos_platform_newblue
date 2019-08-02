@@ -341,4 +341,76 @@ TEST_F(PersistTestSuite, EnumerateDevicesForNumAndKey) {
     ASSERT_TRUE(cbkData.numFound);
     ASSERT_EQ(memcmp(&cbkData.addrFound, getDevOneAddr(), sizeof(struct bt_addr)), 0);
 }
+
+TEST_F(PersistTestSuite, LocalDeviceAddressGetAddDel) {
+    struct bt_addr addr1 = {{0x11, 0x22, 0x33, 0x44, 0x55, 0x66}, 0x00};
+    struct bt_addr addr2 = {{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}, 0x01};
+    struct bt_addr addrRet;
+
+    // add the identity address
+    EXPECT_FALSE(persistGetDevOtherAddr(NULL, PERSIST_ADDRESS_TYPE_IDENTITY, &addrRet));
+    EXPECT_TRUE(persistAddDevOtherAddr(NULL, PERSIST_ADDRESS_TYPE_IDENTITY, &addr1));
+    EXPECT_TRUE(persistGetDevOtherAddr(NULL, PERSIST_ADDRESS_TYPE_IDENTITY, &addrRet));
+    EXPECT_EQ(memcmp(&addr1, &addrRet, sizeof(struct bt_addr)), 0);
+
+    // replace the identity address
+    EXPECT_TRUE(persistAddDevOtherAddr(NULL, PERSIST_ADDRESS_TYPE_IDENTITY, &addr2));
+    EXPECT_TRUE(persistGetDevOtherAddr(NULL, PERSIST_ADDRESS_TYPE_IDENTITY, &addrRet));
+    EXPECT_EQ(memcmp(&addr2, &addrRet, sizeof(struct bt_addr)), 0);
+
+    // delete the identity address
+    EXPECT_TRUE(persistDelDevOtherAddr(NULL, PERSIST_ADDRESS_TYPE_IDENTITY));
+    EXPECT_FALSE(persistGetDevOtherAddr(NULL, PERSIST_ADDRESS_TYPE_IDENTITY, &addrRet));
+
+    // local device doesn't support other address types
+    EXPECT_FALSE(persistAddDevOtherAddr(NULL, PERSIST_ADDRESS_TYPE_LATEST, &addr1));
+    EXPECT_FALSE(persistGetDevOtherAddr(NULL, PERSIST_ADDRESS_TYPE_LATEST, &addrRet));
+    EXPECT_FALSE(persistDelDevOtherAddr(NULL, PERSIST_ADDRESS_TYPE_LATEST));
+}
+
+TEST_F(PersistTestSuite, PeerDeviceAddressGetAddDel) {
+    uint64_t randNumOne = 12345678;
+    uint64_t num = 0;
+    uint8_t numType = PERSIST_NUM_TYPE_SM_RANDOM;
+    struct bt_addr addr1 = {{0x11, 0x22, 0x33, 0x44, 0x55, 0x66}, 0x00};
+    struct bt_addr addr2 = {{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}, 0x01};
+    struct bt_addr addrRet;
+
+    // add the identity address
+    EXPECT_FALSE(persistGetDevOtherAddr(getDevOneAddr(), PERSIST_ADDRESS_TYPE_IDENTITY, &addrRet));
+
+    EXPECT_TRUE(persistAddDevOtherAddr(getDevOneAddr(), PERSIST_ADDRESS_TYPE_IDENTITY, &addr1));
+    EXPECT_TRUE(persistGetDevOtherAddr(getDevOneAddr(), PERSIST_ADDRESS_TYPE_IDENTITY, &addrRet));
+    EXPECT_EQ(memcmp(&addr1, &addrRet, sizeof(struct bt_addr)), 0);
+
+    // verify adding number still works
+    EXPECT_TRUE(persistAddDevNumber(getDevOneAddr(), numType, randNumOne));
+    EXPECT_TRUE(persistGetDevNumber(getDevOneAddr(), numType, &num));
+    EXPECT_EQ(num, randNumOne);
+
+    // replace the identity address
+    EXPECT_TRUE(persistAddDevOtherAddr(getDevOneAddr(), PERSIST_ADDRESS_TYPE_IDENTITY, &addr2));
+    EXPECT_TRUE(persistGetDevOtherAddr(getDevOneAddr(), PERSIST_ADDRESS_TYPE_IDENTITY, &addrRet));
+    EXPECT_EQ(memcmp(&addr2, &addrRet, sizeof(struct bt_addr)), 0);
+
+    // verify the number previously added still exists
+    EXPECT_TRUE(persistGetDevNumber(getDevOneAddr(), numType, &num));
+    EXPECT_EQ(num, randNumOne);
+
+    // delete the identity address
+    EXPECT_TRUE(persistDelDevOtherAddr(getDevOneAddr(), PERSIST_ADDRESS_TYPE_IDENTITY));
+    EXPECT_FALSE(persistGetDevOtherAddr(getDevOneAddr(), PERSIST_ADDRESS_TYPE_IDENTITY, &addrRet));
+
+    // verify the number previously added still exists
+    EXPECT_TRUE(persistGetDevNumber(getDevOneAddr(), numType, &num));
+    EXPECT_EQ(num, randNumOne);
+
+    // delete device one then verify the identity address addition will add the device
+    persistDelKnownDev(getDevOneAddr());
+    EXPECT_FALSE(persistGetDevOtherAddr(getDevOneAddr(), PERSIST_ADDRESS_TYPE_IDENTITY, &addrRet));
+    EXPECT_FALSE(persistDelDevOtherAddr(getDevOneAddr(), PERSIST_ADDRESS_TYPE_IDENTITY));
+    EXPECT_TRUE(persistAddDevOtherAddr(getDevOneAddr(), PERSIST_ADDRESS_TYPE_IDENTITY, &addr1));
+    EXPECT_TRUE(persistGetDevOtherAddr(getDevOneAddr(), PERSIST_ADDRESS_TYPE_IDENTITY, &addrRet));
+    EXPECT_EQ(memcmp(&addr1, &addrRet, sizeof(struct bt_addr)), 0);
+}
 }  // namespace

@@ -28,6 +28,10 @@
 #define PERSIST_NUM_TYPE_SM_MITM_PROTECT 4 /* MITM protection provided by the stored LTKs */
 #define PERSIST_NUM_TYPE_SM_BOND         5 /* bonding relationship with the peer device */
 
+//address types
+#define PERSIST_ADDRESS_TYPE_IDENTITY    0 /* identity address given by peer device */
+#define PERSIST_ADDRESS_TYPE_LATEST      1 /* latest address advertised by known peer device */
+
 /* callbacks are called with internal mutex held - do not call back into persist funcs or wait too
  * long! Return true go on enumerating. False to stop. */
 typedef bool (*persistKnownDevEnumeratorF)(void *cbkData, const struct bt_addr *addr,
@@ -63,6 +67,13 @@ bool persistDelDevKeys(const struct bt_addr *addr);                             
 bool persistAddDevNumber(const struct bt_addr *addr, uint8_t numType, uint64_t num);    //addr = NULL for our own numbers
 bool persistGetDevNumber(const struct bt_addr *addr, uint8_t numType, uint64_t *num);   //addr = NULL for our own numbers
 bool persistDelDevNumbers(const struct bt_addr *addr);                                  //addr = NULL for our own numbers
+
+//addr = NULL for our own other address in which case only PERSIST_ADDRESS_TYPE_IDENTITY is supported
+bool persistAddDevOtherAddr(const struct bt_addr *addr, uint8_t addrType, const struct bt_addr *otherAddr);
+//addr = NULL for our own other address in which case only PERSIST_ADDRESS_TYPE_IDENTITY is supported
+bool persistGetDevOtherAddr(const struct bt_addr *addr, uint8_t addrType, struct bt_addr *otherAddr);
+//addr = NULL for our own other address in which case only PERSIST_ADDRESS_TYPE_IDENTITY is supported
+bool persistDelDevOtherAddr(const struct bt_addr *addr, uint8_t addrType);
 
 
 #endif
