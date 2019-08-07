@@ -13,6 +13,8 @@
 
 NEWBLUE_BEGIN_DECLS
 
+// Refer to include/uapi/linux/hid.h in kernel.
+#define MAX_DEVICE_NAME_SIZE 128
 
 //uuid of service
 #define BTLE_UUID_HID_SERVICE                          0x1812  // org.bluetooth.service.human_interface_device
@@ -40,13 +42,14 @@ typedef void (*BtleHidReportRxCbk)(ble_hid_conn_t hidId, int32_t reportId, sg da
 void btleHidInit(BtleHidConnStateCbk stateCbk, BtleHidReportRxCbk rxCbk) NEWBLUE_EXPORT;
 
 //attach/detach
-ble_hid_conn_t btleHidAttach(gatt_client_conn_t hidId) NEWBLUE_EXPORT;
+ble_hid_conn_t btleHidAttach(gatt_client_conn_t hidId, const char *deviceName) NEWBLUE_EXPORT;
 bool btleHidDetach(ble_hid_conn_t hidId) NEWBLUE_EXPORT;
 bool btleHidDetachFromGatt(gatt_client_conn_t hidId) NEWBLUE_EXPORT;
 
 //descriptors & info
 bool btleHidGetReportDescriptors(ble_hid_conn_t hidId, const void **descriptorDataP, uint32_t *descriptorLenP) NEWBLUE_EXPORT;
 bool btleHidGetHidInfo(ble_hid_conn_t hidId, uint16_t *hidVerP, uint8_t *countryP, uint8_t *flagsP) NEWBLUE_EXPORT;
+bool btleHidGetHidName(ble_hid_conn_t hidId, char *hidName) NEWBLUE_EXPORT;
 
 //reports
 bool btleHidWriteReport(ble_hid_conn_t hidId, int32_t reportId, sg data) NEWBLUE_EXPORT;

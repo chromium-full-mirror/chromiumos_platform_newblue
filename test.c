@@ -587,7 +587,7 @@ static void gattConnectedCbkHidTest(void *data, gatt_client_conn_t conn, uint8_t
     logi("GATT for HID connect status: %u\n", status);
 
     if (status == GATT_CLI_STATUS_OK && !mHidConn) {
-        mHidConn = btleHidAttach(conn);
+        mHidConn = btleHidAttach(conn, NULL);
         mBattSvcCon = gattSvcBattAttach(conn);
         mMiscInfoSvcCon = gattSvcMiscInfoAttach(conn);
     }

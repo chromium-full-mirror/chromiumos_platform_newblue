@@ -4,6 +4,7 @@
  * found in the LICENSE file.
  */
 #include <stdlib.h>
+#include <string.h>
 #include "btleHid.h"
 #include "gatt.h"
 #include "util.h"
@@ -71,6 +72,7 @@ struct HidConn {
 
     ble_hid_conn_t id;
     gatt_client_conn_t gattConn;
+    uint8_t deviceName[MAX_DEVICE_NAME_SIZE];
     uint8_t state;
     uint32_t substate; // intra-state state tracking
 
@@ -1090,7 +1092,7 @@ out_unlock:
  * RETURN:   hid connection id or zero on immediate failure
  * NOTES:    expect state callback with details
  */
-ble_hid_conn_t btleHidAttach(gatt_client_conn_t gattConn)
+ble_hid_conn_t btleHidAttach(gatt_client_conn_t gattConn, const char *deviceName)
 {
     const struct uuid hidUuid = BT_UUID_STATIC_16(BTLE_UUID_HID_SERVICE);
     ble_hid_conn_t hidConn = 0;
@@ -1109,6 +1111,7 @@ ble_hid_conn_t btleHidAttach(gatt_client_conn_t gattConn)
         return 0;
     }
 
+    strncpy((char *)hid->deviceName, deviceName, MAX_DEVICE_NAME_SIZE);
     hid->id = hidConn = uniqGetNext();
     hid->gattConn = gattConn;
     hid->state = BTLE_HID_CONN_STATE_GATT_DISCOVERY;
@@ -1192,6 +1195,37 @@ bool btleHidGetHidInfo(ble_hid_conn_t hidId, uint16_t *hidVerP, uint8_t *country
             *countryP = utilGetLE8(hid->hidInfo.chrData->data + 2);
         if (flagsP)
             *flagsP = utilGetLE8(hid->hidInfo.chrData->data + 3);
+        ret = true;
+    }
+    pthread_mutex_unlock(&mHidLock);
+
+    return ret;
+}
+
+/*
+ * FUNCTION: btleHidGetHidName
+ * USE:      Get HID name from a HID device
+ * PARAMS:   hidId - HID device handle
+ *           hidName - hid device name stored here
+ * RETURN:   true on success
+ * NOTES:
+ */
+bool btleHidGetHidName(ble_hid_conn_t hidId, char* hidName) {
+    struct HidConn* hid;
+    bool ret = false;
+
+    pthread_mutex_lock(&mHidLock);
+    hid = hidFindConnById(hidId);
+    if (!hid)
+        logw("Attempting to get HID name from a nonexistent HID device\n");
+    else if (hid->state != BTLE_HID_CONN_STATE_UP)
+        logw("Attempting to get HID name from a HID device in state %u\n",
+             hid->state);
+    else {
+        if (strlen((char*) hid->deviceName))
+            strncpy(hidName, (char*) hid->deviceName, MAX_DEVICE_NAME_SIZE);
+        else
+            strncpy(hidName, (char*) "newblue-uhid-device", MAX_DEVICE_NAME_SIZE);
         ret = true;
     }
     pthread_mutex_unlock(&mHidLock);

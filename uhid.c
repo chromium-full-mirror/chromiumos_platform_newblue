@@ -22,7 +22,6 @@
 
 // Refer to include/uapi/linux/hid.h in kernel.
 #define HID_MAX_DESCRIPTOR_SIZE 4096
-#define MAX_DEVICE_NAME_SIZE 128
 
 // Define report descriptor items.
 // Refer to http://www.usb.org/developers/hidpage/HID1_11.pdf
@@ -271,6 +270,7 @@ static bool extractBtleUhidDeviceInfo(struct UhidDeviceInfo *devInfo, int fd, bl
     devInfo->hidId = hidId;
     devInfo->bus = BUS_USB;
     devInfo->next = NULL;
+    btleHidGetHidName(hidId, (char*) devInfo->name);
     btleHidGetHidInfo(hidId, (uint16_t *)&devInfo->version, (uint8_t *)&devInfo->country, &devInfo->flags);
     btleHidGetReportDescriptors(hidId, (const void **)&rdData, &rdSize);
 
@@ -292,8 +292,7 @@ static bool extractBtleUhidDeviceInfo(struct UhidDeviceInfo *devInfo, int fd, bl
 
     devInfo->reportIdPresent = reportIdPresent;
 
-    // TODO: Extract these data from remote device.
-    strncpy((char *)devInfo->name, (char *)"newblue-uhid-device", MAX_DEVICE_NAME_SIZE);
+    // TODO(b:139126336): Extract Product Related Information from HID Descriptor
     devInfo->vendor = 0x00E0;   // Google
     devInfo->product = 0x0000;
     return true;
