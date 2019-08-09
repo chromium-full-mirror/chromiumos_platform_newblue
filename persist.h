@@ -30,7 +30,6 @@
 
 //address types
 #define PERSIST_ADDRESS_TYPE_IDENTITY    0 /* identity address given by peer device */
-#define PERSIST_ADDRESS_TYPE_LATEST      1 /* latest address advertised by known peer device */
 
 /* callbacks are called with internal mutex held - do not call back into persist funcs or wait too
  * long! Return true go on enumerating. False to stop. */

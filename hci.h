@@ -160,7 +160,7 @@ typedef uniq_t hci_adv_set_t;
 
 /* various callbacks - it is universally a bad idea to call back into hci from these, except otherwise noted funcs */
 /* rssi = 127 -> no RSSI */
-typedef void (*hciDeviceDiscoveredLeCbk)(void *cbkData, const struct bt_addr *addr, int8_t rssi, uint8_t replyType, const void *eir, uint8_t eirLen);
+typedef void (*hciDeviceDiscoveredLeCbk)(void *cbkData, const struct bt_addr *addr, const struct bt_addr *resolvedAddr, int8_t rssi, uint8_t replyType, const void *eir, uint8_t eirLen);
 
 typedef void (*hciOpDoneCbk)(void *cbkData, uint8_t status /* 0 = good */);
 
@@ -208,10 +208,6 @@ bool hciLeConnGetInfo(hci_conn_t aclConn, bool *masterP, uint64_t *peerFtrsP, ui
 bool hciLeEncryptConn(hci_conn_t aclConn, uint64_t rand, uint16_t ediv, const uint8_t *key);
 /* Provide LTK for a connection for which an LTK request had arrived. pass NULL to say "no" */
 bool hciLeProvideLtk(hci_conn_t aclConn, const uint8_t *key);
-
-
-/* misc */
-void hciInquiryUpdatePersistDeviceDb(const struct bt_addr *addr, const uint32_t *devClsP, const void *eir, uint8_t eirLen);
 
 /* advertising As many sets as you can can be created. Only a certain number may be on at once (hw dependent) */
 bool hciAdvIsPowerLevelSettingSupported(void) NEWBLUE_EXPORT;

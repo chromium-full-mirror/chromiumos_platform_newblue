@@ -31,6 +31,7 @@
 #include "hci.h"
 #include "log.h"
 #include "mt.h"
+#include "sm.h"
 
 
 #define MAX_FTR_PAGES         4 /* we'll not get any more than this */
@@ -159,6 +160,7 @@ struct hciCbkWorkItem {
 
         struct {
             struct bt_addr                addr;
+            struct bt_addr                resolvedAddr;
             uint8_t                       advType;
             int8_t                        rssi;
             uint8_t                       advLen;
@@ -1067,7 +1069,7 @@ static void* hciCbkWorker(void *unused)
             w->simple.cbk(w->simple.cbkData1, w->simple.cbkData2, w->simple.stackGoingDown, w->simple.haveEvt ? (struct hciEvtHdr*)(w + 1) : NULL);
             break;
         case CBK_WORK_LE_DISC_DEV:
-            mDiscoverLeCbk(mDiscoverLeData, &w->leDev.addr, w->leDev.rssi, w->leDev.advType, w->leDev.adv, w->leDev.advLen);
+            mDiscoverLeCbk(mDiscoverLeData, &w->leDev.addr, &w->leDev.resolvedAddr, w->leDev.rssi, w->leDev.advType, w->leDev.adv, w->leDev.advLen);
             break;
         case CBK_WORK_FLUSH:
             sem_post(w->flush.sem);
@@ -2181,14 +2183,16 @@ static bool hciCmdSubmitSimpleWithCompleteAndStatusSync(uint8_t ogf, uint16_t oc
 /*
  * FUNCTION: hciInquiryUpdatePersistDeviceDb
  * USE:      Update persistent "seen devices" DB with EIR data
- * PARAMS:   addr - the address of the remote device
+ * PARAMS:   persistDevAddr - the device address that we use to persist
+ *           latestAddr - the latest advertised address of the remote device
  *           devClsP - device class or NULL if not known
  *           eir - the provided EIR data (if any)
  *           eirLen - size of the above buffer
  * RETURN:   NONE
  * NOTES:
  */
-void hciInquiryUpdatePersistDeviceDb(const struct bt_addr *addr, const uint32_t *devClsP, const void *eir, uint8_t eirLen)
+static void hciInquiryUpdatePersistDeviceDb(const struct bt_addr *persistDevAddr, const struct bt_addr *latestAddr,
+    const uint32_t *devClsP, const void *eir, uint8_t eirLen)
 {
     const uint8_t *name = NULL;
     uint32_t nameLen = 0;
@@ -2218,7 +2222,7 @@ void hciInquiryUpdatePersistDeviceDb(const struct bt_addr *addr, const uint32_t 
         }
     }
 
-    persistAddKnownDev(addr, name, name ? &nameLen : NULL, nameIsFull, devClsP);
+    persistAddKnownDev(persistDevAddr, name, name ? &nameLen : NULL, nameIsFull, devClsP);
 }
 
 /*
@@ -2234,11 +2238,13 @@ void hciInquiryUpdatePersistDeviceDb(const struct bt_addr *addr, const uint32_t 
  */
 static void hciInquiryEvtLeSingleItem(const struct bt_addr *addr, uint8_t advType, int8_t rssi, const void *advData, uint8_t advDataLen)
 {
-    struct hciCbkWorkItem *w = (struct hciCbkWorkItem*)malloc(sizeof(struct hciCbkWorkItem) + advDataLen);
+    struct hciCbkWorkItem *w = (struct hciCbkWorkItem*)calloc(1, sizeof(struct hciCbkWorkItem) + advDataLen);
     if (!w) {
         logw("Dropping LE discovered item due to memory error\n");
         return;
     }
+
+    const struct bt_addr *persistDevAddr;
 
     w->cbkWorkItemType = CBK_WORK_LE_DISC_DEV;
     memcpy(&w->leDev.addr, addr, sizeof(w->leDev.addr));
@@ -2247,7 +2253,14 @@ static void hciInquiryEvtLeSingleItem(const struct bt_addr *addr, uint8_t advTyp
     w->leDev.advLen = advDataLen;
     w->leDev.rssi = rssi;
 
-    hciInquiryUpdatePersistDeviceDb(addr, NULL, advData, advDataLen);
+    if (smResolveAddr(&w->leDev.resolvedAddr, addr)) {
+        logd("Resolved address: "MACFMT"\n", MACCONV(w->leDev.resolvedAddr.addr));
+        persistDevAddr = &w->leDev.resolvedAddr;
+    } else {
+        persistDevAddr = addr;
+    }
+
+    hciInquiryUpdatePersistDeviceDb(persistDevAddr, addr, NULL, advData, advDataLen);
     if (workQueuePut(mCallbackWork, w))
         return;
 

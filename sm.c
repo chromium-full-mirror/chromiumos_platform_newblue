@@ -278,7 +278,6 @@ static void smNotifyPasskeyDisplayObserver(const struct bt_addr *addr, bool vali
                                            uint32_t passkey);
 static void smNotifyPasskeyRequestObserver(const struct bt_addr *addr, bool valid);
 static uint32_t smAddressHash(uint32_t r, const uint8_t *key);
-static bool smResolveAddr(struct bt_addr *addr, const struct bt_addr *peerAddr);
 static bool smIsLtkBlocked(const struct smKey *ltk);
 
 /* sendQ for packet transmissions */
@@ -1949,8 +1948,7 @@ static void smRx(struct smInstance *inst, sg packet)
             break;
         }
 
-        if ((inst->phase == SM_PHASE_DONE || inst->phase == SM_PHASE_LTK_ENCRYPTED) &&
-            inst->isInitiator) {
+        if (inst->phase == SM_PHASE_DONE) {
             if (!smLtkEncrypt(inst)) {
                 pairErr = SM_PAIR_ERR_ENCR_CONN;
                 break;
@@ -3462,7 +3460,7 @@ static bool smIrkEnumF(void *cbkData, const struct bt_addr *addr, const void *na
  * RETURN:   true if peerAddr can be resolved with a stored IRK and addr is valid; false otherwise
  * NOTES:
  */
-static bool smResolveAddr(struct bt_addr *addr, const struct bt_addr *peerAddr)
+bool smResolveAddr(struct bt_addr *addr, const struct bt_addr *peerAddr)
 {
     struct smIrkEnumCbkData enumData;
     uint8_t keyType = KEY_TYPE_IRK;
@@ -3475,7 +3473,7 @@ static bool smResolveAddr(struct bt_addr *addr, const struct bt_addr *peerAddr)
     enumData.wasFound = false;
 
     /* enumerate DB to find the peer address with IRK which can resolve peerAddr */
-    persistEnumKnownDevs(smIrkEnumF, (void *)&enumData, NULL, &keyType);
+    persistEnumKnownDevs(smIrkEnumF, (void *)&enumData, &keyType, NULL);
     if (!enumData.wasFound) {
         logi("No matching IRK\n");
         goto out;

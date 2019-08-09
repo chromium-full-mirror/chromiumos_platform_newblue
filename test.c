@@ -82,7 +82,7 @@ static void testHciScoRxCbk(hci_conn_t aclConn, const void *data, uint8_t len, u
    logi("TEST SCO RX %ub, loss: %s\n", len, lossAmtStr[lossAmount]);
 }
 
-static void leDiscoveryCbk(void *cbkData, const struct bt_addr *addr, int8_t rssi, uint8_t replyType, const void *eir, uint8_t eirLen)
+static void leDiscoveryCbk(void *cbkData, const struct bt_addr *addr, const struct bt_addr *resolvedAddr, int8_t rssi, uint8_t replyType, const void *eir, uint8_t eirLen)
 {
     struct LeDiscDev **leDevicesP = (struct LeDiscDev**)cbkData, *t;
     char randomAddr = addr->type == BT_ADDR_TYPE_LE_RANDOM;

@@ -361,11 +361,6 @@ TEST_F(PersistTestSuite, LocalDeviceAddressGetAddDel) {
     // delete the identity address
     EXPECT_TRUE(persistDelDevOtherAddr(NULL, PERSIST_ADDRESS_TYPE_IDENTITY));
     EXPECT_FALSE(persistGetDevOtherAddr(NULL, PERSIST_ADDRESS_TYPE_IDENTITY, &addrRet));
-
-    // local device doesn't support other address types
-    EXPECT_FALSE(persistAddDevOtherAddr(NULL, PERSIST_ADDRESS_TYPE_LATEST, &addr1));
-    EXPECT_FALSE(persistGetDevOtherAddr(NULL, PERSIST_ADDRESS_TYPE_LATEST, &addrRet));
-    EXPECT_FALSE(persistDelDevOtherAddr(NULL, PERSIST_ADDRESS_TYPE_LATEST));
 }
 
 TEST_F(PersistTestSuite, PeerDeviceAddressGetAddDel) {

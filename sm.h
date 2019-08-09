@@ -283,6 +283,8 @@ void smProvidePasskey(const struct bt_addr *addr, bool provided, uint32_t passke
 struct smKnownDevNode* smGetKnownDevices() NEWBLUE_EXPORT;
 /* free the list of all known devices */
 void smKnownDevicesFree(struct smKnownDevNode*) NEWBLUE_EXPORT;
+/* resolve the address if it is resolvable */
+bool smResolveAddr(struct bt_addr *addr, const struct bt_addr *peerAddr);
 
 
 /* ONLY FOR UNITTEST PURPOSE */

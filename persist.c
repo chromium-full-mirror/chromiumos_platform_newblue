@@ -74,7 +74,6 @@ struct persistKey {
 #define PERS_NAME_NUM_NAME               0x0000000c /* type: PERS_TYPE_UINT, size: 1 */
 #define PERS_NAME_NUM_VAL                0x0000000d /* type: PERS_TYPE_UINT, size: 8 */
 #define PERS_NAME_IDENTITY_ADDR          0x0000000e /* type: PERS_TYPE_BT_ADDR */
-#define PERS_NAME_LATEST_ADDR            0x0000000f /* type: PERS_TYPE_BT_ADDR */
 
 /* types */
 #define PERS_TYPE_UINT                   0x00000001
@@ -1675,9 +1674,6 @@ static bool getAddrPersistenceNameFromType(uint8_t addrType, uint8_t *persistNam
     switch(addrType) {
         case PERSIST_ADDRESS_TYPE_IDENTITY:
             *persistName = PERS_NAME_IDENTITY_ADDR;
-            break;
-        case PERSIST_ADDRESS_TYPE_LATEST:
-            *persistName = PERS_NAME_LATEST_ADDR;
             break;
         default:
             return false;

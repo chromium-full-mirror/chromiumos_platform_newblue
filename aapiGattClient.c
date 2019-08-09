@@ -74,6 +74,7 @@ static bt_status_t aapiGattClientUnregisterClient(int client_if)
  * USE:      Called on each received LE discovery reply
  * PARAMS:   cbkData - unused
  *           addr - the address we got
+ *           resolvedAddr - unused
  *           rssi - the RSSI
  *           replyType - HCI_ADV_TYPE_* 
  *           eir - the received data
@@ -81,7 +82,7 @@ static bt_status_t aapiGattClientUnregisterClient(int client_if)
  * RETURN:   status
  * NOTES:
  */
-static void aapiGattClientPrvDeviceDiscovered(void *cbkData, const struct bt_addr *addr, int8_t rssi, uint8_t replyType, const void *eir, uint8_t eirLen)
+static void aapiGattClientPrvDeviceDiscovered(void *cbkData, const struct bt_addr *addr, const struct bt_addr *resolvedAddr, int8_t rssi, uint8_t replyType, const void *eir, uint8_t eirLen)
 {
     //XXX: apparently android does nto care about reply type?
     //XXX: device type lost here
