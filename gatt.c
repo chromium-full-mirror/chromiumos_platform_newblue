@@ -2211,7 +2211,7 @@ static bool gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *han
 
         case GATT_INTENT_READ:
             pthread_mutex_unlock(&mGattLock); // see "A NOTE ABOUT LOCKS" above
-            todo->readCbk(todo->connId, todo->clientTrans, todo->handle, GATT_CLI_STATUS_OK, ATT_ERROR_NONE, data);
+            todo->readCbk(todo->userData, todo->connId, todo->clientTrans, todo->handle, GATT_CLI_STATUS_OK, ATT_ERROR_NONE, data);
             pthread_mutex_lock(&mGattLock);
             conn = gattConnFindByL2cConn(to);
             break;
@@ -2407,7 +2407,7 @@ static void gattAttCliError(uniq_t trans, l2c_handle_t to, const uint16_t *handl
             pthread_mutex_unlock(&mGattLock); // see "A NOTE ABOUT LOCKS" above
             // "invalid offset" or "not long" are not error, just EOFs, so we treat them as not errors.
             status = ((*errP == ATT_ERROR_ATTRIBUTE_NOT_LONG || *errP == ATT_ERROR_INVALID_OFFSET) ? GATT_CLI_STATUS_OK : GATT_CLI_STATUS_ERR);
-            todo->readCbk(todo->connId, todo->clientTrans, todo->handle, status, *errP, NULL);
+            todo->readCbk(todo->userData, todo->connId, todo->clientTrans, todo->handle, status, *errP, NULL);
             pthread_mutex_lock(&mGattLock);
             conn = gattConnFindByL2cConn(to);
             break;
@@ -4179,7 +4179,8 @@ static bool gattClientVerifyAuthReq(uint8_t authReq)
 /*
  * FUNCTION: gattClientRead
  * USE:      Read an attribute (usually a characteristic or a descriptor)
- * PARAMS:   conn - the connection id
+ * PARAMS:   userData - caller's data which will be given with the callback
+ *           conn - the connection id
  *           handle - the handle to read
  *           authReq - authentication requirements (// TODO)
  *           offset - offset to start reading at
@@ -4188,7 +4189,7 @@ static bool gattClientVerifyAuthReq(uint8_t authReq)
  * RETURN:   GATT_CLI_STATUS_*
  * NOTES:
  */
-uint8_t gattClientRead(gatt_client_conn_t conn, uint16_t handle, uint8_t authReq, uint16_t offset, uniq_t trans, gattCliReadCbk cbk)
+uint8_t gattClientRead(void* userData, gatt_client_conn_t conn, uint16_t handle, uint8_t authReq, uint16_t offset, uniq_t trans, gattCliReadCbk cbk)
 {
     struct gattCliTodoItem *todo;
 
@@ -4203,6 +4204,7 @@ uint8_t gattClientRead(gatt_client_conn_t conn, uint16_t handle, uint8_t authReq
     if (todo) {
         todo->readCbk = cbk;
         todo->clientTrans = trans;
+        todo->userData = userData;
     }
     pthread_mutex_unlock(&mGattLock);
 
@@ -4943,7 +4945,8 @@ static void gattClientUtilLongReadStructFreeData(struct GattCliUtilLongReadState
 /*
  * FUNCTION: gattClientUtilLongReadReadCbk
  * USE:      Called by GATT code when a reach chunk arrives
- * PARAMS:   conn - the connection id
+ * PARAMS:   userData - our data (unused here)
+ *           conn - the connection id
  *           curTrans - current transaction ID used to look up this long read operation
  *           handle - the handle that was read
  *           status - GATT status of the read
@@ -4952,7 +4955,7 @@ static void gattClientUtilLongReadStructFreeData(struct GattCliUtilLongReadState
  * RETURN:
  * NOTES:
  */
-static void gattClientUtilLongReadReadCbk(gatt_client_conn_t conn, uniq_t curTrans, uint16_t handle, uint8_t status, uint8_t error, sg data)
+static void gattClientUtilLongReadReadCbk(void* userData, gatt_client_conn_t conn, uniq_t curTrans, uint16_t handle, uint8_t status, uint8_t error, sg data)
 {
     struct GattCliUtilLongReadState* st;
 
@@ -5036,7 +5039,7 @@ static uint8_t gattClientUtilLongReadScheduleNextChunk(gatt_client_conn_t conn, 
         ret = GATT_CLI_STATUS_ERR;
     }
     else {
-        ret = gattClientRead(conn, handle, authReq, offset, curTrans, gattClientUtilLongReadReadCbk);
+        ret = gattClientRead(NULL, conn, handle, authReq, offset, curTrans, gattClientUtilLongReadReadCbk);
         if (ret == GATT_CLI_STATUS_OK)
             return GATT_CLI_STATUS_OK;
         logi("GATT util long read: failed to schedule a read: 0x%02x\n", ret);

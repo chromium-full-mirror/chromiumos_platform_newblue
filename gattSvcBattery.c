@@ -217,7 +217,8 @@ static void gattSvcBattAsyncDataArrivedCbk(gatt_client_conn_t gattConn, uint16_t
 /*
  * FUNCTION: gattSvcBattReadReportReadCbk
  * USE:      Called by GATT when our read succeeds or fails
- * PARAMS:   gattConn - a gatt client connection
+ * PARAMS:   userData - our data (unused here)
+ *           gattConn - a gatt client connection
  *           trans - transaction ID (unused here as we can look up by gatt conn id)
  *           handle - handle we read (char's value handle)
  *           status - GATT status
@@ -226,7 +227,7 @@ static void gattSvcBattAsyncDataArrivedCbk(gatt_client_conn_t gattConn, uint16_t
  * RETURN:   NONE
  * NOTES:    it is likely that this success or failure is not actionable for us, so we do nothing
  */
-static void gattSvcBattReadReportReadCbk(gatt_client_conn_t gattConn, uniq_t trans, uint16_t handle, uint8_t status, uint8_t error, sg data)
+static void gattSvcBattReadReportReadCbk(void* userData, gatt_client_conn_t gattConn, uniq_t trans, uint16_t handle, uint8_t status, uint8_t error, sg data)
 {
     if (status != GATT_CLI_STATUS_OK || !data)
         logi("BattSvc GATT READ to handle 0x%04x failed with status 0x%02x\n", handle, status);
@@ -460,7 +461,7 @@ bool gattSvcBattRequestRead(gatt_svc_batt_conn_t handle)
         uint16_t handle = svc->charValHandle;
 
         pthread_mutex_unlock(&mBattSvcLock);
-        return GATT_CLI_STATUS_OK == gattClientRead(conn, handle, 0, 0, 0, gattSvcBattReadReportReadCbk);
+        return GATT_CLI_STATUS_OK == gattClientRead(NULL, conn, handle, 0, 0, 0, gattSvcBattReadReportReadCbk);
     }
     pthread_mutex_unlock(&mBattSvcLock);
 

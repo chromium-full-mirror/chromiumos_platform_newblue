@@ -178,7 +178,7 @@ typedef void (*gattCliEnumCharacteristicsCbk)(gatt_client_conn_t conn, uniq_t tr
 typedef void (*gattCliEnumCharDescrsCbk)(gatt_client_conn_t conn, uniq_t trans, const struct uuid *uuid, uint16_t handle, uint8_t status);
 
 //called as a response to gattClientRead(). data will be non-NULL if the read was a success. if status is GATT_CLI_STATUS_ERR, check error for ATT_ERROR_*.
-typedef void (*gattCliReadCbk)(gatt_client_conn_t conn, uniq_t trans, uint16_t handle, uint8_t status, uint8_t error, sg data);
+typedef void (*gattCliReadCbk)(void* userData, gatt_client_conn_t conn, uniq_t trans, uint16_t handle, uint8_t status, uint8_t error, sg data);
 
 //called as a response to gattClientWrite()
 typedef void (*gattCliWriteCbk)(gatt_client_conn_t conn, uniq_t trans, uint16_t handle, uint8_t status);
@@ -219,7 +219,7 @@ uint8_t gattClientEnumCharacteristics(gatt_client_conn_t conn, uint16_t fromHand
 uint8_t gattClientEnumCharDescriptors(gatt_client_conn_t conn, uint16_t fromHandle, uint16_t toHandle, uniq_t trans, gattCliEnumCharDescrsCbk cbk) NEWBLUE_EXPORT;
 
 /* reads/writes (writes MUST fit into MTU minus whatever, or they will be truncated) */
-uint8_t gattClientRead(gatt_client_conn_t conn, uint16_t handle, uint8_t authReq, uint16_t offset, uniq_t trans, gattCliReadCbk cbk) NEWBLUE_EXPORT;
+uint8_t gattClientRead(void* userData, gatt_client_conn_t conn, uint16_t handle, uint8_t authReq, uint16_t offset, uniq_t trans, gattCliReadCbk cbk) NEWBLUE_EXPORT;
 uint8_t gattClientWrite(gatt_client_conn_t conn, uint16_t handle, uint8_t authReq, uint8_t writeType, uint16_t ofst, sg data, uniq_t trans, gattCliWriteCbk cbk) NEWBLUE_EXPORT;
 uint8_t gattClientStagedWritesExecute(gatt_client_conn_t conn, bool execute, uniq_t trans, gattCliStagedWriteExecuteCb cbk) NEWBLUE_EXPORT; //if not execute then drop them all
 

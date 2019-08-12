@@ -1298,7 +1298,8 @@ bool btleHidWriteReport(ble_hid_conn_t hidId, int32_t reportId, sg data)
 /*
  * FUNCTION: btleHidReadReportReadCbk
  * USE:      Called by GATT when our read succeeds or fails
- * PARAMS:   gattConn - a gatt client connection
+ * PARAMS:   userData - our data (unused here)
+ *           gattConn - a gatt client connection
  *           trans - transaction ID (unused here as we can look up by gatt conn id)
  *           handle - handle we wrote (char value handle)
  *           status - GATT status
@@ -1307,7 +1308,7 @@ bool btleHidWriteReport(ble_hid_conn_t hidId, int32_t reportId, sg data)
  * RETURN:   NONE
  * NOTES:    it is likely that this success or failure is not actionable for us, so we do nothing
  */
-static void btleHidReadReportReadCbk(gatt_client_conn_t gattConn, uniq_t trans, uint16_t handle, uint8_t status, uint8_t error, sg data)
+static void btleHidReadReportReadCbk(void* userData, gatt_client_conn_t gattConn, uniq_t trans, uint16_t handle, uint8_t status, uint8_t error, sg data)
 {
     if (status != GATT_CLI_STATUS_OK || !data)
         logi("HID GATT READ to handle 0x%04x failed with status 0x%02x\n", handle, status);
@@ -1352,7 +1353,7 @@ bool btleHidReadReport(ble_hid_conn_t hidId, int32_t reportId)
             gatt_client_conn_t conn = hid->gattConn;
 
             pthread_mutex_unlock(&mHidLock);
-            return GATT_CLI_STATUS_OK == gattClientRead(conn, handle, 0, 0, 0, btleHidReadReportReadCbk);
+            return GATT_CLI_STATUS_OK == gattClientRead(NULL, conn, handle, 0, 0, 0, btleHidReadReportReadCbk);
         }
     }
 
