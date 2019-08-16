@@ -221,12 +221,11 @@ static void gattSvcBattAsyncDataArrivedCbk(gatt_client_conn_t gattConn, uint16_t
  *           trans - transaction ID (unused here as we can look up by gatt conn id)
  *           handle - handle we read (char's value handle)
  *           status - GATT status
- *           error - ATT_ERROR_* if status is GATT_CLI_STATUS_ERR
  *           data - the data
  * RETURN:   NONE
  * NOTES:    it is likely that this success or failure is not actionable for us, so we do nothing
  */
-static void gattSvcBattReadReportReadCbk(gatt_client_conn_t gattConn, uniq_t trans, uint16_t handle, uint8_t status, uint8_t error, sg data)
+static void gattSvcBattReadReportReadCbk(gatt_client_conn_t gattConn, uniq_t trans, uint16_t handle, uint8_t status, sg data)
 {
     if (status != GATT_CLI_STATUS_OK || !data)
         logi("BattSvc GATT READ to handle 0x%04x failed with status 0x%02x\n", handle, status);

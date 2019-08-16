@@ -378,6 +378,7 @@ static void gattWorkItemFree(struct gattWorkItem *wi);
 static struct gattCliTodoItem* gattCliTodoMakeMtuReq(struct gattConnState* conn, uint16_t mtu, uint8_t purpose);
 static uint8_t gattClientUtilLongReadScheduleNextChunk(gatt_client_conn_t conn, uint32_t curTrans, bool needCallback);
 
+
 /*
  * FUNCTION: gattConnFindByL2cConn
  * USE:      find a per-connection structure for a given l2c handle
@@ -2211,7 +2212,7 @@ static bool gattAttCliReadCbk(uniq_t trans, l2c_handle_t to, const uint16_t *han
 
         case GATT_INTENT_READ:
             pthread_mutex_unlock(&mGattLock); // see "A NOTE ABOUT LOCKS" above
-            todo->readCbk(todo->userData, todo->connId, todo->clientTrans, todo->handle, GATT_CLI_STATUS_OK, ATT_ERROR_NONE, data);
+            todo->readCbk(todo->connId, todo->clientTrans, todo->handle, GATT_CLI_STATUS_OK, data);
             pthread_mutex_lock(&mGattLock);
             conn = gattConnFindByL2cConn(to);
             break;
@@ -2351,7 +2352,6 @@ static void gattAttCliError(uniq_t trans, l2c_handle_t to, const uint16_t *handl
     if (conn) {
         struct gattCliTodoItem *todo = conn->todoCurr;
         conn->todoCurr = NULL;
-        uint8_t status;
 
         switch (todo->purpose) {
         case GATT_INTENT_ENUM_SVCS:
@@ -2406,8 +2406,7 @@ static void gattAttCliError(uniq_t trans, l2c_handle_t to, const uint16_t *handl
         case GATT_INTENT_READ:
             pthread_mutex_unlock(&mGattLock); // see "A NOTE ABOUT LOCKS" above
             // "invalid offset" or "not long" are not error, just EOFs, so we treat them as not errors.
-            status = ((*errP == ATT_ERROR_ATTRIBUTE_NOT_LONG || *errP == ATT_ERROR_INVALID_OFFSET) ? GATT_CLI_STATUS_OK : GATT_CLI_STATUS_ERR);
-            todo->readCbk(todo->userData, todo->connId, todo->clientTrans, todo->handle, status, *errP, NULL);
+            todo->readCbk(todo->connId, todo->clientTrans, todo->handle, (*errP == ATT_ERROR_ATTRIBUTE_NOT_LONG || *errP == ATT_ERROR_INVALID_OFFSET) ? GATT_CLI_STATUS_OK : GATT_CLI_STATUS_ERR, NULL);
             pthread_mutex_lock(&mGattLock);
             conn = gattConnFindByL2cConn(to);
             break;
@@ -4946,13 +4945,12 @@ static void gattClientUtilLongReadStructFreeData(struct GattCliUtilLongReadState
  * PARAMS:   conn - the connection id
  *           curTrans - current transaction ID used to look up this long read operation
  *           handle - the handle that was read
- *           status - GATT status of the read
- *           error - GATT error code if status is GATT_CLI_STATUS_ERR
+ *           status - GATT status of thie read
  *           data - the data we got or NULL on EOF
  * RETURN:
  * NOTES:
  */
-static void gattClientUtilLongReadReadCbk(gatt_client_conn_t conn, uniq_t curTrans, uint16_t handle, uint8_t status, uint8_t error, sg data)
+static void gattClientUtilLongReadReadCbk(gatt_client_conn_t conn, uniq_t curTrans, uint16_t handle, uint8_t status, sg data)
 {
     struct GattCliUtilLongReadState* st;
 
