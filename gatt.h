@@ -118,7 +118,7 @@ bool gattServiceSendInd(gatt_service_t svc, att_cid_t cid, uint16_t handle, cons
 
 #define GATT_CLI_STATUS_OK               0
 #define GATT_CLI_STATUS_OTHER_SIDE_DISC  1 /* the peer told us to go away */
-#define GATT_CLI_STATUS_ERR              2 /* an unknown error type in the local stack */
+#define GATT_CLI_STATUS_ERR              2 /* an error from either local stack or peer - see ATT_ERROR_* for the actual error */
 #define GATT_CLI_STATUS_WE_DISC          3 /* we disconnected */
 
 #define GATT_CLI_WRITE_TYPE_SIGNED       0 /* bluedroid has no support of this so we can assign this value to whatever we want. we pick zero for better switch() compilation */
@@ -177,8 +177,8 @@ typedef void (*gattCliEnumCharacteristicsCbk)(gatt_client_conn_t conn, uniq_t tr
 //called when a characteristic descriptor has been discovered. Expect one or more calls to this after calling gattClientEnumCharDescriptors(). UUID set to NULL when enumeration is complete
 typedef void (*gattCliEnumCharDescrsCbk)(gatt_client_conn_t conn, uniq_t trans, const struct uuid *uuid, uint16_t handle, uint8_t status);
 
-//called as a response to gattClientRead(). data will be non-NULL if the read was a success
-typedef void (*gattCliReadCbk)(gatt_client_conn_t conn, uniq_t trans, uint16_t handle, uint8_t status, sg data);
+//called as a response to gattClientRead(). data will be non-NULL if the read was a success. if status is GATT_CLI_STATUS_ERR, check error for ATT_ERROR_*.
+typedef void (*gattCliReadCbk)(gatt_client_conn_t conn, uniq_t trans, uint16_t handle, uint8_t status, uint8_t error, sg data);
 
 //called as a response to gattClientWrite()
 typedef void (*gattCliWriteCbk)(gatt_client_conn_t conn, uniq_t trans, uint16_t handle, uint8_t status);
