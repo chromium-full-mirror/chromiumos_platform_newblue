@@ -1268,12 +1268,11 @@ bool btleHidWriteReport(ble_hid_conn_t hidId, int32_t reportId, sg data)
  *           trans - transaction ID (unused here as we can look up by gatt conn id)
  *           handle - handle we wrote (char value handle)
  *           status - GATT status
- *           error  - ATT_ERROR_* if status is GATT_CLI_STATUS_ERR
  *           data - the data
  * RETURN:   NONE
  * NOTES:    it is likely that this success or failure is not actionable for us, so we do nothing
  */
-static void btleHidReadReportReadCbk(gatt_client_conn_t gattConn, uniq_t trans, uint16_t handle, uint8_t status, uint8_t error, sg data)
+static void btleHidReadReportReadCbk(gatt_client_conn_t gattConn, uniq_t trans, uint16_t handle, uint8_t status, sg data)
 {
     if (status != GATT_CLI_STATUS_OK || !data)
         logi("HID GATT READ to handle 0x%04x failed with status 0x%02x\n", handle, status);
