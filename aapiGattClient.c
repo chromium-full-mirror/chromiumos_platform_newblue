@@ -1,3 +1,8 @@
+/*
+ * Copyright 2018 The Chromium OS Authors. All rights reserved.
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file.
+ */
 #include <string.h>
 #include "aapiGattClient.h"
 #include "gatt.h"
@@ -110,7 +115,7 @@ static bt_status_t aapiGattClientScan(bool start)
             logw("Starting LE scan while another already underway. Cancelling old one.\n");
             hciDiscoverLeStop(mScanId);
         }
-        mScanId = hciDiscoverLeStart(aapiGattClientPrvDeviceDiscovered, NULL, false, false); //XXX: we default to passive scan using our real address for now
+        mScanId = hciDiscoverLeStart(aapiGattClientPrvDeviceDiscovered, NULL, /* active */ false, /* scanInterval */ 96, /* scanWindow */ 48, /* useOwnRandomAddr */ false, /* onlyWhitelist */ false, /* filterDuplicates */ true); //XXX: we default to passive scan using our real address for now
         if (!mScanId) {
             loge("Failed to start LE scan\n");
             ret = BT_STATUS_FAIL;

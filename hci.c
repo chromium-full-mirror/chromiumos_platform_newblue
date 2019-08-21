@@ -3697,18 +3697,29 @@ bool hciAdvSetDisable(hci_adv_set_t handle)
  * PARAMS:   cbk - device discovered callback
  *           cbkData - data for said callback
  *           active - do active scan?
+ *           scanInterval - scan interval
+ *           scanWindow - scan window
+ *           useOwnRandomAddr - use random address
+ *           onlyWhitelist - scan only for white listed device?
+ *           filterDuplicates - enable filter duplicates?
+ *
  * RETURN:   discovery handle or 0 for error
  * NOTES:    Callbacks might be called even if func returns false, but
  *           will stop once said return value is actually returned.
  *           Discovery goes on until stopped.
  */
-uniq_t hciDiscoverLeStart(hciDeviceDiscoveredLeCbk cbk, void *cbkData, bool active, bool useRandomAddr)
+uniq_t hciDiscoverLeStart(hciDeviceDiscoveredLeCbk cbk, void *cbkData, bool active, uint16_t scanInterval, uint16_t scanWindow, bool useOwnRandomAddr, bool onlyWhitelist, bool filterDuplicates)
 {
     uniq_t ret = 0;
     int sta;
 
     if (!cbk) {
         loge("Refusing discovery with no callback\n");
+        return 0;
+    }
+
+    if (scanInterval > HCI_LE_SCAN_INTERVAL_MAX || scanInterval < HCI_LE_SCAN_INTERVAL_MIN || scanWindow > HCI_LE_SCAN_WINDOW_MAX || scanWindow < HCI_LE_SCAN_WINDOW_MIN || scanInterval < scanWindow) {
+        loge("Invalid scan parameters\n");
         return 0;
     }
 
@@ -3726,13 +3737,14 @@ uniq_t hciDiscoverLeStart(hciDeviceDiscoveredLeCbk cbk, void *cbkData, bool acti
     if (!ret)
         return 0;
 
-    sta = hciLeSetScanParamsSync(active, HCI_LE_SCAN_INTERVAL, HCI_LE_SCAN_WINDOW, useRandomAddr, false);
+    sta = hciLeSetScanParamsSync(active, scanInterval, scanWindow, useOwnRandomAddr, onlyWhitelist);
+
     if (sta) {
         loge("Failed to set LE scan params: %d\n", sta);
         goto err;
     }
 
-    sta = hciLeSetScanEnableSync(true, false);
+    sta = hciLeSetScanEnableSync(true, filterDuplicates);
     if (sta) {
         loge("Failed to set LE scan on: %d\n", sta);
         goto err;

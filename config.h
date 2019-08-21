@@ -110,10 +110,12 @@ extern const char pref_path[];
 #define HCI_LE_CONN_SCAN_WINDOW            6  /* 3.75 ms */
 
 /*
- * Default LE scan parameters
+ * LE scan parameters
  */
-#define HCI_LE_SCAN_INTERVAL               24 /* 15 ms */
-#define HCI_LE_SCAN_WINDOW                 4  /* 2.5 ms */
+#define HCI_LE_SCAN_INTERVAL_MIN           4      /* 2.5 ms */
+#define HCI_LE_SCAN_INTERVAL_MAX           0x4000 /* 10240 ms */
+#define HCI_LE_SCAN_WINDOW_MIN             4      /* 2.5 ms */
+#define HCI_LE_SCAN_WINDOW_MAX             0x4000 /* 10240 ms */
 
 /*
  * How many bytes of RX data we're willing to buffer for a new ACL link during

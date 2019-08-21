@@ -179,8 +179,7 @@ bool hciInfoAclBufSizeLe(uint16_t *bufSz, uint16_t *bufNum); //false if no LE su
 void hciGetLocalAddress(uint8_t *addr);
 
 /* misc api. False on error, true if expect callback */
-uniq_t hciDiscoverLeStart(hciDeviceDiscoveredLeCbk cbk, void *cbkData, bool active,
-    bool useRandomAddr) NEWBLUE_EXPORT;
+uniq_t hciDiscoverLeStart(hciDeviceDiscoveredLeCbk cbk, void *cbkData, bool active, uint16_t scanInterval, uint16_t scanWindow, bool useOwnRandomAddr, bool onlyWhitelist, bool filterDuplicates) NEWBLUE_EXPORT;
 bool hciDiscoverLeStop(uniq_t handle) NEWBLUE_EXPORT;
 
 #define HCI_TX_SEND_OK          0

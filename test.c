@@ -134,6 +134,9 @@ static void readyForUpCbk() {
 #define DEVICE_CLASS_MINOR_AV_SHIFT		2
 #define DEVICE_CLASS_MINOR_AV_PORTBL_AUDIO	7
 
+#define TEST_SCAN_INTERVAL              36
+#define TEST_SCAN_WINDOW                18
+
 void logData(char* dst, const void *buf, uint8_t len)
 {
     const uint8_t *data = (const uint8_t*)buf;
@@ -997,7 +1000,7 @@ int main(int argc, char** argv)
         uniq_t h;
 
         logi("Trying some LE discovery%s...\n", (wantConnect || doHidTest) ? " and connection" : "");
-        h = hciDiscoverLeStart(leDiscoveryCbk, &leDevices, true, false);
+        h = hciDiscoverLeStart(leDiscoveryCbk, &leDevices, /* active */ true, TEST_SCAN_INTERVAL, TEST_SCAN_WINDOW, /* useOwnRandomAddr */ true, /* onlyWhitelist */ false, /* filterDuplicates */ false);
         if (h) {
             sleep((wantConnect || doHidTest) ? 5 : 20);
             fprintf(stderr, "\n");
@@ -1145,7 +1148,7 @@ int main(int argc, char** argv)
         logi("Scanning for device "ADDRFMT" ...\n",
              ADDRCONV(argc == 3 ? mInputDevAddr : mAddrs[0]));
         for (i = 0; i < round; ++i) {
-            scanId = hciDiscoverLeStart(leDiscoveryCbk, &leDevices, true, false);
+            scanId = hciDiscoverLeStart(leDiscoveryCbk, &leDevices, /* active */ true, TEST_SCAN_INTERVAL, TEST_SCAN_WINDOW, /* useOwnRandomAddr */ true, /* onlyWhitelist */ false, /* filterDuplicates */ false);
             if (!scanId) {
                 loge("Failed to do LE discovery\n");
                 break;
