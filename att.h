@@ -29,6 +29,7 @@ typedef uniq_t att_trans_t;
 /* we WILL negotiate, but only this much is ever guaranteed */
 #define ATT_MTU_MIN_EDR                48
 #define ATT_MTU_MIN_LE                 23
+#define ATT_MTU_INVALID                0 /* any MTU less than ATT_MTU_MIN_LE is invalid, and here we simply summarized those as one value */
 
 #define ATT_SIG_LEN                    SM_SIG_LEN
 

@@ -207,6 +207,9 @@ uint8_t gattClientDisconnect(gatt_client_conn_t conn) NEWBLUE_EXPORT; /* -> GATT
 /* cache maintenance */
 bool gattClientInvalidateCache(const struct bt_addr *whomTo) NEWBLUE_EXPORT; //true if process started
 
+/* MTU for data transmission of read/write operations */
+uint32_t gattClientGetMtu(gatt_client_conn_t conn) NEWBLUE_EXPORT;
+
 /* all of the following return GATT_CLI_* */
 
 /* service search */

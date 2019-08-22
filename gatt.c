@@ -3658,6 +3658,41 @@ bool gattClientInvalidateCache(const struct bt_addr *whomTo)
 }
 
 /*
+ * FUNCTION: gattClientGetMtu
+ * USE:      retrieve the agreed MTU with a peer
+ * PARAMS:   connId - the connection id
+ * RETURN:   a non-zero MTU if the connection exists, 0 otherwise
+ * NOTES:
+ */
+uint32_t gattClientGetMtu(gatt_client_conn_t connId)
+{
+    struct gattClientConnection *conn = NULL;
+    struct gattConnState *connState = NULL;
+    uint32_t mtu = ATT_MTU_INVALID;
+
+    pthread_mutex_lock(&mGattLock);
+
+    conn = gattClientConnFindById(connId);
+    if (!conn) {
+      logw("Failed to retrieve MTU with a nonexistent GATT Client connection\n");
+      goto out;
+    }
+
+    connState = gattConnFindById(conn->gattConnId);
+    if (!connState) {
+      logw("Failed to retrieve MTU with a nonexistent GATT connection\n");
+      goto out;
+    }
+
+    mtu = connState->mtu;
+    if (mtu < ATT_MTU_MIN_LE)
+      mtu = ATT_MTU_INVALID;
+out:
+    pthread_mutex_unlock(&mGattLock);
+    return mtu;
+}
+
+/*
  * FUNCTION: gattCliTodoEnqItem
  * USE:      Enqueue a gatt to-do item in front or back of list
  * PARAMS:   conn - the connection structure
