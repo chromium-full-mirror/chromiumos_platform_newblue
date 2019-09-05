@@ -2257,6 +2257,11 @@ static void smFixedChState(void *userData, void *instance, uint8_t evt, const vo
             smTransitPhase(inst, SM_PHASE_REQ_SENT);
         }
 
+        if (inst->isInitiator && inst->phase == SM_PHASE_DONE) {
+            logi("SM started for an already paired device, starting encryption.\n");
+            smLtkEncrypt(inst);
+        }
+
         break;
 
     case L2C_STATE_ENCR:
@@ -3173,37 +3178,6 @@ void smUnpair(const struct bt_addr *addr)
          cancelled ? "cancelled" : "forgotten");
     smNotifyPairStateObserver(addr, cancelled ? SM_PAIR_STATE_CANCELED : SM_PAIR_STATE_NOT_PAIRED,
                               SM_PAIR_ERR_NONE);
-}
-
-/*
- * FUNCTION: smStartEncryption
- * USE:      Starts the link encryption to a peer device based on past pairing result.
- * PARAMS:   addr - the address of the peer device
- * RETURN:   true if encryption can be started, false otherwise
- * NOTES:    This works only if link is already established with the peer device.
- */
-bool smStartEncryption(const struct bt_addr *addr)
-{
-    struct smInstance *inst = NULL;
-    bool ret = false;
-
-    pthread_mutex_lock(&mSmLock);
-
-    if (!(inst = smInstFindByAddr(addr))) {
-        logd("%s(): No instance found with "ADDRFMT"\n", __func__, ADDRCONV(*addr));
-        goto unlock;
-    }
-
-    if (inst->phase == SM_PHASE_LTK_SENT || inst->phase == SM_PHASE_LTK_ENCRYPTED) {
-        logd("Encryption is already initiated\n");
-        goto unlock;
-    }
-
-    ret = smLtkEncrypt(inst);
-
-unlock:
-    pthread_mutex_unlock(&mSmLock);
-    return ret;
 }
 
 /*
