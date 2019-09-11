@@ -231,13 +231,16 @@ bool gattSvcMiscInfoDetachFromGatt(gatt_client_conn_t gattConn)
 /*
  * FUNCTION: gattSvcMiscInfoReadCbk
  * USE:      Called by GATT when our read succeeds or fails
- * PARAMS:   gattConn - a gatt client connection
+ * PARAMS:   userData - our data (unused here)
+ *           gattConn - a gatt client connection
  *           trans - transaction ID (unused here as we can look up by gatt conn id)
+ *           handle - handle we read
+ *           error - ATT_ERROR_NONE on success; other ATT_ERROR_* if data is NULL
  *           data - the data or NULL on error
  * RETURN:   NONE
  * NOTES:
  */
-static void gattSvcMiscInfoReadCbk(gatt_client_conn_t gattConn, uniq_t trans, sg data)
+static void gattSvcMiscInfoReadCbk(void* userData, gatt_client_conn_t gattConn, uniq_t trans, uint16_t handle, uint8_t error, sg data)
 {
     enum GattSvcMiscInfoType type = trans;
     struct MiscInfoSvcConn *svc;
@@ -478,7 +481,7 @@ bool gattSvcMiscInfoRequestRead(gatt_svc_misc_info_conn_t handle, enum GattSvcMi
         if (!handle) // no such attribute - tell caller right away
             return false;
         else if (!val) // no cache? schedule a read
-            return GATT_CLI_STATUS_OK == gattClientUtilLongRead(conn, handle, 0, type, gattSvcMiscInfoReadCbk);
+            return GATT_CLI_STATUS_OK == gattClientUtilLongRead(NULL, conn, handle, 0, type, gattSvcMiscInfoReadCbk);
         else {
             mCbkRx(handle, type, val);
             return true;

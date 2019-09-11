@@ -337,6 +337,7 @@ struct GattCliUtilSvcTraverseState {
 struct GattCliUtilLongReadState {
     struct GattCliUtilLongReadState *next;
     struct GattCliUtilLongReadState *prev;
+    void*  userData;
     uniq_t curTrans, clientTrans;
     uint16_t handle;
     uint8_t authReq;
@@ -4996,10 +4997,15 @@ static void gattClientUtilLongReadReadCbk(void* userData, gatt_client_conn_t con
         }
     }
 
+    // only provide a real ATT_ERROR_* while |status| is no CATT_CLI_STATUS_OK. For the case where
+    // the read reaches EOF, status would be GATT_CLI_STATUS_OK, but error code would be either
+    // ATT_ERROR_ATTRIBUTE_NOT_LONG or ATT_ERROR_INVALID_OFFSET.
+    error = (status == GATT_CLI_STATUS_OK ? ATT_ERROR_NONE : error);
+
     // done? tell caller
     gattClientUtilLongReadStructUnlink(st);
     pthread_mutex_unlock(&mGattUtilLock);
-    st->cbk(conn, st->clientTrans, st->dataSoFar);
+    st->cbk(st->userData, conn, st->clientTrans, st->handle, error, st->dataSoFar);
     st->dataSoFar = NULL; // callback owns it
     gattClientUtilLongReadStructFreeData(st);
 }
@@ -5019,6 +5025,7 @@ static uint8_t gattClientUtilLongReadScheduleNextChunk(gatt_client_conn_t conn, 
     uint8_t ret, authReq;
     uint32_t offset;
     uint16_t handle;
+    uint8_t error = ATT_ERROR_NONE;
 
     pthread_mutex_lock(&mGattUtilLock);
     st = gattClientUtilLongReadStructFindByTransId(curTrans);
@@ -5037,15 +5044,17 @@ static uint8_t gattClientUtilLongReadScheduleNextChunk(gatt_client_conn_t conn, 
     if (offset != (uint16_t)offset) {
         logi("GATT util long read: offset too large\n");
         ret = GATT_CLI_STATUS_ERR;
+        error = ATT_ERROR_INVALID_OFFSET;
     }
     else {
-        ret = gattClientRead(NULL, conn, handle, authReq, offset, curTrans, gattClientUtilLongReadReadCbk);
+        ret = gattClientRead(st->userData, conn, handle, authReq, offset, curTrans, gattClientUtilLongReadReadCbk);
         if (ret == GATT_CLI_STATUS_OK)
             return GATT_CLI_STATUS_OK;
         logi("GATT util long read: failed to schedule a read: 0x%02x\n", ret);
+        error = ATT_ERROR_UNLIKELY_ERROR;
     }
 
-    //if we ge this far, we failed - cleanup
+    //if we get this far, we failed - cleanup
     pthread_mutex_lock(&mGattUtilLock);
     st = gattClientUtilLongReadStructFindByTransId(curTrans);
     if (!st) {
@@ -5056,7 +5065,7 @@ static uint8_t gattClientUtilLongReadScheduleNextChunk(gatt_client_conn_t conn, 
     gattClientUtilLongReadStructUnlink(st);
     pthread_mutex_unlock(&mGattUtilLock);
     if (needCallback)
-        st->cbk(conn, st->clientTrans, NULL);
+        st->cbk(st->userData, conn, st->clientTrans, st->handle, error, NULL);
     gattClientUtilLongReadStructFreeData(st);
     return ret;
 }
@@ -5064,7 +5073,8 @@ static uint8_t gattClientUtilLongReadScheduleNextChunk(gatt_client_conn_t conn, 
 /*
  * FUNCTION: gattClientUtilLongRead
  * USE:      Perform all the work needed to completely read a handle
- * PARAMS:   conn - the connection id
+ * PARAMS:   userData - caller's data which will be given with the callback
+ *           conn - the connection id
  *           handle - the handle to read
  *           authReq - the authentication requirements
  *           clientTrans - transaction ID (unused, passed to callback)
@@ -5072,7 +5082,7 @@ static uint8_t gattClientUtilLongReadScheduleNextChunk(gatt_client_conn_t conn, 
  * RETURN:   GATT_CLI_STATUS_*
  * NOTES:    even handles cases of MTU changing during the read. Pessimistically does one extra read at end to avoid caring about MTUs
  */
-uint8_t gattClientUtilLongRead(gatt_client_conn_t conn, uint16_t handle, uint8_t authReq, uniq_t clientTrans, gattCliUtilLongReadCompletedCbk cbk)
+uint8_t gattClientUtilLongRead(void* userData, gatt_client_conn_t conn, uint16_t handle, uint8_t authReq, uniq_t clientTrans, gattCliUtilLongReadCompletedCbk cbk)
 {
     struct GattCliUtilLongReadState* st = (struct GattCliUtilLongReadState*)calloc(1, sizeof(struct GattCliUtilLongReadState));
     uniq_t trans;
@@ -5086,6 +5096,7 @@ uint8_t gattClientUtilLongRead(gatt_client_conn_t conn, uint16_t handle, uint8_t
         return GATT_CLI_STATUS_ERR;
     }
 
+    st->userData = userData;
     st->handle = handle;
     st->authReq = authReq;
     st->clientTrans = clientTrans;
