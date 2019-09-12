@@ -181,7 +181,7 @@ typedef void (*gattCliEnumCharDescrsCbk)(gatt_client_conn_t conn, uniq_t trans, 
 typedef void (*gattCliReadCbk)(void* userData, gatt_client_conn_t conn, uniq_t trans, uint16_t handle, uint8_t status, uint8_t error, sg data);
 
 //called as a response to gattClientWrite()
-typedef void (*gattCliWriteCbk)(gatt_client_conn_t conn, uniq_t trans, uint16_t handle, uint8_t status);
+typedef void (*gattCliWriteCbk)(void* userData, gatt_client_conn_t conn, uniq_t trans, uint16_t handle, uint8_t status, uint8_t error);
 
 //called as a response to gattClientStagedWritesExecute() when the other side has replied
 typedef void (*gattCliStagedWriteExecuteCb)(gatt_client_conn_t conn, uniq_t trans, bool success);
@@ -220,7 +220,7 @@ uint8_t gattClientEnumCharDescriptors(gatt_client_conn_t conn, uint16_t fromHand
 
 /* reads/writes (writes MUST fit into MTU minus whatever, or they will be truncated) */
 uint8_t gattClientRead(void* userData, gatt_client_conn_t conn, uint16_t handle, uint8_t authReq, uint16_t offset, uniq_t trans, gattCliReadCbk cbk) NEWBLUE_EXPORT;
-uint8_t gattClientWrite(gatt_client_conn_t conn, uint16_t handle, uint8_t authReq, uint8_t writeType, uint16_t ofst, sg data, uniq_t trans, gattCliWriteCbk cbk) NEWBLUE_EXPORT;
+uint8_t gattClientWrite(void* userData, gatt_client_conn_t conn, uint16_t handle, uint8_t authReq, uint8_t writeType, uint16_t ofst, sg data, uniq_t trans, gattCliWriteCbk cbk) NEWBLUE_EXPORT;
 uint8_t gattClientStagedWritesExecute(gatt_client_conn_t conn, bool execute, uniq_t trans, gattCliStagedWriteExecuteCb cbk) NEWBLUE_EXPORT; //if not execute then drop them all
 
 /* notification subscription/unsubscription. gattClientNotifsSubscribe assumes you do not ask for the impossible */

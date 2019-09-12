@@ -1239,17 +1239,19 @@ bool btleHidGetHidName(ble_hid_conn_t hidId, char* hidName) {
 /*
  * FUNCTION: btleHidWriteReportWriteCbk
  * USE:      Called by GATT when our write succeeds or fails
- * PARAMS:   gattConn - a gatt client connection
+ * PARAMS:   userData - our data (unused here)
+ *           gattConn - a gatt client connection
  *           trans - transaction ID (unused here as we can look up by gatt conn id)
  *           handle - handle we wrote
  *           status - GATT status
+ *           error - ATT_ERROR_*
  * RETURN:   NONE
  * NOTES:    it is likely that this success or failure is not actionable for us, so we do nothing
  */
-static void btleHidWriteReportWriteCbk(gatt_client_conn_t gattConn, uniq_t trans, uint16_t handle, uint8_t status)
+static void btleHidWriteReportWriteCbk(void* userData, gatt_client_conn_t gattConn, uniq_t trans, uint16_t handle, uint8_t status, uint8_t error)
 {
     if (status != GATT_CLI_STATUS_OK)
-        logi("HID GATT Write to handle 0x%04x failed with status 0x%02x\n", handle, status);
+        logi("HID GATT Write to handle 0x%04x failed with status 0x%02x ATT error 0x%02x\n", handle, status, error);
 }
 
 /*
@@ -1290,7 +1292,7 @@ bool btleHidWriteReport(ble_hid_conn_t hidId, int32_t reportId, sg data)
             gatt_client_conn_t conn = hid->gattConn;
 
             pthread_mutex_unlock(&mHidLock);
-            return GATT_CLI_STATUS_OK == gattClientWrite(conn, handle, 0, GATT_CLI_WRITE_TYPE_WRITE, 0, data, 0, btleHidWriteReportWriteCbk);
+            return GATT_CLI_STATUS_OK == gattClientWrite(NULL, conn, handle, 0, GATT_CLI_WRITE_TYPE_WRITE, 0, data, 0, btleHidWriteReportWriteCbk);
         }
     }
 
