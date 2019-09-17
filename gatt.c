@@ -2311,6 +2311,11 @@ static void gattAttCliWriteCbk(uniq_t trans, l2c_handle_t to)
             } while (conn && somethingDone);
             break;
 
+        case GATT_INTENT_WRITE:
+            todo->writeCbk(todo->userData, todo->connId, todo->clientTrans, todo->handle, GATT_CLI_STATUS_OK, ATT_ERROR_NONE);
+            conn = gattConnFindByL2cConn(to);
+            break;
+
         default:
             loge("Unknown reason for getting a write result\n");
             break;
@@ -2409,6 +2414,13 @@ static void gattAttCliError(uniq_t trans, l2c_handle_t to, const uint16_t *handl
             // "invalid offset" or "not long" are not error, just EOFs, so we treat them as not errors.
             status = ((*errP == ATT_ERROR_ATTRIBUTE_NOT_LONG || *errP == ATT_ERROR_INVALID_OFFSET) ? GATT_CLI_STATUS_OK : GATT_CLI_STATUS_ERR);
             todo->readCbk(todo->userData, todo->connId, todo->clientTrans, todo->handle, status, *errP, NULL);
+            pthread_mutex_lock(&mGattLock);
+            conn = gattConnFindByL2cConn(to);
+            break;
+
+        case GATT_INTENT_WRITE:
+            pthread_mutex_unlock(&mGattLock); // see "A NOTE ABOUT LOCKS" above
+            todo->writeCbk(todo->userData, todo->connId, todo->clientTrans, todo->handle, GATT_CLI_STATUS_ERR, *errP);
             pthread_mutex_lock(&mGattLock);
             conn = gattConnFindByL2cConn(to);
             break;
@@ -4215,7 +4227,8 @@ uint8_t gattClientRead(void* userData, gatt_client_conn_t conn, uint16_t handle,
 /*
  * FUNCTION: gattClientCharWrite
  * USE:      Write a characteristic
- * PARAMS:   conn - the connection id
+ * PARAMS:   userData - caller's data which will be given with the callback
+ *           conn - the connection id
  *           handle - the handle to read
  *           authReq - authentication requirements (// TODO)
  *           writeType - cmd? req? prepare? (GATT_CLI_WRITE_TYPE_*)
@@ -4226,7 +4239,7 @@ uint8_t gattClientRead(void* userData, gatt_client_conn_t conn, uint16_t handle,
  * RETURN:   GATT_CLI_STATUS_*
  * NOTES:
  */
-uint8_t gattClientWrite(gatt_client_conn_t conn, uint16_t handle, uint8_t authReq, uint8_t writeType, uint16_t ofst, sg data, uniq_t trans, gattCliWriteCbk cbk)
+uint8_t gattClientWrite(void *userData, gatt_client_conn_t conn, uint16_t handle, uint8_t authReq, uint8_t writeType, uint16_t ofst, sg data, uniq_t trans, gattCliWriteCbk cbk)
 {
     struct gattCliTodoItem *todo;
     uint8_t type;
@@ -4254,6 +4267,7 @@ uint8_t gattClientWrite(gatt_client_conn_t conn, uint16_t handle, uint8_t authRe
     pthread_mutex_lock(&mGattLock);
     todo = gattCliTodoMakeWrite(conn, GATT_INTENT_WRITE, type, handle, authReq, ofst, data);
     if (todo) {
+        todo->userData = userData;
         todo->writeCbk = cbk;
         todo->clientTrans = trans;
     }
