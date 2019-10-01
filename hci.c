@@ -4085,7 +4085,7 @@ static struct hciAclConn* hciConnAclStructNew(uint16_t id, const struct bt_addr 
  *           timeoutP - if not null, timeout to use. if null - stack picks
  * RETURN:   connectin handle if an attempt will be made to connect. 0 else
  */
-hci_conn_t hciConnect(const struct bt_addr* addr, const uint8_t *selfRandomAddr, uint16_t *scanIntervalP, uint16_t *scanWindowP, uint16_t *connIntervalMinP, uint16_t *connIntervalMaxP, uint16_t *latencyP, uint16_t *timeoutP)
+hci_conn_t hciConnect(const struct bt_addr* addr, const uint8_t* selfRandomAddr, uint16_t* scanIntervalP, uint16_t* scanWindowP, uint16_t* connIntervalMinP, uint16_t* connIntervalMaxP, uint16_t* latencyP, uint16_t* timeoutP)
 {
     uint32_t scanInterval, scanWindow, connIntervalMin, connIntervalMax, latency, timeout;
     hci_conn_t ret = 0;
