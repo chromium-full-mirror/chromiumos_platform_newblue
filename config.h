@@ -101,21 +101,35 @@ extern const char pref_path[];
 /*
  * Default LE connection parameters
  */
-#define HCI_LE_CONN_INT_MIN                10 /* 12.5 ms */
-#define HCI_LE_CONN_INT_MAX                20 /* 25.0 ms */
-#define HCI_LE_CONN_LATENCY                10
-#define HCI_LE_CONN_TIMEOUT                83  /* .83 s */
-#define HCI_LE_CONN_USE_RAND_ADDR          false /* TODO: should be true but 00:00:00:00:00:00 will be used as the local random address if we don't set one */
-#define HCI_LE_CONN_SCAN_INTERVAL          24 /* 15 ms */
-#define HCI_LE_CONN_SCAN_WINDOW            6  /* 3.75 ms */
+#define HCI_LE_CONN_DEFAULT_INT_MIN 10  /* 12.5 ms */
+#define HCI_LE_CONN_DEFAULT_INT_MAX 20  /* 25.0 ms */
+#define HCI_LE_CONN_DEFAULT_LATENCY 10
+#define HCI_LE_CONN_DEFAULT_TIMEOUT 83  /* .83 s */
+/* TODO: should be true but 00:00:00:00:00:00 will be used as the ocal random
+ * address if we don't set one */
+#define HCI_LE_CONN_DEFAULT_USE_RAND_ADDR false
+#define HCI_LE_CONN_DEFAULT_SCAN_INTERVAL 24  /* 15 ms */
+#define HCI_LE_CONN_DEFAULT_SCAN_WINDOW 6     /* 3.75 ms */
+
+/*
+ * LE connection parameters range per Bluetooth spec Version 5.1 | Vol2, Part
+ * E, 7.8.12.
+ */
+#define HCI_LE_CONN_SCAN_INTERVAL_MAX 0x4000  /* N * 0.625 ms = 10.24 s*/
+#define HCI_LE_CONN_SCAN_WINDOW_MIN 0x4       /* N * 0.625 ms = 2.5 ms */
+#define HCI_LE_CONN_INTERVAL_MIN 0x6          /* N * 1.25 ms = 7.5 ms */
+#define HCI_LE_CONN_INTERVAL_MAX 0x0C80       /* N * 1.25 ms = 4 s */
+#define HCI_LE_CONN_LATENCY_MAX 0x01F3        /* Number of connection events */
+#define HCI_LE_CONN_TIMEOUT_MIN 0xA           /* N * 10 ms = 100 ms */
+#define HCI_LE_CONN_TIMEOUT_MAX 0x4000        /* N * 10 ms = 32 s */
 
 /*
  * LE scan parameters
  */
-#define HCI_LE_SCAN_INTERVAL_MIN           4      /* 2.5 ms */
-#define HCI_LE_SCAN_INTERVAL_MAX           0x4000 /* 10240 ms */
-#define HCI_LE_SCAN_WINDOW_MIN             4      /* 2.5 ms */
-#define HCI_LE_SCAN_WINDOW_MAX             0x4000 /* 10240 ms */
+#define HCI_LE_SCAN_INTERVAL_MIN           4       /* 2.5 ms */
+#define HCI_LE_SCAN_INTERVAL_MAX           0x4000  /* 10240 ms */
+#define HCI_LE_SCAN_WINDOW_MIN             4       /* 2.5 ms */
+#define HCI_LE_SCAN_WINDOW_MAX             0x4000  /* 10240 ms */
 
 /*
  * How many bytes of RX data we're willing to buffer for a new ACL link during
