@@ -42,6 +42,7 @@ struct UhidDeviceInfo {
 
     int fd;
     ble_hid_conn_t hidId;
+    uint8_t state;  /* indicating the device state such as UP or TEARDOWN */
     uint8_t reportIdPresent;
     uint8_t name[MAX_DEVICE_NAME_SIZE];
     uint16_t bus;
@@ -70,6 +71,10 @@ static struct UhidDevices *mDevices = NULL;                            /* the uh
 
 pthread_t mOutputReportThread;                                         /* the thread polling output report events */
 
+/* fwd decls */
+static void hidDeinit(void);
+
+
 /*
  * FUNCTION: uhidWrite
  * USE:      Write hid event data to kernel
@@ -81,6 +86,11 @@ static int uhidWrite(int fd, const struct uhid_event *ev)
 {
     size_t ev_size;
     int ret;
+
+    if (fd <= 0) {
+        loge("fd to write is invalid: %d\n", fd);
+        return -EBADR;
+    }
 
     ev_size = sizeof(*ev);
     while (1) {
@@ -134,9 +144,14 @@ static int createDeviceInKernel(const struct UhidDeviceInfo *devInfo)
  * RETURN:   0 on success or an error code
  * NOTES:
  */
-static int destroyDeviceInKernel(const struct UhidDeviceInfo *devInfo)
+static int destroyDeviceInKernel(struct UhidDeviceInfo *devInfo)
 {
     struct uhid_event ev = {.type = UHID_DESTROY};
+
+    if (!devInfo)
+        return -EFAULT;
+
+    devInfo->state = BTLE_HID_CONN_STATE_TEARDOWN;
 
     return uhidWrite(devInfo->fd, &ev);
 }
@@ -256,6 +271,7 @@ static bool extractBtleUhidDeviceInfo(struct UhidDeviceInfo *devInfo, int fd, bl
     logd("Extract device data.\n");
     devInfo->fd = fd;
     devInfo->hidId = hidId;
+    devInfo->state = BTLE_HID_CONN_STATE_UP;
     devInfo->bus = BUS_USB;
     devInfo->next = NULL;
     btleHidGetHidName(hidId, (char*) devInfo->name);
@@ -332,11 +348,18 @@ static struct UhidDeviceInfo *uhidFindDeviceByFd(int fd) {
  * NOTES:
  */
 static void printmDevices() {
+    if (!mDevices)
+        return;
+
     logd("mDevices has %d devices\n", mDevices->numDevices);
+
     for (struct UhidDeviceInfo *d = mDevices->head; d; d = d->next)
-      logd("  %d\n", d->fd);
-    for (int i = 0; i <= MAX_SUPPORTED_HID_CONNECTIONS; i++)
-      logd("  pfds[%d].fd %d\n", i, mDevices->pfds[i].fd);
+        logd("  %d\n", d->fd);
+
+    for (int i = 0; i <= MAX_SUPPORTED_HID_CONNECTIONS; i++) {
+        if (mDevices->pfds[i].fd >= 0)
+            logd("  pfds[%d].fd %d\n", i, mDevices->pfds[i].fd);
+    }
 }
 
 /*
@@ -393,11 +416,10 @@ static void freeDeviceInfo(struct UhidDeviceInfo *devInfo) {
 static bool uhidDeviceDel(ble_hid_conn_t hidId) {
     struct UhidDeviceInfo *p = NULL;
     struct UhidDeviceInfo *d = NULL;
-    bool ret = false;
 
     if (!mDevices) {
         loge("mDevices is NULL.\n");
-        return ret;
+        return false;
     }
 
     d = mDevices->head;
@@ -417,9 +439,9 @@ static bool uhidDeviceDel(ble_hid_conn_t hidId) {
 
         mDevices->numDevices--;
     }
-    printmDevices();
+    logd("Removed the device with conn id %" PRIu64 " from mDevices.\n", hidId);
 
-    return ret;
+    return true;
 }
 
 /*
@@ -456,13 +478,42 @@ static bool sendOutputReport(const struct UhidDeviceInfo *devInfo, struct uhid_e
 }
 
 /*
+ * FUNCTION: closeDevInfo
+ * USE:      close a device
+ * PARAMS:   devInfo - device data
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void closeDevInfo(struct UhidDeviceInfo *devInfo) {
+    if (!devInfo)
+        return;
+
+    if (!uhidDeviceDel(devInfo->hidId))
+        logw("Cannot find HID conn id %" PRIu64 " to delete.\n", devInfo->hidId);
+
+    for (int i = 1; i <= MAX_SUPPORTED_HID_CONNECTIONS; i++) {
+        if (mDevices->pfds[i].fd == devInfo->fd) {
+            close(mDevices->pfds[i].fd);
+            mDevices->pfds[i].fd = -1;
+            break;
+        }
+    }
+    freeDeviceInfo(devInfo);
+
+    if (mDevices->numDevices <= 0)
+        hidDeinit();
+
+    printmDevices();
+}
+
+/*
  * FUNCTION: handleUhidOutputEvent
  * USE:      read output events and send output reports accordingly
  * PARAMS:   devInfo - device data
  * RETURN:   0 on success or an error code
  * NOTES:
  */
-static int handleUhidOutputEvent(const struct UhidDeviceInfo *devInfo)
+static int handleUhidOutputEvent(struct UhidDeviceInfo *devInfo)
 {
     struct uhid_event ev = {0,};
     ssize_t ret;
@@ -486,7 +537,12 @@ static int handleUhidOutputEvent(const struct UhidDeviceInfo *devInfo)
         logd("ev type: UHID_OPEN %d. The HID device is opened.\n", ev.type);
         break;
     case UHID_CLOSE:
-        logd("ev type: UHID_CLOSE %d. The HID device is closed.\n", ev.type);
+        if (devInfo->state == BTLE_HID_CONN_STATE_TEARDOWN) {
+            logd("ev type: UHID_CLOSE %d. The HID device is closed.\n", ev.type);
+            closeDevInfo((struct UhidDeviceInfo *)devInfo);
+        } else {
+            logd("ev type: UHID_CLOSE %d. Ignored.\n", ev.type);
+        }
         break;
     case UHID_OUTPUT:
         logv("ev type: UHID_OUTPUT %d\n", ev.type);
@@ -497,6 +553,29 @@ static int handleUhidOutputEvent(const struct UhidDeviceInfo *devInfo)
     }
 
     return 0;
+}
+
+/*
+ * FUNCTION: closeAllDevices
+ * USE:      close all devices
+ * PARAMS:   NONE
+ * RETURN:   NONE
+ * NOTES:
+ */
+static void closeAllDevices(void) {
+    if (mDevices) {
+        logd("Closing all devices...\n");
+
+        // Close any fd that is still open.
+        for (int i = 1; i <= MAX_SUPPORTED_HID_CONNECTIONS; i++) {
+            if (mDevices->pfds[i].fd > 0)
+                close(mDevices->pfds[i].fd);
+        }
+
+        close(mDevices->control_pipe[0]);
+        free(mDevices);
+        mDevices = NULL;
+    }
 }
 
 /*
@@ -517,7 +596,7 @@ static void* outputReportPoller(void *unused) {
         } else {
             for (int i = 1; i <= MAX_SUPPORTED_HID_CONNECTIONS; i++) {
                 if (mDevices->pfds[i].revents & POLLIN) {
-                    logd("POLLIN for the %d-th device, fd: %u\n", i, mDevices->pfds[i].fd);
+                    logd("POLLIN for the device[%d].fd %u\n", i, mDevices->pfds[i].fd);
                     handleUhidOutputEvent(uhidFindDeviceByFd(mDevices->pfds[i].fd));
                 }
             }
@@ -527,6 +606,7 @@ static void* outputReportPoller(void *unused) {
 
             if (mDevices->pfds[0].revents & POLLHUP) {
                 logi("Received POLLHUP from pfds 0. Exiting.\n");
+                closeAllDevices();
                 break;
             }
         }
@@ -632,7 +712,7 @@ static struct UhidDeviceInfo* createDevInfo(ble_hid_conn_t hidId) {
         if (mDevices->pfds[i].fd < 0) {
             mDevices->pfds[i].fd = fd;
             mDevices->pfds[i].events = POLLIN;
-            logd("devInfo created for id %" PRIu64 " fd %d.\n", hidId, fd);
+            logd("devInfo created for pfds[%d] id %" PRIu64 " fd %d.\n", i, hidId, fd);
             return devInfo;
         }
     }
@@ -650,51 +730,6 @@ out:
 }
 
 /*
- * FUNCTION: closeDevInfo
- * USE:      close a device
- * PARAMS:   devInfo - device data
- * RETURN:   NONE
- * NOTES:
- */
-static void closeDevInfo(struct UhidDeviceInfo *devInfo) {
-    if (!devInfo)
-        return;
-
-    for (int i = 1; i <= MAX_SUPPORTED_HID_CONNECTIONS; i++) {
-        if (mDevices->pfds[i].fd == devInfo->fd) {
-            close(mDevices->pfds[i].fd);
-            mDevices->pfds[i].fd = -1;
-            break;
-        }
-    }
-    freeDeviceInfo(devInfo);
-    printmDevices();
-}
-
-/*
- * FUNCTION: closeAllDevices
- * USE:      close all devices
- * PARAMS:   NONE
- * RETURN:   NONE
- * NOTES:
- */
-static void closeAllDevices(void) {
-    if (mDevices) {
-        logd("Closing all devices...\n");
-
-        // Close any fd that is still open.
-        for (int i = 1; i <= MAX_SUPPORTED_HID_CONNECTIONS; i++) {
-            if (mDevices->pfds[i].fd > 0)
-                close(mDevices->pfds[i].fd);
-        }
-
-        close(mDevices->control_pipe[0]);
-        free(mDevices);
-        mDevices = NULL;
-    }
-}
-
-/*
  * FUNCTION: hidDeinit
  * USE:      close pipe and file descriptors and then free devices
  * PARAMS:   NONE
@@ -702,15 +737,11 @@ static void closeAllDevices(void) {
  * NOTES:
  */
 static void hidDeinit(void) {
+    if (!mDevices)
+        return;
+
     /* Close the control_pipe so that mOutputReportThread exits with POLLHUP. */
     close(mDevices->control_pipe[1]);
-
-    if (pthread_join(mOutputReportThread, NULL))
-        loge("Failed to join mOutputReportThread.\n");
-    else
-        logd("Joined with mOutputReportThread successfully.\n");
-
-    closeAllDevices();
 }
 
 /*
@@ -747,16 +778,20 @@ void hidConnStateCbk(ble_hid_conn_t hidId, uint8_t state)
         }
 
         devInfo = createDevInfo(hidId);
-
-        ret = createDeviceInKernel(devInfo);
-        if (ret) {
-            loge("Failed to create uhid device: %d.\n", ret);
-            goto out_device;
+        if (!devInfo) {
+            loge("Failed to create devInfo for that hidId %" PRIu64 ".\n", hidId);
+            goto out;
         }
 
         if (!uhidDeviceAppend(devInfo)) {
             loge("Failure to append the device.\n");
             goto out_device;
+        }
+
+        ret = createDeviceInKernel(devInfo);
+        if (ret) {
+            loge("Failed to create uhid device: %d.\n", ret);
+            goto del_device;
         }
 
         logi("Created a uhid device. %u devices in total.\n", mDevices->numDevices);
@@ -769,18 +804,14 @@ void hidConnStateCbk(ble_hid_conn_t hidId, uint8_t state)
         }
 
         devInfo = uhidFindDeviceById(hidId);
+        if (!devInfo) {
+            loge("Failed to find the device with that hidId %" PRIu64 ".\n", hidId);
+            goto out;
+        }
+
         ret = destroyDeviceInKernel(devInfo);
         if (ret)
             loge("Error in destroying the device: %d\n", ret);
-
-        if (!uhidDeviceDel(hidId))
-            logw("Cannot find HID conn id %" PRIu64 " to delete.\n", hidId);
-
-        closeDevInfo(devInfo);
-        logi("uhid device destroyed: %u devices left.\n", mDevices->numDevices);
-
-        if (mDevices->numDevices <= 0)
-            hidDeinit();
 
         goto out;
     }
@@ -788,6 +819,9 @@ void hidConnStateCbk(ble_hid_conn_t hidId, uint8_t state)
         logd("uhid does not handle this state: %d\n", state);
         goto out;
     }
+
+del_device:
+    uhidDeviceDel(devInfo->hidId);
 
 out_device:
     freeDeviceInfo(devInfo);
