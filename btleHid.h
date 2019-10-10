@@ -50,6 +50,8 @@ bool btleHidDetachFromGatt(gatt_client_conn_t hidId) NEWBLUE_EXPORT;
 bool btleHidGetReportDescriptors(ble_hid_conn_t hidId, const void **descriptorDataP, uint32_t *descriptorLenP) NEWBLUE_EXPORT;
 bool btleHidGetHidInfo(ble_hid_conn_t hidId, uint16_t *hidVerP, uint8_t *countryP, uint8_t *flagsP) NEWBLUE_EXPORT;
 bool btleHidGetHidName(ble_hid_conn_t hidId, char *hidName) NEWBLUE_EXPORT;
+bool btleHidGetHostAddress(ble_hid_conn_t hidId, struct bt_addr* addr) NEWBLUE_EXPORT;
+bool btleHidGetPeerAddress(ble_hid_conn_t hidId, struct bt_addr* addr) NEWBLUE_EXPORT;
 
 //reports
 bool btleHidWriteReport(ble_hid_conn_t hidId, int32_t reportId, sg data) NEWBLUE_EXPORT;

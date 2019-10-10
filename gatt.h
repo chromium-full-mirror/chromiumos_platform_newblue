@@ -210,6 +210,11 @@ bool gattClientInvalidateCache(const struct bt_addr *whomTo) NEWBLUE_EXPORT; //t
 /* MTU for data transmission of read/write operations */
 uint32_t gattClientGetMtu(gatt_client_conn_t conn) NEWBLUE_EXPORT;
 
+/* Get the bdaddr of the host controller */
+bool gattClientGetHostAddress(gatt_client_conn_t conn, struct bt_addr* addr);
+/* Get the bdaddr of the peer gatt device */
+bool gattClientGetPeerAddress(gatt_client_conn_t conn, struct bt_addr* addr);
+
 /* all of the following return GATT_CLI_* */
 
 /* service search */
@@ -241,5 +246,3 @@ NEWBLUE_END_DECLS
 
 
 #endif
-
-
