@@ -157,6 +157,19 @@ NEWBLUE_BEGIN_DECLS
 typedef uint8_t SmPairState;
 typedef uint8_t SmPairErr;
 
+/* things for authReq fields */
+#define SM_AUTH_REQ_BOND_MASK           0x03
+#define SM_AUTH_REQ_BOND_NO             0x00
+#define SM_AUTH_REQ_BOND_BOND           0x01
+#define SM_AUTH_REQ_MITM_FLAG           0x04
+#define SM_AUTH_REQ_SC_FLAG             0x08
+#define SM_AUTH_REQ_KEYPRESS_FLAG       0x10
+
+/* the SC flag is not set as it is currently not implemented in newblue */
+#define SM_AUTH_REQ_VALID_MASK          (SM_AUTH_REQ_BOND_NO | \
+                                         SM_AUTH_REQ_BOND_BOND | \
+                                         SM_AUTH_REQ_MITM_FLAG)
+
 /* SM calls this to notify an observer about the pairing state change event.
  * observers need to cast pairStateChange to struct smPairStateChange, and there is no ownership
  * transition.
@@ -295,6 +308,8 @@ void smCalcConfValForTest(uint8_t* out, const uint8_t *k, const uint8_t *r, uint
 void smCalcKeyForTest(uint8_t *out, const uint8_t *k, const uint8_t *r1, const uint8_t *r2);
 uint32_t smAddressHashForTest(uint32_t r, const uint8_t *key);
 bool smIsLtkBlockedForTest(const struct smKey *ltk);
+uint8_t smAuthRequirementFromRemoteAuthRequirementsForTest(
+    const uint8_t remoteAuthRequirements);
 
 NEWBLUE_END_DECLS
 
