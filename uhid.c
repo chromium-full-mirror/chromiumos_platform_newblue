@@ -167,8 +167,9 @@ static int destroyDeviceInKernel(struct UhidDeviceInfo *devInfo)
  * NOTES:    Refer to "USB Device Class Definition for Human Interface Devices"
  *           http://www.usb.org/developers/hidpage/HID1_11.pdf
  */
-static bool parseReportDescriptor(const uint8_t *rdData, uint32_t rdSize, bool *reportIdPresent)
-{
+static bool parseReportDescriptor(const uint8_t *rdData,
+        const uint32_t rdSize,
+        bool *reportIdPresent) {
     uint8_t bSize;
     uint8_t prefix;
     int collectionDepth = 0;
@@ -251,6 +252,12 @@ static bool parseReportDescriptor(const uint8_t *rdData, uint32_t rdSize, bool *
     }
 
     return true;
+}
+
+bool parseReportDescriptorForTest(const uint8_t* rdData,
+    const uint32_t rdSize,
+    bool* reportIdPresent) {
+    return parseReportDescriptor(rdData, rdSize, reportIdPresent);
 }
 
 /*
