@@ -91,14 +91,6 @@ struct smAuthReq {
 #define SM_ERR_REPEATED_ATTEMPTS        0x09 /* too rapid an attempt to pair after a failure */
 #define SM_ERR_INVALID_PARAMS           0x0A /* unparsable command or invalid params in command */
 
-/* things for authReq fields */
-#define SM_AUTH_REQ_BOND_MASK           0x03
-#define SM_AUTH_REQ_BOND_NO             0x00
-#define SM_AUTH_REQ_BOND_BOND           0x01
-#define SM_AUTH_REQ_MITM_FLAG           0x04
-#define SM_AUTH_REQ_SC_FLAG             0x08
-#define SM_AUTH_REQ_KEYPRESS_FLAG       0x10
-
 /* things for key distr fields */
 #define SM_KEY_DISTR_LTK                0x01
 #define SM_KEY_DISTR_IRK                0x02
@@ -304,6 +296,18 @@ static const uint8_t mPairAlgs[5][5] = {
     {SM_ALG_JUST_WORK, SM_ALG_JUST_WORK, SM_ALG_JUST_WORK, SM_ALG_JUST_WORK, SM_ALG_JUST_WORK},
     {SM_ALG_PASS_KEY,  SM_ALG_PASS_KEY,  SM_ALG_PASS_KEY,  SM_ALG_JUST_WORK, SM_ALG_PASS_KEY },
 };
+
+/*
+ * FUNCTION: smAuthRequirementFromRemoteAuthRequirements
+ * USE:      Calculates auth requirements from the remote device's (initiator's)
+ * PARAMS:   remoteAuthRequirements - the initiator's requirements
+ * RETURN:   the effective auth requirements to use in the pairing response.
+ * NOTES:
+ */
+static uint8_t smAuthRequirementFromRemoteAuthRequirements(
+    const uint8_t remoteAuthRequirements) {
+    return (remoteAuthRequirements & SM_AUTH_REQ_VALID_MASK);
+}
 
 /* work struct of notifying application(s) */
 struct smNotifWork {
@@ -1415,9 +1419,10 @@ static void smRx(struct smInstance *inst, sg packet)
             break;
         }
 
-        /* as a responsder, we set our authentication requirement based on our IO capabilities and
-         * peer's requirement */
-        inst->myAuthReq = inst->peerAuthReq;
+        /* as a responsder, we set our authentication requirement based on our
+           IO capabilities and peer's requirement */
+        inst->myAuthReq = smAuthRequirementFromRemoteAuthRequirements(
+            inst->peerAuthReq);
         if (mIoCap == HCI_DISP_CAP_NONE)
             inst->myAuthReq &= ~SM_AUTH_REQ_MITM_FLAG;
         inst->myMaxKeySz = SM_MAX_KEY_LEN;
@@ -4241,4 +4246,9 @@ uint32_t smAddressHashForTest(uint32_t r, const uint8_t *key)
 bool smIsLtkBlockedForTest(const struct smKey *ltk)
 {
     return smIsLtkBlocked(ltk);
+}
+
+uint8_t smAuthRequirementFromRemoteAuthRequirementsForTest(
+    const uint8_t remoteAuthRequirements) {
+    return smAuthRequirementFromRemoteAuthRequirements(remoteAuthRequirements);
 }
