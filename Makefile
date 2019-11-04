@@ -22,6 +22,7 @@ LDLIBS += -lpthread
 common_OBJS = att.o \
               gatt.o \
               gatt-builtin.o \
+              bt.o \
               btleHid.o \
               gattSvcBattery.o \
               gattSvcMiscInfo.o \

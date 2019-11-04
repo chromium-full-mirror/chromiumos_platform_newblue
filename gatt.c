@@ -18,6 +18,7 @@
 #include "log.h"
 #include "mt.h"
 #include "bt.h"
+#include "hci.h"
 
 // TODO: if multiple clients stage writes/try to commit them, we do not arbitrate that. Depending on the desired use of this, we may have to
 
@@ -3693,6 +3694,60 @@ out:
 }
 
 /*
+ * FUNCTION:  gattClientGetHostAddress
+ * USE:       get the address of the host controller
+ * PARAMS:    connId  - the connection id
+ *            addr    - host address
+ * RETURN:    Success if host address found.
+ */
+bool gattClientGetHostAddress(gatt_client_conn_t connId, struct bt_addr* addr) {
+    if (addr) {
+        addr->type = BT_ADDR_TYPE_LE_PUBLIC;
+        hciGetLocalAddress(addr->addr);
+    }
+
+    return true;
+}
+
+/*
+ * FUNCTION:  gattClientGetPeerAddress
+ * USE:       get the address of the peer device
+ * PARAMS:    connId  - the connection id
+ *            addr    - peer address
+ * RETURN:    address of the peer device
+ */
+bool gattClientGetPeerAddress(gatt_client_conn_t connId, struct bt_addr* addr) {
+    struct gattClientConnection* conn = NULL;
+    struct gattConnState* connState = NULL;
+    bool ret = false;
+
+    pthread_mutex_lock(&mGattLock);
+
+    conn = gattClientConnFindById(connId);
+    if (!conn) {
+        logw(
+            "Failed to get peer address with a nonexistent GATT Client "
+            "connection\n");
+        goto out;
+    }
+
+    connState = gattConnFindById(conn->gattConnId);
+    if (!connState) {
+        logw("Failed to get peer address with a nonexistent GATT connection\n");
+        goto out;
+    }
+
+    if (addr)
+        memcpy(addr, &connState->addr, sizeof(struct bt_addr));
+
+    ret = true;
+
+out:
+    pthread_mutex_unlock(&mGattLock);
+    return ret;
+}
+
+/*
  * FUNCTION: gattCliTodoEnqItem
  * USE:      Enqueue a gatt to-do item in front or back of list
  * PARAMS:   conn - the connection structure
@@ -5161,4 +5216,3 @@ uint8_t gattClientUtilLongRead(void* userData, gatt_client_conn_t conn, uint16_t
     pthread_mutex_unlock(&mGattUtilLock);
     return gattClientUtilLongReadScheduleNextChunk(conn, trans, false); // no need for callback this first time as we're sync
 }
-

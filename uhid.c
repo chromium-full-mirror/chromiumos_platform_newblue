@@ -53,6 +53,9 @@ struct UhidDeviceInfo {
     uint8_t flags;
     uint8_t *rdData;
     uint16_t rdSize;
+
+    struct bt_addr phys; /* Physical address of adapter */
+    struct bt_addr uniq; /* Uniq id of the device */
 };
 
 struct UhidDevices {
@@ -133,6 +136,10 @@ static int createDeviceInKernel(const struct UhidDeviceInfo *devInfo)
     ev.u.create.product = devInfo->product;
     ev.u.create.version = devInfo->version;
     ev.u.create.country = devInfo->country;
+
+    // Copy adapter and device addresses to uhid
+    ba2strlc(&devInfo->phys, (char*)ev.u.create.phys, sizeof(ev.u.create.phys));
+    ba2strlc(&devInfo->uniq, (char*)ev.u.create.uniq, sizeof(ev.u.create.uniq));
 
     return uhidWrite(devInfo->fd, &ev);
 }
@@ -279,10 +286,12 @@ static bool extractBtleUhidDeviceInfo(struct UhidDeviceInfo *devInfo, int fd, bl
     devInfo->fd = fd;
     devInfo->hidId = hidId;
     devInfo->state = BTLE_HID_CONN_STATE_UP;
-    devInfo->bus = BUS_USB;
+    devInfo->bus = BUS_BLUETOOTH;
     devInfo->next = NULL;
     btleHidGetHidName(hidId, (char*) devInfo->name);
     btleHidGetHidInfo(hidId, (uint16_t *)&devInfo->version, (uint8_t *)&devInfo->country, &devInfo->flags);
+    btleHidGetHostAddress(hidId, &devInfo->phys);
+    btleHidGetPeerAddress(hidId, &devInfo->uniq);
     btleHidGetReportDescriptors(hidId, (const void **)&rdData, &rdSize);
 
     logd("Size of report map: %d\n", rdSize);

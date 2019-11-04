@@ -1,6 +1,13 @@
+/*
+ * Copyright 2019 The Chromium OS Authors. All rights reserved.
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file.
+ */
+
 #ifndef _BT_H_
 #define _BT_H_
 
+#include <string.h>
 #include "types.h"
 
 #define BT_MAC_LEN                6
@@ -37,5 +44,7 @@ struct bt_addr {
 #define BT_TRANSPORT_BR_EDR     1
 #define BT_TRANSPORT_LE         2
 
-#endif
+int ba2str(const struct bt_addr* bdaddr, char* buf, size_t len);
+int ba2strlc(const struct bt_addr* bdaddr, char* buf, size_t len);
 
+#endif

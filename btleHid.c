@@ -1237,6 +1237,60 @@ bool btleHidGetHidName(ble_hid_conn_t hidId, char* hidName) {
 }
 
 /*
+ * FUNCTION:  btleHidGetHostAddress
+ * USE:       Get address of host controller
+ * PARAMS:    hidId   - HID device handle
+ *            addr    - Output host address
+ * RETURN:    true on success
+ * NOTES:
+ */
+bool btleHidGetHostAddress(ble_hid_conn_t hidId, struct bt_addr* addr) {
+    struct HidConn* hid;
+    bool ret = false;
+
+    pthread_mutex_lock(&mHidLock);
+    hid = hidFindConnById(hidId);
+    if (!hid)
+        logw("Attempting to get HID name from a nonexistent HID device\n");
+    else if (hid->state != BTLE_HID_CONN_STATE_UP)
+        logw("Attempting to get HID name from a HID device in state %u\n",
+             hid->state);
+    else
+        ret = gattClientGetHostAddress(hid->gattConn, addr);
+
+    pthread_mutex_unlock(&mHidLock);
+
+    return ret;
+}
+
+/*
+ * FUNCTION:  btleHidGetPeerAddress
+ * USE:       Get address of peer device
+ * PARAMS:    hidId   - HID device handle
+ *            addr    - Output peer device address
+ * RETURN:    true on success
+ * NOTES:
+ */
+bool btleHidGetPeerAddress(ble_hid_conn_t hidId, struct bt_addr* addr) {
+    struct HidConn* hid;
+    bool ret = false;
+
+    pthread_mutex_lock(&mHidLock);
+    hid = hidFindConnById(hidId);
+    if (!hid)
+        logw("Attempting to get HID name from a nonexistent HID device\n");
+    else if (hid->state != BTLE_HID_CONN_STATE_UP)
+        logw("Attempting to get HID name from a HID device in state %u\n",
+             hid->state);
+    else
+        ret = gattClientGetPeerAddress(hid->gattConn, addr);
+
+    pthread_mutex_unlock(&mHidLock);
+
+    return ret;
+}
+
+/*
  * FUNCTION: btleHidWriteReportWriteCbk
  * USE:      Called by GATT when our write succeeds or fails
  * PARAMS:   userData - our data (unused here)
@@ -1365,11 +1419,3 @@ bool btleHidReadReport(ble_hid_conn_t hidId, int32_t reportId)
     pthread_mutex_unlock(&mHidLock);
     return false;
 }
-
-
-
-
-
-
-
-
