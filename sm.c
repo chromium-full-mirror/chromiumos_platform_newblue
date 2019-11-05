@@ -3479,10 +3479,8 @@ bool smResolveAddr(struct bt_addr *addr, const struct bt_addr *peerAddr)
 
     /* enumerate DB to find the peer address with IRK which can resolve peerAddr */
     persistEnumKnownDevs(smIrkEnumF, (void *)&enumData, &keyType, NULL);
-    if (!enumData.wasFound) {
-        logi("No matching IRK\n");
+    if (!enumData.wasFound)
         goto out;
-    }
     *addr = enumData.peerAddr;
     err = false;
 out:
