@@ -136,6 +136,12 @@ static void readyForUpCbk() {
 
 #define TEST_SCAN_INTERVAL              36
 #define TEST_SCAN_WINDOW                18
+#define TEST_CONN_SCAN_INTERVAL         24
+#define TEST_CONN_SCAN_WINDOW           6
+#define TEST_CONN_INT_MIN               10
+#define TEST_CONN_INT_MAX               20
+#define TEST_CONN_LATENCY               10
+#define TEST_CONN_TIMEOUT               83
 
 void logData(char* dst, const void *buf, uint8_t len)
 {
@@ -146,6 +152,10 @@ void logData(char* dst, const void *buf, uint8_t len)
     for (i = 0; i < len; i++)
         sprintf(dst + strlen(dst), " %02X", data[i]);
 }
+
+static const struct GattConnectParameters mConnectParameters = {
+    TEST_CONN_SCAN_INTERVAL, TEST_CONN_SCAN_WINDOW, TEST_CONN_INT_MIN,
+    TEST_CONN_INT_MAX,       TEST_CONN_LATENCY,     TEST_CONN_TIMEOUT};
 
 static gatt_service_t mSvcTime = 0;
 static att_cid_t mConnTime = 0;
@@ -435,7 +445,7 @@ static void initSvcSubsystemsAndGattConnect(struct bt_addr *connTo)
     gattSvcMiscInfoInit(miscInfoSvcStateCbk, miscInfoSvcRxCbk);
     btleHidInit(hidConnStateCbk, hidReportRxCbk);
 
-    con = gattClientConnect(NULL, connTo, gattConnectedCbkHidTest);
+    con = gattClientConnect(NULL, connTo, &mConnectParameters, gattConnectedCbkHidTest);
     if (!con)
         logw("Failed to try to form a GATT connection!\n");
     else {
@@ -1078,7 +1088,7 @@ int main(int argc, char** argv)
             }
             else if (wantConnect) {
 
-                con = gattClientConnect(NULL, &connTo, gattConnectedCbkGattEnum);
+                con = gattClientConnect(NULL, &connTo, &mConnectParameters, gattConnectedCbkGattEnum);
                 if (!con)
                     logw("Failed to try to form a GATT connection!\n");
                 else {

@@ -3128,7 +3128,7 @@ void smPair(const struct bt_addr *addr, const struct smPairSecurityRequirements 
     inst->peerKeyDistrReq = inst->myKeyDistrReq;
     inst->peerKeyDistr = inst->myKeyDistrReq;
 
-    if (!l2cApiCreateFixedChConnection(L2C_FIXED_CH_NUM_SM, addr, smFixedChState, NULL, inst)) {
+    if (!l2cApiCreateFixedChConnection(L2C_FIXED_CH_NUM_SM, addr, smFixedChState, NULL, inst, NULL)) {
         logw("%s(): Error creating a fixed channel l2cap connection\n", __func__);
         pairErr = SM_PAIR_ERR_L2C_CONN;
         goto fail;

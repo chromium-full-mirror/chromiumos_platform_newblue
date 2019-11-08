@@ -368,7 +368,7 @@ struct l2cSvcWork {
         } connUpdtCbk;
         struct {
             struct bt_addr addr;
-            //todo: more params for non-default conns?
+            l2cConnectParameters_t connectParameters;
         } linkOpen;
         struct {
             hci_conn_t aclConn;
@@ -902,22 +902,36 @@ static bool l2cSvcWorkScheduleConnUpdtCbk(l2cConnUpdateDoneCbk doneCbk, void *cb
  * FUNCTION: l2cSvcWorkScheduleAclLinkOpen
  * USE:      Schedule an ACL link open call to the lower layer
  * PARAMS:   addr - the address of peer to connect to
+ *           connectParameters - parameters specified create connection details
  * RETURN:   false on immediate error
  * NOTES:    actual call will happen in the worker thread.
  */
-static bool l2cSvcWorkScheduleAclLinkOpen(const struct bt_addr *addr)
-{
-    struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_ACL_LINK_OPEN, 0);
-    if (!w)
-        return false;
-
-    w->linkOpen.addr = *addr;
-    if (workQueuePut(mServiceWork, w))
-        return true;
-
-    loge("Failed to enqueue service work for ACL link open!\n");
-    free(w);
+static bool l2cSvcWorkScheduleAclLinkOpen(
+    const struct bt_addr* addr,
+    const l2cConnectParameters_t* connectParameters) {
+  struct l2cSvcWork* w = l2cSvcWorkAlloc(L2C_WORK_ACL_LINK_OPEN, 0);
+  if (!w)
     return false;
+
+  w->linkOpen.addr = *addr;
+
+  // Check if upper level pass down a struct of connection parameters, if not
+  // use default instead.
+  if (!connectParameters) {
+    w->linkOpen.connectParameters = (l2cConnectParameters_t){
+        HCI_LE_CONN_SCAN_INTERVAL, HCI_LE_CONN_SCAN_WINDOW,
+        HCI_LE_CONN_INT_MIN,       HCI_LE_CONN_INT_MAX,
+        HCI_LE_CONN_LATENCY,       HCI_LE_CONN_TIMEOUT};
+  } else {
+    w->linkOpen.connectParameters = *connectParameters;
+  }
+
+  if (workQueuePut(mServiceWork, w))
+    return true;
+
+  loge("Failed to enqueue service work for ACL link open!\n");
+  free(w);
+  return false;
 }
 
 /*
@@ -5233,51 +5247,54 @@ static void l2cAclLinkUpTimeout(uniq_t which,  uint64_t aclConnHandle)
  * FUNCTION: l2cCreateAndOpenNewAclConn
  * USE:      Request an ACL connection be created
  * PARAMS:   addr - the peer address
+ *           connectParameters - parameters specified create connection details
  * RETURN:   true is it was requested. False on immediate error.
  * NOTES:    call with mConnsLock held
  */
-static struct l2cAclConn* l2cCreateAndOpenNewAclConn(const struct bt_addr* addr)
-{
-    struct l2cAclConn *conn;
+static struct l2cAclConn* l2cCreateAndOpenNewAclConn(
+    const struct bt_addr* addr,
+    const l2cConnectParameters_t* connectParameters) {
+  struct l2cAclConn* conn;
 
-    conn = l2cAclConnFindByAddr(addr);
-    if (conn) {
-        if (conn->state == L2C_ACL_STATE_TEARDOWN) {
-            logw("Asked to establish existing ACL conn as it goes down. Bad luck\n");
-            return NULL;
-        } else {
-            logw("Asked to establish existing ACL conn\n");
-            return conn;
-        }
-    }
-
-    conn = (struct l2cAclConn*)calloc(1, sizeof(struct l2cAclConn));
-    if (!conn) {
-        loge("Out of memory\n");
-        return NULL;
-    }
-
-    memcpy(&conn->peerAddr, addr, sizeof(conn->peerAddr));
-    conn->handle = uniqGetNext();
-    conn->state = L2C_ACL_STATE_PENDING;
-    conn->prev = NULL;
-    conn->reassSg = NULL;
-    conn->sigMtu = L2C_MIN_SIG_MTU;
-
-    if (!l2cSvcWorkScheduleAclLinkOpen(&conn->peerAddr)) {
-        free(conn);
-        conn = NULL;
+  conn = l2cAclConnFindByAddr(addr);
+  if (conn) {
+    if (conn->state == L2C_ACL_STATE_TEARDOWN) {
+      logw("Asked to establish existing ACL conn as it goes down. Bad luck\n");
+      return NULL;
     } else {
-        conn->next = mAclConns;
-        if (mAclConns)
-            mAclConns->prev = conn;
-        mAclConns = conn;
-        conn->openTimer = timerSet(L2C_ACL_LINK_UP_TIMEOUT, l2cAclLinkUpTimeout, conn->handle);
-        if (!conn->openTimer)
-            loge("Failed to set open timeout for ACL link\n");
+      logw("Asked to establish existing ACL conn\n");
+      return conn;
     }
+  }
 
-    return conn;
+  conn = (struct l2cAclConn*)calloc(1, sizeof(struct l2cAclConn));
+  if (!conn) {
+    loge("Out of memory\n");
+    return NULL;
+  }
+
+  memcpy(&conn->peerAddr, addr, sizeof(conn->peerAddr));
+  conn->handle = uniqGetNext();
+  conn->state = L2C_ACL_STATE_PENDING;
+  conn->prev = NULL;
+  conn->reassSg = NULL;
+  conn->sigMtu = L2C_MIN_SIG_MTU;
+
+  if (!l2cSvcWorkScheduleAclLinkOpen(&conn->peerAddr, connectParameters)) {
+    free(conn);
+    conn = NULL;
+  } else {
+    conn->next = mAclConns;
+    if (mAclConns)
+      mAclConns->prev = conn;
+    mAclConns = conn;
+    conn->openTimer =
+        timerSet(L2C_ACL_LINK_UP_TIMEOUT, l2cAclLinkUpTimeout, conn->handle);
+    if (!conn->openTimer)
+      loge("Failed to set open timeout for ACL link\n");
+  }
+
+  return conn;
 }
 
 /*
@@ -5289,90 +5306,100 @@ static struct l2cAclConn* l2cCreateAndOpenNewAclConn(const struct bt_addr* addr)
  *           doneCbk - function to call when action completes
  *           userData - data to pass to stateCbk
  *           instance - data to pass to stateCbk
+ *           connectParameters - parameters specified create connection details
  * RETURN:   true is a send was requested. False on immediate error.
  * NOTES:    callback may be called before this function returns, if
  *           true was returned, at least one call to the callback
  *           will happen
  */
-bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr* addr, uint16_t mtu, l2cStateCbk stateCbk, void* userData, void* instance)
-{
-    struct l2cAclConn *aclConn;
-    struct l2cConn *conn = NULL;
-    bool ret = false;
+bool l2cApiCreatePsmConnection(
+    psm_t psm,
+    const struct bt_addr* addr,
+    uint16_t mtu,
+    l2cStateCbk stateCbk,
+    void* userData,
+    void* instance,
+    const l2cConnectParameters_t* connectParameters) {
+  struct l2cAclConn* aclConn;
+  struct l2cConn* conn = NULL;
+  bool ret = false;
 
-    if (!stateCbk) {
-        logw("Invalid stateCbk\n");
-        return false;
+  if (!stateCbk) {
+    logw("Invalid stateCbk\n");
+    return false;
+  }
+
+  if (!l2cPsmValid(psm)) {
+    logw("Invalid PSM %d\n", psm);
+    return false;
+  }
+
+  if (BT_ADDR_IS_LE(*addr)) {
+    logw("Cannot create a PSM connection to an LE address\n");
+    return false;
+  }
+
+  pthread_mutex_lock(&mConnsLock);
+  aclConn = l2cAclConnFindByAddr(addr);
+  if (aclConn && aclConn->state == L2C_ACL_STATE_TEARDOWN) {
+    logw("Trying to open a connection over a going-down ACL link. Bad luck\n");
+    goto out;
+  } else if (!aclConn) {
+    logd("acl not found for connection requested, making one\n");
+    aclConn = l2cCreateAndOpenNewAclConn(addr, connectParameters);
+  }
+  if (!aclConn) {
+    loge("Failed to create/open/find ACL conn\n");
+    goto out;
+  }
+
+  conn = l2cNewConnStruct(L2C_CONN_STATE_CONN_WAIT, aclConn->handle, 0, 0, psm,
+                          mtu, true);
+  if (!conn) {
+    loge("Failed to allocate an L2C conn\n");
+    goto out;
+  }
+
+  /* create the conn */
+  conn->stateCbk = stateCbk;
+  conn->userData = userData;
+  conn->instance = instance;
+  conn->inUse = 1;
+
+  if (aclConn->conn == L2C_ACL_STATE_ESTABLISHED) {
+    uint8_t ident;
+    uint16_t localCh = l2cAclFreeCid(aclConn);
+
+    if (!localCh) {
+      logw("No free channels for acl " HCI_CONN_FMT "x\n",
+           HCI_CONN_CONV(aclConn->conn));
+      goto out;
     }
 
-    if (!l2cPsmValid(psm)) {
-        logw("Invalid PSM %d\n", psm);
-        return false;
+    ident = l2cSigSendConnectionReq(aclConn, psm, localCh);
+    if (!ident) {
+      l2cSvcWorkScheduleStateCallDirect(stateCbk, userData, instance,
+                                        L2C_STATE_CLOSED, NULL, 0);
+      loge("Failed to request opening of a psm channel\n");
+      goto out;
     }
-
-    if (BT_ADDR_IS_LE(*addr)) {
-        logw("Cannot create a PSM connection to an LE address\n");
-        return false;
-    }
-
-    pthread_mutex_lock(&mConnsLock);
-    aclConn = l2cAclConnFindByAddr(addr);
-    if (aclConn && aclConn->state == L2C_ACL_STATE_TEARDOWN) {
-        logw("Trying to open a connection over a going-down ACL link. Bad luck\n");
-        goto out;
-    } else if (!aclConn) {
-        logd("acl not found for connection requested, making one\n");
-        aclConn = l2cCreateAndOpenNewAclConn(addr);
-    }
-    if (!aclConn) {
-        loge("Failed to create/open/find ACL conn\n");
-        goto out;
-    }
-
-    conn = l2cNewConnStruct(L2C_CONN_STATE_CONN_WAIT, aclConn->handle, 0, 0, psm, mtu, true);
-    if (!conn) {
-        loge("Failed to allocate an L2C conn\n");
-        goto out;
-    }
-
-    /* create the conn */
-    conn->stateCbk = stateCbk;
-    conn->userData = userData;
-    conn->instance = instance;
-    conn->inUse = 1;
-
-    if (aclConn->conn == L2C_ACL_STATE_ESTABLISHED) {
-        uint8_t ident;
-        uint16_t localCh = l2cAclFreeCid(aclConn);
-
-        if (!localCh) {
-            logw("No free channels for acl "HCI_CONN_FMT"x\n", HCI_CONN_CONV(aclConn->conn));
-            goto out;
-        }
-
-        ident = l2cSigSendConnectionReq(aclConn, psm, localCh);
-        if (!ident) {
-            l2cSvcWorkScheduleStateCallDirect(stateCbk, userData, instance, L2C_STATE_CLOSED, NULL, 0);
-            loge("Failed to request opening of a psm channel\n");
-            goto out;
-        }
-        conn->localCh = localCh;
-        conn->state = L2C_CONN_STATE_TX_OPEN_TXED;
-        conn->ident = ident;
-        l2cAclDownTimerStop(aclConn);
-        l2cConnTimer(conn, L2C_L2CAP_OPEN_TIMEOUT);
-    }
-    conn->next = mConns;
-    if (mConns)
-        mConns->prev = conn;
-    mConns = conn;
-    ret = true;
+    conn->localCh = localCh;
+    conn->state = L2C_CONN_STATE_TX_OPEN_TXED;
+    conn->ident = ident;
+    l2cAclDownTimerStop(aclConn);
+    l2cConnTimer(conn, L2C_L2CAP_OPEN_TIMEOUT);
+  }
+  conn->next = mConns;
+  if (mConns)
+    mConns->prev = conn;
+  mConns = conn;
+  ret = true;
 
 out:
-    pthread_mutex_unlock(&mConnsLock);
-    if (!ret && conn)
-        free(conn);
-    return ret;
+  pthread_mutex_unlock(&mConnsLock);
+  if (!ret && conn)
+    free(conn);
+  return ret;
 }
 
 /*
@@ -5383,80 +5410,89 @@ out:
  *           stateCbk - function to call with state
  *           userData - data to pass to stateCbk
  *           instance - data to pass to stateCbk
+ *           connectParameters - parameters specified create connection details
  * RETURN:   true is a send was requested. False on immediate error.
  * NOTES:    callback may be called before this function returns, if
  *           true was returned, at least one call to the callback
  *           will happen
  */
-bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr* addr, l2cStateCbk stateCbk, void* userData, void* instance)
-{
-    struct l2cAclConn *aclConn;
-    struct l2cConn *conn = NULL;
-    bool ret = false;
+bool l2cApiCreateFixedChConnection(
+    uint16_t chan,
+    const struct bt_addr* addr,
+    l2cStateCbk stateCbk,
+    void* userData,
+    void* instance,
+    const l2cConnectParameters_t* connectParameters) {
+  struct l2cAclConn* aclConn;
+  struct l2cConn* conn = NULL;
+  bool ret = false;
 
-    if (chan == L2C_CH_SIGNALLING_EDR || chan == L2C_CH_CONNECTIONLESS ||
-        chan == L2C_CH_SIGNALLING_LE || !chan || chan >= L2C_NUM_FIXED_CHANNELS) {
-        logw("Invalid channel for creating a FixedCh connection\n");
-        return false;
-    }
+  if (chan == L2C_CH_SIGNALLING_EDR || chan == L2C_CH_CONNECTIONLESS ||
+      chan == L2C_CH_SIGNALLING_LE || !chan || chan >= L2C_NUM_FIXED_CHANNELS) {
+    logw("Invalid channel for creating a FixedCh connection\n");
+    return false;
+  }
 
-    if (!stateCbk) {
-        logw("Invalid stateCbk\n");
-        return false;
-    }
+  if (!stateCbk) {
+    logw("Invalid stateCbk\n");
+    return false;
+  }
 
-    pthread_mutex_lock(&mConnsLock);
-    aclConn = l2cAclConnFindByAddr(addr);
-    if (aclConn && aclConn->state == L2C_ACL_STATE_TEARDOWN) {
-        logw("Trying to open a connection over a going-down ACL link. Bad luck\n");
-        goto out;
-    } else if (!aclConn) {
-        logd("acl not found for connection requested, making one\n");
-        aclConn = l2cCreateAndOpenNewAclConn(addr);
-    }
-    if (!aclConn) {
-        loge("Failed to create/open/find ACL conn\n");
-        goto out;
-    }
+  pthread_mutex_lock(&mConnsLock);
+  aclConn = l2cAclConnFindByAddr(addr);
+  if (aclConn && aclConn->state == L2C_ACL_STATE_TEARDOWN) {
+    logw("Trying to open a connection over a going-down ACL link. Bad luck\n");
+    goto out;
+  } else if (!aclConn) {
+    logd("acl not found for connection requested, making one\n");
+    aclConn = l2cCreateAndOpenNewAclConn(addr, connectParameters);
+  }
+  if (!aclConn) {
+    loge("Failed to create/open/find ACL conn\n");
+    goto out;
+  }
 
-    /* check is same FixedCh already exists */
-    conn = mConns;
-    while(conn && (conn->acl != aclConn->handle || conn->psm || conn->localCh != chan))
-         conn = conn->next;
-    if (conn) {
-        logi("Ignoring attempt to open FixedCh %d conn when existing exists\n", chan);
-        goto out;
-    }
+  /* check is same FixedCh already exists */
+  conn = mConns;
+  while (conn &&
+         (conn->acl != aclConn->handle || conn->psm || conn->localCh != chan))
+    conn = conn->next;
+  if (conn) {
+    logi("Ignoring attempt to open FixedCh %d conn when existing exists\n",
+         chan);
+    goto out;
+  }
 
-    conn = l2cNewConnStruct(L2C_CONN_STATE_CONN_WAIT, aclConn->handle, chan, chan, 0, 0, true);
-    if (!conn) {
-        loge("Failed to allocate an L2C conn\n");
-        return false;
-    }
+  conn = l2cNewConnStruct(L2C_CONN_STATE_CONN_WAIT, aclConn->handle, chan, chan,
+                          0, 0, true);
+  if (!conn) {
+    loge("Failed to allocate an L2C conn\n");
+    return false;
+  }
 
-    /* create the conn */
-    conn->handle = uniqGetNext();
-    conn->stateCbk = stateCbk;
-    conn->userData = userData;
-    conn->instance = instance;
-    conn->inUse = 1;
+  /* create the conn */
+  conn->handle = uniqGetNext();
+  conn->stateCbk = stateCbk;
+  conn->userData = userData;
+  conn->instance = instance;
+  conn->inUse = 1;
 
-    if (aclConn->state == L2C_ACL_STATE_ESTABLISHED) {
-        l2cChannelReadyForData(aclConn, conn);
-        l2cAclDownTimerStop(aclConn);
-    }
+  if (aclConn->state == L2C_ACL_STATE_ESTABLISHED) {
+    l2cChannelReadyForData(aclConn, conn);
+    l2cAclDownTimerStop(aclConn);
+  }
 
-    conn->next = mConns;
-    if (mConns)
-        mConns->prev = conn;
-    mConns = conn;
-    ret = true;
+  conn->next = mConns;
+  if (mConns)
+    mConns->prev = conn;
+  mConns = conn;
+  ret = true;
 
 out:
-    pthread_mutex_unlock(&mConnsLock);
-    if (!ret && conn)
-        free(conn);
-    return ret;
+  pthread_mutex_unlock(&mConnsLock);
+  if (!ret && conn)
+    free(conn);
+  return ret;
 }
 
 /*
