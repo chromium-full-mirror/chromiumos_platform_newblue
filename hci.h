@@ -158,15 +158,6 @@ typedef uniq_t hci_adv_set_t;
 #define HCI_NAME_REQ_STATUS_ERROR        1
 #define HCI_NAME_REQ_STATUS_COMPLETE     2
 
-struct hciConnectParameters {
-    uint16_t scanInterval;
-    uint16_t scanWindow;
-    uint16_t connectIntervalMin;
-    uint16_t connectIntervalMax;
-    uint16_t latency;
-    uint16_t timeout;
-};
-
 /* various callbacks - it is universally a bad idea to call back into hci from these, except otherwise noted funcs */
 /* rssi = 127 -> no RSSI */
 typedef void (*hciDeviceDiscoveredLeCbk)(void *cbkData, const struct bt_addr *addr, const struct bt_addr *resolvedAddr, int8_t rssi, uint8_t replyType, const void *eir, uint8_t eirLen);
@@ -201,14 +192,7 @@ bool hciDiscoverLeStop(uniq_t handle) NEWBLUE_EXPORT;
 #define HCI_BOUNDARY_CONT       2
 
 /* connect */
-hci_conn_t hciConnect(const struct bt_addr* addr,
-                      const uint8_t* selfRandomAddr,
-                      uint16_t* scanIntervalP,
-                      uint16_t* scanWindowP,
-                      uint16_t* connIntervalMinP,
-                      uint16_t* connIntervalMaxP,
-                      uint16_t* latencyP,
-                      uint16_t* timeoutP);
+hci_conn_t hciConnect(const struct bt_addr* addr, const uint8_t *selfRandomAddr, uint16_t *scanIntervalP, uint16_t *scanWindowP, uint16_t *connIntervalMinP, uint16_t *connIntervalMaxP, uint16_t *latencyP, uint16_t *timeoutP);
 /* disconnect/cancel connection attempt */
 bool hciDisconnect(hci_conn_t aclConn);
 /* try to send data -> HCI_TX_SEND_*   boundary = HCI_BOUNDARY_* */

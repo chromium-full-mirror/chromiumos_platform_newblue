@@ -43,8 +43,6 @@ void l2cDeinit(void) NEWBLUE_EXPORT;
 
 /* HIGHER LAYER INTERFACE API */
 
-/* connection parameters */
-typedef struct hciConnectParameters l2cConnectParameters_t;
 
 /* callbacks for connections */
 struct l2cEncrState {
@@ -120,23 +118,11 @@ bool l2cApiServiceFixedChUnregister(uint16_t chan, void (*doneCbk)(void*), void 
 
 
 /* call this to connect to a remote PSM-based service Expect an MTU callback. */
-bool l2cApiCreatePsmConnection(psm_t psm,
-                               const struct bt_addr* addr,
-                               uint16_t mtu,
-                               l2cStateCbk stateCbk,
-                               void* userData,
-                               void* instance,
-                               const l2cConnectParameters_t* connectParameters);
+bool l2cApiCreatePsmConnection(psm_t psm, const struct bt_addr *addr, uint16_t mtu, l2cStateCbk stateCbk, void *userData, void *instance);
 
-/* call this to connect to a remote FixedCh service. Do not expect an MTU
- * callback. */
-bool l2cApiCreateFixedChConnection(
-    uint16_t chan,
-    const struct bt_addr* addr,
-    l2cStateCbk stateCbk,
-    void* userData,
-    void* instance,
-    const l2cConnectParameters_t* connectParameters);
+/* call this to connect to a remote FixedCh service. Do not expect an MTU callback. */
+bool l2cApiCreateFixedChConnection(uint16_t chan, const struct bt_addr *addr, l2cStateCbk stateCbk, void *userData, void *instance);
+
 
 /* call this to request a connection parameter update for a given connection */
 typedef void (*l2cConnUpdateDoneCbk)(void *userData, bool success);
