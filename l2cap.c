@@ -919,9 +919,9 @@ static bool l2cSvcWorkScheduleAclLinkOpen(
   // use default instead.
   if (!connectParameters) {
     w->linkOpen.connectParameters = (l2cConnectParameters_t){
-        HCI_LE_CONN_DEFAULT_SCAN_INTERVAL, HCI_LE_CONN_DEFAULT_SCAN_WINDOW,
-        HCI_LE_CONN_DEFAULT_INT_MIN,       HCI_LE_CONN_DEFAULT_INT_MAX,
-        HCI_LE_CONN_DEFAULT_LATENCY,       HCI_LE_CONN_DEFAULT_TIMEOUT};
+        HCI_LE_CONN_SCAN_INTERVAL, HCI_LE_CONN_SCAN_WINDOW,
+        HCI_LE_CONN_INT_MIN,       HCI_LE_CONN_INT_MAX,
+        HCI_LE_CONN_LATENCY,       HCI_LE_CONN_TIMEOUT};
   } else {
     w->linkOpen.connectParameters = *connectParameters;
   }
@@ -3697,7 +3697,8 @@ static void* l2cSvcWorker(void* unused)
             work->connUpdtCbk.doneCbk(work->connUpdtCbk.cbkData, work->connUpdtCbk.success);
             break;
         case L2C_WORK_ACL_LINK_OPEN:
-            if (!hciConnect(&work->linkOpen.addr, NULL, &work->linkOpen.connectParameters))
+            //todo: non-default settings?
+            if (!hciConnect(&work->linkOpen.addr, NULL, NULL, NULL, NULL, NULL, NULL, NULL))
                 loge("HCI refused to connect\n");
             break;
         case L2C_WORK_ACL_LINK_CLOSE:
