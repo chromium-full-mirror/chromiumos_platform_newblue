@@ -203,7 +203,12 @@ bool hciDiscoverLeStop(uniq_t handle) NEWBLUE_EXPORT;
 /* connect */
 hci_conn_t hciConnect(const struct bt_addr* addr,
                       const uint8_t* selfRandomAddr,
-                      const struct hciConnectParameters* connectParameters);
+                      uint16_t* scanIntervalP,
+                      uint16_t* scanWindowP,
+                      uint16_t* connIntervalMinP,
+                      uint16_t* connIntervalMaxP,
+                      uint16_t* latencyP,
+                      uint16_t* timeoutP);
 /* disconnect/cancel connection attempt */
 bool hciDisconnect(hci_conn_t aclConn);
 /* try to send data -> HCI_TX_SEND_*   boundary = HCI_BOUNDARY_* */

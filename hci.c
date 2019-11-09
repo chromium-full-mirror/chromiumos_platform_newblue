@@ -409,8 +409,6 @@ static bool hciScheduleAclRx(uint16_t hdr, sg packet);
 static void hciConnAclStructDel(struct hciAclConn* conn);
 static bool hciSetupResetEventHandler(bool cmdWaitLockHeld);
 static void hciAdvSetGetCurAdvAddrLocked(struct hciAdvSet *set, struct bt_addr *ownAddr);
-static bool hciValidateConnectParameters(
-    const struct hciConnectParameters* connectParameters);
 
 /* adv indirection function pointers. Called with mAdvSetsLock held*/
 static bool (*mHciAdvSetEnable)(struct hciAdvSet *set, bool enable);
@@ -3969,42 +3967,44 @@ static void hciMakeProgressOnLeConnectionReqs(void)
  * FUNCTION: hciEnqueueConnectLe
  * USE:      Enqueue a request to make an LE connection
  * PARAMS:   aclConn - the acl conn struct allocated for this connection
- *           sendRandomAddr - send peer our random addr?
- *           connectParameters - contains connection parameter details
+ *           randomAddr - peer address is random?
+ *           scanInt - connect scan interval
+ *           scanWindow - connect scan window
+ *           intMin - minimum wanted interval
+ *           intMax - maximum wanted interval
+ *           latency - wanted latency
+ *           timeout - wanted timeout
+ *           useOwnRandomAddr - send peer our random addr?
  * RETURN:   true if attempt will be made
  * NOTES:    call with mConnsLock held
  */
-static bool hciEnqueueConnectLe(
-    hci_conn_t aclConn,
-    const uint8_t* sendRandomAddr,
-    const struct hciConnectParameters* connectParameters) {
-  struct hciLeConnReq* req = calloc(1, sizeof(struct hciLeConnReq));
+static bool hciEnqueueConnectLe(hci_conn_t aclConn, uint16_t scanInt, uint16_t scanWindow, uint16_t intMin, uint16_t intMax, uint16_t latency, uint16_t timeout, const uint8_t *sendRandomAddr)
+{
+    struct hciLeConnReq *req = calloc(1, sizeof(struct hciLeConnReq));
 
-  if (!req)
-    return false;
-  if (!connectParameters)
-    return false;
+    if (!req)
+        return false;
 
-  req->aclConn = aclConn;
-  req->scanInt = connectParameters->scanInterval;
-  req->scanWindow = connectParameters->scanWindow;
-  req->intMin = connectParameters->connectIntervalMin;
-  req->intMax = connectParameters->connectIntervalMax;
-  req->latency = connectParameters->latency;
-  req->timeout = connectParameters->timeout;
-  req->useRandomAddr = !!sendRandomAddr;
-  if (sendRandomAddr)
-    memcpy(req->selfRandomAddr, sendRandomAddr, sizeof(req->selfRandomAddr));
+    req->aclConn = aclConn;
+    req->scanInt = scanInt;
+    req->scanWindow = scanWindow;
+    req->intMin = intMin;
+    req->intMax = intMax;
+    req->latency = latency;
+    req->timeout = timeout;
+    req->useRandomAddr = !!sendRandomAddr;
+    if (sendRandomAddr)
+        memcpy(req->selfRandomAddr, sendRandomAddr, sizeof(req->selfRandomAddr));
 
-  if (mLeConnReqsTail)
-    mLeConnReqsTail->next = req;
-  else
-    mLeConnReqsHead = req;
-  mLeConnReqsTail = req;
+    if (mLeConnReqsTail)
+        mLeConnReqsTail->next = req;
+    else
+        mLeConnReqsHead = req;
+    mLeConnReqsTail = req;
 
-  hciMakeProgressOnLeConnectionReqs();
+    hciMakeProgressOnLeConnectionReqs();
 
-  return true;
+    return true;
 }
 
 /*
@@ -4076,44 +4076,107 @@ static struct hciAclConn* hciConnAclStructNew(uint16_t id, const struct bt_addr 
  * FUNCTION: hciConnect
  * USE:      Start a connection to a given address
  * PARAMS:   addr - the address to connect to
- *           selfRandomAddr - if null will use public addr, else this is the
- *           random address to use as own for connection
- *           connectParameters - contains connection parameter details
+ *           selfRandomAddr - if null will use public addr, else this is the random address to use as own for connection
+ *           scanIntervalP - if not null, scan interval to use. if null - stack picks
+ *           scanWindowP - if not null, scan window to use. if null - stack picks
+ *           connIntervalMinP - if not null, min conn interval to use. if null - stack picks
+ *           connIntervalMaxP - if not null, max conn interval to use. if null - stack picks
+ *           latencyP - if not null, latency to use. if null - stack picks
+ *           timeoutP - if not null, timeout to use. if null - stack picks
  * RETURN:   connectin handle if an attempt will be made to connect. 0 else
  */
-hci_conn_t hciConnect(const struct bt_addr* addr,
-                      const uint8_t* selfRandomAddr,
-                      const struct hciConnectParameters* connectParameters) {
-  hci_conn_t ret = 0;
+hci_conn_t hciConnect(const struct bt_addr* addr, const uint8_t* selfRandomAddr, uint16_t* scanIntervalP, uint16_t* scanWindowP, uint16_t* connIntervalMinP, uint16_t* connIntervalMaxP, uint16_t* latencyP, uint16_t* timeoutP)
+{
+    uint32_t scanInterval, scanWindow, connIntervalMin, connIntervalMax, latency, timeout;
+    hci_conn_t ret = 0;
 
-  logd("Requesting a connection to " ADDRFMT "\n", ADDRCONV(*addr));
+    logd("Requesting a connection to "ADDRFMT"\n", ADDRCONV(*addr));
 
-  // EDR is not supported
-  if (BT_ADDR_IS_EDR(*addr)) {
-    loge("EDR unsupported\n");
-    return ret; /* empty handler */
-  }
+    //EDR is not supported
+    if (BT_ADDR_IS_EDR(*addr)) {
+        loge("EDR unsupported\n");
+        return false;
+    }
 
-  if (!hciValidateConnectParameters(connectParameters))
-    return ret; /* empty handler */
+    //read params
+    if (scanIntervalP && scanWindowP) {
+        scanInterval = *scanIntervalP;
+        scanWindow = *scanWindowP;
+    }
+    else if (scanIntervalP) {
+        scanInterval = *scanIntervalP;
+        scanWindow = (scanInterval + 1) / 2;
+        if (scanWindow < 0x0004)  //min as per spec
+            scanWindow = 0x0004;
+    }
+    else if (scanWindowP) {
+        scanWindow = *scanWindowP;
+        scanInterval = scanWindow * 2;
+        if (scanInterval > 0x4000)  //max as per spec
+            scanInterval = 0x4000;
+    }
+    else {
+        scanWindow = HCI_LE_CONN_SCAN_WINDOW;
+        scanInterval = HCI_LE_CONN_SCAN_INTERVAL;
+    }
 
-  pthread_mutex_lock(&mConnsLock);
-  if (hciConnFindByAddr(addr))
-    logw("refusing to connect to address I already have a connection to\n");
-  else {
-    struct hciAclConn* conn =
-        hciConnAclStructNew(ACL_CONN_ID_INVALID, addr, CONN_STATE_WAIT, true);
-    if (!conn)
-      loge("Failed to allocate conn struct\n");
-    else if (hciEnqueueConnectLe(conn->handle, selfRandomAddr,
-                                 connectParameters))
-      ret = conn->handle;
-    else
-      hciConnAclStructDel(conn);
-  }
-  pthread_mutex_unlock(&mConnsLock);
+    if (connIntervalMinP && connIntervalMaxP) {
+        connIntervalMin = *connIntervalMinP;
+        connIntervalMax = *connIntervalMaxP;
+    }
+    else if (connIntervalMinP) {
+        connIntervalMin = *connIntervalMinP;
+        connIntervalMax = (connIntervalMin + 3) / 2;
+        if (connIntervalMax > 0x0c80)  //max as per spec
+            connIntervalMax = 0x0c80;
+    }
+    else if (connIntervalMaxP) {
+        connIntervalMax = *connIntervalMaxP;
+        connIntervalMin = (connIntervalMax * 2) / 3;
+        if (connIntervalMin < 0x0006)  //min as per spec
+            connIntervalMax = 0x0006;
+    }
+    else {
+        connIntervalMin = HCI_LE_CONN_INT_MIN;
+        connIntervalMax = HCI_LE_CONN_INT_MAX;
+    }
 
-  return ret;
+    latency = latencyP ? *latencyP : HCI_LE_CONN_LATENCY;
+    timeout = timeoutP ? *timeoutP : HCI_LE_CONN_TIMEOUT;
+
+    //sanity check params before we get too far
+    if (scanInterval < scanWindow || scanWindow < 0x0004 || scanInterval > 0x4000) { //as per spec
+        logw("Scan settings for connection creation are invalid\n");
+        return 0;
+    }
+    if (connIntervalMin > connIntervalMax || connIntervalMin < 0x0006 || connIntervalMax > 0x0c80) { //as per spec
+        logw("Connection interval settings for connection creation are invalid\n");
+        return 0;
+    }
+    if (latency > 0x01f3) { //as per spec
+        logw("Latency setting for connection creation are invalid\n");
+        return 0;
+    }
+    if (timeout < 0x000a || timeout > 0x0c80 || timeout * 8 <= (1 + latency) * connIntervalMax * 2) { //as per spec
+        logw("Timeout setting for connection creation are invalid\n");
+        return 0;
+    }
+
+    pthread_mutex_lock(&mConnsLock);
+    if (hciConnFindByAddr(addr))
+        logw("refusing to connect to address I already have a connection to\n");
+    else {
+        struct hciAclConn* conn = hciConnAclStructNew(ACL_CONN_ID_INVALID, addr, CONN_STATE_WAIT, true);
+        if (!conn)
+            loge("Failed to allocate conn struct\n");
+        else if (hciEnqueueConnectLe(conn->handle, scanInterval, scanWindow, connIntervalMin, connIntervalMax, latency, timeout, selfRandomAddr))
+            ret = conn->handle;
+        else
+            hciConnAclStructDel(conn);
+    }
+    pthread_mutex_unlock(&mConnsLock);
+
+    return ret;
 }
 
 /*
@@ -4873,48 +4936,3 @@ static bool hciConnDisconnect(uint16_t cid)
     return hciCmdSubmitSimpleWithStatusWithDoneCbk(HCI_OGF_Link_Control, HCI_CMD_Disconnect, &cmd, sizeof(cmd), hciCmdStatusCbk, NULL);
 }
 
-/*
- * FUNCTION: hciValidateConnectParameters
- * USE:      Exam the connection parameters against Bluetooth Spec
- * PARAMS:   connectParameters - connection parameter struct
- * RETURN:   true on valid connection parameters. else false.
- */
-static bool hciValidateConnectParameters(
-    const struct hciConnectParameters* connectParameters) {
-  if (!connectParameters) {
-    logw("Null connection parameter struct\n");
-    return false;
-  }
-
-  const uint16_t scanInterval = connectParameters->scanInterval;
-  const uint16_t scanWindow = connectParameters->scanWindow;
-  const uint16_t connectIntervalMin = connectParameters->connectIntervalMin;
-  const uint16_t connectIntervalMax = connectParameters->connectIntervalMax;
-  const uint16_t latency = connectParameters->latency;
-  const uint16_t timeout = connectParameters->timeout;
-
-  // Sanity check connection parameters
-  if (scanInterval < scanWindow || scanWindow < HCI_LE_CONN_SCAN_WINDOW_MIN ||
-      scanInterval > HCI_LE_CONN_SCAN_INTERVAL_MAX) {
-    logw("Scan settings for connection creation are invalid\n");
-    return false;
-  }
-  if (connectIntervalMin > connectIntervalMax ||
-      connectIntervalMin < HCI_LE_CONN_INTERVAL_MIN ||
-      connectIntervalMax > HCI_LE_CONN_INTERVAL_MAX) {
-    logw("Connection interval settings for connection creation are invalid\n");
-    return false;
-  }
-  if (latency > HCI_LE_CONN_LATENCY_MAX) {
-    logw("Latency setting for connection creation are invalid\n");
-    return false;
-  }
-  // Derived from spec requirement Supervision_Timeout > (1 + Conn_Latency) *
-  // Conn_Interval_Max * 2.
-  if (timeout < HCI_LE_CONN_TIMEOUT_MIN || timeout > HCI_LE_CONN_TIMEOUT_MAX ||
-      timeout * 4 <= (1 + latency) * connectIntervalMax) {
-    logw("Timeout setting for connection creation are invalid\n");
-    return false;
-  }
-  return true;
-}
