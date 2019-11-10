@@ -1564,64 +1564,35 @@ static uint8_t gattFixedChSvcAlloc(void *userData, l2c_handle_t handle, bool isA
  * FUNCTION: gattConnectionCreateOrLocate
  * USE:      Make a new gatt L2C connection or find an existing one
  * PARAMS:   to - whom to connect to
- *           connectParameters - parameters specified create connection details
  * RETURN:   connection struct or NULL
  * NOTES:    call with mGattLock held
  */
-static struct gattConnState* gattConnectionCreateOrLocate(
-    const struct bt_addr* to,
-    const l2cConnectParameters_t* connectParameters) {
-  struct gattConnState* gattConn;
+static struct gattConnState* gattConnectionCreateOrLocate(const struct bt_addr *to)
+{
+    struct gattConnState *gattConn;
+    bool connTrying;
 
-  gattConn = gattConnFindByAddr(to);
-  if (!gattConn) {
-    if (gattStateAllocLocked(0, (void**)&gattConn, to,
-                             GATT_CONN_STATE_CONNECTING) != SVC_ALLOC_SUCCESS)
-      logw(
-          "Failed to allocate a gatt connection instance for an outbound GATT "
-          "connection to " ADDRFMT "\n",
-          ADDRCONV(*to));
-    else {
-      bool connTrying;
-      if (BT_ADDR_IS_EDR(*to))
-        connTrying = l2cApiCreatePsmConnection(GATT_PSM, to, L2C_MAX_SAFE_MTU,
-                                               gattConnEvt, NULL, gattConn,
-                                               connectParameters);
-      else
-        connTrying = l2cApiCreateFixedChConnection(
-            GATT_FIXEDCH, to, gattConnEvt, NULL, gattConn, connectParameters);
+    gattConn = gattConnFindByAddr(to);
+    if (!gattConn) {
 
-      if (!connTrying) {
-        logw(
-            "Failed to attempt to establish an outbound GATT connection "
-            "to " ADDRFMT "\n",
-            ADDRCONV(*to));
-        gattConnStructDelete(gattConn);
-        gattConn = NULL;
-      }
+        if (gattStateAllocLocked(0, (void**)&gattConn, to, GATT_CONN_STATE_CONNECTING) != SVC_ALLOC_SUCCESS)
+            logw("Failed to allocate a gatt connection instance for an outbound GATT connection to "ADDRFMT"\n", ADDRCONV(*to));
+        else {
+
+            if (BT_ADDR_IS_EDR(*to))
+                connTrying = l2cApiCreatePsmConnection(GATT_PSM, to, L2C_MAX_SAFE_MTU, gattConnEvt, NULL, gattConn);
+            else
+                connTrying = l2cApiCreateFixedChConnection(GATT_FIXEDCH, to, gattConnEvt, NULL, gattConn);
+
+            if (!connTrying) {
+                logw("Failed to attempt to establish an outbound GATT connection to "ADDRFMT"\n", ADDRCONV(*to));
+                gattConnStructDelete(gattConn);
+                gattConn = NULL;
+            }
+        }
     }
-  }
 
-  return gattConn;
-}
-
-/*
- * FUNCTION: gattConnectParametersTol2cConnectParameters
- * USE:      Convert connection parameter structure from gatt to l2c format
- * PARAMS:   gattConnectParameters - Gatt formatted connection parameter
- *           l2cConnectParameters - L2C formatted connection parameter
- */
-static void gattConnectParametersTol2cConnectParameters(
-    const struct GattConnectParameters* gattConnectParameters,
-    l2cConnectParameters_t* l2cConnectParameters) {
-  l2cConnectParameters->scanInterval = gattConnectParameters->scan_interval;
-  l2cConnectParameters->scanWindow = gattConnectParameters->scan_window;
-  l2cConnectParameters->connectIntervalMin =
-      gattConnectParameters->connect_interval_min;
-  l2cConnectParameters->connectIntervalMax =
-      gattConnectParameters->connect_interval_max;
-  l2cConnectParameters->latency = gattConnectParameters->latency;
-  l2cConnectParameters->timeout = gattConnectParameters->timeout;
+    return gattConn;
 }
 
 /*
@@ -1629,7 +1600,6 @@ static void gattConnectParametersTol2cConnectParameters(
  * USE:      Make a new gatt client connection
  * PARAMS:   userData - caller's data which will be given with the callback
  *           to - whom to connect to
- *           connectParameters - parameters specified create connection details
  *           resultCbk - will be called with results
  * RETURN:   connection id or 0 on failure
  * NOTES:    the callback might be called before this func returnes (talk
@@ -1639,57 +1609,50 @@ static void gattConnectParametersTol2cConnectParameters(
  *           a mutex in callback, and also take it before calling this, do
  *           not release it till this func returns.
  */
-gatt_client_conn_t gattClientConnect(
-    void* userData,
-    const struct bt_addr* to,
-    const struct GattConnectParameters* connectParameters,
-    gattCliConnectResultCbk resultCbk) {
-  struct gattClientConnection* clicon;
-  struct gattConnState* inst;
-  gatt_client_conn_t ret = 0;
+gatt_client_conn_t gattClientConnect(void *userData, const struct bt_addr *to,
+                                     gattCliConnectResultCbk resultCbk)
+{
+    struct gattClientConnection *clicon;
+    struct gattConnState *inst;
+    gatt_client_conn_t ret = 0;
 
-  clicon = calloc(1, sizeof(struct gattClientConnection));
-  if (!clicon) {
-    loge("Out of memory allocating a client connection for GATT\n");
-    return 0;
-  }
+    clicon = calloc(1, sizeof(struct gattClientConnection));
+    if (!clicon) {
+        loge("Out of memory allocating a client connection for GATT\n");
+        return 0;
+    }
 
-  l2cConnectParameters_t l2cConnectParameters;
-  gattConnectParametersTol2cConnectParameters(connectParameters,
-                                              &l2cConnectParameters);
-  pthread_mutex_lock(&mGattLock);
-  inst = gattConnectionCreateOrLocate(to, &l2cConnectParameters);
-  if (!inst) {
-    logw(
-        "Failed to create an outbound GATT connection. Client connection "
-        "process will end\n");
-    goto out;
-  }
+    pthread_mutex_lock(&mGattLock);
+    inst = gattConnectionCreateOrLocate(to);
+    if (!inst) {
+        logw("Failed to create an outbound GATT connection. Client connection process will end\n");
+        goto out;
+    }
 
-  inst->numLocalUsers++;
-  clicon->next = mClientConns;
-  if (mClientConns)
-    mClientConns->prev = clicon;
-  mClientConns = clicon;
+    inst->numLocalUsers++;
+    clicon->next = mClientConns;
+    if (mClientConns)
+        mClientConns->prev = clicon;
+    mClientConns = clicon;
 
-  clicon->userData = userData;
-  clicon->gattConnId = inst->gattConnId;
-  clicon->connId = uniqGetNext();
-  clicon->connCbk = resultCbk;
+    clicon->userData = userData;
+    clicon->gattConnId = inst->gattConnId;
+    clicon->connId = uniqGetNext();
+    clicon->connCbk = resultCbk;
 
-  // call callback right away?
-  if (inst->state == GATT_CONN_STATE_RUNNING)
-    gattEnqueueCliConnStatusCall(clicon, GATT_CLI_STATUS_OK);
+    // call callback right away?
+    if (inst->state == GATT_CONN_STATE_RUNNING)
+        gattEnqueueCliConnStatusCall(clicon, GATT_CLI_STATUS_OK);
 
-  // success!
-  ret = clicon->connId;
-  pthread_mutex_unlock(&mGattLock);
-  return ret;
+    // success!
+    ret = clicon->connId;
+    pthread_mutex_unlock(&mGattLock);
+    return ret;
 
 out:
-  pthread_mutex_unlock(&mGattLock);
-  free(clicon);
-  return 0;
+    pthread_mutex_unlock(&mGattLock);
+    free(clicon);
+    return 0;
 }
 
 /*

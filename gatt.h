@@ -159,14 +159,6 @@ struct GattTraversedService {
     struct GattTraversedServiceInclSvc *inclSvcs;
 };
 
-struct GattConnectParameters {
-    uint16_t scan_interval;
-    uint16_t scan_window;
-    uint16_t connect_interval_min;
-    uint16_t connect_interval_max;
-    uint16_t latency;
-    uint16_t timeout;
-};
 
 /* gatt client callbacks */
 
@@ -209,11 +201,7 @@ typedef void (*gattCliUtilLongReadCompletedCbk)(void* userData, gatt_client_conn
 
 
 /* connection lifecycle */
-gatt_client_conn_t gattClientConnect(
-    void* userData,
-    const struct bt_addr* to,
-    const struct GattConnectParameters* connectParameters,
-    gattCliConnectResultCbk resultCbk) NEWBLUE_EXPORT;
+gatt_client_conn_t gattClientConnect(void *userData, const struct bt_addr *to, gattCliConnectResultCbk resultCbk) NEWBLUE_EXPORT;
 uint8_t gattClientDisconnect(gatt_client_conn_t conn) NEWBLUE_EXPORT; /* -> GATT_CLI_*, calls the gattCliConnectResultCbk passed to gattClientConnect() with GATT_CLI_OTHER_SIDE_DISC */
 
 /* cache maintenance */
