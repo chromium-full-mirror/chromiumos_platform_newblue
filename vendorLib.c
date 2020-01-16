@@ -445,8 +445,8 @@ static void* vendorWorker(void *pipeFdP)
                 char line[128];
                 uint32_t i;
 
-            if (!sz)
-                sprintf(line, "vRX (%u) <ZLP>", buf[0]);
+                if (!sz)
+                    sprintf(line, "vRX (%u) <ZLP>", buf[0]);
 
                 for(i = 0; i < sz; i++) {
                     if (i & 15)
